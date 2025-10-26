@@ -1,0 +1,54 @@
+# Emacs
+*~
+\#*\#
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# straight.el - ignore everything except versions (lockfiles)
+straight/*
+!straight/versions/
+
+# Backup files
+backups/
+auto-save/
+undo-tree-history/
+
+# Custom file
+custom.el
+
+# Org mode
+*.org~
+.org-id-locations
+org-roam.db
+
+# LSP
+.lsp-session-v1
+
+# Flycheck
+flycheck_*.el
+
+# CIDER
+cider-history
+.cider-repl-history
+.nrepl-port
+
+# Project
+.projectile
+projectile-bookmarks.eld
+projectile.cache
+
+# Mac
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+
+eln-cache/*
+.cache/
+*.eld
+history
+/transient/
+/PLAN.md
