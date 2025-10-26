@@ -27,7 +27,9 @@
   :bind (:map vertico-map
               ("RET" . vertico-directory-enter)
               ("DEL" . vertico-directory-delete-char)
-              ("M-DEL" . vertico-directory-delete-word))
+              ("M-DEL" . vertico-directory-delete-word)
+              ("C-h" . vertico-directory-up)
+              ("C-l" . vertico-directory-enter))
   :hook (rfn-eshadow-update-overlay . vertico-directory-tidy))
 
 ;; ============================================================================

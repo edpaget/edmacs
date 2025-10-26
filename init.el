@@ -102,11 +102,11 @@ LANGUAGE should be the name without the .el extension."
 (load-module "git")
 
 ;; ============================================================================
-;; Language-specific configurations (loaded on-demand)
+;; Language-specific configurations
 ;; ============================================================================
 
-;; Language configs are loaded via hooks in their respective mode configurations
-;; Example: (add-hook 'clojure-mode-hook (lambda () (load-language-config "clojure")))
+(load-language-config "clojure")
+(load-language-config "java")
 
 ;; ============================================================================
 ;; Custom file
