@@ -89,6 +89,9 @@ LANGUAGE should be the name without the .el extension."
 ;; Programming tools (general)
 (load-module "programming")
 
+;; VTerm terminal emulator
+(load-module "vterm")
+
 ;; AI assistant integration
 (load-module "ai")
 
@@ -122,6 +125,9 @@ LANGUAGE should be the name without the .el extension."
           (lambda ()
             (message "Emacs loaded in %.2f seconds with %d garbage collections."
                      (float-time (time-subtract after-init-time before-init-time))
-                     gcs-done)))
+                     gcs-done)
+            ;; Display projectile projects list
+            (when (fboundp 'projectile-switch-project)
+              (projectile-switch-project))))
 
 ;;; init.el ends here

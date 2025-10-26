@@ -12,6 +12,9 @@
 (use-package vertico
   :init
   (vertico-mode)
+  :bind (:map vertico-map
+              ("C-j" . vertico-next)
+              ("C-k" . vertico-previous))
   :config
   (setq vertico-cycle t)  ; Cycle from last to first candidate
   )

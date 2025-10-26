@@ -11,29 +11,26 @@
 
 (use-package claude-code-ide
   :config
-  ;; API key configuration
-  ;; Set your API key in one of these ways:
-  ;; 1. Set the ANTHROPIC_API_KEY environment variable
-  ;; 2. Set it directly (not recommended for shared configs):
-  ;;    (setq claude-code-ide-api-key "your-api-key-here")
-
-  ;; Model configuration
-  (setq claude-code-ide-model "claude-sonnet-4-20250514")  ; or your preferred model
+  ;; Claude Code IDE uses the Claude Code CLI which manages its own API key
+  ;; You can configure additional CLI flags with:
+  ;; (setq claude-code-ide-cli-extra-flags "--model opus")
 
   ;; AI keybindings with general.el
   (general-define-key
    :states '(normal visual)
    :prefix "SPC a"
    "" '(:ignore t :which-key "ai")
-   "a" '(claude-code-ide-chat :which-key "chat")
-   "c" '(claude-code-ide-code-action :which-key "code action")
-   "e" '(claude-code-ide-explain :which-key "explain")
-   "r" '(claude-code-ide-refactor :which-key "refactor")
-   "d" '(claude-code-ide-document :which-key "document")
-   "f" '(claude-code-ide-fix :which-key "fix")
-   "t" '(claude-code-ide-test :which-key "generate test")
-   "o" '(claude-code-ide-optimize :which-key "optimize")
-   "s" '(claude-code-ide-suggest :which-key "suggest"))
+   "a" '(claude-code-ide :which-key "start session")
+   "m" '(claude-code-ide-menu :which-key "menu")
+   "c" '(claude-code-ide-continue :which-key "continue")
+   "r" '(claude-code-ide-resume :which-key "resume")
+   "q" '(claude-code-ide-stop :which-key "stop")
+   "b" '(claude-code-ide-switch-to-buffer :which-key "switch to buffer")
+   "t" '(claude-code-ide-toggle :which-key "toggle window")
+   "l" '(claude-code-ide-list-sessions :which-key "list sessions")
+   "i" '(claude-code-ide-insert-at-mentioned :which-key "insert selection")
+   "p" '(claude-code-ide-send-prompt :which-key "send prompt")
+   "s" '(claude-code-ide-check-status :which-key "check status"))
 
   ;; Local leader bindings for AI in programming buffers
   (general-define-key
@@ -41,10 +38,10 @@
    :keymaps 'prog-mode-map
    :prefix ","
    "a" '(:ignore t :which-key "ai")
-   "aa" '(claude-code-ide-chat :which-key "chat")
-   "ac" '(claude-code-ide-code-action :which-key "code action")
-   "ae" '(claude-code-ide-explain :which-key "explain")
-   "ar" '(claude-code-ide-refactor :which-key "refactor")))
+   "aa" '(claude-code-ide :which-key "start session")
+   "am" '(claude-code-ide-menu :which-key "menu")
+   "ai" '(claude-code-ide-insert-at-mentioned :which-key "insert selection")
+   "ap" '(claude-code-ide-send-prompt :which-key "send prompt")))
 
 ;; ============================================================================
 ;; Optional: gptel (alternative/additional AI interface)
