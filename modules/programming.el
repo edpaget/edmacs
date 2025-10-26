@@ -61,10 +61,10 @@
         lsp-ui-doc-position 'at-point
         lsp-ui-doc-delay 0.5
         lsp-ui-peek-enable t
-        lsp-ui-sideline-enable t
-        lsp-ui-sideline-show-hover t
-        lsp-ui-sideline-show-diagnostics t
-        lsp-ui-sideline-show-code-actions t))
+        lsp-ui-sideline-enable nil
+        lsp-ui-sideline-show-hover nil
+        lsp-ui-sideline-show-diagnostics nil
+        lsp-ui-sideline-show-code-actions nil))
 
 ;; Consult-LSP - Consult integration for LSP
 (use-package consult-lsp

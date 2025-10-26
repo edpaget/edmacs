@@ -52,3 +52,4 @@ eln-cache/*
 history
 /transient/
 /PLAN.md
+/tree-sitter/

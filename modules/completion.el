@@ -13,8 +13,16 @@
   :init
   (vertico-mode)
   :bind (:map vertico-map
+              ;; Vim-style navigation
               ("C-j" . vertico-next)
-              ("C-k" . vertico-previous))
+              ("C-k" . vertico-previous)
+              ("C-n" . vertico-next)
+              ("C-p" . vertico-previous)
+              ;; Vim-style scrolling
+              ("C-d" . vertico-scroll-down)
+              ("C-u" . vertico-scroll-up)
+              ;; Vim-style word deletion
+              ("C-w" . backward-kill-word))
   :config
   (setq vertico-cycle t)  ; Cycle from last to first candidate
   )
@@ -128,7 +136,9 @@
   :bind
   (("C-." . embark-act)
    ("C-;" . embark-dwim)
-   ("C-h B" . embark-bindings))
+   ("C-h B" . embark-bindings)
+   ;; Alternative vim-friendly binding
+   ("C-o" . embark-act))
 
   :config
   ;; Hide the mode line of the Embark live/completions buffers
@@ -149,6 +159,24 @@
 (use-package corfu
   :init
   (global-corfu-mode)
+
+  :bind (:map corfu-map
+              ;; Vim-style navigation
+              ("C-j" . corfu-next)
+              ("C-k" . corfu-previous)
+              ("C-n" . corfu-next)
+              ("C-p" . corfu-previous)
+              ;; Vim completion keys
+              ("C-y" . corfu-insert)      ; Accept/yank (vim-style)
+              ("C-e" . corfu-quit)        ; Abort (vim-style)
+              ;; Tab completion
+              ("TAB" . corfu-next)
+              ([tab] . corfu-next)
+              ("S-TAB" . corfu-previous)
+              ([backtab] . corfu-previous)
+              ;; Enter to insert
+              ("RET" . corfu-insert)
+              ([return] . corfu-insert))
 
   :config
   (setq corfu-cycle t                ; Cycle through candidates
@@ -172,6 +200,12 @@
   :straight nil
   :after corfu
   :load-path "straight/repos/corfu/extensions/"
+  :bind (:map corfu-popupinfo-map
+              ;; Vim-style scrolling in documentation popup
+              ("C-d" . corfu-popupinfo-scroll-up)
+              ("C-u" . corfu-popupinfo-scroll-down)
+              ("C-j" . corfu-popupinfo-scroll-up)
+              ("C-k" . corfu-popupinfo-scroll-down))
   :hook (corfu-mode . corfu-popupinfo-mode)
   :config
   (setq corfu-popupinfo-delay '(0.5 . 0.2)))

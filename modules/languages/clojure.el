@@ -110,11 +110,4 @@
         cljr-suppress-middleware-warnings t)
   (cljr-add-keybindings-with-prefix "C-c C-m"))
 
-;; ============================================================================
-;; Flycheck Clojure - Additional linters
-;; ============================================================================
-
-(use-package flycheck-clj-kondo
-  :after (flycheck clojure-mode))
-
 ;;; clojure.el ends here
