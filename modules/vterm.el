@@ -17,6 +17,12 @@
         vterm-buffer-name-string "vterm %s"
         vterm-kill-buffer-on-exit t)
 
+  ;; Evil integration - start in insert state (like vim terminal)
+  (evil-set-initial-state 'vterm-mode 'insert)
+
+  ;; In vterm-copy-mode, use normal state for navigation
+  (evil-set-initial-state 'vterm-copy-mode 'normal)
+
   ;; VTerm keybindings
   (general-define-key
    :states 'normal
@@ -25,8 +31,26 @@
    "v" '(vterm :which-key "open vterm")
    "o" '(vterm-other-window :which-key "vterm other window"))
 
+  ;; Key bindings in insert state for vterm
+  (evil-define-key 'insert vterm-mode-map
+    (kbd "C-c C-t") #'vterm-copy-mode)  ; Enter copy mode
+
+  ;; Key bindings in normal state for vterm-copy-mode
+  (evil-define-key 'normal vterm-copy-mode-map
+    (kbd "i") #'vterm-copy-mode         ; Exit copy mode back to insert
+    (kbd "RET") #'vterm-copy-mode       ; Exit copy mode
+    (kbd "q") #'vterm-copy-mode         ; Exit copy mode
+    (kbd "p") #'vterm-yank              ; Paste from kill ring
+    (kbd "P") #'vterm-yank-pop)         ; Paste previous from kill ring
+
   ;; Allow Emacs-style keybindings in vterm
-  (define-key vterm-mode-map (kbd "C-c C-t") #'vterm-copy-mode))
+  (define-key vterm-mode-map (kbd "C-c C-t") #'vterm-copy-mode)
+
+  ;; Make C-u work in vterm
+  (define-key vterm-mode-map (kbd "C-u") #'vterm-send-C-u)
+
+  ;; Paste from kill ring with C-y
+  (define-key vterm-mode-map (kbd "C-y") #'vterm-yank))
 
 ;; ============================================================================
 ;; VTerm Toggle - Toggle vterm buffer
