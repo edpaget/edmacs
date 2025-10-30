@@ -53,6 +53,17 @@
   (define-key vterm-mode-map (kbd "C-y") #'vterm-yank))
 
 ;; ============================================================================
+;; VTerm Anti-Flicker Filter
+;; ============================================================================
+
+(use-package vterm-anti-flicker-filter
+  :straight (vterm-anti-flicker-filter
+             :type git
+             :host github
+             :repo "martinbaillie/vterm-anti-flicker-filter")
+  :after vterm)
+
+;; ============================================================================
 ;; VTerm Toggle - Toggle vterm buffer
 ;; ============================================================================
 
