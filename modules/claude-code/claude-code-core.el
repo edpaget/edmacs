@@ -1,8 +1,19 @@
 ;;; claude-code-core.el --- Core Claude Code REPL integration -*- lexical-binding: t -*-
 
+;; Copyright (C) 2025
+
+;; Author: Claude Code Contributors
+;; Version: 0.2.0
+;; Package-Requires: ((emacs "28.1") (markdown-mode "2.5") (projectile "2.7.0"))
+;; Keywords: tools, ai, claude
+;; URL: https://github.com/your-repo/claude-code
+
 ;;; Commentary:
 ;; Main entry point for Claude Code REPL-style integration.
 ;; Provides high-level commands for interacting with Claude Code.
+;;
+;; This package provides a beautiful REPL-style interface for Claude Code
+;; with markdown rendering, syntax highlighting, and structured conversation history.
 
 ;;; Code:
 

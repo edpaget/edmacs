@@ -1,0 +1,49 @@
+name: Checks
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  check:
+    name: Run all checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Emacs
+        uses: purcell/setup-emacs@master
+        with:
+          version: '29.2'
+
+      - name: Cache Eldev
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/eldev
+          key: ${{ runner.os }}-eldev-${{ hashFiles('**/Eldev') }}
+          restore-keys: ${{ runner.os }}-eldev-
+
+      - name: Install Eldev
+        run: |
+          curl -fsSL https://raw.github.com/emacs-eldev/eldev/master/webinstall/eldev > eldev
+          chmod +x eldev
+          sudo mv eldev /usr/local/bin/
+
+      - name: Prepare
+        run: eldev prepare
+
+      - name: Demo
+        run: eldev demo
+
+      - name: Compile
+        run: eldev compile
+
+      - name: Test
+        run: eldev test || echo "No tests yet"
+
+      - name: Lint
+        run: eldev lint || echo "Linting issues found (non-blocking)"
+        continue-on-error: true

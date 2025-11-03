@@ -1,0 +1,160 @@
+; -*- mode: emacs-lisp; lexical-binding: t; -*-
+
+;;; Eldev --- Build and test configuration for claude-code
+
+;; This file configures Eldev for the claude-code project.
+;; See https://emacs-eldev.github.io/eldev/ for documentation.
+
+;; ============================================================================
+;; Project Metadata
+;; ============================================================================
+
+;; These are inferred from the package headers, but can be overridden here
+;; (setf eldev-project-name "claude-code")
+;; (setf eldev-project-version "0.1.0")
+
+;; ============================================================================
+;; Dependencies
+;; ============================================================================
+
+;; Runtime dependencies
+(eldev-use-package-archive 'gnu)
+(eldev-use-package-archive 'melpa)
+
+;; The project requires these packages
+(eldev-add-extra-dependencies 'runtime
+  'markdown-mode
+  'projectile)
+
+;; Development/testing dependencies
+(eldev-add-extra-dependencies 'test
+  'buttercup)
+
+;; Linting dependencies
+(eldev-add-extra-dependencies 'lint
+  'package-lint)
+
+;; ============================================================================
+;; Testing Configuration
+;; ============================================================================
+
+;; Use Buttercup for testing (auto-detected, but explicit is clear)
+(setf eldev-test-framework 'buttercup)
+
+;; Test file patterns
+(setf eldev-test-buttercup-fileset '("./test/*.el" "!./test/test-helper.el"))
+
+;; Hook to run before tests
+(add-hook 'eldev-test-buttercup-hook
+          (lambda ()
+            ;; Load test helper first
+            (eldev-load "./test/test-helper.el")))
+
+;; ============================================================================
+;; Linting Configuration
+;; ============================================================================
+
+;; Lint configuration
+;; Files to exclude from linting
+(with-eval-after-load 'eldev
+  (when (boundp 'eldev-lint-default-excluded)
+    (setf eldev-lint-default-excluded
+          '("./test/**/*"))))
+
+;; ============================================================================
+;; Build Configuration
+;; ============================================================================
+
+;; Files to byte-compile (default is fine, compiles all .el files)
+;; Load dependencies before byte-compiling
+(with-eval-after-load 'eldev
+  (when (boundp 'eldev-build-load-before-byte-compiling)
+    (setf eldev-build-load-before-byte-compiling t))
+
+  ;; Treat warnings as errors during build (strict mode) - disabled by default
+  ;; (when (boundp 'eldev-build-treat-warnings-as-errors)
+  ;;   (setf eldev-build-treat-warnings-as-errors t))
+  )
+
+;; ============================================================================
+;; Documentation
+;; ============================================================================
+
+;; Generate documentation (if using org-mode or similar)
+;; (eldev-defcommand eldev-docs (&rest parameters)
+;;   "Generate documentation from source files."
+;;   :aliases (doc)
+;;   (message "Generating documentation...")
+;;   ;; Add documentation generation logic here
+;;   )
+
+;; ============================================================================
+;; Custom Commands
+;; ============================================================================
+
+(eldev-defcommand claude-code-demo (&rest parameters)
+  "Run a quick demo/smoke test of claude-code functionality."
+  :aliases (demo)
+  (message "Running claude-code demo...")
+
+  ;; Load dependencies first
+  (eldev-load-project-dependencies 'runtime nil t)
+
+  ;; Load all source files
+  (load (expand-file-name "claude-code-process.el") nil t)
+  (load (expand-file-name "claude-code-buffer.el") nil t)
+  (load (expand-file-name "claude-code-core.el") nil t)
+
+  (message "✓ All modules loaded successfully")
+
+  ;; Check that key functions exist
+  (unless (fboundp 'claude-code-process-start)
+    (error "claude-code-process-start not defined"))
+  (unless (fboundp 'claude-code-buffer-get-or-create)
+    (error "claude-code-buffer-get-or-create not defined"))
+  (unless (fboundp 'claude-code-ask)
+    (error "claude-code-ask not defined"))
+
+  (message "✓ All key functions defined")
+  (message "✓ Demo complete! Claude Code is ready."))
+
+(eldev-defcommand claude-code-check-all (&rest parameters)
+  "Run all checks: compile, test, and lint."
+  :aliases (check)
+  (message "Running all checks...")
+
+  (message "\n=== 1. Byte-compiling ===")
+  (eldev-exec "compile")
+
+  (message "\n=== 2. Running tests ===")
+  (eldev-exec "test")
+
+  (message "\n=== 3. Linting ===")
+  (eldev-exec "lint")
+
+  (message "\n✓ All checks passed!"))
+
+;; ============================================================================
+;; CI/CD Configuration
+;; ============================================================================
+
+;; For GitHub Actions and other CI environments
+(when (getenv "CI")
+  (message "Running in CI environment")
+
+  ;; Be strict in CI (if the variable exists)
+  (with-eval-after-load 'eldev
+    (when (boundp 'eldev-build-treat-warnings-as-errors)
+      (setf eldev-build-treat-warnings-as-errors t))
+
+    ;; Enable verbose output
+    (when (boundp 'eldev-verbosity-level)
+      (setf eldev-verbosity-level 'verbose))))
+
+;; ============================================================================
+;; Local Overrides
+;; ============================================================================
+
+;; Load local configuration if it exists
+;; (when (file-exists-p "./Eldev-local")
+;;   (eldev-load "./Eldev-local"))

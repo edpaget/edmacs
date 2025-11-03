@@ -1,5 +1,10 @@
 # Claude Code REPL Integration
 
+![CI](https://github.com/USERNAME/REPO/workflows/CI/badge.svg)
+![Checks](https://github.com/USERNAME/REPO/workflows/Checks/badge.svg)
+[![Emacs](https://img.shields.io/badge/Emacs-28.1+-purple.svg)](https://www.gnu.org/software/emacs/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Status**: Phases 1-2 Complete ✅
 
 A beautiful, REPL-style Claude Code integration for Emacs with markdown rendering, syntax highlighting, and structured conversation history.
