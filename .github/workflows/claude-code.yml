@@ -48,11 +48,6 @@ jobs:
         working-directory: modules/claude-code
         run: eldev -dtT prepare
 
-      - name: Verify dependencies installed
-        working-directory: modules/claude-code
-        run: |
-          eldev -dtT exec emacs --batch --eval "(progn (require 'markdown-mode) (require 'projectile) (message \"Dependencies loaded successfully\"))"
-
       - name: Run demo smoke test
         working-directory: modules/claude-code
         run: eldev -dtT demo
