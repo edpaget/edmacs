@@ -1,6 +1,4 @@
-; -*- mode: emacs-lisp; lexical-binding: t; -*-
-
-;;; Eldev --- Build and test configuration for claude-code
+;;; Eldev --- Build and test configuration for claude-code -*- mode: emacs-lisp; lexical-binding: t; -*-
 
 ;; This file configures Eldev for the claude-code project.
 ;; See https://emacs-eldev.github.io/eldev/ for documentation.
@@ -23,16 +21,16 @@
 
 ;; The project requires these packages
 (eldev-add-extra-dependencies 'runtime
-  'markdown-mode
-  'projectile)
+                              'markdown-mode
+                              'projectile)
 
 ;; Development/testing dependencies
 (eldev-add-extra-dependencies 'test
-  'buttercup)
+                              'buttercup)
 
 ;; Linting dependencies
 (eldev-add-extra-dependencies 'lint
-  'package-lint)
+                              'package-lint)
 
 ;; ============================================================================
 ;; Testing Configuration
@@ -93,48 +91,46 @@
 ;; ============================================================================
 
 (eldev-defcommand claude-code-demo (&rest parameters)
-  "Run a quick demo/smoke test of claude-code functionality."
-  :aliases (demo)
-  (message "Running claude-code demo...")
+                  "Run a quick demo/smoke test of claude-code functionality."
+                  :aliases (demo)
+                  (message "Running claude-code demo...")
 
-  ;; Load dependencies first - ensure both are activated
-  (eldev-load-project-dependencies 'runtime nil t)
-  (require 'markdown-mode)
-  (require 'projectile)
+                  ;; Load dependencies first - ensure both are activated
+                  (eldev-load-project-dependencies 'runtime nil t)
 
-  ;; Load all source files
-  (load (expand-file-name "claude-code-process.el") nil t)
-  (load (expand-file-name "claude-code-buffer.el") nil t)
-  (load (expand-file-name "claude-code-core.el") nil t)
+                  ;; Load all source files
+                  (load (expand-file-name "claude-code-process.el") nil t)
+                  (load (expand-file-name "claude-code-buffer.el") nil t)
+                  (load (expand-file-name "claude-code-core.el") nil t)
 
-  (message "✓ All modules loaded successfully")
+                  (message "✓ All modules loaded successfully")
 
-  ;; Check that key functions exist
-  (unless (fboundp 'claude-code-process-start)
-    (error "claude-code-process-start not defined"))
-  (unless (fboundp 'claude-code-buffer-get-or-create)
-    (error "claude-code-buffer-get-or-create not defined"))
-  (unless (fboundp 'claude-code-ask)
-    (error "claude-code-ask not defined"))
+                  ;; Check that key functions exist
+                  (unless (fboundp 'claude-code-process-start)
+                    (error "claude-code-process-start not defined"))
+                  (unless (fboundp 'claude-code-buffer-get-or-create)
+                    (error "claude-code-buffer-get-or-create not defined"))
+                  (unless (fboundp 'claude-code-ask)
+                    (error "claude-code-ask not defined"))
 
-  (message "✓ All key functions defined")
-  (message "✓ Demo complete! Claude Code is ready."))
+                  (message "✓ All key functions defined")
+                  (message "✓ Demo complete! Claude Code is ready."))
 
 (eldev-defcommand claude-code-check-all (&rest parameters)
-  "Run all checks: compile, test, and lint."
-  :aliases (check)
-  (message "Running all checks...")
+                  "Run all checks: compile, test, and lint."
+                  :aliases (check)
+                  (message "Running all checks...")
 
-  (message "\n=== 1. Byte-compiling ===")
-  (eldev-exec "compile")
+                  (message "\n=== 1. Byte-compiling ===")
+                  (eldev-exec "compile")
 
-  (message "\n=== 2. Running tests ===")
-  (eldev-exec "test")
+                  (message "\n=== 2. Running tests ===")
+                  (eldev-exec "test")
 
-  (message "\n=== 3. Linting ===")
-  (eldev-exec "lint")
+                  (message "\n=== 3. Linting ===")
+                  (eldev-exec "lint")
 
-  (message "\n✓ All checks passed!"))
+                  (message "\n✓ All checks passed!"))
 
 ;; ============================================================================
 ;; CI/CD Configuration

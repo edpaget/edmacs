@@ -6,7 +6,6 @@
 
 ;;; Code:
 
-(require 'markdown-mode)
 (require 'claude-code-process)
 
 ;; ============================================================================
@@ -159,14 +158,14 @@ responses, tool usage, and metadata.
 
       ;; Create interaction object
       (let ((interaction (make-claude-code-interaction
-                         :prompt prompt
-                         :prompt-time (current-time)
-                         :response-text ""
-                         :tool-uses nil
-                         :start-marker (copy-marker start-pos)
-                         :end-marker (point-marker)
-                         :status 'streaming
-                         :metadata nil)))
+                          :prompt prompt
+                          :prompt-time (current-time)
+                          :response-text ""
+                          :tool-uses nil
+                          :start-marker (copy-marker start-pos)
+                          :end-marker (point-marker)
+                          :status 'streaming
+                          :metadata nil)))
         (setq-local claude-code-buffer-current-interaction interaction)
         interaction))))
 
@@ -177,18 +176,18 @@ responses, tool usage, and metadata.
       (let ((inhibit-read-only t))
         (save-excursion
           (goto-char (claude-code-interaction-end-marker
-                     claude-code-buffer-current-interaction))
+                      claude-code-buffer-current-interaction))
           (insert text)
           (set-marker (claude-code-interaction-end-marker
-                      claude-code-buffer-current-interaction)
-                     (point)))
+                       claude-code-buffer-current-interaction)
+                      (point)))
 
         ;; Update interaction
         (setf (claude-code-interaction-response-text
                claude-code-buffer-current-interaction)
               (concat (claude-code-interaction-response-text
-                      claude-code-buffer-current-interaction)
-                     text))))))
+                       claude-code-buffer-current-interaction)
+                      text))))))
 
 (defun claude-code-buffer-add-tool-use (buffer tool-name tool-input)
   "Add a tool use entry to BUFFER for TOOL-NAME with TOOL-INPUT."
@@ -197,7 +196,7 @@ responses, tool usage, and metadata.
       (let ((inhibit-read-only t))
         (save-excursion
           (goto-char (claude-code-interaction-end-marker
-                     claude-code-buffer-current-interaction))
+                      claude-code-buffer-current-interaction))
           (insert "\n\n")
           (claude-code-buffer--insert-with-face
            (format "**[Tool: %s]**\n" tool-name)
@@ -209,8 +208,8 @@ responses, tool usage, and metadata.
           (insert "\n```\n")
 
           (set-marker (claude-code-interaction-end-marker
-                      claude-code-buffer-current-interaction)
-                     (point)))
+                       claude-code-buffer-current-interaction)
+                      (point)))
 
         ;; Update interaction
         (push (list :tool tool-name :input tool-input)
@@ -224,7 +223,7 @@ responses, tool usage, and metadata.
       (let ((inhibit-read-only t))
         (save-excursion
           (goto-char (claude-code-interaction-end-marker
-                     claude-code-buffer-current-interaction))
+                      claude-code-buffer-current-interaction))
           (insert "\n\n")
 
           ;; Add metadata if provided
@@ -235,16 +234,16 @@ responses, tool usage, and metadata.
               (when (or tokens-in tokens-out duration)
                 (claude-code-buffer--insert-with-face
                  (format "Tokens: %d in, %d out"
-                        (or tokens-in 0)
-                        (or tokens-out 0))
+                         (or tokens-in 0)
+                         (or tokens-out 0))
                  'claude-code-metadata-face)
                 (when duration
                   (insert (format " • Duration: %.2fs" (/ duration 1000.0))))
                 (insert "\n"))))
 
           (set-marker (claude-code-interaction-end-marker
-                      claude-code-buffer-current-interaction)
-                     (point)))
+                       claude-code-buffer-current-interaction)
+                      (point)))
 
         ;; Update interaction
         (setf (claude-code-interaction-status
@@ -281,8 +280,8 @@ responses, tool usage, and metadata.
                      (re-search-forward "^```" nil t))))
       (when (and start end)
         (let ((code (buffer-substring-no-properties
-                    (save-excursion (goto-char start) (forward-line 1) (point))
-                    (save-excursion (goto-char end) (forward-line -1) (point)))))
+                     (save-excursion (goto-char start) (forward-line 1) (point))
+                     (save-excursion (goto-char end) (forward-line -1) (point)))))
           (kill-new code)
           (message "Copied code block to kill ring"))))))
 
