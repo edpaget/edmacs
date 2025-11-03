@@ -46,15 +46,20 @@ jobs:
 
       - name: Install dependencies
         working-directory: modules/claude-code
-        run: eldev -t prepare
+        run: eldev -dtT prepare
+
+      - name: Verify dependencies installed
+        working-directory: modules/claude-code
+        run: |
+          eldev -dtT exec emacs --batch --eval "(progn (require 'markdown-mode) (require 'projectile) (message \"Dependencies loaded successfully\"))"
 
       - name: Run demo smoke test
         working-directory: modules/claude-code
-        run: eldev -t demo
+        run: eldev -dtT demo
 
       - name: Byte-compile
         working-directory: modules/claude-code
-        run: eldev -dtT compile
+        run: eldev -dtT compile --load-before
 
       - name: Run tests
         working-directory: modules/claude-code
