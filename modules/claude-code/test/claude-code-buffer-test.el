@@ -167,10 +167,11 @@
     (it "stores completion status"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
         (claude-code-buffer-start-interaction buffer "Prompt")
-        (let ((interaction claude-code-buffer-current-interaction))
-          (claude-code-buffer-complete-interaction buffer)
-          (expect (claude-code-interaction-status interaction)
-                  :to-equal 'complete)))))
+        (with-current-buffer buffer
+          (let ((interaction claude-code-buffer-current-interaction))
+            (claude-code-buffer-complete-interaction buffer)
+            (expect (claude-code-interaction-status interaction)
+                    :to-equal 'complete))))))
 
   (describe "Event handling"
 
@@ -269,7 +270,7 @@
     (it "derives from markdown-mode"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
         (with-current-buffer buffer
-          (expect (derived-mode-p 'markdown-mode) :to-be t))))))
+          (expect (derived-mode-p 'markdown-mode) :to-be-truthy))))))
 
 (provide 'claude-code-buffer-test)
 ;;; claude-code-buffer-test.el ends here

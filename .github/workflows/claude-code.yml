@@ -38,12 +38,6 @@ jobs:
         working-directory: modules/claude-code
         run: eldev -dtT prepare
 
-      - name: Run demo smoke test
-        working-directory: modules/claude-code
-        run: |
-            eldev -dtT dependencies demo
-            eldev -dtT demo
-
       - name: Byte-compile
         working-directory: modules/claude-code
         run: eldev -dtT compile

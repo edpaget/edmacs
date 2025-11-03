@@ -91,6 +91,7 @@ Displays structured conversations with Claude including prompts,
 responses, tool usage, and metadata.
 
 \\{claude-code-buffer-mode-map}"
+  (setq mode-name "Claude-Code")
   (setq-local buffer-read-only t)
   (setq-local truncate-lines nil)
   (setq-local word-wrap t)
@@ -295,22 +296,22 @@ responses, tool usage, and metadata.
   "Handle an \\='assistant\\=' event in BUFFER from EVENT."
   (when-let* ((message (alist-get 'message event))
               (content (alist-get 'content message)))
-    ;; Process each content block
-    (seq-do
-     (lambda (block)
-       (let ((block-type (alist-get 'type block)))
-         (cond
-          ;; Text content
-          ((equal block-type "text")
-           (when-let* ((text (alist-get 'text block)))
-             (claude-code-buffer-append-text buffer text)))
+    ;; Convert vector to list if needed
+    (let ((content-list (if (vectorp content) (append content nil) content)))
+      ;; Process each content block
+      (dolist (block content-list)
+        (let ((block-type (alist-get 'type block)))
+          (cond
+           ;; Text content
+           ((equal block-type "text")
+            (when-let* ((text (alist-get 'text block)))
+              (claude-code-buffer-append-text buffer text)))
 
-          ;; Tool use
-          ((equal block-type "tool_use")
-           (let ((tool-name (alist-get 'name block))
-                 (tool-input (alist-get 'input block)))
-             (claude-code-buffer-add-tool-use buffer tool-name tool-input))))))
-     content)))
+           ;; Tool use
+           ((equal block-type "tool_use")
+            (let ((tool-name (alist-get 'name block))
+                  (tool-input (alist-get 'input block)))
+              (claude-code-buffer-add-tool-use buffer tool-name tool-input)))))))))
 
 (defun claude-code-buffer-handle-result-event (buffer event)
   "Handle a \\='result\\=' event in BUFFER from EVENT."

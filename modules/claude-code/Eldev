@@ -96,7 +96,7 @@
                   (message "Running claude-code demo...")
 
                   ;; Load dependencies first - ensure both are activated
-                  (eldev-load-project-dependencies 'runtime nil nil)
+                  (eldev-load-project-dependencies 'runtime nil t)
 
                   ;; Load all source files
                   (load (expand-file-name "claude-code-core.el") nil t)

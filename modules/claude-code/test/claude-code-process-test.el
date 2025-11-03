@@ -241,7 +241,7 @@
 
       (let ((proc-obj (claude-code-process-start "/tmp/test/")))
         ;; Mock process should be alive
-        (expect (claude-code-process-alive-p proc-obj) :to-be t)
+        (expect (claude-code-process-alive-p proc-obj) :to-be-truthy)
 
         ;; After killing, should be dead
         (kill-process (claude-code-process-process proc-obj))
@@ -285,6 +285,9 @@
 
   (describe "Helper functions"
 
+    (after-each
+      (claude-code-test-teardown))
+
     (it "lists all processes"
       (claude-code-test-spy-on-make-process)
 
@@ -297,6 +300,7 @@
           (expect all-procs :to-contain proc2))))
 
     (it "returns empty list when no processes"
+      (claude-code-test-teardown)  ; Ensure clean state
       (expect (claude-code-process-list-all) :to-equal nil))))
 
 (provide 'claude-code-process-test)
