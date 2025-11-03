@@ -57,6 +57,7 @@ jobs:
         run: |
             ls -al .eldev
             ls -al .eldev/31.0
+            ls -al .eldev/31.0/packages
             eldev -dtT compile
 
       - name: Run tests
