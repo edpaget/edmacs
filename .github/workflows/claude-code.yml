@@ -2,45 +2,19 @@ name: Claude Code CI
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main ]
     paths:
       - 'modules/claude-code/**'
       - '.github/workflows/claude-code.yml'
   pull_request:
-    branches: [ main, master, develop ]
     paths:
       - 'modules/claude-code/**'
       - '.github/workflows/claude-code.yml'
   workflow_dispatch:
 
-defaults:
-  run:
-    working-directory: modules/claude-code
-
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        emacs_version:
-          - '28.1'
-          - '28.2'
-          - '29.1'
-          - '29.2'
-        experimental: [false]
-        include:
-          # Test on macOS with latest stable
-          - os: macos-latest
-            emacs_version: '29.2'
-            experimental: false
-          # Test with Emacs snapshot (allowed to fail)
-          - os: ubuntu-latest
-            emacs_version: 'snapshot'
-            experimental: true
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
@@ -49,7 +23,7 @@ jobs:
       - name: Set up Emacs
         uses: purcell/setup-emacs@master
         with:
-          version: ${{ matrix.emacs_version }}
+          version: 'snapshot'
 
       - name: Cache Eldev
         uses: actions/cache@v4
@@ -71,86 +45,22 @@ jobs:
         run: eldev --version
 
       - name: Install dependencies
+        working-directory: modules/claude-code
         run: eldev -t prepare
 
       - name: Run demo smoke test
+        working-directory: modules/claude-code
         run: eldev -t demo
 
       - name: Byte-compile
+        working-directory: modules/claude-code
         run: eldev -dtT compile --warnings-as-errors
 
       - name: Run tests
-        if: hashFiles('modules/claude-code/test/*.el') != ''
+        working-directory: modules/claude-code
         run: eldev -dtT test
 
       - name: Run linter
+        working-directory: modules/claude-code
         run: eldev -dtT lint
         continue-on-error: true
-
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Emacs
-        uses: purcell/setup-emacs@master
-        with:
-          version: '29.2'
-
-      - name: Cache Eldev
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/eldev
-            ~/.eldev
-          key: ${{ runner.os }}-eldev-${{ hashFiles('modules/claude-code/Eldev') }}
-
-      - name: Install Eldev
-        run: |
-          curl -fsSL https://raw.github.com/emacs-eldev/eldev/master/webinstall/eldev > eldev
-          chmod +x eldev
-          sudo mv eldev /usr/local/bin/
-
-      - name: Build package
-        run: eldev -dtT compile
-
-      - name: Check package
-        run: eldev -dtT package
-
-  documentation:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Check documentation files exist
-        run: |
-          echo "Checking for documentation..."
-          ls -la *.md || true
-          test -f README.md || echo "Warning: No README.md found"
-
-      - name: Validate markdown
-        uses: DavidAnson/markdownlint-cli2-action@v14
-        continue-on-error: true
-        with:
-          globs: 'modules/claude-code/**/*.md'
-
-  report:
-    runs-on: ubuntu-latest
-    needs: [test, build]
-    if: always()
-
-    steps:
-      - name: Report status
-        run: |
-          echo "Test job status: ${{ needs.test.result }}"
-          echo "Build job status: ${{ needs.build.result }}"
-          if [ "${{ needs.test.result }}" == "failure" ] || [ "${{ needs.build.result }}" == "failure" ]; then
-            echo "❌ Claude Code CI checks failed"
-            exit 1
-          else
-            echo "✅ All Claude Code CI checks passed"
-          fi

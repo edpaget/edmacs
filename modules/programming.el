@@ -221,4 +221,21 @@
 ;;  "k" '(project-kill-buffers :which-key "kill buffers")
 ;;  "e" '(project-eshell :which-key "eshell"))
 
+;; ============================================================================
+;; YAML Mode - YAML file editing
+;; ============================================================================
+
+(use-package yaml-mode
+  :mode ("\\.ya?ml\\'" . yaml-mode)
+  :config
+  ;; Indentation settings for YAML
+  (setq yaml-indent-offset 2)
+
+  ;; Enable flycheck for YAML
+  (add-hook 'yaml-mode-hook #'flycheck-mode)
+
+  ;; Enable LSP for YAML (if yaml-language-server is installed)
+  ;; Install: npm install -g yaml-language-server
+  (add-hook 'yaml-mode-hook #'lsp-deferred))
+
 ;;; programming.el ends here
