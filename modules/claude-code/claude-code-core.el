@@ -4,9 +4,9 @@
 
 ;; Author: Claude Code Contributors
 ;; Version: 0.2.0
-;; Package-Requires: ((emacs "28.1") (markdown-mode "2.5") (projectile "2.7.0"))
+;; Package-Requires: ((emacs "31.0") (markdown-mode "2.7") (projectile "2.9.1"))
 ;; Keywords: tools, ai, claude
-;; URL: https://github.com/your-repo/claude-code
+;; URL: https://github.com/edpaget/edmacs/modules/claude-code
 
 ;;; Commentary:
 ;; Main entry point for Claude Code REPL-style integration.

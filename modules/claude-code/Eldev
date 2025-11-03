@@ -21,9 +21,10 @@
 
 ;; The project requires these packages
 (eldev-add-extra-dependencies 'runtime
-                              'markdown-mode
-                              ;; 'projectile
-                              )
+                              'projectile)
+
+(eldev-add-extra-dependencies 'runtime
+                              'markdown-mode)
 
 ;; Development/testing dependencies
 (eldev-add-extra-dependencies 'test

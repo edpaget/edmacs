@@ -51,10 +51,7 @@ jobs:
       - name: Run demo smoke test
         working-directory: modules/claude-code
         run: |
-            ls -al .eldev
-            ls -al .eldev/31.0
-            ls -al .eldev/31.0/packages
-            ls -al .eldev/31.0/packages/markdown-mode-2.7
+            eldev -dtT dependencies demo
             eldev -dtT demo
 
       - name: Byte-compile
