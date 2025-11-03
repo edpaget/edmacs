@@ -23,7 +23,7 @@ jobs:
       - name: Set up Emacs
         uses: purcell/setup-emacs@master
         with:
-          version: 'snapshot'
+          version: '30.2'
 
       - name: Install Eldev
         run: |
