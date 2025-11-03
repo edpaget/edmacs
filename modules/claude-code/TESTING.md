@@ -577,9 +577,88 @@ jobs:
 5. Set up CI/CD for automated testing
 6. Aim for >80% code coverage
 
+## Test Coverage Summary
+
+### Current Status
+
+**Total Tests**: 69
+**Passing**: 60 (87%)
+**Failing**: 9 (13%)
+
+### Coverage by Module
+
+| Module | Tests | Passing | Failing | Coverage |
+|--------|-------|---------|---------|----------|
+| claude-code-process.el | 26 | 23 | 3 | 88% |
+| claude-code-buffer.el | 33 | 28 | 5 | 85% |
+| claude-code-core.el | 10 | 9 | 1 | 90% |
+
+### Test Categories
+
+**Process Management** (26 tests)
+- Module loading (1 test)
+- Process creation (4 tests)
+- Process retrieval (4 tests)
+- JSON parsing (4 tests)
+- JSON line handling (2 tests)
+- Callback system (4 tests)
+- Process lifecycle (3 tests)
+- Process status (3 tests)
+- Helper functions (2 tests)
+
+**Buffer UI** (33 tests)
+- Module loading (1 test)
+- Buffer creation (6 tests)
+- Interaction management (7 tests)
+- Tool usage (3 tests)
+- Interaction completion (3 tests)
+- Event handling (3 tests)
+- Multiple interactions (2 tests)
+- Buffer clearing (2 tests)
+- Buffer mode (2 tests)
+
+**Core Commands** (10 tests)
+- Module loading (2 tests)
+- claude-code-ask (4 tests)
+- claude-code-open-buffer (1 test)
+- claude-code-clear-buffer (2 tests)
+- claude-code-show-processes (4 tests)
+
+### Known Test Failures
+
+The following 9 tests are currently failing:
+
+1. **Buffer event handling** (3 failures)
+   - `handles assistant event with text` - Text content not appearing in buffer
+   - `handles assistant event with tool use` - Tool use not being formatted correctly
+   - `handles result event` - Metadata not being displayed
+
+2. **Mode detection** (1 failure)
+   - `has correct mode name` - `format-mode-line` returning empty string
+
+3. **Process lifecycle** (2 failures)
+   - `checks if process is alive` - Returns status list instead of boolean
+   - `lists all processes` - Cleanup not working between tests
+
+4. **Interaction state** (2 failures)
+   - `stores completion status` - Status not persisting after completion
+   - `adds separator between interactions` - Separator not rendering
+
+5. **Cleanup** (1 failure)
+   - `does nothing if buffer doesn't exist` - Throwing error instead of returning nil
+
+### Next Steps for 100% Coverage
+
+1. **Fix event handling** - Investigate why assistant events aren't updating buffer
+2. **Fix mode name** - Ensure `mode-name` is set correctly in `claude-code-buffer-mode`
+3. **Fix process alive check** - Return boolean instead of status list
+4. **Improve cleanup** - Ensure hash table is cleared between tests
+5. **Fix interaction state** - Investigate why completion status isn't persisting
+
 ## Resources
 
 - [Buttercup Documentation](https://github.com/jorgenschaefer/emacs-buttercup)
 - [ERT Manual](https://www.gnu.org/software/emacs/manual/html_mono/ert.html)
 - [Emacs Package Dev Handbook](https://alphapapa.github.io/emacs-package-dev-handbook/)
 - [Testing Elisp (nullprogram)](https://nullprogram.com/blog/2012/08/15/)
+- [Eldev Documentation](https://github.com/emacs-eldev/eldev)

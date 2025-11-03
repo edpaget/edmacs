@@ -41,14 +41,17 @@
 ;; Use Buttercup for testing (auto-detected, but explicit is clear)
 (setf eldev-test-framework 'buttercup)
 
-;; Test file patterns
-(setf eldev-test-buttercup-fileset '("./test/*.el" "!./test/test-helper.el"))
+;; Test file patterns - only load test files, not helper
+(setf eldev-test-buttercup-fileset '("./test/*-test.el"))
 
-;; Hook to run before tests
+;; Make sure test-helper.el is in load-path
+(add-to-list 'load-path (expand-file-name "test"))
+
+;; Hook to run before tests - load test dependencies
 (add-hook 'eldev-test-buttercup-hook
-          (lambda ()
-            ;; Load test helper first
-            (eldev-load "./test/test-helper.el")))
+          (lambda (&rest _)
+            (require 'buttercup)
+            (load (expand-file-name "test/test-helper.el") nil t)))
 
 ;; ============================================================================
 ;; Linting Configuration

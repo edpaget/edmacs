@@ -1,11 +1,21 @@
-name: CI
+name: Claude Code CI
 
 on:
   push:
     branches: [ main, master, develop ]
+    paths:
+      - 'modules/claude-code/**'
+      - '.github/workflows/claude-code.yml'
   pull_request:
     branches: [ main, master, develop ]
+    paths:
+      - 'modules/claude-code/**'
+      - '.github/workflows/claude-code.yml'
   workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: modules/claude-code
 
 jobs:
   test:
@@ -47,7 +57,7 @@ jobs:
           path: |
             ~/.cache/eldev
             ~/.eldev
-          key: ${{ runner.os }}-eldev-${{ hashFiles('**/Eldev') }}
+          key: ${{ runner.os }}-eldev-${{ hashFiles('modules/claude-code/Eldev') }}
           restore-keys: |
             ${{ runner.os }}-eldev-
 
@@ -70,7 +80,7 @@ jobs:
         run: eldev -dtT compile --warnings-as-errors
 
       - name: Run tests
-        if: hashFiles('test/*.el') != ''
+        if: hashFiles('modules/claude-code/test/*.el') != ''
         run: eldev -dtT test
 
       - name: Run linter
@@ -95,7 +105,7 @@ jobs:
           path: |
             ~/.cache/eldev
             ~/.eldev
-          key: ${{ runner.os }}-eldev-${{ hashFiles('**/Eldev') }}
+          key: ${{ runner.os }}-eldev-${{ hashFiles('modules/claude-code/Eldev') }}
 
       - name: Install Eldev
         run: |
@@ -121,13 +131,12 @@ jobs:
           echo "Checking for documentation..."
           ls -la *.md || true
           test -f README.md || echo "Warning: No README.md found"
-          test -f DEVELOPMENT.md || echo "Warning: No DEVELOPMENT.md found"
 
       - name: Validate markdown
         uses: DavidAnson/markdownlint-cli2-action@v14
         continue-on-error: true
         with:
-          globs: '**/*.md'
+          globs: 'modules/claude-code/**/*.md'
 
   report:
     runs-on: ubuntu-latest
@@ -140,8 +149,8 @@ jobs:
           echo "Test job status: ${{ needs.test.result }}"
           echo "Build job status: ${{ needs.build.result }}"
           if [ "${{ needs.test.result }}" == "failure" ] || [ "${{ needs.build.result }}" == "failure" ]; then
-            echo "❌ CI checks failed"
+            echo "❌ Claude Code CI checks failed"
             exit 1
           else
-            echo "✅ All CI checks passed"
+            echo "✅ All Claude Code CI checks passed"
           fi
