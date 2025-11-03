@@ -115,7 +115,7 @@
     (is_error . :json-false)
     (duration_ms . 1234)
     (usage ((input_tokens . 10)
-           (output_tokens . 50)))
+            (output_tokens . 50)))
     (session_id . "test-session-123"))
   "Mock result event.")
 
@@ -189,26 +189,26 @@ PROC-OBJ is the claude-code-process object."
 ;; ============================================================================
 
 (buttercup-define-matcher :to-have-function (symbol)
-  (if (fboundp (funcall symbol))
-      t
-    (cons nil (format "Expected %s to be a function, but it was not defined"
-                     (funcall symbol)))))
+                          (if (fboundp (funcall symbol))
+                              t
+                            (cons nil (format "Expected %s to be a function, but it was not defined"
+                                              (funcall symbol)))))
 
 (buttercup-define-matcher :to-be-live-process (process)
-  (let ((proc (funcall process)))
-    (if (and proc (process-live-p proc))
-        t
-      (cons nil (format "Expected process to be alive, but it was %s"
-                       (if proc "dead" "nil"))))))
+                          (let ((proc (funcall process)))
+                            (if (and proc (process-live-p proc))
+                                t
+                              (cons nil (format "Expected process to be alive, but it was %s"
+                                                (if proc "dead" "nil"))))))
 
 (buttercup-define-matcher :to-match-buffer (buffer regexp)
-  (let ((buf (funcall buffer))
-        (rx (funcall regexp)))
-    (if (claude-code-test-buffer-contains-p buf rx)
-        t
-      (cons nil (format "Expected buffer to contain text matching '%s', but it did not.\nBuffer contents:\n%s"
-                       rx
-                       (claude-code-test-buffer-contents buf))))))
+                          (let ((buf (funcall buffer))
+                                (rx (funcall regexp)))
+                            (if (claude-code-test-buffer-contains-p buf rx)
+                                t
+                              (cons nil (format "Expected buffer to contain text matching '%s', but it did not.\nBuffer contents:\n%s"
+                                                rx
+                                                (claude-code-test-buffer-contents buf))))))
 
 ;; ============================================================================
 ;; Setup and Teardown

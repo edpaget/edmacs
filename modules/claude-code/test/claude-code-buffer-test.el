@@ -138,7 +138,7 @@
 
         (with-current-buffer buffer
           (let ((tools (claude-code-interaction-tool-uses
-                       claude-code-buffer-current-interaction)))
+                        claude-code-buffer-current-interaction)))
             (expect tools :to-be-truthy)
             (expect (plist-get (car tools) :tool) :to-equal "Grep"))))))
 

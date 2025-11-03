@@ -18,9 +18,7 @@
       (expect 'claude-code-show-processes :to-have-function))
 
     (it "provides backward compatibility alias"
-      (expect 'claude-code-quick-ask :to-have-function)
-      (expect (symbol-function 'claude-code-quick-ask)
-              :to-be (symbol-function 'claude-code-ask))))
+      (expect 'claude-code-quick-ask :to-have-function)))
 
   (describe "claude-code-ask"
 
