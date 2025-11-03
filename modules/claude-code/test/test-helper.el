@@ -91,22 +91,20 @@
 
 (defvar claude-code-test-assistant-event-text
   '((type . "assistant")
-    (message
-     ((model . "claude-sonnet-4-5-20250929")
-      (id . "msg_test123")
-      (content . [((type . "text")
-                   (text . "This is a test response from Claude."))]))))
+    (message . ((model . "claude-sonnet-4-5-20250929")
+                (id . "msg_test123")
+                (content . [((type . "text")
+                             (text . "This is a test response from Claude."))]))))
   "Mock assistant event with text content.")
 
 (defvar claude-code-test-assistant-event-tool
   '((type . "assistant")
-    (message
-     ((model . "claude-sonnet-4-5-20250929")
-      (id . "msg_test456")
-      (content . [((type . "tool_use")
-                   (id . "toolu_test")
-                   (name . "Read")
-                   (input . ((file_path . "/test/file.el"))))]))))
+    (message . ((model . "claude-sonnet-4-5-20250929")
+                (id . "msg_test456")
+                (content . [((type . "tool_use")
+                             (id . "toolu_test")
+                             (name . "Read")
+                             (input . ((file_path . "/test/file.el"))))]))))
   "Mock assistant event with tool use.")
 
 (defvar claude-code-test-result-event
@@ -114,8 +112,8 @@
     (subtype . "success")
     (is_error . :json-false)
     (duration_ms . 1234)
-    (usage ((input_tokens . 10)
-            (output_tokens . 50)))
+    (usage . ((input_tokens . 10)
+              (output_tokens . 50)))
     (session_id . "test-session-123"))
   "Mock result event.")
 

@@ -85,17 +85,29 @@
     map)
   "Keymap for Claude Code buffer mode.")
 
-(define-derived-mode claude-code-buffer-mode markdown-mode "Claude-Code"
+(define-derived-mode claude-code-buffer-mode text-mode "Claude-Code"
   "Major mode for Claude Code response buffers.
 Displays structured conversations with Claude including prompts,
 responses, tool usage, and metadata.
 
 \\{claude-code-buffer-mode-map}"
-  (setq mode-name "Claude-Code")
   (setq-local buffer-read-only t)
   (setq-local truncate-lines nil)
   (setq-local word-wrap t)
-  (visual-line-mode 1))
+  (visual-line-mode 1)
+  ;; Enable markdown syntax highlighting if available
+  (when (fboundp 'markdown-mode)
+    (font-lock-mode -1)
+    (setq-local font-lock-defaults
+                (list markdown-mode-font-lock-keywords t))
+    (font-lock-mode 1))
+  ;; Ensure mode-line is updated
+  (force-mode-line-update))
+
+(add-hook 'claude-code-buffer-mode-hook
+          (lambda ()
+            (setq mode-name "Claude-Code")
+            (force-mode-line-update)))
 
 ;; ============================================================================
 ;; Interaction Structure
