@@ -97,8 +97,10 @@
   :aliases (demo)
   (message "Running claude-code demo...")
 
-  ;; Load dependencies first
+  ;; Load dependencies first - ensure both are activated
   (eldev-load-project-dependencies 'runtime nil t)
+  (require 'markdown-mode)
+  (require 'projectile)
 
   ;; Load all source files
   (load (expand-file-name "claude-code-process.el") nil t)
