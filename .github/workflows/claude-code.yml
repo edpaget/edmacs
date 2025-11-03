@@ -54,7 +54,7 @@ jobs:
 
       - name: Byte-compile
         working-directory: modules/claude-code
-        run: eldev -dtT compile --load-before
+        run: eldev -dtT compile
 
       - name: Run tests
         working-directory: modules/claude-code
