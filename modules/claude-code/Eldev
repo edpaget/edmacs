@@ -21,10 +21,8 @@
 
 ;; The project requires these packages
 (eldev-add-extra-dependencies 'runtime
+                              'markdown-mode
                               'projectile)
-
-(eldev-add-extra-dependencies 'runtime
-                              'markdown-mode)
 
 ;; Development/testing dependencies
 (eldev-add-extra-dependencies 'test
@@ -70,11 +68,11 @@
 
 ;; Files to byte-compile (default is fine, compiles all .el files)
 ;; Load dependencies before byte-compiling
-(setf eldev-build-load-before-byte-compiling t)
+;; (setf eldev-build-load-before-byte-compiling t)
 
 ;; Treat warnings as errors during build (strict mode) - disabled by default
-;; (when (boundp 'eldev-build-treat-warnings-as-errors)
-;;   (setf eldev-build-treat-warnings-as-errors t))
+(when (boundp 'eldev-build-treat-warnings-as-errors)
+  (setf eldev-build-treat-warnings-as-errors t))
 
 ;; ============================================================================
 ;; Documentation

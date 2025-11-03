@@ -6,6 +6,7 @@
 
 ;;; Code:
 
+(require 'projectile)
 (require 'markdown-mode)
 (require 'claude-code-process)
 
