@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(eldev prepare:*)",
+      "Bash(eldev demo:*)",
+      "Bash(eldev compile:*)",
+      "Bash(eldev test:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

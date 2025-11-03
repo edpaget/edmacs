@@ -275,9 +275,9 @@ responses, tool usage, and metadata.
   "Copy the code block at point to the kill ring."
   (interactive)
   (save-excursion
-    (let ((start (re-search-backward "^```" nil t))
-          (end (when start (forward-line 1)
-                     (re-search-forward "^```" nil t))))
+    (let* ((start (re-search-backward "^```" nil t))
+           (end (when start (forward-line 1)
+                      (re-search-forward "^```" nil t))))
       (when (and start end)
         (let ((code (buffer-substring-no-properties
                      (save-excursion (goto-char start) (forward-line 1) (point))
@@ -290,7 +290,7 @@ responses, tool usage, and metadata.
 ;; ============================================================================
 
 (defun claude-code-buffer-handle-assistant-event (buffer event)
-  "Handle an 'assistant' event in BUFFER from EVENT."
+  "Handle an \\='assistant\\=' event in BUFFER from EVENT."
   (when-let* ((message (alist-get 'message event))
               (content (alist-get 'content message)))
     ;; Process each content block
@@ -300,7 +300,7 @@ responses, tool usage, and metadata.
          (cond
           ;; Text content
           ((equal block-type "text")
-           (when-let ((text (alist-get 'text block)))
+           (when-let* ((text (alist-get 'text block)))
              (claude-code-buffer-append-text buffer text)))
 
           ;; Tool use
@@ -311,7 +311,7 @@ responses, tool usage, and metadata.
      content)))
 
 (defun claude-code-buffer-handle-result-event (buffer event)
-  "Handle a 'result' event in BUFFER from EVENT."
+  "Handle a \\='result\\=' event in BUFFER from EVENT."
   (let ((usage (alist-get 'usage event))
         (duration (alist-get 'duration_ms event)))
     (claude-code-buffer-complete-interaction

@@ -69,24 +69,23 @@ Returns the parsed object or nil if parsing fails."
   "Handle a complete JSON line from the Claude process.
 PROC-OBJ is the claude-code-process structure.
 LINE is the complete JSON string to process."
-  (when-let ((event (claude-code-process--parse-json-event line)))
-    (let ((event-type (alist-get 'type event)))
-      ;; Store the last response for debugging
-      (setf (claude-code-process-last-response proc-obj) event)
+  (when-let* ((event (claude-code-process--parse-json-event line)))
+    ;; Store the last response for debugging
+    (setf (claude-code-process-last-response proc-obj) event)
 
-      ;; Call registered callbacks
-      (dolist (callback (claude-code-process-response-callbacks proc-obj))
-        (condition-case err
-            (funcall callback event)
-          (error
-           (message "Claude Code: Callback error: %s" (error-message-string err))))))))
+    ;; Call registered callbacks
+    (dolist (callback (claude-code-process-response-callbacks proc-obj))
+      (condition-case err
+          (funcall callback event)
+        (error
+         (message "Claude Code: Callback error: %s" (error-message-string err)))))))
 
 (defun claude-code-process--filter (process output)
   "Process filter for Claude Code process.
 PROCESS is the Emacs process object.
 OUTPUT is the new output string."
-  (when-let ((proc-obj (gethash (process-get process 'project-root)
-                                claude-code-processes)))
+  (when-let* ((proc-obj (gethash (process-get process 'project-root)
+                                 claude-code-processes)))
     (with-current-buffer (claude-code-process-buffer proc-obj)
       ;; Append output to buffer
       (goto-char (point-max))
@@ -115,8 +114,8 @@ OUTPUT is the new output string."
   "Process sentinel for Claude Code process.
 PROCESS is the Emacs process object.
 EVENT is the process event string."
-  (when-let ((project-root (process-get process 'project-root))
-             (proc-obj (gethash project-root claude-code-processes)))
+  (when-let* ((project-root (process-get process 'project-root))
+              (proc-obj (gethash project-root claude-code-processes)))
     (cond
      ((string-match-p "^finished" event)
       (setf (claude-code-process-status proc-obj) 'stopped)
@@ -269,7 +268,7 @@ CALLBACK should be a function that takes a single argument (the error event)."
 
 (defun claude-code-process-alive-p (proc-obj)
   "Return t if PROC-OBJ's process is alive."
-  (when-let ((process (claude-code-process-process proc-obj)))
+  (when-let* ((process (claude-code-process-process proc-obj)))
     (process-live-p process)))
 
 ;; ============================================================================
@@ -307,14 +306,14 @@ CALLBACK should be a function that takes a single argument (the error event)."
 (defun claude-code-process-kill-current-project ()
   "Kill the Claude Code process for the current project."
   (interactive)
-  (if-let ((proc-obj (claude-code-process-current)))
+  (if-let* ((proc-obj (claude-code-process-current)))
       (claude-code-process-kill proc-obj)
     (message "No Claude Code process running for this project")))
 
 (defun claude-code-process-status-current-project ()
   "Show the status of the Claude Code process for the current project."
   (interactive)
-  (if-let ((proc-obj (claude-code-process-current)))
+  (if-let* ((proc-obj (claude-code-process-current)))
       (let* ((status (claude-code-process-status proc-obj))
              (metadata (claude-code-process-metadata proc-obj))
              (model (plist-get metadata :model))
