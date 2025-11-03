@@ -112,8 +112,14 @@
 ;; treesit-auto automatically uses tree-sitter modes when available
 (use-package treesit-auto
   :config
-  (global-treesit-auto-mode)
-  (setq treesit-auto-install 'prompt))  ; Prompt to install missing grammars
+  (setq treesit-auto-install 'prompt)  ; Prompt to install missing grammars
+
+  ;; Disable tree-sitter for markdown - it requires a complex split parser setup
+  ;; and markdown-mode already provides excellent syntax highlighting
+  (setq treesit-auto-langs
+        (delete 'markdown (copy-sequence treesit-auto-langs)))
+
+  (global-treesit-auto-mode))
 
 ;; ============================================================================
 ;; Smartparens - Better parenthesis handling

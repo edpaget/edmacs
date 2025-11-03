@@ -1,7 +1,7 @@
 ;;; ai.el --- AI assistant integration -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; Claude Code integration via vterm
+;; Claude Code integration - both vterm (legacy) and REPL-style
 
 ;;; Code:
 
@@ -15,6 +15,25 @@
          ("\\.md\\'" . markdown-mode)
          ("\\.markdown\\'" . markdown-mode))
   :init (setq markdown-command "multimarkdown"))
+
+;; ============================================================================
+;; Claude Code REPL Integration (New)
+;; ============================================================================
+
+;; Add claude-code directory to load path
+(add-to-list 'load-path
+             (expand-file-name "claude-code"
+                               (file-name-directory
+                                (or load-file-name
+                                    buffer-file-name
+                                    (expand-file-name "ai.el" default-directory)))))
+
+;; Load the core module
+(require 'claude-code-core)
+
+;; Set up keybindings
+(with-eval-after-load 'general
+  (claude-code-core-setup-keybindings))
 
 ;; ============================================================================
 ;; Claude Code VTerm Integration

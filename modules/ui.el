@@ -22,18 +22,43 @@
                         :font font-name
                         :height (* size 10))))
 
-;; Try common programming fonts in order of preference
-(cond
- ((find-font (font-spec :name "JetBrains Mono"))
-  (set-font-if-available "JetBrains Mono" 12))
- ((find-font (font-spec :name "Fira Code"))
-  (set-font-if-available "Fira Code" 12))
- ((find-font (font-spec :name "Consolas"))
-  (set-font-if-available "Consolas" 12))
- ((find-font (font-spec :name "Menlo"))
-  (set-font-if-available "Menlo" 12))
- (t
-  (set-font-if-available "Monaco" 12)))
+;; Font size presets
+(defvar font-size-standard 18
+  "Standard font size in points.")
+
+(defvar font-size-large 28
+  "Large font size in points.")
+
+(defvar font-size-current font-size-standard
+  "Current font size in use.")
+
+(defun set-iosevka-font (size)
+  "Set Iosevka font at SIZE points."
+  (when (find-font (font-spec :name "Iosevka"))
+    (set-face-attribute 'default nil
+                        :font "Iosevka"
+                        :height (* size 10))
+    (set-face-attribute 'fixed-pitch nil
+                        :font "Iosevka"
+                        :height (* size 10))
+    (set-face-attribute 'variable-pitch nil
+                        :font "Iosevka"
+                        :height (* size 10))
+    (setq font-size-current size)))
+
+(defun toggle-font-size ()
+  "Toggle between standard and large font sizes."
+  (interactive)
+  (if (= font-size-current font-size-standard)
+      (progn
+        (set-iosevka-font font-size-large)
+        (message "Font size: %dpt (large)" font-size-large))
+    (progn
+      (set-iosevka-font font-size-standard)
+      (message "Font size: %dpt (standard)" font-size-standard))))
+
+;; Set initial font
+(set-iosevka-font font-size-standard)
 
 ;; ============================================================================
 ;; Theme - Catppuccin

@@ -114,6 +114,7 @@
   "tl" '(display-line-numbers-mode :which-key "line numbers")
   "tw" '(toggle-truncate-lines :which-key "truncate lines")
   "tv" '(visual-line-mode :which-key "visual line mode")
+  "tf" '(toggle-font-size :which-key "toggle font size")
 
   ;; Quit/Session
   "q" '(:ignore t :which-key "quit")
