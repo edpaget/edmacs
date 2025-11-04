@@ -45,10 +45,13 @@
         (with-current-buffer buffer
           (expect major-mode :to-be 'claude-code-buffer-mode))))
 
-    (it "sets buffer as read-only"
+    (it "sets up interactive input area"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
         (with-current-buffer buffer
-          (expect buffer-read-only :to-be t))))
+          ;; Buffer should have an input marker set up
+          (expect claude-code-buffer-input-start-marker :to-be-truthy)
+          ;; Input area should exist
+          (expect (string-match-p "> " (buffer-string)) :to-be-truthy))))
 
     (it "stores project root in buffer-local variable"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
@@ -246,7 +249,8 @@
         (claude-code-buffer-clear buffer)
 
         (with-current-buffer buffer
-          (expect (buffer-string) :to-equal ""))))
+          ;; Buffer should have input prompt after clearing
+          (expect (string-match-p "> " (buffer-string)) :to-be-truthy))))
 
     (it "resets current interaction"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
@@ -273,7 +277,141 @@
     (it "derives from text-mode"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
         (with-current-buffer buffer
-          (expect (derived-mode-p 'text-mode) :to-be-truthy))))))
+          (expect (derived-mode-p 'text-mode) :to-be-truthy)))))
+
+  (describe "Phase 3: Navigation"
+
+    (after-each
+      (claude-code-test-teardown))
+
+    (it "navigates to next interaction"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "First prompt")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (claude-code-buffer-start-interaction buffer "Second prompt")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (with-current-buffer buffer
+          (goto-char (point-min))
+          (claude-code-buffer-next-interaction)
+          (expect (looking-at "## Prompt") :to-be-truthy))))
+
+    (it "navigates to previous interaction"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "First prompt")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (claude-code-buffer-start-interaction buffer "Second prompt")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (claude-code-buffer-previous-interaction)
+          (expect (looking-at "## Prompt") :to-be-truthy))))
+
+    (it "stores completed interactions in history"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "First prompt")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (claude-code-buffer-start-interaction buffer "Second prompt")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (with-current-buffer buffer
+          (expect (length claude-code-buffer-interactions) :to-equal 2))))
+
+    (it "clears interaction history when buffer is cleared"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Test")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (claude-code-buffer-clear buffer)
+
+        (with-current-buffer buffer
+          (expect claude-code-buffer-interactions :to-be nil))))
+
+    (it "navigates to next code block"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Test")
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (insert "```elisp\n(+ 1 2)\n```\n")
+            (insert "```python\nprint('hello')\n```\n")
+            (goto-char (point-min))
+            (claude-code-buffer-next-code-block)
+            (expect (looking-at "```") :to-be-truthy)))))
+
+    (it "searches for text in interactions"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Test")
+        (claude-code-buffer-append-text buffer "unique-search-term")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (with-current-buffer buffer
+          (goto-char (point-min))
+          (claude-code-buffer-search-interactions "unique-search-term")
+          (expect (thing-at-point 'word) :to-equal "unique")))))
+
+  (describe "Phase 4: Interactive REPL Input"
+
+    (after-each
+      (claude-code-test-teardown))
+
+    (it "sets up input area on buffer creation"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (expect claude-code-buffer-input-start-marker :to-be-truthy)
+          (expect (markerp claude-code-buffer-input-start-marker) :to-be t))))
+
+    (it "sets up input area after interaction completes"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        ;; Clear initial input area
+        (with-current-buffer buffer
+          (setq-local claude-code-buffer-input-start-marker nil))
+
+        (claude-code-buffer-start-interaction buffer "Test")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (with-current-buffer buffer
+          (expect claude-code-buffer-input-start-marker :to-be-truthy))))
+
+    (it "detects when point is in input area"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (expect (claude-code-buffer-in-input-area-p) :to-be t)
+          (goto-char (point-min))
+          (expect (claude-code-buffer-in-input-area-p) :to-be nil))))
+
+    (it "gets input text"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (let ((inhibit-read-only t))
+            (insert "test input"))
+          (expect (claude-code-buffer-get-input) :to-equal "test input"))))
+
+    (it "clears input area"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (let ((inhibit-read-only t))
+            (insert "test input"))
+          (claude-code-buffer-clear-input)
+          (expect (claude-code-buffer-get-input) :to-equal ""))))
+
+    (it "adds input to history ring"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (let ((inhibit-read-only t))
+            (insert "test input"))
+          ;; Manually add to ring (send-input would do this)
+          (ring-insert claude-code-buffer-input-ring "test input")
+          (expect (ring-empty-p claude-code-buffer-input-ring) :to-be nil)
+          (expect (ring-ref claude-code-buffer-input-ring 0) :to-equal "test input"))))))
 
 (provide 'claude-code-buffer-test)
 ;;; claude-code-buffer-test.el ends here

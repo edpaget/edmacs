@@ -6,7 +6,6 @@
 
 ;;; Code:
 
-(require 'projectile)
 (require 'markdown-mode)
 (require 'claude-code-process)
 
@@ -64,6 +63,8 @@
         (with-current-buffer (generate-new-buffer buffer-name)
           (claude-code-buffer-mode)
           (setq-local claude-code-buffer-project-root project-root)
+          ;; Set up initial input area
+          (claude-code-buffer-setup-input-area)
           (current-buffer)))))
 
 (defvar-local claude-code-buffer-project-root nil
@@ -72,16 +73,64 @@
 (defvar-local claude-code-buffer-current-interaction nil
   "Marker for the current interaction being built.")
 
+(defvar-local claude-code-buffer-interactions nil
+  "List of all completed interactions in this buffer.")
+
+(defvar-local claude-code-buffer-prompt-start-marker nil
+  "Marker for the start of the current prompt.")
+
+(defvar-local claude-code-buffer-input-start-marker nil
+  "Marker for the start of the input area.")
+
+(defvar-local claude-code-buffer-input-ring nil
+  "Ring of previous inputs for history navigation.")
+
+(defvar-local claude-code-buffer-input-ring-index nil
+  "Current position in the input ring.")
+
+(defconst claude-code-buffer-input-ring-size 100
+  "Maximum number of inputs to store in history.")
+
+(defvar-local claude-code-buffer-session-id nil
+  "Session ID for conversation continuity across process restarts.")
+
 ;; ============================================================================
 ;; Buffer Mode
 ;; ============================================================================
 
-(defvar claude-code-buffer-mode-map
+;; Keymap for read-only history area with single-letter commands
+(defvar claude-code-buffer-readonly-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "g") #'claude-code-buffer-refresh)
     (define-key map (kbd "c") #'claude-code-buffer-copy-last-response)
+    map)
+  "Keymap for read-only (history) area in Claude Code buffers.")
+
+(defvar claude-code-buffer-mode-map
+  (let ((map (make-sparse-keymap)))
+    ;; Always-available commands
     (define-key map (kbd "C-c C-c") #'claude-code-buffer-copy-code-block-at-point)
+    (define-key map (kbd "C-c q") #'quit-window)
+    (define-key map (kbd "C-c g") #'claude-code-buffer-refresh)
+
+    ;; Phase 3: Navigation commands
+    (define-key map (kbd "C-c C-n") #'claude-code-buffer-next-interaction)
+    (define-key map (kbd "C-c C-p") #'claude-code-buffer-previous-interaction)
+    (define-key map (kbd "C-M-n") #'claude-code-buffer-next-code-block)
+    (define-key map (kbd "C-M-p") #'claude-code-buffer-previous-code-block)
+
+    ;; Phase 3: Action commands
+    (define-key map (kbd "C-c C-r") #'claude-code-buffer-resend-prompt)
+    (define-key map (kbd "C-c C-s") #'claude-code-buffer-search-interactions)
+
+    ;; Phase 4: Interactive REPL input
+    (define-key map (kbd "RET") #'claude-code-buffer-return)
+    (define-key map (kbd "C-c RET") #'claude-code-buffer-send-input)
+    (define-key map (kbd "C-j") #'electric-newline-and-maybe-indent)
+    (define-key map (kbd "M-p") #'claude-code-buffer-previous-input)
+    (define-key map (kbd "M-n") #'claude-code-buffer-next-input)
+
     map)
   "Keymap for Claude Code buffer mode.")
 
@@ -91,10 +140,14 @@ Displays structured conversations with Claude including prompts,
 responses, tool usage, and metadata.
 
 \\{claude-code-buffer-mode-map}"
-  (setq-local buffer-read-only t)
   (setq-local truncate-lines nil)
   (setq-local word-wrap t)
   (visual-line-mode 1)
+  ;; Ensure buffer is not globally read-only
+  (setq buffer-read-only nil)
+  ;; Initialize input history ring
+  (setq-local claude-code-buffer-input-ring (make-ring claude-code-buffer-input-ring-size))
+  (setq-local claude-code-buffer-input-ring-index nil)
   ;; Enable markdown syntax highlighting if available
   (when (fboundp 'markdown-mode)
     (font-lock-mode -1)
@@ -265,7 +318,15 @@ responses, tool usage, and metadata.
                claude-code-buffer-current-interaction) 'complete)
         (setf (claude-code-interaction-metadata
                claude-code-buffer-current-interaction) metadata)
-        (setq-local claude-code-buffer-current-interaction nil)))))
+
+        ;; Save to history
+        (push claude-code-buffer-current-interaction
+              claude-code-buffer-interactions)
+
+        (setq-local claude-code-buffer-current-interaction nil))
+
+      ;; Set up input area for next interaction
+      (claude-code-buffer-setup-input-area))))
 
 ;; ============================================================================
 ;; Buffer Commands
@@ -299,6 +360,235 @@ responses, tool usage, and metadata.
                      (save-excursion (goto-char end) (forward-line -1) (point)))))
           (kill-new code)
           (message "Copied code block to kill ring"))))))
+
+;; ============================================================================
+;; Phase 3: Navigation Commands
+;; ============================================================================
+
+(defun claude-code-buffer-next-interaction ()
+  "Move point to the next interaction in the buffer."
+  (interactive)
+  (let ((start-pos (point)))
+    (end-of-line)
+    (if (re-search-forward "^## Prompt" nil t)
+        (progn
+          (beginning-of-line)
+          (message "Moved to next interaction"))
+      (goto-char start-pos)
+      (message "No next interaction"))))
+
+(defun claude-code-buffer-previous-interaction ()
+  "Move point to the previous interaction in the buffer."
+  (interactive)
+  (let ((start-pos (point)))
+    (beginning-of-line)
+    (if (re-search-backward "^## Prompt" nil t)
+        (message "Moved to previous interaction")
+      (goto-char start-pos)
+      (message "No previous interaction"))))
+
+(defun claude-code-buffer-get-interaction-at-point ()
+  "Get the interaction structure at point."
+  (save-excursion
+    ;; Find the start of the current interaction
+    (unless (looking-at "^## Prompt")
+      (re-search-backward "^## Prompt" nil t))
+    (let ((prompt-start (point)))
+      ;; Find all interactions
+      (dolist (interaction (reverse claude-code-buffer-interactions))
+        (when (and (markerp (claude-code-interaction-start-marker interaction))
+                   (marker-position (claude-code-interaction-start-marker interaction))
+                   (= (marker-position (claude-code-interaction-start-marker interaction))
+                      prompt-start))
+          (cl-return interaction))))))
+
+(defun claude-code-buffer-resend-prompt ()
+  "Re-send the prompt from the interaction at point."
+  (interactive)
+  (let ((interaction (claude-code-buffer-get-interaction-at-point)))
+    (if interaction
+        (let ((prompt (claude-code-interaction-prompt interaction)))
+          (if prompt
+              (progn
+                (require 'claude-code-core)
+                (claude-code-ask prompt))
+            (message "No prompt found in current interaction")))
+      (message "Not in an interaction"))))
+
+(defun claude-code-buffer-next-code-block ()
+  "Move point to the next code block in the buffer."
+  (interactive)
+  (let ((start-pos (point)))
+    (end-of-line)
+    (if (re-search-forward "^```" nil t)
+        (progn
+          (beginning-of-line)
+          (message "Moved to next code block"))
+      (goto-char start-pos)
+      (message "No next code block"))))
+
+(defun claude-code-buffer-previous-code-block ()
+  "Move point to the previous code block in the buffer."
+  (interactive)
+  (let ((start-pos (point)))
+    (beginning-of-line)
+    (if (re-search-backward "^```" nil t)
+        (message "Moved to previous code block")
+      (goto-char start-pos)
+      (message "No previous code block"))))
+
+(defun claude-code-buffer-search-interactions (query)
+  "Search for QUERY in all interactions and jump to the first match."
+  (interactive "sSearch in interactions: ")
+  (let ((start-pos (point))
+        (case-fold-search t))
+    (goto-char (point-min))
+    (if (search-forward query nil t)
+        (progn
+          (beginning-of-line)
+          (message "Found: %s" query))
+      (goto-char start-pos)
+      (message "Not found: %s" query))))
+
+;; ============================================================================
+;; Phase 4: Interactive REPL Input
+;; ============================================================================
+
+(defun claude-code-buffer-setup-input-area ()
+  "Set up the input area at the end of the buffer."
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char (point-max))
+      ;; Add input prompt
+      (unless (bobp)
+        (insert "\n\n"))
+      ;; Insert prompt with better text property handling
+      (let ((prompt-start (point)))
+        ;; Mark the start of the prompt
+        (setq-local claude-code-buffer-prompt-start-marker (copy-marker prompt-start))
+        (set-marker-insertion-type claude-code-buffer-prompt-start-marker nil)
+
+        (insert "> ")
+        ;; Apply properties with specific rear-nonsticky list
+        (put-text-property prompt-start (point) 'face 'claude-code-prompt-face)
+        (put-text-property prompt-start (point) 'read-only t)
+        (put-text-property prompt-start (point) 'field 'claude-code-prompt)
+        (put-text-property prompt-start (point) 'intangible t)
+        (put-text-property prompt-start (point) 'rear-nonsticky '(read-only face field intangible)))
+      ;; Mark the start of the input area
+      (setq-local claude-code-buffer-input-start-marker (point-marker))
+      (set-marker-insertion-type claude-code-buffer-input-start-marker nil)))
+  ;; Set up text properties for read-only history area
+  (when claude-code-buffer-input-start-marker
+    (let ((inhibit-read-only t)
+          (marker-pos (marker-position claude-code-buffer-input-start-marker)))
+      (when (> marker-pos (point-min))
+        ;; Calculate history-end to exclude the "> " prompt (2 chars before marker)
+        (let ((history-end (max (point-min) (- marker-pos 2))))
+          ;; Make history read-only and add keymap for single-letter commands
+          (put-text-property (point-min) history-end 'read-only t)
+          (put-text-property (point-min) history-end 'keymap claude-code-buffer-readonly-map)))
+      ;; Explicitly ensure the input area is NOT read-only and has NO special keymap
+      (when (<= marker-pos (point-max))
+        (remove-text-properties marker-pos (point-max) '(read-only nil keymap nil)))))
+  ;; Move point to input area
+  (goto-char (point-max))
+  (message "Input area ready. Type your message and press C-c RET to send."))
+
+(defun claude-code-buffer-in-input-area-p ()
+  "Return t if point is in the input area."
+  (and claude-code-buffer-input-start-marker
+       (>= (point) claude-code-buffer-input-start-marker)))
+
+(defun claude-code-buffer-get-input ()
+  "Get the current input text."
+  (when claude-code-buffer-input-start-marker
+    (buffer-substring-no-properties
+     (marker-position claude-code-buffer-input-start-marker)
+     (point-max))))
+
+(defun claude-code-buffer-clear-input ()
+  "Clear the input area."
+  (when claude-code-buffer-input-start-marker
+    (let ((inhibit-read-only t))
+      (delete-region claude-code-buffer-input-start-marker (point-max)))))
+
+(defun claude-code-buffer-send-input ()
+  "Send the current input to Claude."
+  (interactive)
+  (let ((input (string-trim (or (claude-code-buffer-get-input) ""))))
+    (cond
+     ;; No input marker set up
+     ((not claude-code-buffer-input-start-marker)
+      (message "Error: No input area available. Try reopening the buffer."))
+
+     ;; Empty input
+     ((string-empty-p input)
+      (message "Please enter some text before sending."))
+
+     ;; Everything OK, send it
+     (t
+      ;; Add to history
+      (ring-insert claude-code-buffer-input-ring input)
+      (setq-local claude-code-buffer-input-ring-index nil)
+
+      ;; Clear input area and remove input marker
+      (claude-code-buffer-clear-input)
+      (setq-local claude-code-buffer-input-start-marker nil)
+
+      ;; Send to Claude
+      (require 'claude-code-core)
+      (claude-code-ask input)
+
+      (message "Sent: %s" (truncate-string-to-width input 50 nil nil "..."))))))
+
+(defun claude-code-buffer-return ()
+  "Smart RET: send input if in input area, otherwise normal behavior."
+  (interactive)
+  (if (claude-code-buffer-in-input-area-p)
+      (claude-code-buffer-send-input)
+    ;; In read-only area, just move to next line or do nothing
+    (when (not (eobp))
+      (forward-line 1))))
+
+(defun claude-code-buffer-previous-input ()
+  "Insert the previous input from history."
+  (interactive)
+  (when (and claude-code-buffer-input-ring
+             (not (ring-empty-p claude-code-buffer-input-ring)))
+    (let ((inhibit-read-only t))
+      ;; Initialize index if needed
+      (unless claude-code-buffer-input-ring-index
+        (setq-local claude-code-buffer-input-ring-index 0))
+
+      ;; Get previous input
+      (let ((input (ring-ref claude-code-buffer-input-ring
+                             claude-code-buffer-input-ring-index)))
+        (claude-code-buffer-clear-input)
+        (insert input)
+
+        ;; Move to next older input
+        (when (< (1+ claude-code-buffer-input-ring-index)
+                 (ring-length claude-code-buffer-input-ring))
+          (setq-local claude-code-buffer-input-ring-index
+                      (1+ claude-code-buffer-input-ring-index)))))))
+
+(defun claude-code-buffer-next-input ()
+  "Insert the next input from history."
+  (interactive)
+  (when (and claude-code-buffer-input-ring
+             claude-code-buffer-input-ring-index
+             (> claude-code-buffer-input-ring-index 0))
+    (let ((inhibit-read-only t))
+      ;; Move to next newer input
+      (setq-local claude-code-buffer-input-ring-index
+                  (1- claude-code-buffer-input-ring-index))
+
+      ;; Get and insert input
+      (let ((input (ring-ref claude-code-buffer-input-ring
+                             claude-code-buffer-input-ring-index)))
+        (claude-code-buffer-clear-input)
+        (insert input)))))
 
 ;; ============================================================================
 ;; Event Handlers (for use with process callbacks)
@@ -340,11 +630,16 @@ responses, tool usage, and metadata.
 ;; ============================================================================
 
 (defun claude-code-buffer-clear (buffer)
-  "Clear all content from BUFFER."
+  "Clear all content from BUFFER and start fresh conversation."
   (with-current-buffer buffer
     (let ((inhibit-read-only t))
       (erase-buffer)
-      (setq-local claude-code-buffer-current-interaction nil))))
+      (setq-local claude-code-buffer-current-interaction nil)
+      (setq-local claude-code-buffer-interactions nil)
+      (setq-local claude-code-buffer-input-start-marker nil)
+      (setq-local claude-code-buffer-session-id nil))  ; Reset session for fresh start
+    ;; Set up fresh input area
+    (claude-code-buffer-setup-input-area)))
 
 (provide 'claude-code-buffer)
 ;;; claude-code-buffer.el ends here

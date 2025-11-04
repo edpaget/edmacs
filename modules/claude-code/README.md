@@ -5,14 +5,16 @@
 [![Emacs](https://img.shields.io/badge/Emacs-28.1+-purple.svg)](https://www.gnu.org/software/emacs/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Status**: Phases 1-2 Complete ✅
+**Status**: Phases 1-4 Complete ✅
 
-A beautiful, REPL-style Claude Code integration for Emacs with markdown rendering, syntax highlighting, and structured conversation history.
+A beautiful, **true interactive REPL** for Claude Code in Emacs. Type prompts directly in the buffer and send with RET, just like CIDER. Features markdown rendering, syntax highlighting, structured conversation history, and powerful navigation.
 
 ## What's Implemented
 
 ### Phase 1: Core Process Management ✅
 ### Phase 2: Response Buffer UI ✅
+### Phase 3: Navigation and History ✅
+### Phase 4: Interactive REPL Input ✅
 
 ## Features
 
@@ -40,22 +42,60 @@ A beautiful, REPL-style Claude Code integration for Emacs with markdown renderin
 - **Process control**: Start, stop, and monitor Claude processes
 - **Debug tools**: Raw event inspection for troubleshooting
 
+### 🧭 Navigation and History (Phase 3)
+
+- **Interaction navigation**: Jump between prompt/response pairs
+- **Code block navigation**: Quick movement between code examples
+- **Re-send prompts**: Iterate on previous questions with one command
+- **Search conversations**: Find text across all interactions
+- **Interaction history**: All completed interactions tracked and accessible
+
+### ⌨️ Interactive REPL Input (Phase 4) **NEW!**
+
+- **Type directly in buffer**: No more minibuffer prompts!
+- **RET to send**: Press RET in input area to send prompt (like CIDER)
+- **Multi-line input**: Use C-j for newlines, RET to send
+- **Input history**: M-p/M-n to navigate previous prompts
+- **Smart read-only**: Responses are protected, input area is editable
+- **Continuous conversation**: Claude remembers previous prompts in the same buffer!
+  - Uses session-based continuity with `--resume`
+  - Each buffer maintains its own conversation thread
+  - No configuration needed - it just works!
+
 ## Quick Start
 
 After reloading your Emacs configuration:
 
 ```
-SPC a c a
-"What is the best way to learn Emacs?"
+SPC a c a                    # Open Claude Code REPL
 ```
 
-A beautiful response buffer will open showing:
-- Your prompt with timestamp
-- Claude's response streaming in real-time
-- Markdown formatting and syntax highlighting
-- Token usage when complete
+A beautiful REPL buffer opens with a "> " prompt. **Now just type and press RET:**
 
-Continue the conversation by asking more questions - all interactions stay in the same buffer!
+```
+> What is the best way to learn Emacs?
+[Press RET]
+
+## Response
+
+The best way to learn Emacs is...
+
+> How do I configure key bindings?
+[Press RET]
+
+## Response
+
+To configure key bindings in Emacs...
+```
+
+Features you'll see:
+- Your prompts with timestamps
+- Claude's responses streaming in real-time
+- Markdown formatting and syntax highlighting
+- Token usage and response duration
+- Input history with M-p/M-n
+
+**No more switching to the minibuffer - it's a true REPL!**
 
 ## Keybindings
 
@@ -75,10 +115,28 @@ Continue the conversation by asking more questions - all interactions stay in th
 
 When in a Claude Code response buffer:
 
+**Basic Commands:**
 - `q` - Quit window
 - `g` - Refresh buffer
 - `c` - Copy last response to kill ring
 - `C-c C-c` - Copy code block at point
+
+**Interactive REPL (Phase 4):** **NEW!**
+- `RET` - Send input (when in input area)
+- `C-c RET` - Send input (explicit, works anywhere)
+- `C-j` - Insert newline without sending
+- `M-p` - Previous input from history
+- `M-n` - Next input from history
+
+**Navigation (Phase 3):**
+- `C-c C-n` - Next interaction
+- `C-c C-p` - Previous interaction
+- `C-M-n` - Next code block
+- `C-M-p` - Previous code block
+
+**Actions (Phase 3):**
+- `C-c C-r` - Re-send prompt at point
+- `C-c C-s` - Search in interactions
 
 ### Testing Phase 1
 

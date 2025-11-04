@@ -57,7 +57,7 @@
           (file-name-nondirectory (directory-file-name project-root))))
 
 (defun claude-code-process--parse-json-event (json-string)
-  "Parse a JSON event string from Claude Code output.
+  "Parse JSON-STRING event from Claude Code output.
 Returns the parsed object or nil if parsing fails."
   (condition-case err
       (json-read-from-string json-string)
@@ -153,6 +153,8 @@ Optional MODEL to use instead of default."
     (when session-id
       (setq args (append args (list "--resume" session-id))))
 
+    (message "STARTING")
+    (message "Sending arguments: %s" args)
     ;; Start the process
     (setq process
           (make-process
@@ -215,6 +217,8 @@ Returns t if successful, nil otherwise."
     (setf (claude-code-process-last-prompt proc-obj) prompt)
 
     ;; Send the prompt followed by EOF
+    ;; Note: EOF ends this process session, so each prompt is independent
+    ;; For conversation continuity, we rely on --resume with captured session-id
     (condition-case err
         (progn
           (process-send-string process prompt)

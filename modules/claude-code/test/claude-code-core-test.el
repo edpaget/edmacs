@@ -94,7 +94,8 @@
         (claude-code-clear-buffer)
 
         (with-current-buffer buffer
-          (expect (buffer-string) :to-equal ""))))
+          ;; Buffer should have input prompt after clearing
+          (expect (string-match-p "> " (buffer-string)) :to-be-truthy))))
 
     (it "does nothing if buffer doesn't exist"
       (spy-on 'projectile-project-root :and-return-value "/tmp/nonexistent/")

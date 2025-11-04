@@ -52,11 +52,16 @@ This is a debugging command to test the process management layer."
       (message "Failed to send prompt"))))
 
 (defun claude-code-ask (prompt)
-  "Ask Claude a question with PROMPT using the beautiful response buffer."
+  "Ask Claude a question with PROMPT using the beautiful response buffer.
+Each prompt in the same buffer continues the conversation using session continuity."
   (interactive "sAsk Claude: ")
   (let* ((project-root (claude-code-process--get-project-root))
-         (proc-obj (claude-code-process-start project-root))
-         (response-buffer (claude-code-buffer-get-or-create project-root)))
+         (response-buffer (claude-code-buffer-get-or-create project-root))
+         ;; Get session ID from buffer for conversation continuity
+         (session-id (with-current-buffer response-buffer
+                       claude-code-buffer-session-id))
+         ;; Start new process with session-id to continue conversation
+         (proc-obj (claude-code-process-start project-root session-id)))
 
     ;; Start a new interaction in the buffer
     (claude-code-buffer-start-interaction response-buffer prompt)
@@ -70,6 +75,14 @@ This is a debugging command to test the process management layer."
      (lambda (event)
        (let ((event-type (alist-get 'type event)))
          (cond
+          ;; System event - may contain session ID for conversation continuity
+          ((equal event-type "system")
+           (when-let ((session-id (alist-get 'session_id event)))
+             ;; Store in buffer for conversation continuity across process restarts
+             (with-current-buffer response-buffer
+               (setq-local claude-code-buffer-session-id session-id))
+             (message "Claude Code: Session ID captured (%s)" session-id)))
+
           ;; Assistant message - contains the actual response
           ((equal event-type "assistant")
            (claude-code-buffer-handle-assistant-event response-buffer event))
@@ -77,6 +90,12 @@ This is a debugging command to test the process management layer."
           ;; Result - final summary
           ((equal event-type "result")
            (claude-code-buffer-handle-result-event response-buffer event)
+           ;; Kill process after response - will restart with --resume for next prompt
+           (run-with-timer
+            0.5 nil
+            (lambda ()
+              (when (claude-code-process-p proc-obj)
+                (claude-code-process-kill proc-obj))))
            (message "Claude Code: Response complete"))))))
 
     ;; Add error callback
