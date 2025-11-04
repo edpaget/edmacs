@@ -14,6 +14,7 @@
   (add-to-list 'load-path project-dir))
 
 ;; Load the modules
+(require 'claude-code-approval)
 (require 'claude-code-process)
 (require 'claude-code-buffer)
 (require 'claude-code-core)
@@ -34,16 +35,22 @@
 
 (defun claude-code-test-cleanup ()
   "Clean up all test resources."
-  ;; Kill all processes
+  ;; Kill all processes (this also stops approval servers)
   (claude-code-process-kill-all)
 
   ;; Kill all claude-code buffers
   (dolist (buf (buffer-list))
-    (when (string-match-p "\\*claude-code" (buffer-name buf))
+    (when (string-match-p "\\*claude-code\\|\\*Claude Code Approval\\*" (buffer-name buf))
       (kill-buffer buf)))
 
   ;; Clear the process hash table
-  (clrhash claude-code-processes))
+  (clrhash claude-code-processes)
+
+  ;; Clear approval-related hash tables
+  (clrhash claude-code-approval-servers)
+  (clrhash claude-code-approval-session-rules)
+  (clrhash claude-code-approval--active-processes)
+  (clrhash claude-code-approval--responded-processes))
 
 ;; ============================================================================
 ;; Mock Process Creation

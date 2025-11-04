@@ -54,13 +54,24 @@
 
     (it "passes correct arguments to make-process"
       (spy-on 'make-process :and-return-value (claude-code-test-create-mock-process))
+      (spy-on 'claude-code-approval-start-server :and-return-value "/tmp/test-socket.sock")
 
       (claude-code-process-start "/tmp/test/" nil "opus")
 
       (expect 'make-process :to-have-been-called)
-      (let ((args (spy-calls-args-for 'make-process 0)))
-        (expect (plist-get args :command) :to-equal
-                '("claude" "--print" "--verbose" "--output-format" "stream-json" "--model" "opus")))))
+      (let* ((args (spy-calls-args-for 'make-process 0))
+             (command (plist-get args :command)))
+        ;; Check that all expected arguments are present (order matters for some)
+        (expect (nth 0 command) :to-equal "claude")
+        (expect (nth 1 command) :to-equal "--print")
+        (expect (nth 2 command) :to-equal "--verbose")
+        (expect (nth 3 command) :to-equal "--output-format")
+        (expect (nth 4 command) :to-equal "stream-json")
+        (expect (nth 5 command) :to-equal "--model")
+        (expect (nth 6 command) :to-equal "opus")
+        (expect (nth 7 command) :to-equal "--settings")
+        ;; The 8th argument is the temp settings file path, just check it exists
+        (expect (nth 8 command) :to-match "claude-settings.*\\.json"))))
 
   (describe "Process retrieval"
 
