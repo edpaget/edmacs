@@ -94,6 +94,23 @@ Maps process object to t to prevent garbage collection.")
   "Hash table tracking processes we've already responded to.
 Prevents duplicate responses if filter is called multiple times.")
 
+;; Declare buffer-local variables to suppress byte-compiler warnings
+;; These are set via setq-local in the approval UI buffer
+(defvar claude-code-approval--current-tool nil
+  "Current tool name being approved in this buffer.")
+(defvar claude-code-approval--current-input nil
+  "Current tool input being approved in this buffer.")
+(defvar claude-code-approval--current-id nil
+  "Current request ID being approved in this buffer.")
+(defvar claude-code-approval--current-proc nil
+  "Current client process for this approval request.")
+
+;; Forward declarations to suppress byte-compiler warnings
+(declare-function claude-code-approval--check-policy "claude-code-approval")
+(declare-function claude-code-approval--send-response "claude-code-approval")
+(declare-function claude-code-approval--make-hook-response "claude-code-approval")
+(declare-function claude-code-approval--get-decision-async "claude-code-approval")
+
 ;;; Socket Server Lifecycle
 
 (defun claude-code-approval-start-server (project-root)
@@ -607,12 +624,6 @@ This function returns immediately after showing the UI."
 
 (defvar-local claude-code-approval--current-proc nil
   "Current client process for this approval request.")
-
-;; Declare buffer-local variables to suppress byte-compiler warnings
-(defvar claude-code-approval--current-tool)
-(defvar claude-code-approval--current-input)
-(defvar claude-code-approval--current-id)
-(defvar claude-code-approval--current-proc)
 
 ;;; Utility Functions
 

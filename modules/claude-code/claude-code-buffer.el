@@ -10,6 +10,16 @@
 (require 'claude-code-process)
 
 ;; ============================================================================
+;; Forward Declarations
+;; ============================================================================
+
+;; Suppress byte-compiler warnings for buffer-local variables defined later
+(defvar claude-code-buffer-interactions)
+
+;; Forward declare functions from other modules
+(declare-function claude-code-ask "claude-code-core")
+
+;; ============================================================================
 ;; Custom Faces
 ;; ============================================================================
 
@@ -256,9 +266,37 @@ If nerd-icons is not available, returns FALLBACK (or empty string)."
       (min claude-code-buffer-max-width (window-body-width))
     (or claude-code-separator-length 80)))
 
-(defun claude-code-buffer--format-header (type text &optional timestamp)
-  "Format a header of TYPE with TEXT and optional TIMESTAMP.
+(defun claude-code-buffer--format-status-indicator (status)
+  "Format a status indicator for STATUS.
+STATUS should be \\='streaming, \\='complete, or \\='error.
+Returns a propertized string with icon and text."
+  (let* ((face (pcase status
+                 ('streaming 'claude-code-status-streaming)
+                 ('complete 'claude-code-status-complete)
+                 ('error 'claude-code-status-error)
+                 (_ 'claude-code-status-streaming)))
+         (icon (pcase status
+                 ('streaming (claude-code-buffer--icon "nf-md-loading" "⟳"))
+                 ('complete (claude-code-buffer--icon "nf-md-check" "✓"))
+                 ('error (claude-code-buffer--icon "nf-md-close" "✗"))
+                 (_ "")))
+         (text (pcase status
+                 ('streaming "Streaming...")
+                 ('complete "Complete")
+                 ('error "Error")
+                 (_ ""))))
+    (if (not (string-empty-p text))
+        (propertize (format " %s %s" icon text)
+                    'face face
+                    'claude-code-status t
+                    'claude-code-status-value status)
+      ;; Return empty string for unknown status
+      "")))
+
+(defun claude-code-buffer--format-header (type text &optional timestamp status)
+  "Format a header of TYPE with TEXT, optional TIMESTAMP and STATUS.
 TYPE should be \\='prompt or \\='response.
+STATUS should be \\='streaming, \\='complete, or \\='error.
 Returns a propertized string ready for insertion."
   (let* ((width (claude-code-buffer--get-adaptive-width))
          (face (if (eq type 'prompt)
@@ -268,50 +306,73 @@ Returns a propertized string ready for insertion."
                    (claude-code-buffer--icon "nf-md-account" "📝")
                  (claude-code-buffer--icon "nf-md-robot" "🤖")))
          (timestamp-str (if timestamp
-                           (format "[%s]" timestamp)
-                         ""))
-         (icon-prefix (if (string-empty-p icon) "" (concat icon " "))))
+                            (format "[%s]" timestamp)
+                          ""))
+         (icon-prefix (if (string-empty-p icon) "" (concat icon " ")))
+         (status-str (if status
+                         (claude-code-buffer--format-status-indicator status)
+                       "")))
 
     (pcase claude-code-buffer-header-style
       ('simple
-       ;; Simple markdown style: ## Prompt [timestamp]
+       ;; Simple markdown style: ## Prompt [timestamp] ✓ Complete
        (concat (propertize (format "## %s" text) 'face face)
                (when timestamp
                  (concat " "
                          (propertize timestamp-str
-                                    'face 'claude-code-timestamp)))))
+                                     'face 'claude-code-timestamp)))
+               status-str))
 
       ('box
-       ;; ASCII box style: +--- Prompt ---[timestamp]---+
-       (let* ((header-text (concat text " " timestamp-str))
+       ;; ASCII box style: +--- Prompt ---[timestamp] Status ---+
+       (let* ((status-text (if status (format " %s " (pcase status
+                                                       ('streaming "Streaming...")
+                                                       ('complete "Complete")
+                                                       ('error "Error")
+                                                       (_ ""))) ""))
+              (header-text (concat text " " timestamp-str status-text))
               (dashes (max 3 (- width (length header-text) 6))))
          (concat (propertize "+--- " 'face face)
                  (propertize text 'face face)
                  " "
                  (when timestamp
                    (concat (propertize timestamp-str 'face 'claude-code-timestamp)
-                          " "))
-                 (propertize (make-string (max 0 (- dashes (if timestamp (length timestamp-str) 0) 1)) ?-)
-                            'face face)
+                           " "))
+                 status-str
+                 " "
+                 (propertize (make-string (max 0 (- dashes (length status-text) (if timestamp (length timestamp-str) 0) 1)) ?-)
+                             'face face)
                  (propertize "+" 'face face))))
 
       ('unicode-box
-       ;; Unicode box style: ╭─ Prompt ─[timestamp]─╮
-       (let* ((header-text (concat text " " timestamp-str))
+       ;; Unicode box style: ╭─ Prompt ─[timestamp] Status ─╮
+       (let* ((status-text (if status (format " %s " (pcase status
+                                                       ('streaming "Streaming...")
+                                                       ('complete "Complete")
+                                                       ('error "Error")
+                                                       (_ ""))) ""))
+              (header-text (concat text " " timestamp-str status-text))
               (dashes (max 2 (- width (length header-text) 6))))
          (concat (propertize "╭─ " 'face face)
                  (propertize text 'face face)
                  " "
                  (when timestamp
                    (concat (propertize timestamp-str 'face 'claude-code-timestamp)
-                          " "))
-                 (propertize (make-string (max 0 (- dashes (if timestamp (length timestamp-str) 0) 1)) ?─)
-                            'face face)
+                           " "))
+                 status-str
+                 " "
+                 (propertize (make-string (max 0 (- dashes (length status-text) (if timestamp (length timestamp-str) 0) 1)) ?─)
+                             'face face)
                  (propertize "╮" 'face face))))
 
       ('unicode-fancy
-       ;; Unicode with icons: ┏━ 📝 Prompt ━[timestamp]━┓
-       (let* ((header-text (concat icon-prefix text " " timestamp-str))
+       ;; Unicode with icons: ┏━ 📝 Prompt ━[timestamp] Status ━┓
+       (let* ((status-text (if status (format " %s " (pcase status
+                                                       ('streaming "Streaming...")
+                                                       ('complete "Complete")
+                                                       ('error "Error")
+                                                       (_ ""))) ""))
+              (header-text (concat icon-prefix text " " timestamp-str status-text))
               (dashes (max 2 (- width (length header-text) 6))))
          (concat (propertize "┏━ " 'face face)
                  icon-prefix
@@ -319,9 +380,11 @@ Returns a propertized string ready for insertion."
                  " "
                  (when timestamp
                    (concat (propertize timestamp-str 'face 'claude-code-timestamp)
-                          " "))
-                 (propertize (make-string (max 0 (- dashes (length icon-prefix) (if timestamp (length timestamp-str) 0) 1)) ?━)
-                            'face face)
+                           " "))
+                 status-str
+                 " "
+                 (propertize (make-string (max 0 (- dashes (length icon-prefix) (length status-text) (if timestamp (length timestamp-str) 0) 1)) ?━)
+                             'face face)
                  (propertize "┓" 'face face))))
 
       (_ ;; Default to simple
@@ -329,7 +392,8 @@ Returns a propertized string ready for insertion."
                (when timestamp
                  (concat " "
                          (propertize timestamp-str
-                                    'face 'claude-code-timestamp))))))))
+                                     'face 'claude-code-timestamp)))
+               status-str)))))
 
 (defun claude-code-buffer--make-separator (&optional label)
   "Create a separator line with optional LABEL.
@@ -339,28 +403,28 @@ Respects `claude-code-separator-style' customization."
       ('line
        ;; Simple line: ────────────────
        (propertize (make-string width claude-code-separator-character)
-                  'face 'claude-code-separator))
+                   'face 'claude-code-separator))
 
       ('double
        ;; Double line: ════════════════
        (propertize (make-string width ?═)
-                  'face 'claude-code-separator-heavy))
+                   'face 'claude-code-separator-heavy))
 
       ('labeled
        ;; Labeled: ─── Label ───
        (let* ((text (or label (format "Interaction #%d"
-                                     (1+ (length claude-code-buffer-interactions)))))
+                                      (1+ (length claude-code-buffer-interactions)))))
               (text-len (length text))
               (total-dashes (- width text-len 2)) ; 2 for spaces around text
               (left-dashes (/ total-dashes 2))
               (right-dashes (- total-dashes left-dashes)))
          (concat (propertize (make-string left-dashes claude-code-separator-character)
-                            'face 'claude-code-separator)
+                             'face 'claude-code-separator)
                  " "
                  (propertize text 'face 'claude-code-separator)
                  " "
                  (propertize (make-string right-dashes claude-code-separator-character)
-                            'face 'claude-code-separator))))
+                             'face 'claude-code-separator))))
 
       ('minimal
        ;; Minimal: just three dashes
@@ -372,12 +436,44 @@ Respects `claude-code-separator-style' customization."
 
       (_ ;; Default to line
        (propertize (make-string width claude-code-separator-character)
-                  'face 'claude-code-separator)))))
+                   'face 'claude-code-separator)))))
 
 (defun claude-code-buffer--insert-spacing (n)
   "Insert N blank lines for section spacing."
   (dotimes (_ (or n claude-code-section-spacing))
     (insert "\n")))
+
+(defun claude-code-buffer--update-status (interaction new-status)
+  "Update the status indicator for INTERACTION to NEW-STATUS.
+NEW-STATUS should be \\='streaming, \\='complete, or \\='error.
+This dynamically updates the response header in the buffer."
+  (when (and interaction
+             (markerp (claude-code-interaction-start-marker interaction))
+             (marker-position (claude-code-interaction-start-marker interaction)))
+    (let ((inhibit-read-only t))
+      (save-excursion
+        ;; Find the response header line
+        (goto-char (claude-code-interaction-start-marker interaction))
+        (when (re-search-forward "^\\(##\\|[+╭┏]\\).*Response"
+                                 (claude-code-interaction-end-marker interaction) t)
+          (let ((line-start (line-beginning-position)))
+            ;; Remove old status indicator if present
+            (goto-char line-start)
+            (let ((search-end (line-end-position)))
+              (while (and (< (point) search-end)
+                          (not (get-text-property (point) 'claude-code-status)))
+                (goto-char (next-single-property-change (point) 'claude-code-status nil search-end)))
+              (when (< (point) search-end)
+                ;; Found old status, delete it
+                (let ((status-start (point))
+                      (status-end (next-single-property-change (point) 'claude-code-status nil search-end)))
+                  (delete-region status-start status-end))))
+
+            ;; Insert new status at end of line (recalculate position after deletion)
+            (goto-char (line-end-position))
+            (let ((new-status-str (claude-code-buffer--format-status-indicator new-status)))
+              (when new-status-str
+                (insert new-status-str)))))))))
 
 ;; ============================================================================
 ;; Buffer Management
@@ -637,8 +733,8 @@ Uses the configured separator style from `claude-code-separator-style'."
       (insert "\n")
       (claude-code-buffer--insert-spacing claude-code-section-spacing)
 
-      ;; Insert response header
-      (insert (claude-code-buffer--format-header 'response "Response"))
+      ;; Insert response header with streaming status
+      (insert (claude-code-buffer--format-header 'response "Response" nil 'streaming))
       (insert "\n")
       (claude-code-buffer--insert-spacing claude-code-section-spacing)
 
@@ -726,32 +822,80 @@ Uses the configured separator style from `claude-code-separator-style'."
                   (duration (alist-get 'duration_ms metadata)))
               (when (or tokens-in tokens-out duration)
                 ;; Format with enhanced styling
-                (let ((meta-start (point)))
-                  ;; Tokens label
-                  (insert (propertize "Tokens: " 'face 'claude-code-metadata-label))
-                  ;; Tokens values
-                  (insert (propertize (format "%d" (or tokens-in 0))
+                ;; Tokens label
+                (insert (propertize "Tokens: " 'face 'claude-code-metadata-label))
+                ;; Tokens values
+                (insert (propertize (format "%d" (or tokens-in 0))
                                     'face 'claude-code-metadata-value))
-                  (insert " → ")
-                  (insert (propertize (format "%d" (or tokens-out 0))
+                (insert " → ")
+                (insert (propertize (format "%d" (or tokens-out 0))
                                     'face 'claude-code-metadata-value))
-                  ;; Duration if available
-                  (when duration
-                    (insert " • ")
-                    (insert (propertize "Duration: " 'face 'claude-code-metadata-label))
-                    (insert (propertize (format "%.2fs" (/ duration 1000.0))
+                ;; Duration if available
+                (when duration
+                  (insert " • ")
+                  (insert (propertize "Duration: " 'face 'claude-code-metadata-label))
+                  (insert (propertize (format "%.2fs" (/ duration 1000.0))
                                       'face 'claude-code-metadata-value)))
-                  (insert "\n")))))
+                (insert "\n"))))
+
+          ;; Update end marker to current position (after metadata)
+          (set-marker (claude-code-interaction-end-marker
+                       claude-code-buffer-current-interaction)
+                      (point))))
+
+      ;; Update interaction status
+      (setf (claude-code-interaction-status
+             claude-code-buffer-current-interaction) 'complete)
+      (setf (claude-code-interaction-metadata
+             claude-code-buffer-current-interaction) metadata)
+
+      ;; Update status indicator in buffer to show complete
+      (claude-code-buffer--update-status claude-code-buffer-current-interaction 'complete)
+
+      ;; Mark entire interaction as a field for better navigation
+      (let ((start (marker-position (claude-code-interaction-start-marker
+                                     claude-code-buffer-current-interaction)))
+            (end (marker-position (claude-code-interaction-end-marker
+                                   claude-code-buffer-current-interaction))))
+        (put-text-property start end 'field 'claude-code-interaction))
+
+      ;; Save to history
+      (push claude-code-buffer-current-interaction
+            claude-code-buffer-interactions)
+
+      (setq-local claude-code-buffer-current-interaction nil))
+
+    ;; Set up input area for next interaction
+    (claude-code-buffer-setup-input-area)))
+
+(defun claude-code-buffer-error-interaction (buffer error-message)
+  "Mark the current interaction in BUFFER as failed with ERROR-MESSAGE."
+  (with-current-buffer buffer
+    (when claude-code-buffer-current-interaction
+      (let ((inhibit-read-only t))
+        ;; Update interaction status FIRST
+        (setf (claude-code-interaction-status
+               claude-code-buffer-current-interaction) 'error)
+
+        ;; Update status indicator in buffer BEFORE inserting error message
+        (claude-code-buffer--update-status claude-code-buffer-current-interaction 'error)
+
+        ;;Now insert the error message
+        (save-excursion
+          (goto-char (claude-code-interaction-end-marker
+                      claude-code-buffer-current-interaction))
+          (insert "\n\n")
+
+          ;; Display error message
+          (let ((error-start (point)))
+            (insert "❌ Error: ")
+            (insert error-message)
+            (insert "\n")
+            (put-text-property error-start (point) 'face 'claude-code-status-error))
 
           (set-marker (claude-code-interaction-end-marker
                        claude-code-buffer-current-interaction)
                       (point)))
-
-        ;; Update interaction
-        (setf (claude-code-interaction-status
-               claude-code-buffer-current-interaction) 'complete)
-        (setf (claude-code-interaction-metadata
-               claude-code-buffer-current-interaction) metadata)
 
         ;; Mark entire interaction as a field for better navigation
         (let ((start (marker-position (claude-code-interaction-start-marker
@@ -836,12 +980,13 @@ Uses the configured separator style from `claude-code-separator-style'."
       (re-search-backward "^## Prompt" nil t))
     (let ((prompt-start (point)))
       ;; Find all interactions
-      (dolist (interaction (reverse claude-code-buffer-interactions))
-        (when (and (markerp (claude-code-interaction-start-marker interaction))
-                   (marker-position (claude-code-interaction-start-marker interaction))
-                   (= (marker-position (claude-code-interaction-start-marker interaction))
-                      prompt-start))
-          (cl-return interaction))))))
+      (cl-block nil
+        (dolist (interaction (reverse claude-code-buffer-interactions))
+          (when (and (markerp (claude-code-interaction-start-marker interaction))
+                     (marker-position (claude-code-interaction-start-marker interaction))
+                     (= (marker-position (claude-code-interaction-start-marker interaction))
+                        prompt-start))
+            (cl-return interaction)))))))
 
 (defun claude-code-buffer-resend-prompt ()
   "Re-send the prompt from the interaction at point."

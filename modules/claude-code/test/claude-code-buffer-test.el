@@ -825,7 +825,156 @@
                 (while (search-forward "\n\n" nil t)
                   (setq newline-count (1+ newline-count))))
               ;; Should have at least one group of multiple newlines from spacing
-              (expect newline-count :to-be-greater-than 0)))))))
+              (expect newline-count :to-be-greater-than 0))))))
+
+  (describe "Status indicators"
+
+    (after-each
+      (claude-code-test-teardown))
+
+    (describe "Status indicator formatting"
+
+      (it "formats streaming status"
+        (let ((status-str (claude-code-buffer--format-status-indicator 'streaming)))
+          (expect status-str :not :to-be nil)
+          (expect (get-text-property 0 'face status-str) :to-be 'claude-code-status-streaming)
+          (expect (get-text-property 0 'claude-code-status status-str) :to-be t)
+          (expect (get-text-property 0 'claude-code-status-value status-str) :to-be 'streaming)))
+
+      (it "formats complete status"
+        (let ((status-str (claude-code-buffer--format-status-indicator 'complete)))
+          (expect status-str :not :to-be nil)
+          (expect (get-text-property 0 'face status-str) :to-be 'claude-code-status-complete)
+          (expect (get-text-property 0 'claude-code-status-value status-str) :to-be 'complete)))
+
+      (it "formats error status"
+        (let ((status-str (claude-code-buffer--format-status-indicator 'error)))
+          (expect status-str :not :to-be nil)
+          (expect (get-text-property 0 'face status-str) :to-be 'claude-code-status-error)
+          (expect (get-text-property 0 'claude-code-status-value status-str) :to-be 'error)))
+
+      (it "handles unknown status gracefully"
+        (let ((status-str (claude-code-buffer--format-status-indicator 'unknown)))
+          ;; Should return non-nil string, even if empty
+          (expect status-str :not :to-be nil))))
+
+    (describe "Header formatting with status"
+
+      (it "includes status in simple header style"
+        (let ((claude-code-buffer-header-style 'simple))
+          (let ((header (claude-code-buffer--format-header 'response "Response" nil 'streaming)))
+            (expect header :to-match "Response")
+            (expect (get-text-property 0 'claude-code-status header) :to-be nil)
+            ;; Status should be somewhere in the string
+            (let ((has-status nil))
+              (dotimes (i (length header))
+                (when (get-text-property i 'claude-code-status header)
+                  (setq has-status t)))
+              (expect has-status :to-be t)))))
+
+      (it "includes status in unicode-box header style"
+        (let ((claude-code-buffer-header-style 'unicode-box))
+          (let ((header (claude-code-buffer--format-header 'response "Response" nil 'complete)))
+            (expect header :to-match "Response")
+            (expect header :to-match "╭")
+            ;; Should contain status indicator
+            (let ((has-status nil))
+              (dotimes (i (length header))
+                (when (get-text-property i 'claude-code-status header)
+                  (setq has-status t)))
+              (expect has-status :to-be t)))))
+
+      (it "includes status in unicode-fancy header style"
+        (let ((claude-code-buffer-header-style 'unicode-fancy))
+          (let ((header (claude-code-buffer--format-header 'response "Response" nil 'error)))
+            (expect header :to-match "Response")
+            (expect header :to-match "┏")
+            ;; Should contain status indicator
+            (let ((has-status nil))
+              (dotimes (i (length header))
+                (when (get-text-property i 'claude-code-status header)
+                  (setq has-status t)))
+              (expect has-status :to-be t))))))
+
+    (describe "Interaction with status"
+
+      (it "starts interaction with streaming status"
+        (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+          (claude-code-buffer-start-interaction buffer "Test prompt")
+
+          (with-current-buffer buffer
+            (let ((content (buffer-string)))
+              ;; Should contain Response header
+              (expect content :to-match "Response")
+              ;; Should have streaming status in buffer
+              (let ((has-streaming nil))
+                (save-excursion
+                  (goto-char (point-min))
+                  (while (not (eobp))
+                    (when (and (get-text-property (point) 'claude-code-status)
+                              (eq (get-text-property (point) 'claude-code-status-value) 'streaming))
+                      (setq has-streaming t))
+                    (forward-char 1)))
+                (expect has-streaming :to-be t))))))
+
+      (it "updates status to complete on interaction completion"
+        (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+          (claude-code-buffer-start-interaction buffer "Test prompt")
+          (claude-code-buffer-append-text buffer "Test response")
+          (claude-code-buffer-complete-interaction buffer
+                                                  '((input_tokens . 10)
+                                                    (output_tokens . 20)))
+
+          (with-current-buffer buffer
+            ;; Should have complete status in buffer
+            (let ((has-complete nil))
+              (save-excursion
+                (goto-char (point-min))
+                (while (not (eobp))
+                  (when (and (get-text-property (point) 'claude-code-status)
+                            (eq (get-text-property (point) 'claude-code-status-value) 'complete))
+                    (setq has-complete t))
+                  (forward-char 1)))
+              (expect has-complete :to-be t)))))
+
+      (it "shows error status on interaction error"
+        (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+          (claude-code-buffer-start-interaction buffer "Test prompt")
+          (claude-code-buffer-error-interaction buffer "Connection failed")
+
+          (with-current-buffer buffer
+            (let ((content (buffer-string)))
+              ;; Should contain error indicator and message
+              (expect content :to-match "Error")
+              (expect content :to-match "Connection failed")
+              ;; Should have error status in buffer
+              (let ((has-error nil))
+                (save-excursion
+                  (goto-char (point-min))
+                  (while (not (eobp))
+                    (when (and (get-text-property (point) 'claude-code-status)
+                              (eq (get-text-property (point) 'claude-code-status-value) 'error))
+                      (setq has-error t))
+                    (forward-char 1)))
+                (expect has-error :to-be t))))))
+
+      (it "updates interaction status in structure"
+        (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+          (claude-code-buffer-start-interaction buffer "Test prompt")
+
+          (with-current-buffer buffer
+            ;; Status should be streaming initially
+            (expect (claude-code-interaction-status claude-code-buffer-current-interaction)
+                   :to-be 'streaming))
+
+          (claude-code-buffer-complete-interaction buffer)
+
+          (with-current-buffer buffer
+            ;; Should have one completed interaction
+            (expect (length claude-code-buffer-interactions) :to-be 1)
+            ;; Status should be complete
+            (expect (claude-code-interaction-status (car claude-code-buffer-interactions))
+                   :to-be 'complete)))))))
 
 (provide 'claude-code-buffer-test)
 ;;; claude-code-buffer-test.el ends here

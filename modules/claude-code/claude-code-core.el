@@ -53,8 +53,9 @@ This is a debugging command to test the process management layer."
       (message "Failed to send prompt"))))
 
 (defun claude-code-ask (prompt)
-  "Ask Claude a question with PROMPT using the beautiful response buffer.
-Each prompt in the same buffer continues the conversation using session continuity."
+  "Ask Claude a question with PROMPT using the response buffer.
+Each prompt in the same buffer continues the conversation using
+session continuity."
   (interactive "sAsk Claude: ")
   (let* ((project-root (claude-code-process--get-project-root))
          (response-buffer (claude-code-buffer-get-or-create project-root))
@@ -78,8 +79,8 @@ Each prompt in the same buffer continues the conversation using session continui
          (cond
           ;; System event - may contain session ID for conversation continuity
           ((equal event-type "system")
-           (when-let ((session-id (alist-get 'session_id event)))
-             ;; Store in buffer for conversation continuity across process restarts
+           (when-let* ((session-id (alist-get 'session_id event)))
+             ;; Store in buffer for conversation continuity
              (with-current-buffer response-buffer
                (setq-local claude-code-buffer-session-id session-id))
              (message "Claude Code: Session ID captured (%s)" session-id)))
