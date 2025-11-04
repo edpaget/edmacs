@@ -17,35 +17,367 @@
   "Response buffer for Claude Code."
   :group 'tools)
 
-(defface claude-code-prompt-face
-  '((t :inherit font-lock-keyword-face :weight bold))
-  "Face for prompt headers."
+;; ============================================================================
+;; Faces - Enhanced with light/dark mode support
+;; ============================================================================
+
+;; Header faces
+(defface claude-code-prompt-header
+  '((t :inherit font-lock-keyword-face
+       :weight bold
+       :height 1.1
+       :underline t))
+  "Face for prompt section headers (## Prompt)."
   :group 'claude-code-buffer)
 
-(defface claude-code-response-face
+(defface claude-code-response-header
+  '((t :inherit font-lock-type-face
+       :weight bold
+       :height 1.1
+       :underline t))
+  "Face for response section headers (## Response)."
+  :group 'claude-code-buffer)
+
+;; Content faces
+(defface claude-code-user-prompt
+  '((((background light)) :inherit default :slant italic :foreground "#5c6370")
+    (((background dark)) :inherit default :slant italic :foreground "#abb2bf"))
+  "Face for user prompt text."
+  :group 'claude-code-buffer)
+
+(defface claude-code-assistant-text
   '((t :inherit default))
-  "Face for response text."
+  "Face for Claude's response text (inherits theme default)."
   :group 'claude-code-buffer)
 
-(defface claude-code-tool-face
-  '((t :inherit font-lock-function-name-face))
-  "Face for tool usage headers."
+;; Tool use faces
+(defface claude-code-tool-header
+  '((t :inherit warning :weight bold))
+  "Face for tool use headers (e.g., [Tool: Read])."
   :group 'claude-code-buffer)
 
-(defface claude-code-timestamp-face
-  '((t :inherit font-lock-comment-face :slant italic))
+(defface claude-code-tool-name
+  '((t :inherit font-lock-function-name-face :weight bold))
+  "Face for tool names in tool headers."
+  :group 'claude-code-buffer)
+
+(defface claude-code-tool-section
+  '((((background light)) :background "#f5f5f5" :extend t)
+    (((background dark)) :background "#282c34" :extend t))
+  "Face for entire tool use sections (background)."
+  :group 'claude-code-buffer)
+
+;; Status and metadata faces
+(defface claude-code-timestamp
+  '((t :inherit font-lock-comment-face :slant italic :height 0.9))
   "Face for timestamps."
   :group 'claude-code-buffer)
 
-(defface claude-code-separator-face
+(defface claude-code-metadata-label
+  '((t :inherit font-lock-constant-face :weight bold :height 0.85))
+  "Face for metadata labels (Tokens:, Duration:)."
+  :group 'claude-code-buffer)
+
+(defface claude-code-metadata-value
+  '((t :inherit font-lock-number-face :height 0.85))
+  "Face for metadata values."
+  :group 'claude-code-buffer)
+
+;; Separator faces
+(defface claude-code-separator
+  '((((background light)) :foreground "#d0d0d0")
+    (((background dark)) :foreground "#3e4451"))
+  "Face for section separators (horizontal rules)."
+  :group 'claude-code-buffer)
+
+(defface claude-code-separator-heavy
+  '((((background light)) :foreground "#a0a0a0" :weight bold)
+    (((background dark)) :foreground "#5c6370" :weight bold))
+  "Face for heavy separators between interactions."
+  :group 'claude-code-buffer)
+
+;; Input area faces
+(defface claude-code-input-prompt
+  '((t :inherit font-lock-builtin-face :weight bold))
+  "Face for the input prompt indicator."
+  :group 'claude-code-buffer)
+
+(defface claude-code-input-area
+  '((((background light)) :background "#fafafa" :extend t)
+    (((background dark)) :background "#2c313a" :extend t))
+  "Face for the input area background."
+  :group 'claude-code-buffer)
+
+;; Status indicator faces
+(defface claude-code-status-streaming
+  '((t :inherit success :weight bold))
+  "Face for streaming status indicator."
+  :group 'claude-code-buffer)
+
+(defface claude-code-status-complete
   '((t :inherit font-lock-comment-face))
-  "Face for section separators."
+  "Face for complete status indicator."
+  :group 'claude-code-buffer)
+
+(defface claude-code-status-error
+  '((t :inherit error :weight bold))
+  "Face for error status indicator."
+  :group 'claude-code-buffer)
+
+;; Session info faces
+(defface claude-code-session-id
+  '((t :inherit font-lock-string-face :height 0.8 :family "monospace"))
+  "Face for session IDs."
+  :group 'claude-code-buffer)
+
+(defface claude-code-model-name
+  '((t :inherit font-lock-keyword-face :height 0.85 :weight bold))
+  "Face for model name display."
+  :group 'claude-code-buffer)
+
+;; Legacy face aliases for backward compatibility
+(defface claude-code-prompt-face
+  '((t :inherit claude-code-prompt-header))
+  "Deprecated: Use `claude-code-prompt-header' instead."
+  :group 'claude-code-buffer)
+
+(defface claude-code-response-face
+  '((t :inherit claude-code-assistant-text))
+  "Deprecated: Use `claude-code-assistant-text' instead."
+  :group 'claude-code-buffer)
+
+(defface claude-code-tool-face
+  '((t :inherit claude-code-tool-header))
+  "Deprecated: Use `claude-code-tool-header' instead."
+  :group 'claude-code-buffer)
+
+(defface claude-code-timestamp-face
+  '((t :inherit claude-code-timestamp))
+  "Deprecated: Use `claude-code-timestamp' instead."
+  :group 'claude-code-buffer)
+
+(defface claude-code-separator-face
+  '((t :inherit claude-code-separator))
+  "Deprecated: Use `claude-code-separator' instead."
   :group 'claude-code-buffer)
 
 (defface claude-code-metadata-face
-  '((t :inherit font-lock-doc-face :height 0.9))
-  "Face for metadata (token counts, etc.)."
+  '((t :inherit claude-code-metadata-label))
+  "Deprecated: Use `claude-code-metadata-label' instead."
   :group 'claude-code-buffer)
+
+;; ============================================================================
+;; Customization Variables
+;; ============================================================================
+
+(defcustom claude-code-buffer-header-style 'simple
+  "Style for section headers in Claude Code buffers.
+Choices:
+  - \\='simple: Plain markdown headers (##)
+  - \\='box: ASCII box drawing
+  - \\='unicode-box: Unicode box drawing characters
+  - \\='unicode-fancy: Unicode with icons (requires nerd-fonts)"
+  :type '(choice (const :tag "Simple markdown" simple)
+                 (const :tag "ASCII box" box)
+                 (const :tag "Unicode box" unicode-box)
+                 (const :tag "Unicode + icons" unicode-fancy))
+  :group 'claude-code-buffer)
+
+(defcustom claude-code-separator-style 'line
+  "Style for separators between interactions.
+Choices:
+  - \\='line: Simple line (──────)
+  - \\='double: Double line (══════)
+  - \\='labeled: Line with interaction number
+  - \\='minimal: Short line
+  - \\='none: No separator"
+  :type '(choice (const :tag "Single line" line)
+                 (const :tag "Double line" double)
+                 (const :tag "Labeled with number" labeled)
+                 (const :tag "Minimal" minimal)
+                 (const :tag "None" none))
+  :group 'claude-code-buffer)
+
+(defcustom claude-code-use-icons t
+  "Whether to use icons in the buffer.
+When enabled, uses nerd-icons if available, falls back to Unicode emoji.
+When disabled, uses plain text markers."
+  :type 'boolean
+  :group 'claude-code-buffer)
+
+(defcustom claude-code-input-prompt-string "claude> "
+  "String to display as the input prompt.
+This appears at the start of the input area where you type your message."
+  :type 'string
+  :group 'claude-code-buffer)
+
+(defcustom claude-code-section-spacing 1
+  "Number of blank lines between sections.
+Controls vertical spacing between prompt/response/tool sections."
+  :type 'integer
+  :group 'claude-code-buffer)
+
+(defcustom claude-code-buffer-max-width nil
+  "Maximum width for content in characters.
+If nil, use full window width. If set, content will be limited to this width."
+  :type '(choice (const :tag "No limit" nil)
+                 (integer :tag "Max width"))
+  :group 'claude-code-buffer)
+
+(defcustom claude-code-separator-character ?─
+  "Character to use for simple line separators.
+Default is the Unicode box-drawing light horizontal character (U+2500)."
+  :type 'character
+  :group 'claude-code-buffer)
+
+(defcustom claude-code-separator-length 80
+  "Default length for separators in characters."
+  :type 'integer
+  :group 'claude-code-buffer)
+
+;; ============================================================================
+;; Styling Helper Functions
+;; ============================================================================
+
+(defun claude-code-buffer--icon (name &optional fallback)
+  "Get icon NAME using nerd-icons, or use FALLBACK.
+If `claude-code-use-icons' is nil, returns empty string.
+If nerd-icons is not available, returns FALLBACK (or empty string)."
+  (cond
+   ((not claude-code-use-icons) "")
+   ((and (fboundp 'nerd-icons-mdicon)
+         (require 'nerd-icons nil t))
+    (nerd-icons-mdicon name :face 'nerd-icons-blue))
+   (t (or fallback ""))))
+
+(defun claude-code-buffer--get-adaptive-width ()
+  "Get the adaptive width for content based on settings and window size."
+  (if claude-code-buffer-max-width
+      (min claude-code-buffer-max-width (window-body-width))
+    (or claude-code-separator-length 80)))
+
+(defun claude-code-buffer--format-header (type text &optional timestamp)
+  "Format a header of TYPE with TEXT and optional TIMESTAMP.
+TYPE should be \\='prompt or \\='response.
+Returns a propertized string ready for insertion."
+  (let* ((width (claude-code-buffer--get-adaptive-width))
+         (face (if (eq type 'prompt)
+                   'claude-code-prompt-header
+                 'claude-code-response-header))
+         (icon (if (eq type 'prompt)
+                   (claude-code-buffer--icon "nf-md-account" "📝")
+                 (claude-code-buffer--icon "nf-md-robot" "🤖")))
+         (timestamp-str (if timestamp
+                           (format "[%s]" timestamp)
+                         ""))
+         (icon-prefix (if (string-empty-p icon) "" (concat icon " "))))
+
+    (pcase claude-code-buffer-header-style
+      ('simple
+       ;; Simple markdown style: ## Prompt [timestamp]
+       (concat (propertize (format "## %s" text) 'face face)
+               (when timestamp
+                 (concat " "
+                         (propertize timestamp-str
+                                    'face 'claude-code-timestamp)))))
+
+      ('box
+       ;; ASCII box style: +--- Prompt ---[timestamp]---+
+       (let* ((header-text (concat text " " timestamp-str))
+              (dashes (max 3 (- width (length header-text) 6))))
+         (concat (propertize "+--- " 'face face)
+                 (propertize text 'face face)
+                 " "
+                 (when timestamp
+                   (concat (propertize timestamp-str 'face 'claude-code-timestamp)
+                          " "))
+                 (propertize (make-string (max 0 (- dashes (if timestamp (length timestamp-str) 0) 1)) ?-)
+                            'face face)
+                 (propertize "+" 'face face))))
+
+      ('unicode-box
+       ;; Unicode box style: ╭─ Prompt ─[timestamp]─╮
+       (let* ((header-text (concat text " " timestamp-str))
+              (dashes (max 2 (- width (length header-text) 6))))
+         (concat (propertize "╭─ " 'face face)
+                 (propertize text 'face face)
+                 " "
+                 (when timestamp
+                   (concat (propertize timestamp-str 'face 'claude-code-timestamp)
+                          " "))
+                 (propertize (make-string (max 0 (- dashes (if timestamp (length timestamp-str) 0) 1)) ?─)
+                            'face face)
+                 (propertize "╮" 'face face))))
+
+      ('unicode-fancy
+       ;; Unicode with icons: ┏━ 📝 Prompt ━[timestamp]━┓
+       (let* ((header-text (concat icon-prefix text " " timestamp-str))
+              (dashes (max 2 (- width (length header-text) 6))))
+         (concat (propertize "┏━ " 'face face)
+                 icon-prefix
+                 (propertize text 'face face)
+                 " "
+                 (when timestamp
+                   (concat (propertize timestamp-str 'face 'claude-code-timestamp)
+                          " "))
+                 (propertize (make-string (max 0 (- dashes (length icon-prefix) (if timestamp (length timestamp-str) 0) 1)) ?━)
+                            'face face)
+                 (propertize "┓" 'face face))))
+
+      (_ ;; Default to simple
+       (concat (propertize (format "## %s" text) 'face face)
+               (when timestamp
+                 (concat " "
+                         (propertize timestamp-str
+                                    'face 'claude-code-timestamp))))))))
+
+(defun claude-code-buffer--make-separator (&optional label)
+  "Create a separator line with optional LABEL.
+Respects `claude-code-separator-style' customization."
+  (let ((width (claude-code-buffer--get-adaptive-width)))
+    (pcase claude-code-separator-style
+      ('line
+       ;; Simple line: ────────────────
+       (propertize (make-string width claude-code-separator-character)
+                  'face 'claude-code-separator))
+
+      ('double
+       ;; Double line: ════════════════
+       (propertize (make-string width ?═)
+                  'face 'claude-code-separator-heavy))
+
+      ('labeled
+       ;; Labeled: ─── Label ───
+       (let* ((text (or label (format "Interaction #%d"
+                                     (1+ (length claude-code-buffer-interactions)))))
+              (text-len (length text))
+              (total-dashes (- width text-len 2)) ; 2 for spaces around text
+              (left-dashes (/ total-dashes 2))
+              (right-dashes (- total-dashes left-dashes)))
+         (concat (propertize (make-string left-dashes claude-code-separator-character)
+                            'face 'claude-code-separator)
+                 " "
+                 (propertize text 'face 'claude-code-separator)
+                 " "
+                 (propertize (make-string right-dashes claude-code-separator-character)
+                            'face 'claude-code-separator))))
+
+      ('minimal
+       ;; Minimal: just three dashes
+       (propertize "───" 'face 'claude-code-separator))
+
+      ('none
+       ;; No separator
+       "")
+
+      (_ ;; Default to line
+       (propertize (make-string width claude-code-separator-character)
+                  'face 'claude-code-separator)))))
+
+(defun claude-code-buffer--insert-spacing (n)
+  "Insert N blank lines for section spacing."
+  (dotimes (_ (or n claude-code-section-spacing))
+    (insert "\n")))
 
 ;; ============================================================================
 ;; Buffer Management
@@ -101,6 +433,19 @@
 ;; Buffer Mode
 ;; ============================================================================
 
+;; ============================================================================
+;; Fontification Helper
+;; ============================================================================
+
+(defun claude-code-buffer--fontify-history-only (start end)
+  "Fontify region from START to END, but only in the history area.
+This prevents markdown formatting from being applied to the editable input area."
+  (when claude-code-buffer-input-start-marker
+    (let ((input-start (marker-position claude-code-buffer-input-start-marker)))
+      (when (and input-start (< start input-start))
+        ;; Only fontify up to the input area boundary
+        (font-lock-fontify-region start (min end input-start))))))
+
 ;; Keymap for read-only history area with single-letter commands
 (defvar claude-code-buffer-readonly-map
   (let ((map (make-sparse-keymap)))
@@ -154,10 +499,15 @@ responses, tool usage, and metadata.
   (setq-local claude-code-buffer-input-ring (make-ring claude-code-buffer-input-ring-size))
   (setq-local claude-code-buffer-input-ring-index nil)
   ;; Enable markdown syntax highlighting if available
+  ;; Only apply to history area, not input area
   (when (fboundp 'markdown-mode)
     (font-lock-mode -1)
     (setq-local font-lock-defaults
                 (list markdown-mode-font-lock-keywords t))
+    ;; Add fontification function that respects input area boundaries
+    (add-hook 'jit-lock-functions
+              #'claude-code-buffer--fontify-history-only
+              nil t)
     (font-lock-mode 1))
   ;; Ensure mode-line is updated
   (force-mode-line-update))
@@ -247,11 +597,13 @@ Returns (start . end) or nil if not in a field."
     (insert text)
     (put-text-property start (point) 'face face)))
 
-(defun claude-code-buffer--insert-separator ()
-  "Insert a visual separator."
-  (claude-code-buffer--insert-with-face
-   "────────────────────────────────────────────────────────────────────────────────\n"
-   'claude-code-separator-face))
+(defun claude-code-buffer--insert-separator (&optional label)
+  "Insert a visual separator with optional LABEL.
+Uses the configured separator style from `claude-code-separator-style'."
+  (let ((sep (claude-code-buffer--make-separator label)))
+    (unless (string-empty-p sep)
+      (insert sep)
+      (insert "\n"))))
 
 (defun claude-code-buffer--insert-timestamp (time)
   "Insert formatted timestamp for TIME."
@@ -263,26 +615,32 @@ Returns (start . end) or nil if not in a field."
   "Start a new interaction in BUFFER with PROMPT."
   (with-current-buffer buffer
     (let ((inhibit-read-only t)
-          (start-pos (point-max)))
+          (start-pos (point-max))
+          (timestamp (format-time-string "%Y-%m-%d %H:%M:%S" (current-time))))
       (goto-char (point-max))
 
       ;; Add separator if not first interaction
       (unless (= (point-min) (point-max))
-        (insert "\n")
+        (claude-code-buffer--insert-spacing 1)
         (claude-code-buffer--insert-separator)
-        (insert "\n"))
+        (claude-code-buffer--insert-spacing 1))
 
-      ;; Insert prompt header
-      (claude-code-buffer--insert-with-face "## Prompt " 'claude-code-prompt-face)
-      (claude-code-buffer--insert-timestamp (current-time))
-      (insert "\n\n")
+      ;; Insert prompt header with new formatting
+      (insert (claude-code-buffer--format-header 'prompt "Prompt" timestamp))
+      (insert "\n")
+      (claude-code-buffer--insert-spacing claude-code-section-spacing)
 
-      ;; Insert prompt text
-      (insert prompt)
-      (insert "\n\n")
+      ;; Insert prompt text with user-prompt face
+      (let ((prompt-start (point)))
+        (insert prompt)
+        (put-text-property prompt-start (point) 'face 'claude-code-user-prompt))
+      (insert "\n")
+      (claude-code-buffer--insert-spacing claude-code-section-spacing)
 
       ;; Insert response header
-      (claude-code-buffer--insert-with-face "## Response\n\n" 'claude-code-response-face)
+      (insert (claude-code-buffer--format-header 'response "Response"))
+      (insert "\n")
+      (claude-code-buffer--insert-spacing claude-code-section-spacing)
 
       ;; Create interaction object
       (let ((interaction (make-claude-code-interaction
@@ -323,15 +681,24 @@ Returns (start . end) or nil if not in a field."
         (save-excursion
           (goto-char (claude-code-interaction-end-marker
                       claude-code-buffer-current-interaction))
-          (insert "\n\n")
-          (claude-code-buffer--insert-with-face
-           (format "**[Tool: %s]**\n" tool-name)
-           'claude-code-tool-face)
+          (insert "\n")
+          (claude-code-buffer--insert-spacing claude-code-section-spacing)
 
-          ;; Format tool input nicely
-          (insert "```elisp\n")
-          (insert (format "%S" tool-input))
-          (insert "\n```\n")
+          ;; Insert tool header with icon
+          (let ((tool-icon (claude-code-buffer--icon "nf-md-tools" "🔧"))
+                (header-start (point)))
+            (insert (if (string-empty-p tool-icon) "" (concat tool-icon " ")))
+            (insert (format "**[Tool: %s]**" tool-name))
+            (put-text-property header-start (point) 'face 'claude-code-tool-header)
+            (insert "\n"))
+
+          ;; Format tool input nicely with tool-section background
+          (let ((section-start (point)))
+            (insert "```elisp\n")
+            (insert (format "%S" tool-input))
+            (insert "\n```\n")
+            ;; Apply tool section background
+            (put-text-property section-start (point) 'face 'claude-code-tool-section))
 
           (set-marker (claude-code-interaction-end-marker
                        claude-code-buffer-current-interaction)
@@ -358,14 +725,23 @@ Returns (start . end) or nil if not in a field."
                   (tokens-out (alist-get 'output_tokens metadata))
                   (duration (alist-get 'duration_ms metadata)))
               (when (or tokens-in tokens-out duration)
-                (claude-code-buffer--insert-with-face
-                 (format "Tokens: %d in, %d out"
-                         (or tokens-in 0)
-                         (or tokens-out 0))
-                 'claude-code-metadata-face)
-                (when duration
-                  (insert (format " • Duration: %.2fs" (/ duration 1000.0))))
-                (insert "\n"))))
+                ;; Format with enhanced styling
+                (let ((meta-start (point)))
+                  ;; Tokens label
+                  (insert (propertize "Tokens: " 'face 'claude-code-metadata-label))
+                  ;; Tokens values
+                  (insert (propertize (format "%d" (or tokens-in 0))
+                                    'face 'claude-code-metadata-value))
+                  (insert " → ")
+                  (insert (propertize (format "%d" (or tokens-out 0))
+                                    'face 'claude-code-metadata-value))
+                  ;; Duration if available
+                  (when duration
+                    (insert " • ")
+                    (insert (propertize "Duration: " 'face 'claude-code-metadata-label))
+                    (insert (propertize (format "%.2fs" (/ duration 1000.0))
+                                      'face 'claude-code-metadata-value)))
+                  (insert "\n")))))
 
           (set-marker (claude-code-interaction-end-marker
                        claude-code-buffer-current-interaction)
@@ -524,25 +900,29 @@ Returns (start . end) or nil if not in a field."
   (let ((inhibit-read-only t))
     (save-excursion
       (goto-char (point-max))
-      ;; Add input prompt
+      ;; Add spacing before input prompt
       (unless (bobp)
         (insert "\n\n"))
-      ;; Insert prompt with better text property handling
+      ;; Insert prompt with enhanced styling
       (let ((prompt-start (point)))
         ;; Mark the start of the prompt
         (setq-local claude-code-buffer-prompt-start-marker (copy-marker prompt-start))
         (set-marker-insertion-type claude-code-buffer-prompt-start-marker nil)
 
-        (insert "> ")
+        ;; Insert customizable prompt string
+        (insert (or claude-code-input-prompt-string "> "))
         ;; Apply properties with specific rear-nonsticky list
-        (put-text-property prompt-start (point) 'face 'claude-code-prompt-face)
+        (put-text-property prompt-start (point) 'face 'claude-code-input-prompt)
         (put-text-property prompt-start (point) 'read-only t)
         (put-text-property prompt-start (point) 'field 'claude-code-prompt)
         (put-text-property prompt-start (point) 'intangible t)
         (put-text-property prompt-start (point) 'rear-nonsticky '(read-only face field intangible)))
       ;; Mark the start of the input area
       (setq-local claude-code-buffer-input-start-marker (point-marker))
-      (set-marker-insertion-type claude-code-buffer-input-start-marker nil)))
+      (set-marker-insertion-type claude-code-buffer-input-start-marker nil)
+      ;; Apply input area background from marker to end of buffer
+      (let ((input-start (marker-position claude-code-buffer-input-start-marker)))
+        (put-text-property input-start (point-max) 'face 'claude-code-input-area))))
   ;; Set up text properties for read-only history area
   (when claude-code-buffer-input-start-marker
     (let ((inhibit-read-only t)

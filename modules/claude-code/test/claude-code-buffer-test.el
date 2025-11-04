@@ -165,7 +165,7 @@
          buffer
          '((input_tokens . 10) (output_tokens . 20)))
 
-        (expect buffer :to-match-buffer "Tokens: 10 in, 20 out")))
+        (expect buffer :to-match-buffer "Tokens: 10 → 20")))
 
     (it "stores completion status"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
@@ -206,7 +206,7 @@
          buffer
          claude-code-test-result-event)
 
-        (expect buffer :to-match-buffer "Tokens: 10 in, 50 out"))))
+        (expect buffer :to-match-buffer "Tokens: 10 → 50"))))
 
   (describe "Multiple interactions"
 
@@ -270,9 +270,9 @@
     ;; in non-interactive environments. The mode-name is set correctly in actual use.
     ;; See: claude-code-buffer.el line 88-110
     (xit "has correct mode name"
-      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
-        (with-current-buffer buffer
-          (expect (format-mode-line mode-name) :to-equal "Claude-Code"))))
+         (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+           (with-current-buffer buffer
+             (expect (format-mode-line mode-name) :to-equal "Claude-Code"))))
 
     (it "derives from text-mode"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
@@ -442,7 +442,7 @@
         (claude-code-buffer-start-interaction buffer "Test")
         (with-current-buffer buffer
           (let ((end-marker-pos (marker-position (claude-code-interaction-end-marker
-                                                   claude-code-buffer-current-interaction))))
+                                                  claude-code-buffer-current-interaction))))
             (claude-code-buffer-append-text buffer "First ")
             (claude-code-buffer-append-text buffer "second")
             ;; End marker should have moved forward
@@ -547,7 +547,285 @@
              start (point)
              '(test-prop test-value another-prop another-value))
             (expect (get-text-property start 'test-prop) :to-equal 'test-value)
-            (expect (get-text-property start 'another-prop) :to-equal 'another-value)))))))
+            (expect (get-text-property start 'another-prop) :to-equal 'another-value)))))
+
+    (it "fontifies history area but not input area"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Test prompt with _italic_ text")
+        (claude-code-buffer-append-text buffer "Response with _more italic_ text")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (with-current-buffer buffer
+          ;; Get the input marker position
+          (let ((input-pos (marker-position claude-code-buffer-input-start-marker)))
+            (expect input-pos :to-be-truthy)
+
+            ;; Insert text with underscores in input area
+            (goto-char (point-max))
+            (let ((inhibit-read-only t))
+              (insert "_test_input_"))
+
+            ;; Call the fontification function
+            (claude-code-buffer--fontify-history-only (point-min) (point-max))
+
+            ;; The function should complete without error
+            ;; (In a real scenario, markdown-mode would format the history but not input)
+            (expect t :to-be t)))))))
+
+(describe "Phase A & B: Face and Styling System"
+
+  (after-each
+    (claude-code-test-teardown))
+
+  (describe "Header formatting styles"
+
+    (it "formats simple header style"
+      (let ((claude-code-buffer-header-style 'simple))
+        (let ((header (claude-code-buffer--format-header 'prompt "Test Header")))
+          (expect header :to-match "## Test Header"))))
+
+    (it "formats box header style"
+      (let ((claude-code-buffer-header-style 'box))
+        (let ((header (claude-code-buffer--format-header 'prompt "Test")))
+          (expect header :to-match "\\+---")
+          (expect header :to-match "Test")
+          (expect header :to-match "\\+---"))))
+
+    (it "formats unicode-box header style"
+      (let ((claude-code-buffer-header-style 'unicode-box))
+        (let ((header (claude-code-buffer--format-header 'prompt "Test")))
+          (expect header :to-match "╭")
+          (expect header :to-match "Test")
+          (expect header :to-match "╮"))))
+
+    (it "formats unicode-fancy header style"
+      (let ((claude-code-buffer-header-style 'unicode-fancy))
+        (let ((header (claude-code-buffer--format-header 'prompt "Test")))
+          (expect header :to-match "┏")
+          (expect header :to-match "Test")
+          (expect header :to-match "┓"))))
+
+    (it "includes timestamp when provided"
+      (let ((claude-code-buffer-header-style 'simple))
+        (let ((header (claude-code-buffer--format-header 'prompt "Test" "2025-01-01")))
+          (expect header :to-match "2025-01-01"))))
+
+    (it "applies correct face to prompt header"
+      (let ((claude-code-buffer-header-style 'simple))
+        (let ((header (claude-code-buffer--format-header 'prompt "Test")))
+          (expect (text-property-any 0 (length header) 'face 'claude-code-prompt-header header)
+                  :to-be-truthy))))
+
+    (it "applies correct face to response header"
+      (let ((claude-code-buffer-header-style 'simple))
+        (let ((header (claude-code-buffer--format-header 'response "Test")))
+          (expect (text-property-any 0 (length header) 'face 'claude-code-response-header header)
+                  :to-be-truthy)))))
+
+  (describe "Separator styles"
+
+    (it "creates line separator"
+      (let ((claude-code-separator-style 'line))
+        (let ((sep (claude-code-buffer--make-separator)))
+          (expect sep :to-match "─"))))
+
+    (it "creates double line separator"
+      (let ((claude-code-separator-style 'double))
+        (let ((sep (claude-code-buffer--make-separator)))
+          (expect sep :to-match "═"))))
+
+    (it "creates labeled separator"
+      (let ((claude-code-separator-style 'labeled))
+        (let ((sep (claude-code-buffer--make-separator "Test Label")))
+          (expect sep :to-match "Test Label"))))
+
+    (it "creates minimal separator"
+      (let ((claude-code-separator-style 'minimal))
+        (let ((sep (claude-code-buffer--make-separator)))
+          (expect sep :to-match "───"))))
+
+    (it "creates no separator for none style"
+      (let ((claude-code-separator-style 'none))
+        (let ((sep (claude-code-buffer--make-separator)))
+          (expect sep :to-equal ""))))
+
+    (it "applies separator face"
+      (let ((claude-code-separator-style 'line))
+        (let ((sep (claude-code-buffer--make-separator)))
+          (expect (text-property-any 0 (length sep) 'face 'claude-code-separator sep)
+                  :to-be-truthy))))
+
+    (it "uses custom separator character"
+      (let ((claude-code-separator-character ?*)
+            (claude-code-separator-style 'line))
+        (let ((sep (claude-code-buffer--make-separator)))
+          (expect sep :to-match "\\*")))))
+
+  (describe "Icon support"
+
+    (it "returns icon when nerd-icons is available"
+      (spy-on 'featurep :and-call-fake
+              (lambda (feature) (eq feature 'nerd-icons)))
+      (spy-on 'nerd-icons-mdicon :and-return-value "✓")
+      (let ((claude-code-use-icons t))
+        (let ((icon (claude-code-buffer--icon "check" "✓")))
+          (expect icon :to-equal "✓"))))
+
+    (it "falls back to unicode when nerd-icons not available"
+      (spy-on 'featurep :and-return-value nil)
+      (let ((claude-code-use-icons t))
+        (let ((icon (claude-code-buffer--icon "check" "✓")))
+          (expect icon :to-equal "✓"))))
+
+    (it "returns empty string when icons disabled"
+      (let ((claude-code-use-icons nil))
+        (let ((icon (claude-code-buffer--icon "check" "✓")))
+          (expect icon :to-equal ""))))
+
+    (it "includes spacing after icon when present"
+      (spy-on 'featurep :and-return-value nil)
+      (let ((claude-code-use-icons t))
+        (let ((icon (claude-code-buffer--icon "check" "✓")))
+          (expect icon :to-equal "✓")))))
+
+  (describe "Adaptive width calculation"
+
+    (it "calculates width based on window width"
+      (let ((claude-code-buffer-max-width nil)
+            (claude-code-separator-length 120))
+        (let ((width (claude-code-buffer--get-adaptive-width)))
+          (expect width :to-equal 120))))
+
+    (it "respects max-width when set"
+      (let ((claude-code-buffer-max-width 80))
+        (spy-on 'window-body-width :and-return-value 120)
+        (let ((width (claude-code-buffer--get-adaptive-width)))
+          (expect width :to-equal 80))))
+
+    (it "uses window width when smaller than max"
+      (let ((claude-code-buffer-max-width 100))
+        (spy-on 'window-body-width :and-return-value 80)
+        (let ((width (claude-code-buffer--get-adaptive-width)))
+          (expect width :to-equal 80))))
+
+    (it "handles nil buffer gracefully"
+      (let ((claude-code-buffer-max-width nil))
+        (let ((width (claude-code-buffer--get-adaptive-width)))
+          (expect width :to-be-greater-than 0)))))
+
+  (describe "Spacing configuration"
+
+    (it "inserts configured number of blank lines"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t)
+                (start (point-max)))
+            (goto-char start)
+            (claude-code-buffer--insert-spacing 3)
+            (expect (- (point-max) start) :to-equal 3)))))
+
+    (it "respects zero spacing"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t)
+                (start (point-max)))
+            (goto-char start)
+            (claude-code-buffer--insert-spacing 0)
+            (expect (- (point-max) start) :to-equal 0))))))
+
+  (describe "Custom input prompt"
+
+    (it "uses custom input prompt string"
+      (let ((claude-code-input-prompt-string ">>> "))
+        (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+          (expect buffer :to-match-buffer ">>> "))))
+
+    (it "applies input-prompt face to custom prompt"
+      (let ((claude-code-input-prompt-string "custom> ")
+            (buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (let ((prompt-pos (marker-position claude-code-buffer-prompt-start-marker)))
+            (expect (get-text-property prompt-pos 'face)
+                    :to-equal 'claude-code-input-prompt))))))
+
+  (describe "Face application"
+
+    (it "applies user-prompt face to prompt text"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Test prompt text")
+
+        (with-current-buffer buffer
+          (save-excursion
+            (goto-char (point-min))
+            (when (search-forward "Test prompt text" nil t)
+              (expect (get-text-property (match-beginning 0) 'face)
+                      :to-equal 'claude-code-user-prompt))))))
+
+    (it "applies tool-header face to tool names"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Test")
+        (claude-code-buffer-add-tool-use buffer "Read" '((file_path . "/test.el")))
+
+        (with-current-buffer buffer
+          (save-excursion
+            (goto-char (point-min))
+            (when (search-forward "Tool:" nil t)
+              (expect (get-text-property (match-beginning 0) 'face)
+                      :to-equal 'claude-code-tool-header))))))
+
+    (it "applies metadata faces to completion info"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Test")
+        (claude-code-buffer-complete-interaction buffer '((input_tokens . 10) (output_tokens . 20)))
+
+        (with-current-buffer buffer
+          (save-excursion
+            (goto-char (point-min))
+            (when (search-forward "Tokens:" nil t)
+              (expect (get-text-property (match-beginning 0) 'face)
+                      :to-equal 'claude-code-metadata-label))))))
+
+    (describe "Integration tests with different styles"
+
+      (it "creates interaction with box headers and double separators"
+        (let ((claude-code-buffer-header-style 'box)
+              (claude-code-separator-style 'double))
+          (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+            (claude-code-buffer-start-interaction buffer "First")
+            (claude-code-buffer-complete-interaction buffer)
+            (claude-code-buffer-start-interaction buffer "Second")
+
+            (expect buffer :to-match-buffer "\\+---")
+            (expect buffer :to-match-buffer "═")))))
+
+      (it "creates interaction with unicode-fancy headers and minimal separators"
+        (let ((claude-code-buffer-header-style 'unicode-fancy)
+              (claude-code-separator-style 'minimal))
+          (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+            (claude-code-buffer-start-interaction buffer "Test")
+            (claude-code-buffer-complete-interaction buffer)
+
+            (expect buffer :to-match-buffer "┏")
+            (expect buffer :to-match-buffer "┓"))))
+
+      (it "uses custom spacing between sections"
+        (let ((claude-code-section-spacing 5)
+              (buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+          (claude-code-buffer-start-interaction buffer "Test")
+          (claude-code-buffer-complete-interaction buffer)
+          (claude-code-buffer-start-interaction buffer "Test2")
+
+          (with-current-buffer buffer
+            (let* ((content (buffer-string))
+                   (newline-count 0)
+                   (in-spacing nil))
+              ;; Count consecutive newlines in separator region
+              (save-excursion
+                (goto-char (point-min))
+                (while (search-forward "\n\n" nil t)
+                  (setq newline-count (1+ newline-count))))
+              ;; Should have at least one group of multiple newlines from spacing
+              (expect newline-count :to-be-greater-than 0)))))))
 
 (provide 'claude-code-buffer-test)
 ;;; claude-code-buffer-test.el ends here

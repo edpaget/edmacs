@@ -31,6 +31,27 @@
 ;; Load the core module
 (require 'claude-code-core)
 
+;; Configure fancy UI options for claude-code-buffer
+(with-eval-after-load 'claude-code-buffer
+  ;; Use unicode-fancy style for headers with icons
+  (setq claude-code-buffer-header-style 'unicode-fancy)
+
+  ;; Use labeled separators that show interaction numbers
+  (setq claude-code-separator-style 'labeled)
+
+  ;; Enable icons (uses nerd-icons if available, falls back to emoji)
+  (setq claude-code-use-icons t)
+
+  ;; Customize the input prompt string
+  (setq claude-code-input-prompt-string "claude> ")
+
+  ;; Add a bit more spacing between sections for readability
+  (setq claude-code-section-spacing 1)
+
+  ;; Optional: Set a max width for better readability on wide screens
+  ;; (setq claude-code-buffer-max-width 120)
+  )
+
 ;; Set up keybindings
 (with-eval-after-load 'general
   (claude-code-core-setup-keybindings))

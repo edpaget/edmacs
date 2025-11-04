@@ -396,8 +396,10 @@ This function returns immediately after showing the UI."
         ;; Render the approval UI
         (claude-code-approval--render-ui tool input)))
 
-    ;; Display the buffer
+    ;; Display the buffer and ensure it has focus
     (pop-to-buffer buffer)
+    (select-window (get-buffer-window buffer))
+    (raise-frame)
 
     ;; Start timeout timer
     (setq claude-code-approval--decision-timer
@@ -588,7 +590,9 @@ This function returns immediately after showing the UI."
   "Major mode for Claude Code tool approval requests.
 \\{claude-code-approval-mode-map}"
   (setq buffer-read-only t
-        truncate-lines nil))
+        truncate-lines nil)
+  ;; Ensure our keymap takes precedence over special-mode-map
+  (use-local-map claude-code-approval-mode-map))
 
 ;;; Buffer-local variables for approval requests
 
