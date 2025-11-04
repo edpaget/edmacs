@@ -411,7 +411,143 @@
           ;; Manually add to ring (send-input would do this)
           (ring-insert claude-code-buffer-input-ring "test input")
           (expect (ring-empty-p claude-code-buffer-input-ring) :to-be nil)
-          (expect (ring-ref claude-code-buffer-input-ring 0) :to-equal "test input"))))))
+          (expect (ring-ref claude-code-buffer-input-ring 0) :to-equal "test input")))))
+
+  (describe "CIDER-inspired improvements"
+
+    (after-each
+      (claude-code-test-teardown))
+
+    (it "sets up prompt-start marker"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (expect claude-code-buffer-prompt-start-marker :to-be-truthy)
+          (expect (markerp claude-code-buffer-prompt-start-marker) :to-be t))))
+
+    (it "applies field property to prompt"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (let ((prompt-pos (marker-position claude-code-buffer-prompt-start-marker)))
+            (expect (get-text-property prompt-pos 'field)
+                    :to-equal 'claude-code-prompt)))))
+
+    (it "applies intangible property to prompt"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (let ((prompt-pos (marker-position claude-code-buffer-prompt-start-marker)))
+            (expect (get-text-property prompt-pos 'intangible) :to-be t)))))
+
+    (it "preserves markers when appending text"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Test")
+        (with-current-buffer buffer
+          (let ((end-marker-pos (marker-position (claude-code-interaction-end-marker
+                                                   claude-code-buffer-current-interaction))))
+            (claude-code-buffer-append-text buffer "First ")
+            (claude-code-buffer-append-text buffer "second")
+            ;; End marker should have moved forward
+            (expect (marker-position (claude-code-interaction-end-marker
+                                      claude-code-buffer-current-interaction))
+                    :to-be-greater-than end-marker-pos)))))
+
+    (it "applies field property to completed interactions"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Test prompt")
+        (claude-code-buffer-append-text buffer "Test response")
+        (claude-code-buffer-complete-interaction buffer)
+
+        (with-current-buffer buffer
+          (let ((interaction (car claude-code-buffer-interactions)))
+            (let ((start-pos (marker-position (claude-code-interaction-start-marker interaction))))
+              (expect (get-text-property start-pos 'field)
+                      :to-equal 'claude-code-interaction))))))
+
+    (it "properly deallocates markers on clear-input-area"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (let ((inhibit-read-only t))
+            (insert "test input"))
+          (claude-code-buffer-clear-input-area)
+          (expect claude-code-buffer-input-start-marker :to-be nil)
+          (expect claude-code-buffer-prompt-start-marker :to-be nil))))
+
+    (it "validates complete input"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (let ((inhibit-read-only t))
+            (insert "valid input"))
+          (expect (claude-code-buffer-input-complete-p) :to-be t))))
+
+    (it "rejects empty input"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (expect (claude-code-buffer-input-complete-p) :to-be nil))))
+
+    (it "rejects whitespace-only input"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (let ((inhibit-read-only t))
+            (insert "   \n\t  "))
+          (expect (claude-code-buffer-input-complete-p) :to-be nil))))
+
+    (it "searches history backward with pattern"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          ;; Ring stores newest first, so after these inserts:
+          ;; Index 0: "fix typo in docs" (newest)
+          ;; Index 1: "implement new feature"
+          ;; Index 2: "fix bug in parser" (oldest)
+          (ring-insert claude-code-buffer-input-ring "fix bug in parser")
+          (ring-insert claude-code-buffer-input-ring "implement new feature")
+          (ring-insert claude-code-buffer-input-ring "fix typo in docs")
+
+          (claude-code-buffer-history-search-backward "fix")
+          ;; Should find first match starting from index 0
+          (expect (claude-code-buffer-get-input) :to-equal "fix typo in docs"))))
+
+    (it "continues searching backward on repeated calls"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          ;; Ring stores newest first, so after these inserts:
+          ;; Index 0: "fix bug 2" (newest)
+          ;; Index 1: "feature"
+          ;; Index 2: "fix bug 1" (oldest)
+          (ring-insert claude-code-buffer-input-ring "fix bug 1")
+          (ring-insert claude-code-buffer-input-ring "feature")
+          (ring-insert claude-code-buffer-input-ring "fix bug 2")
+
+          (claude-code-buffer-history-search-backward "fix")
+          ;; First call finds "fix bug 2" at index 0
+          (expect (claude-code-buffer-get-input) :to-equal "fix bug 2")
+
+          (setq last-command 'claude-code-buffer-history-search-backward)
+          (claude-code-buffer-history-search-backward "fix")
+          ;; Second call continues from index 1, finds "fix bug 1" at index 2
+          (expect (claude-code-buffer-get-input) :to-equal "fix bug 1"))))
+
+    (it "gets field bounds correctly"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (let* ((prompt-pos (marker-position claude-code-buffer-prompt-start-marker))
+                 (bounds (claude-code-buffer-get-field-bounds prompt-pos)))
+            (expect bounds :to-be-truthy)
+            (expect (car bounds) :to-equal prompt-pos)))))
+
+    (it "propertize-region applies multiple properties"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (let ((start (point))
+                (inhibit-read-only t))
+            (insert "test text")
+            (claude-code-buffer-propertize-region
+             start (point)
+             '(test-prop test-value another-prop another-value))
+            (expect (get-text-property start 'test-prop) :to-equal 'test-value)
+            (expect (get-text-property start 'another-prop) :to-equal 'another-value)))))))
 
 (provide 'claude-code-buffer-test)
 ;;; claude-code-buffer-test.el ends here

@@ -8,6 +8,7 @@
 
 (require 'json)
 (require 'projectile)
+(require 'claude-code-approval)
 
 ;; ============================================================================
 ;; Variables
@@ -40,7 +41,9 @@
   status                ; Process status: running, stopped, error
   last-prompt           ; Last prompt sent
   last-response         ; Last complete response received
-  metadata)             ; Additional metadata
+  metadata              ; Additional metadata
+  socket-path           ; Path to approval socket
+  settings-file)        ; Path to temp settings file
 
 ;; ============================================================================
 ;; Core Process Functions
@@ -143,18 +146,36 @@ Optional MODEL to use instead of default."
   (let* ((buffer-name (claude-code-process--make-buffer-name project-root))
          (buffer (generate-new-buffer buffer-name))
          (model (or model claude-code-default-model))
+
+         ;; Start approval server first
+         (socket-path (claude-code-approval-start-server project-root))
+
+         ;; Generate settings JSON with inline hook
+         (settings-json (json-encode
+                         `((hooks . ((PreToolUse . [((matcher . "*")
+                                                      (hooks . [((type . "command")
+                                                                 (command . ,(format "nc -U %s -w 120" socket-path)))]))])))
+                           (defaultMode . "default"))))
+         
+         ;; Write settings to temp file
+         (settings-file (make-temp-file "claude-settings" nil ".json" settings-json))
+
          (args (list "--print"
                      "--verbose"
                      "--output-format" "stream-json"
-                     "--model" model))
+                     "--model" model
+                     "--settings" settings-file))
          process proc-obj)
 
+    (message "settings %s" settings-json)
     ;; Add session-related arguments
     (when session-id
       (setq args (append args (list "--resume" session-id))))
 
-    (message "STARTING")
-    (message "Sending arguments: %s" args)
+    (message "Starting Claude Code with approval hook enabled")
+    (message "Socket path: %s" socket-path)
+    (message "Settings file: %s" settings-file)
+
     ;; Start the process
     (setq process
           (make-process
@@ -183,7 +204,9 @@ Optional MODEL to use instead of default."
            :status 'running
            :last-prompt nil
            :last-response nil
-           :metadata (list :model model :started-at (current-time))))
+           :metadata (list :model model :started-at (current-time))
+           :socket-path socket-path
+           :settings-file settings-file))
 
     ;; Store in hash table
     (puthash project-root proc-obj claude-code-processes)
@@ -236,7 +259,8 @@ Returns t if successful, nil otherwise."
 
   (let ((process (claude-code-process-process proc-obj))
         (buffer (claude-code-process-buffer proc-obj))
-        (project-root (claude-code-process-project-root proc-obj)))
+        (project-root (claude-code-process-project-root proc-obj))
+        (settings-file (claude-code-process-settings-file proc-obj)))
 
     ;; Kill the process
     (when (and process (process-live-p process))
@@ -245,6 +269,13 @@ Returns t if successful, nil otherwise."
     ;; Kill the buffer
     (when (buffer-live-p buffer)
       (kill-buffer buffer))
+
+    ;; Stop approval server
+    (claude-code-approval-stop-server project-root)
+
+    ;; Delete temp settings file
+    (when (and settings-file (file-exists-p settings-file))
+      (ignore-errors (delete-file settings-file)))
 
     ;; Remove from hash table
     (remhash project-root claude-code-processes)

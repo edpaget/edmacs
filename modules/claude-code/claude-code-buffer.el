@@ -88,6 +88,9 @@
 (defvar-local claude-code-buffer-input-ring-index nil
   "Current position in the input ring.")
 
+(defvar-local claude-code-buffer-input-history-pattern nil
+  "Pattern for searching history. Set by history search commands.")
+
 (defconst claude-code-buffer-input-ring-size 100
   "Maximum number of inputs to store in history.")
 
@@ -130,6 +133,8 @@
     (define-key map (kbd "C-j") #'electric-newline-and-maybe-indent)
     (define-key map (kbd "M-p") #'claude-code-buffer-previous-input)
     (define-key map (kbd "M-n") #'claude-code-buffer-next-input)
+    (define-key map (kbd "M-r") #'claude-code-buffer-history-search-backward)
+    (define-key map (kbd "M-s") #'claude-code-buffer-history-search-forward)
 
     map)
   "Keymap for Claude Code buffer mode.")
@@ -176,6 +181,61 @@ responses, tool usage, and metadata.
   end-marker          ; Buffer position where interaction ends
   status              ; Status: streaming, complete, error
   metadata)           ; Additional metadata (tokens, duration, etc.)
+
+;; ============================================================================
+;; Buffer Manipulation Utilities
+;; ============================================================================
+
+(defmacro claude-code-buffer-save-markers (&rest body)
+  "Execute BODY while preserving buffer markers.
+Saves and restores positions of input-start and prompt-start markers."
+  (declare (indent 0) (debug t))
+  `(let ((input-pos (when (and claude-code-buffer-input-start-marker
+                               (marker-position claude-code-buffer-input-start-marker))
+                      (marker-position claude-code-buffer-input-start-marker)))
+         (prompt-pos (when (and claude-code-buffer-prompt-start-marker
+                                (marker-position claude-code-buffer-prompt-start-marker))
+                       (marker-position claude-code-buffer-prompt-start-marker))))
+     (prog1 (progn ,@body)
+       (when (and claude-code-buffer-input-start-marker input-pos)
+         (set-marker claude-code-buffer-input-start-marker input-pos))
+       (when (and claude-code-buffer-prompt-start-marker prompt-pos)
+         (set-marker claude-code-buffer-prompt-start-marker prompt-pos)))))
+
+(defun claude-code-buffer-propertize-region (start end properties)
+  "Apply PROPERTIES (a plist) to region from START to END.
+More convenient than multiple put-text-property calls.
+
+Example:
+  (claude-code-buffer-propertize-region
+    start end
+    \\='(face claude-code-prompt-face
+      read-only t
+      field claude-code-prompt))"
+  (let ((props properties))
+    (while props
+      (let ((prop (car props))
+            (value (cadr props)))
+        (put-text-property start end prop value)
+        (setq props (cddr props))))))
+
+(defun claude-code-buffer-get-field-bounds (&optional pos)
+  "Get the bounds of the field at POS (default: point).
+Returns (start . end) or nil if not in a field."
+  (let ((pos (or pos (point))))
+    (let ((field (get-text-property pos 'field)))
+      (when field
+        (let ((start pos)
+              (end pos))
+          ;; Find field start
+          (while (and (> start (point-min))
+                      (eq (get-text-property (1- start) 'field) field))
+            (setq start (1- start)))
+          ;; Find field end
+          (while (and (< end (point-max))
+                      (eq (get-text-property end 'field) field))
+            (setq end (1+ end)))
+          (cons start end))))))
 
 ;; ============================================================================
 ;; Buffer Insertion Functions
@@ -245,10 +305,8 @@ responses, tool usage, and metadata.
         (save-excursion
           (goto-char (claude-code-interaction-end-marker
                       claude-code-buffer-current-interaction))
-          (insert text)
-          (set-marker (claude-code-interaction-end-marker
-                       claude-code-buffer-current-interaction)
-                      (point)))
+          ;; Use insert-before-markers to automatically preserve marker positions
+          (insert-before-markers text))
 
         ;; Update interaction
         (setf (claude-code-interaction-response-text
@@ -318,6 +376,13 @@ responses, tool usage, and metadata.
                claude-code-buffer-current-interaction) 'complete)
         (setf (claude-code-interaction-metadata
                claude-code-buffer-current-interaction) metadata)
+
+        ;; Mark entire interaction as a field for better navigation
+        (let ((start (marker-position (claude-code-interaction-start-marker
+                                       claude-code-buffer-current-interaction)))
+              (end (marker-position (claude-code-interaction-end-marker
+                                     claude-code-buffer-current-interaction))))
+          (put-text-property start end 'field 'claude-code-interaction))
 
         ;; Save to history
         (push claude-code-buffer-current-interaction
@@ -500,6 +565,14 @@ responses, tool usage, and metadata.
   (and claude-code-buffer-input-start-marker
        (>= (point) claude-code-buffer-input-start-marker)))
 
+(defun claude-code-buffer-input-complete-p ()
+  "Check if the current input is complete and ready to send.
+Returns t if input is non-empty after trimming."
+  (when claude-code-buffer-input-start-marker
+    (let ((input (claude-code-buffer-get-input)))
+      (and input
+           (not (string-empty-p (string-trim input)))))))
+
 (defun claude-code-buffer-get-input ()
   "Get the current input text."
   (when claude-code-buffer-input-start-marker
@@ -513,28 +586,49 @@ responses, tool usage, and metadata.
     (let ((inhibit-read-only t))
       (delete-region claude-code-buffer-input-start-marker (point-max)))))
 
+(defun claude-code-buffer-clear-input-area ()
+  "Clear and properly deallocate the input area.
+This function clears the input text and deallocates both the
+prompt-start and input-start markers to prevent memory leaks."
+  (when claude-code-buffer-input-start-marker
+    (let ((inhibit-read-only t))
+      ;; Clear content from prompt-start (if available) or input-start to end
+      (let ((clear-start (if (and claude-code-buffer-prompt-start-marker
+                                  (marker-position claude-code-buffer-prompt-start-marker))
+                             claude-code-buffer-prompt-start-marker
+                           claude-code-buffer-input-start-marker)))
+        (delete-region clear-start (point-max)))
+
+      ;; Properly deallocate markers
+      (when claude-code-buffer-prompt-start-marker
+        (set-marker claude-code-buffer-prompt-start-marker nil))
+      (set-marker claude-code-buffer-input-start-marker nil)
+
+      ;; Clear variables
+      (setq-local claude-code-buffer-prompt-start-marker nil)
+      (setq-local claude-code-buffer-input-start-marker nil))))
+
 (defun claude-code-buffer-send-input ()
   "Send the current input to Claude."
   (interactive)
-  (let ((input (string-trim (or (claude-code-buffer-get-input) ""))))
-    (cond
-     ;; No input marker set up
-     ((not claude-code-buffer-input-start-marker)
-      (message "Error: No input area available. Try reopening the buffer."))
+  (cond
+   ;; No input marker set up
+   ((not claude-code-buffer-input-start-marker)
+    (user-error "No input area available. Try reopening the buffer"))
 
-     ;; Empty input
-     ((string-empty-p input)
-      (message "Please enter some text before sending."))
+   ;; Input not complete or empty
+   ((not (claude-code-buffer-input-complete-p))
+    (user-error "Please enter some text before sending"))
 
-     ;; Everything OK, send it
-     (t
+   ;; Everything OK, send it
+   (t
+    (let ((input (string-trim (claude-code-buffer-get-input))))
       ;; Add to history
       (ring-insert claude-code-buffer-input-ring input)
       (setq-local claude-code-buffer-input-ring-index nil)
 
-      ;; Clear input area and remove input marker
-      (claude-code-buffer-clear-input)
-      (setq-local claude-code-buffer-input-start-marker nil)
+      ;; Clear input area and properly deallocate markers
+      (claude-code-buffer-clear-input-area)
 
       ;; Send to Claude
       (require 'claude-code-core)
@@ -590,6 +684,79 @@ responses, tool usage, and metadata.
         (claude-code-buffer-clear-input)
         (insert input)))))
 
+(defun claude-code-buffer-history-search-backward (pattern)
+  "Search backward in history for entries matching PATTERN (regex).
+Updates input area with first match found. When called repeatedly,
+continues searching through older matches."
+  (interactive "sSearch history backward (regex): ")
+  (setq-local claude-code-buffer-input-history-pattern pattern)
+  (when (and claude-code-buffer-input-ring
+             (not (ring-empty-p claude-code-buffer-input-ring)))
+    (let ((inhibit-read-only t)
+          (start-index (if (and claude-code-buffer-input-ring-index
+                                (eq last-command 'claude-code-buffer-history-search-backward))
+                           (1+ claude-code-buffer-input-ring-index)
+                         0))
+          (found nil)
+          (found-index nil))
+      ;; Search through history from start-index
+      (let ((index start-index))
+        (while (and (< index (ring-length claude-code-buffer-input-ring))
+                    (not found))
+          (let ((input (ring-ref claude-code-buffer-input-ring index)))
+            (when (string-match-p pattern input)
+              (setq found input)
+              (setq found-index index)))
+          (setq index (1+ index))))
+
+      ;; Insert if found
+      (if found
+          (progn
+            (claude-code-buffer-clear-input)
+            (insert found)
+            (setq-local claude-code-buffer-input-ring-index found-index)
+            (message "Found [%d/%d]: %s"
+                     (1+ found-index)
+                     (ring-length claude-code-buffer-input-ring)
+                     (truncate-string-to-width found 50 nil nil "...")))
+        (message "No match for: %s" pattern)))))
+
+(defun claude-code-buffer-history-search-forward (pattern)
+  "Search forward in history for entries matching PATTERN (regex).
+Updates input area with first match found. When called repeatedly,
+continues searching through newer matches."
+  (interactive "sSearch history forward (regex): ")
+  (setq-local claude-code-buffer-input-history-pattern pattern)
+  (when (and claude-code-buffer-input-ring
+             claude-code-buffer-input-ring-index
+             (> claude-code-buffer-input-ring-index 0))
+    (let ((inhibit-read-only t)
+          (start-index (if (eq last-command 'claude-code-buffer-history-search-forward)
+                           (1- claude-code-buffer-input-ring-index)
+                         (1- claude-code-buffer-input-ring-index)))
+          (found nil)
+          (found-index nil))
+      ;; Search backward through history
+      (let ((index start-index))
+        (while (and (>= index 0) (not found))
+          (let ((input (ring-ref claude-code-buffer-input-ring index)))
+            (when (string-match-p pattern input)
+              (setq found input)
+              (setq found-index index)))
+          (setq index (1- index))))
+
+      ;; Insert if found
+      (if found
+          (progn
+            (claude-code-buffer-clear-input)
+            (insert found)
+            (setq-local claude-code-buffer-input-ring-index found-index)
+            (message "Found [%d/%d]: %s"
+                     (1+ found-index)
+                     (ring-length claude-code-buffer-input-ring)
+                     (truncate-string-to-width found 50 nil nil "...")))
+        (message "No match for: %s" pattern)))))
+
 ;; ============================================================================
 ;; Event Handlers (for use with process callbacks)
 ;; ============================================================================
@@ -633,9 +800,16 @@ responses, tool usage, and metadata.
   "Clear all content from BUFFER and start fresh conversation."
   (with-current-buffer buffer
     (let ((inhibit-read-only t))
+      ;; Properly deallocate markers before erasing
+      (when claude-code-buffer-prompt-start-marker
+        (set-marker claude-code-buffer-prompt-start-marker nil))
+      (when claude-code-buffer-input-start-marker
+        (set-marker claude-code-buffer-input-start-marker nil))
+
       (erase-buffer)
       (setq-local claude-code-buffer-current-interaction nil)
       (setq-local claude-code-buffer-interactions nil)
+      (setq-local claude-code-buffer-prompt-start-marker nil)
       (setq-local claude-code-buffer-input-start-marker nil)
       (setq-local claude-code-buffer-session-id nil))  ; Reset session for fresh start
     ;; Set up fresh input area

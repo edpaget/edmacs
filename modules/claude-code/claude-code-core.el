@@ -19,6 +19,7 @@
 
 (require 'claude-code-process)
 (require 'claude-code-buffer)
+(require 'claude-code-approval)
 
 ;; ============================================================================
 ;; Interactive Commands
@@ -159,6 +160,114 @@ Each prompt in the same buffer continues the conversation using session continui
     (pop-to-buffer buffer)))
 
 ;; ============================================================================
+;; Approval Management Commands
+;; ============================================================================
+
+(defun claude-code-approval-set-mode (mode)
+  "Set the approval MODE for Claude Code tool usage.
+MODE can be: interactive, auto-approve, deny-all, or hybrid."
+  (interactive
+   (list (intern (completing-read "Approval mode: "
+                                   '("interactive" "auto-approve" "deny-all" "hybrid")
+                                   nil t))))
+  (setq claude-code-approval-mode mode)
+  (message "Claude Code approval mode set to: %s" mode))
+
+(defun claude-code-approval-show-policy ()
+  "Display current approval policy rules and settings."
+  (interactive)
+  (let ((buffer (get-buffer-create "*claude-code-approval-policy*")))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert (propertize "Claude Code Approval Policy\n"
+                         'face '(:weight bold :height 1.2))
+              (propertize (make-string 60 ?=) 'face 'shadow)
+              "\n\n")
+
+      ;; Current mode
+      (insert (propertize "Current Mode: " 'face 'bold)
+              (propertize (symbol-name claude-code-approval-mode)
+                         'face '(:foreground "cyan" :weight bold))
+              "\n\n")
+
+      ;; Default action
+      (insert (propertize "Default Action: " 'face 'bold)
+              (format "%s\n\n" claude-code-approval-default-action))
+
+      ;; Policy rules
+      (insert (propertize "Policy Rules:\n" 'face 'bold))
+      (if (null claude-code-approval-rules)
+          (insert "  No rules configured.\n")
+        (dolist (rule claude-code-approval-rules)
+          (let ((tool (plist-get rule 'tool))
+                (action (plist-get rule 'action))
+                (pattern (plist-get rule 'pattern)))
+            (insert (format "  • %s: %s"
+                           (propertize (symbol-name action)
+                                      'face (if (eq action 'allow)
+                                               'success
+                                             'error))
+                           tool))
+            (when pattern
+              (insert (format " (pattern: %s)" pattern)))
+            (insert "\n"))))
+      (insert "\n")
+
+      ;; Session rules
+      (insert (propertize "Session Rules:\n" 'face 'bold))
+      (if (hash-table-empty-p claude-code-approval-session-rules)
+          (insert "  No session rules.\n")
+        (maphash (lambda (key value)
+                   (insert (format "  • %s: %s\n"
+                                  (propertize (symbol-name value)
+                                             'face (if (eq value 'allow)
+                                                      'success
+                                                    'error))
+                                  key)))
+                 claude-code-approval-session-rules))
+
+      (goto-char (point-min))
+      (help-mode))
+    (pop-to-buffer buffer)))
+
+(defun claude-code-approval-add-allow-rule (tool &optional pattern)
+  "Add a rule to always allow TOOL, optionally matching PATTERN."
+  (interactive "sTool name: \nsPattern (optional): ")
+  (let ((rule (if (and pattern (not (string-empty-p pattern)))
+                  (list 'tool tool 'action 'allow 'pattern pattern)
+                (list 'tool tool 'action 'allow))))
+    (add-to-list 'claude-code-approval-rules rule)
+    (message "Added allow rule for %s%s"
+             tool
+             (if (and pattern (not (string-empty-p pattern)))
+                 (format " with pattern: %s" pattern)
+               ""))))
+
+(defun claude-code-approval-add-deny-rule (tool &optional pattern)
+  "Add a rule to always deny TOOL, optionally matching PATTERN."
+  (interactive "sTool name: \nsPattern (optional): ")
+  (let ((rule (if (and pattern (not (string-empty-p pattern)))
+                  (list 'tool tool 'action 'deny 'pattern pattern)
+                (list 'tool tool 'action 'deny))))
+    (add-to-list 'claude-code-approval-rules rule)
+    (message "Added deny rule for %s%s"
+             tool
+             (if (and pattern (not (string-empty-p pattern)))
+                 (format " with pattern: %s" pattern)
+               ""))))
+
+(defun claude-code-approval-reset-rules ()
+  "Reset approval rules to defaults."
+  (interactive)
+  (when (yes-or-no-p "Reset all approval rules to defaults? ")
+    (setq claude-code-approval-rules
+          '((tool "Read" action allow)
+            (tool "Grep" action allow)
+            (tool "Glob" action allow)
+            (tool "WebFetch" pattern "domain:github.com" action allow)))
+    (message "Approval rules reset to defaults")))
+
+;; ============================================================================
 ;; Keybindings
 ;; ============================================================================
 
@@ -177,7 +286,20 @@ Each prompt in the same buffer continues the conversation using session continui
      "K" '(claude-code-process-kill-all :which-key "kill all processes")
      "l" '(claude-code-show-processes :which-key "list processes")
      "i" '(claude-code-process-status-current-project :which-key "status")
-     "t" '(claude-code-test-prompt :which-key "test prompt (debug)"))))
+     "t" '(claude-code-test-prompt :which-key "test prompt (debug)"))
+
+    ;; Approval management keybindings
+    (general-define-key
+     :states 'normal
+     :prefix "SPC a c p"
+     "" '(:ignore t :which-key "approval policy")
+     "m" '(claude-code-approval-set-mode :which-key "set mode")
+     "s" '(claude-code-approval-show-policy :which-key "show policy")
+     "a" '(claude-code-approval-add-allow-rule :which-key "add allow rule")
+     "d" '(claude-code-approval-add-deny-rule :which-key "add deny rule")
+     "r" '(claude-code-approval-reset-rules :which-key "reset rules")
+     "c" '(claude-code-approval-clear-session-rules :which-key "clear session rules")
+     "l" '(claude-code-approval-show-session-rules :which-key "show session rules"))))
 
 (provide 'claude-code-core)
 ;;; claude-code-core.el ends here

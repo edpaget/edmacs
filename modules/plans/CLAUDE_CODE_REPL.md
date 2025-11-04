@@ -152,7 +152,7 @@ Tasks:
 2. Design buffer structure with clear sections
 3. Implement markdown rendering
 4. Add streaming text updates (append delta chunks)
-5. Format tool use sections with collapsible details
+5. [ ] Format tool use sections with collapsible details
 6. Add timestamps and session metadata
 7. Implement syntax highlighting for code blocks
 8. Create custom faces for different section types
