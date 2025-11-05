@@ -109,6 +109,7 @@ LANGUAGE should be the name without the .el extension."
 ;; via :mode, :hook, and :after directives in each language config file
 (load-language-config "clojure")
 (load-language-config "java")
+(load-language-config "javascript")
 
 ;; ============================================================================
 ;; Custom file

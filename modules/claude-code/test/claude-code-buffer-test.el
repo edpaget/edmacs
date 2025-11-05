@@ -114,6 +114,92 @@
           (expect (claude-code-interaction-prompt claude-code-buffer-current-interaction)
                   :to-equal "My prompt")))))
 
+  (describe "Todo formatter"
+
+    (it "formats todo list from list input"
+      (let* ((todos '(((content . "First task")
+                      (status . completed)
+                      (activeForm . "First task"))
+                     ((content . "Second task")
+                      (status . in_progress)
+                      (activeForm . "Second task"))
+                     ((content . "Third task")
+                      (status . pending)
+                      (activeForm . "Third task"))))
+             (formatted (claude-code-buffer--format-todo-list todos)))
+        (expect formatted :to-match "✓ First task")
+        (expect formatted :to-match "▶ Second task")
+        (expect formatted :to-match "○ Third task")))
+
+    (it "formats todo list from vector input (JSON array)"
+      (let* ((todos [((content . "First task")
+                      (status . completed)
+                      (activeForm . "First task"))
+                     ((content . "Second task")
+                      (status . in_progress)
+                      (activeForm . "Second task"))
+                     ((content . "Third task")
+                      (status . pending)
+                      (activeForm . "Third task"))])
+             (formatted (claude-code-buffer--format-todo-list todos)))
+        (expect formatted :to-match "✓ First task")
+        (expect formatted :to-match "▶ Second task")
+        (expect formatted :to-match "○ Third task")))
+
+    (it "handles empty todo list"
+      (let ((formatted (claude-code-buffer--format-todo-list [])))
+        (expect formatted :to-equal "")))
+
+    (it "handles empty todo list as list"
+      (let ((formatted (claude-code-buffer--format-todo-list '())))
+        (expect formatted :to-equal "")))
+
+    (it "applies correct faces to todo items"
+      (let* ((todos [((content . "Done")
+                      (status . completed)
+                      (activeForm . "Done"))])
+             (formatted (claude-code-buffer--format-todo-list todos)))
+        ;; The formatted string should have face properties
+        (expect (text-property-any 0 (length formatted) 'face 'success formatted)
+                :to-be-truthy)))
+
+    (it "uses correct icons for each status"
+      (let* ((todos [((content . "Task 1")
+                      (status . completed)
+                      (activeForm . "Task 1"))
+                     ((content . "Task 2")
+                      (status . in_progress)
+                      (activeForm . "Task 2"))
+                     ((content . "Task 3")
+                      (status . pending)
+                      (activeForm . "Task 3"))])
+             (formatted (claude-code-buffer--format-todo-list todos)))
+        (expect formatted :to-match "✓")
+        (expect formatted :to-match "▶")
+        (expect formatted :to-match "○")))
+
+    (it "handles unknown status gracefully"
+      (let* ((todos [((content . "Unknown status task")
+                      (status . unknown_status)
+                      (activeForm . "Unknown status task"))])
+             (formatted (claude-code-buffer--format-todo-list todos)))
+        (expect formatted :to-match "• Unknown status task")))
+
+    (it "handles string status values (from JSON parsing)"
+      (let* ((todos [((content . "Task 1")
+                      (status . "completed")
+                      (activeForm . "Task 1"))
+                     ((content . "Task 2")
+                      (status . "in_progress")
+                      (activeForm . "Task 2"))
+                     ((content . "Task 3")
+                      (status . "pending")
+                      (activeForm . "Task 3"))])
+             (formatted (claude-code-buffer--format-todo-list todos)))
+        (expect formatted :to-match "✓ Task 1")
+        (expect formatted :to-match "▶ Task 2")
+        (expect formatted :to-match "○ Task 3"))))
+
   (describe "Tool usage"
 
     (after-each
@@ -143,7 +229,37 @@
           (let ((tools (claude-code-interaction-tool-uses
                         claude-code-buffer-current-interaction)))
             (expect tools :to-be-truthy)
-            (expect (plist-get (car tools) :tool) :to-equal "Grep"))))))
+            (expect (plist-get (car tools) :tool) :to-equal "Grep")))))
+
+    (it "handles TodoWrite tool with special formatting"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Prompt")
+        (claude-code-buffer-add-tool-use
+         buffer
+         "TodoWrite"
+         '((todos . [((content . "Task 1")
+                      (status . completed)
+                      (activeForm . "Task 1"))
+                     ((content . "Task 2")
+                      (status . in_progress)
+                      (activeForm . "Task 2"))])))
+
+        (expect buffer :to-match-buffer "Task Progress")
+        (expect buffer :to-match-buffer "✓ Task 1")
+        (expect buffer :to-match-buffer "▶ Task 2")))
+
+    (it "handles TodoWrite tool with list input"
+      (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
+        (claude-code-buffer-start-interaction buffer "Prompt")
+        (claude-code-buffer-add-tool-use
+         buffer
+         "TodoWrite"
+         '((todos . (((content . "Task 1")
+                      (status . pending)
+                      (activeForm . "Task 1"))))))
+
+        (expect buffer :to-match-buffer "Task Progress")
+        (expect buffer :to-match-buffer "○ Task 1"))))
 
   (describe "Interaction completion"
 

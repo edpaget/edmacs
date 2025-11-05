@@ -730,6 +730,31 @@ Uses the configured separator style from `claude-code-separator-style'."
    (format-time-string "[%Y-%m-%d %H:%M:%S]" time)
    'claude-code-timestamp-face))
 
+(defun claude-code-buffer--format-todo-list (todos)
+  "Format TODOS list for TodoWrite tool in a readable way.
+TODOS should be a list or vector of todo items with content, status, and activeForm."
+  (let ((lines nil)
+        (status-icons '((completed . "✓")
+                       (in_progress . "▶")
+                       (pending . "○"))))
+    ;; Convert vector to list if needed
+    (let ((todos-list (if (vectorp todos) (append todos nil) todos)))
+      (dolist (todo todos-list)
+        (let* ((content (alist-get 'content todo))
+               (status-raw (alist-get 'status todo))
+               ;; Normalize status: convert string to symbol if needed
+               (status (if (stringp status-raw) (intern status-raw) status-raw))
+               (icon (alist-get status status-icons "•"))
+               (face (pcase status
+                       ('completed 'success)
+                       ('in_progress 'warning)
+                       ('pending 'shadow)
+                       (_ 'default))))
+          (push (propertize (format "%s %s" icon content)
+                           'face face)
+                lines)))
+      (string-join (nreverse lines) "\n"))))
+
 (defun claude-code-buffer--format-tool-params (tool-input)
   "Format TOOL-INPUT parameters in a readable markdown list.
 Returns a formatted string with markdown-style bullet points."
@@ -824,20 +849,35 @@ Returns a formatted string with markdown-style bullet points."
           (insert "\n")
           (claude-code-buffer--insert-spacing claude-code-section-spacing)
 
-          ;; Insert tool header with icon
-          (let ((tool-icon (claude-code-buffer--icon "nf-md-tools" "🔧"))
-                (header-start (point)))
-            (insert (if (string-empty-p tool-icon) "" (concat tool-icon " ")))
-            (insert (format "**Tool: %s**" tool-name))
-            (put-text-property header-start (point) 'face 'claude-code-tool-header)
-            (insert "\n\n"))
+          ;; Special handling for TodoWrite tool
+          (if (string= tool-name "TodoWrite")
+              (let* ((todos (alist-get 'todos tool-input))
+                     (header-start (point)))
+                ;; Use a checklist icon for TodoWrite
+                (insert (claude-code-buffer--icon "nf-md-format_list_checks" "☑") " ")
+                (insert "**Task Progress**")
+                (put-text-property header-start (point) 'face 'claude-code-tool-header)
+                (insert "\n\n")
+                ;; Format todos with special formatting
+                (let ((section-start (point)))
+                  (insert (claude-code-buffer--format-todo-list todos))
+                  (insert "\n")
+                  ;; Apply tool section background
+                  (put-text-property section-start (point) 'face 'claude-code-tool-section)))
 
-          ;; Format tool parameters as markdown list
-          (let ((section-start (point)))
-            (insert (claude-code-buffer--format-tool-params tool-input))
-            (insert "\n")
-            ;; Apply tool section background
-            (put-text-property section-start (point) 'face 'claude-code-tool-section))
+            ;; Standard tool formatting for other tools
+            (let ((tool-icon (claude-code-buffer--icon "nf-md-tools" "🔧"))
+                  (header-start (point)))
+              (insert (if (string-empty-p tool-icon) "" (concat tool-icon " ")))
+              (insert (format "**Tool: %s**" tool-name))
+              (put-text-property header-start (point) 'face 'claude-code-tool-header)
+              (insert "\n\n")
+              ;; Format tool parameters as markdown list
+              (let ((section-start (point)))
+                (insert (claude-code-buffer--format-tool-params tool-input))
+                (insert "\n")
+                ;; Apply tool section background
+                (put-text-property section-start (point) 'face 'claude-code-tool-section))))
 
           (set-marker (claude-code-interaction-end-marker
                        claude-code-buffer-current-interaction)

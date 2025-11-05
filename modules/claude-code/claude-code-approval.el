@@ -43,6 +43,7 @@
   '((tool "Read" action allow)
     (tool "Grep" action allow)
     (tool "Glob" action allow)
+    (tool "TodoWrite" action allow)
     (tool "WebFetch" pattern "domain:github.com" action allow))
   "List of approval rules for auto-approval mode.
 Each rule is a plist with the following keys:
