@@ -73,6 +73,16 @@
   "wl" '(evil-window-right :which-key "window right")
   "w=" '(balance-windows :which-key "balance windows")
 
+  ;; Tiling (window layouts)
+  "wt" '(:ignore t :which-key "tiles")
+  "wtt" '(tiles-mode :which-key "toggle tiles mode")
+  "wts" '(tiles-setup :which-key "setup tiles")
+  "wtr" '(tiles-refresh :which-key "refresh layout")
+  "wtl" '(tiles-set-layout :which-key "set layout")
+  "wtc" '(tiles-cycle-layout :which-key "cycle layout")
+  "wtn" '(tiles-focus-next :which-key "focus next")
+  "wtp" '(tiles-focus-previous :which-key "focus previous")
+
   ;; Search
   "s" '(:ignore t :which-key "search")
   "ss" '(consult-line :which-key "search buffer")

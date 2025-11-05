@@ -160,4 +160,19 @@
 ;; (set-frame-parameter (selected-frame) 'alpha '(95 . 95))
 ;; (add-to-list 'default-frame-alist '(alpha . (95 . 95)))
 
+;; ============================================================================
+;; Tiling Window Manager
+;; ============================================================================
+
+(use-package tiles
+  :straight nil
+  :load-path "modules/tiles"
+  :commands (tiles-mode tiles-setup tiles-refresh)
+  :custom
+  (tiles-default-layout 'horizontal)
+  (tiles-master-window-ratio 0.5)
+  (tiles-auto-balance t)
+  :config
+  (message "Tiles module loaded"))
+
 ;;; ui.el ends here

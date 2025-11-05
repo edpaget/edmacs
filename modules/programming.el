@@ -238,4 +238,11 @@
   ;; Install: npm install -g yaml-language-server
   (add-hook 'yaml-mode-hook #'lsp-deferred))
 
+;; ============================================================================
+;; Language-specific modules
+;; ============================================================================
+
+;; JavaScript and TypeScript
+(require 'javascript)
+
 ;;; programming.el ends here
