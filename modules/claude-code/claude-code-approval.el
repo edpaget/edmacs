@@ -234,7 +234,7 @@ STRING is the JSON request data."
            (let ((response (json-encode (claude-code-approval--make-hook-response "deny" error-msg))))
              (process-send-string proc (concat response "\n"))))
          ;; Remove reference
-         (remhash proc claude-code-approval--active-processes))))))
+         (remhash proc claude-code-approval--active-processes)))))))
 
 ;;; Decision Logic
 
@@ -346,7 +346,7 @@ Returns properly formatted hook response."
             (_
              (claude-code-approval--make-hook-response
               "deny"
-              "Invalid default action"))))))))))
+              "Invalid default action")))))))))
 
 (defun claude-code-approval--rule-matches-p (rule tool input)
   "Check if RULE matches TOOL with INPUT.
@@ -419,6 +419,11 @@ This function returns immediately after showing the UI."
     (pop-to-buffer buffer)
     (select-window (get-buffer-window buffer))
     (raise-frame)
+
+    ;; Force evil-mode to emacs state if it's active
+    (with-current-buffer buffer
+      (when (and (boundp 'evil-mode) evil-mode (fboundp 'evil-emacs-state))
+        (evil-emacs-state)))
 
     ;; Start timeout timer
     (setq claude-code-approval--decision-timer
@@ -611,7 +616,10 @@ This function returns immediately after showing the UI."
   (setq buffer-read-only t
         truncate-lines nil)
   ;; Ensure our keymap takes precedence over special-mode-map
-  (use-local-map claude-code-approval-mode-map))
+  (use-local-map claude-code-approval-mode-map)
+  ;; Configure evil-mode to use emacs state if available
+  (when (fboundp 'evil-set-initial-state)
+    (evil-set-initial-state 'claude-code-approval-mode 'emacs)))
 
 ;;; Buffer-local variables for approval requests
 

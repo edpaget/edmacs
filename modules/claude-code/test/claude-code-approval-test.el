@@ -78,6 +78,41 @@
   ;; Note: Policy and hook response formatting are tested through integration
   ;; with claude-code-process tests, which initialize the approval server
   ;; and test the complete flow.
+
+  (describe "Evil-mode integration"
+    (it "sets initial state to emacs when evil-mode is available"
+      (with-temp-buffer
+        ;; Mock evil-mode functions
+        (let ((evil-state-called nil)
+              (evil-state-arg nil))
+          ;; Define mock function
+          (cl-letf (((symbol-function 'evil-set-initial-state)
+                     (lambda (mode state)
+                       (setq evil-state-called t
+                             evil-state-arg (list mode state)))))
+            ;; Activate the mode
+            (claude-code-approval-mode)
+            ;; Check that evil integration was called with correct arguments
+            (expect evil-state-called :to-be t)
+            (expect (car evil-state-arg) :to-equal 'claude-code-approval-mode)
+            (expect (cadr evil-state-arg) :to-equal 'emacs)))))
+
+    (it "defines keybindings that work in the approval buffer"
+      (with-temp-buffer
+        (claude-code-approval-mode)
+        ;; Check that keybindings are properly defined
+        (expect (lookup-key (current-local-map) (kbd "a"))
+                :to-equal 'claude-code-approval--action-allow)
+        (expect (lookup-key (current-local-map) (kbd "d"))
+                :to-equal 'claude-code-approval--action-deny)
+        (expect (lookup-key (current-local-map) (kbd "A"))
+                :to-equal 'claude-code-approval--action-allow-always)
+        (expect (lookup-key (current-local-map) (kbd "D"))
+                :to-equal 'claude-code-approval--action-deny-always)
+        (expect (lookup-key (current-local-map) (kbd "q"))
+                :to-equal 'claude-code-approval--action-deny)
+        (expect (lookup-key (current-local-map) (kbd "RET"))
+                :to-equal 'claude-code-approval--action-allow))))
   )
 
 (provide 'claude-code-approval-test)
