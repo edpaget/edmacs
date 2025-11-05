@@ -114,6 +114,8 @@ Prevents duplicate responses if filter is called multiple times.")
   "Current request ID being approved in this buffer.")
 (defvar claude-code-approval--current-proc nil
   "Current client process for this approval request.")
+(defvar claude-code-approval--previous-buffer nil
+  "Buffer that was active before the approval buffer was displayed.")
 
 ;;; Helper Functions
 
@@ -122,6 +124,28 @@ Prevents duplicate responses if filter is called multiple times.")
 FORMAT-STRING and ARGS are passed to `message'."
   (unless claude-code-approval-silent
     (apply #'message format-string args)))
+
+(defun claude-code-approval--format-tool-input (input)
+  "Format tool INPUT in a readable way.
+Returns a string with nicely formatted key-value pairs."
+  (if (null input)
+      "(no parameters)"
+    (let ((lines nil))
+      (dolist (pair input)
+        (let* ((key (symbol-name (car pair)))
+               (value (cdr pair))
+               (value-str (cond
+                          ((stringp value)
+                           (if (> (length value) 100)
+                               (concat (substring value 0 100) "...")
+                             value))
+                          ((null value) "nil")
+                          (t (format "%S" value)))))
+          (push (format "  %s: %s"
+                       (propertize key 'face '(:foreground "#8be9fd" :weight bold))
+                       (propertize value-str 'face 'font-lock-string-face))
+                lines)))
+      (string-join (nreverse lines) "\n"))))
 
 ;;; Socket Server Lifecycle
 
@@ -405,7 +429,8 @@ INPUT is the tool input parameters (alist from JSON)."
 TOOL is the tool name, INPUT is the tool parameters, ID is the request ID.
 PROC is the client process to send the response to.
 This function returns immediately after showing the UI."
-  (let ((buffer (get-buffer-create "*Claude Code Approval*")))
+  (let ((buffer (get-buffer-create "*Claude Code Approval*"))
+        (previous-buffer (current-buffer)))
 
     ;; Reset timeout
     (setq claude-code-approval--timeout-remaining claude-code-approval-timeout)
@@ -420,7 +445,8 @@ This function returns immediately after showing the UI."
         (setq-local claude-code-approval--current-tool tool
                     claude-code-approval--current-input input
                     claude-code-approval--current-id id
-                    claude-code-approval--current-proc proc)
+                    claude-code-approval--current-proc proc
+                    claude-code-approval--previous-buffer previous-buffer)
 
         ;; Render the approval UI
         (claude-code-approval--render-ui tool input)))
@@ -451,19 +477,15 @@ This function returns immediately after showing the UI."
             (propertize (make-string 60 ?─) 'face 'shadow)
             "\n\n")
 
-    ;; Tool name
-    (insert (propertize "Tool: " 'face 'bold)
-            (propertize tool 'face '(:foreground "cyan" :weight bold))
+    ;; Tool name with icon
+    (insert (propertize "🔧 Tool: " 'face 'bold)
+            (propertize tool 'face '(:foreground "#50fa7b" :weight bold))
             "\n\n")
 
-    ;; Tool parameters
+    ;; Tool parameters - formatted nicely
     (insert (propertize "Parameters:\n" 'face 'bold))
-    (let ((formatted-input (with-temp-buffer
-                             (insert (json-encode input))
-                             (json-pretty-print-buffer)
-                             (buffer-string))))
-      (insert (propertize formatted-input 'face 'font-lock-string-face))
-      (insert "\n\n"))
+    (insert (claude-code-approval--format-tool-input input))
+    (insert "\n\n")
 
     ;; Timeout warning
     (insert (propertize "⏱ " 'face 'warning)
@@ -526,15 +548,18 @@ This function returns immediately after showing the UI."
 
       ;; Auto-deny on timeout
       (when (<= claude-code-approval--timeout-remaining 0)
-        (when (timerp claude-code-approval--decision-timer)
-          (cancel-timer claude-code-approval--decision-timer)
-          (setq claude-code-approval--decision-timer nil))
-        ;; Send deny response
-        (claude-code-approval--send-response
-         claude-code-approval--current-proc
-         (claude-code-approval--make-hook-response "deny" "Approval request timed out"))
-        ;; Kill the buffer
-        (kill-buffer buffer)))))
+        (let ((previous-buf claude-code-approval--previous-buffer))
+          (when (timerp claude-code-approval--decision-timer)
+            (cancel-timer claude-code-approval--decision-timer)
+            (setq claude-code-approval--decision-timer nil))
+          ;; Send deny response
+          (claude-code-approval--send-response
+           claude-code-approval--current-proc
+           (claude-code-approval--make-hook-response "deny" "Approval request timed out"))
+          ;; Restore previous buffer and kill approval buffer
+          (when (and previous-buf (buffer-live-p previous-buf))
+            (switch-to-buffer previous-buf))
+          (kill-buffer buffer))))))
 
 (defun claude-code-approval--show-feedback (message-text)
   "Show feedback MESSAGE-TEXT in the approval buffer before closing."
@@ -550,11 +575,16 @@ This function returns immediately after showing the UI."
   (sit-for 0.5))
 
 (defun claude-code-approval--cleanup-request ()
-  "Clean up approval request state."
+  "Clean up approval request state and restore previous buffer."
   (when (timerp claude-code-approval--decision-timer)
     (cancel-timer claude-code-approval--decision-timer)
     (setq claude-code-approval--decision-timer nil))
-  (let ((buffer (current-buffer)))
+  (let ((buffer (current-buffer))
+        (previous-buffer claude-code-approval--previous-buffer))
+    ;; Switch back to previous buffer if it's still alive
+    (when (and previous-buffer (buffer-live-p previous-buffer))
+      (switch-to-buffer previous-buffer))
+    ;; Kill the approval buffer
     (when (buffer-live-p buffer)
       (kill-buffer buffer))))
 
@@ -634,18 +664,14 @@ This function returns immediately after showing the UI."
     (evil-set-initial-state 'claude-code-approval-mode 'motion)))
 
 ;;; Buffer-local variables for approval requests
+;; These are already declared as defvar above to suppress byte-compiler warnings
+;; Here we make them explicitly buffer-local
 
-(defvar-local claude-code-approval--current-tool nil
-  "Current tool being approved in this buffer.")
-
-(defvar-local claude-code-approval--current-input nil
-  "Current tool input being approved in this buffer.")
-
-(defvar-local claude-code-approval--current-id nil
-  "Current request ID being approved in this buffer.")
-
-(defvar-local claude-code-approval--current-proc nil
-  "Current client process for this approval request.")
+(make-variable-buffer-local 'claude-code-approval--current-tool)
+(make-variable-buffer-local 'claude-code-approval--current-input)
+(make-variable-buffer-local 'claude-code-approval--current-id)
+(make-variable-buffer-local 'claude-code-approval--current-proc)
+(make-variable-buffer-local 'claude-code-approval--previous-buffer)
 
 ;;; Utility Functions
 

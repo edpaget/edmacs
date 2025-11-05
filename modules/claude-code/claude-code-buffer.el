@@ -542,6 +542,25 @@ This prevents markdown formatting from being applied to the editable input area.
         ;; Only fontify up to the input area boundary
         (font-lock-fontify-region start (min end input-start))))))
 
+(defun claude-code-buffer--clean-input-area ()
+  "Remove any text properties that might interfere with editing in the input area.
+This is called on post-command-hook to ensure the input area stays editable."
+  (when (and claude-code-buffer-input-start-marker
+             (claude-code-buffer-in-input-area-p))
+    (let ((input-start (marker-position claude-code-buffer-input-start-marker))
+          (inhibit-read-only t))
+      (when (<= input-start (point-max))
+        ;; Remove problematic properties from input area
+        (remove-text-properties input-start (point-max)
+                               '(read-only nil
+                                 keymap nil
+                                 syntax-table nil
+                                 font-lock-face nil
+                                 fontified nil
+                                 font-lock-multiline nil
+                                 rear-nonsticky nil
+                                 front-sticky nil))))))
+
 ;; Keymap for read-only history area with single-letter commands
 (defvar claude-code-buffer-readonly-map
   (let ((map (make-sparse-keymap)))
@@ -605,6 +624,10 @@ responses, tool usage, and metadata.
               #'claude-code-buffer--fontify-history-only
               nil t)
     (font-lock-mode 1))
+  ;; Add post-command hook to keep input area clean
+  (add-hook 'post-command-hook
+            #'claude-code-buffer--clean-input-area
+            nil t)
   ;; Ensure mode-line is updated
   (force-mode-line-update))
 
@@ -707,6 +730,27 @@ Uses the configured separator style from `claude-code-separator-style'."
    (format-time-string "[%Y-%m-%d %H:%M:%S]" time)
    'claude-code-timestamp-face))
 
+(defun claude-code-buffer--format-tool-params (tool-input)
+  "Format TOOL-INPUT parameters in a readable markdown list.
+Returns a formatted string with markdown-style bullet points."
+  (if (null tool-input)
+      "_No parameters_"
+    (let ((params nil))
+      (dolist (pair tool-input)
+        (let* ((key (symbol-name (car pair)))
+               (value (cdr pair))
+               (value-str (cond
+                          ((stringp value)
+                           ;; For strings, use code formatting
+                           (format "`%s`" (if (> (length value) 80)
+                                             (concat (substring value 0 80) "...")
+                                           value)))
+                          ((null value) "`nil`")
+                          ((numberp value) (format "`%d`" value))
+                          (t (format "`%S`" value)))))
+          (push (format "- **%s**: %s" key value-str) params)))
+      (string-join (nreverse params) "\n"))))
+
 (defun claude-code-buffer-start-interaction (buffer prompt)
   "Start a new interaction in BUFFER with PROMPT."
   (with-current-buffer buffer
@@ -784,15 +828,14 @@ Uses the configured separator style from `claude-code-separator-style'."
           (let ((tool-icon (claude-code-buffer--icon "nf-md-tools" "🔧"))
                 (header-start (point)))
             (insert (if (string-empty-p tool-icon) "" (concat tool-icon " ")))
-            (insert (format "**[Tool: %s]**" tool-name))
+            (insert (format "**Tool: %s**" tool-name))
             (put-text-property header-start (point) 'face 'claude-code-tool-header)
-            (insert "\n"))
+            (insert "\n\n"))
 
-          ;; Format tool input nicely with tool-section background
+          ;; Format tool parameters as markdown list
           (let ((section-start (point)))
-            (insert "```elisp\n")
-            (insert (format "%S" tool-input))
-            (insert "\n```\n")
+            (insert (claude-code-buffer--format-tool-params tool-input))
+            (insert "\n")
             ;; Apply tool section background
             (put-text-property section-start (point) 'face 'claude-code-tool-section))
 
@@ -1079,8 +1122,15 @@ Uses the configured separator style from `claude-code-separator-style'."
           (put-text-property (point-min) history-end 'read-only t)
           (put-text-property (point-min) history-end 'keymap claude-code-buffer-readonly-map)))
       ;; Explicitly ensure the input area is NOT read-only and has NO special keymap
+      ;; Also remove any markdown or font-lock properties that might interfere
       (when (<= marker-pos (point-max))
-        (remove-text-properties marker-pos (point-max) '(read-only nil keymap nil)))))
+        (remove-text-properties marker-pos (point-max)
+                               '(read-only nil
+                                 keymap nil
+                                 syntax-table nil
+                                 font-lock-face nil
+                                 fontified nil
+                                 font-lock-multiline nil)))))
   ;; Move point to input area
   (goto-char (point-max))
   (message "Input area ready. Type your message and press C-c RET to send."))

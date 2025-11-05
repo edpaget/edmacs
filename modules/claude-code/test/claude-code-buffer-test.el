@@ -126,13 +126,13 @@
 
         (expect buffer :to-match-buffer "Tool: Read")))
 
-    (it "formats tool input as code block"
+    (it "formats tool input as markdown list"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
         (claude-code-buffer-start-interaction buffer "Prompt")
         (claude-code-buffer-add-tool-use buffer "Bash" '((command . "ls -la")))
 
-        (expect buffer :to-match-buffer "```elisp")
-        (expect buffer :to-match-buffer "```")))
+        (expect buffer :to-match-buffer "command")
+        (expect buffer :to-match-buffer "ls -la")))
 
     (it "stores tool use in interaction"
       (let ((buffer (claude-code-buffer-get-or-create "/tmp/test/")))
