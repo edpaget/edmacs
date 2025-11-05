@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/edpaget/edmacs/actions/workflows/claude-code.yml/badge.svg)](https://github.com/edpaget/edmacs/actions/workflows/claude-code.yml)
 [![Emacs](https://img.shields.io/badge/Emacs-29.1+-purple.svg)](https://www.gnu.org/software/emacs/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](../../LICENSE)
 
 An Emacs integration for the [Claude Code CLI](https://github.com/anthropics/claude-code). Provides a REPL-style interface with markdown rendering, syntax highlighting, and conversation continuity.
 
@@ -156,3 +156,7 @@ eldev clean                 # Remove compiled files
 - [Claude Code CLI](https://github.com/anthropics/claude-code) in PATH
 - Projectile (for project detection)
 - markdown-mode (for rendering)
+
+## License
+
+This module is part of the edmacs configuration and is licensed under the GNU General Public License v3.0 or later. See the [LICENSE](../../LICENSE) file for details.

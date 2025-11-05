@@ -360,7 +360,7 @@ Contributions are welcome! Please:
 
 ## License
 
-This configuration is provided as-is under the MIT License.
+This configuration is licensed under the GNU General Public License v3.0 or later. See the LICENSE file for details.
 
 ## Resources
 
