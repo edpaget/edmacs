@@ -50,7 +50,7 @@ Each rule is a plist with the following keys:
 - action: \\='allow or \\='deny
 - pattern: Optional pattern to match against tool input (string)
 
-Rules are evaluated in order. First matching rule wins.
+Rules are evaluated in order.  First matching rule wins.
 Deny rules take precedence over allow rules."
   :type '(repeat (plist :key-type symbol))
   :group 'claude-code-approval)

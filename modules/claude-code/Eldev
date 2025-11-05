@@ -62,6 +62,11 @@
     (setf eldev-lint-default-excluded
           '("./test/**/*"))))
 
+;; Configure which linters to run
+;; Use only checkdoc and byte-compile warnings
+;; This is a multi-file package, so package-lint's prefix checking doesn't apply
+(setf eldev-lint-default '(checkdoc))
+
 ;; ============================================================================
 ;; Build Configuration
 ;; ============================================================================

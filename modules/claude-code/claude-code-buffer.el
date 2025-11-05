@@ -229,7 +229,7 @@ Controls vertical spacing between prompt/response/tool sections."
 
 (defcustom claude-code-buffer-max-width nil
   "Maximum width for content in characters.
-If nil, use full window width. If set, content will be limited to this width."
+If nil, use full window width.  If set, content will be limited to this width."
   :type '(choice (const :tag "No limit" nil)
                  (integer :tag "Max width"))
   :group 'claude-code-buffer)
@@ -517,7 +517,7 @@ This dynamically updates the response header in the buffer."
   "Current position in the input ring.")
 
 (defvar-local claude-code-buffer-input-history-pattern nil
-  "Pattern for searching history. Set by history search commands.")
+  "Pattern for searching history.  Set by history search commands.")
 
 (defconst claude-code-buffer-input-ring-size 100
   "Maximum number of inputs to store in history.")
@@ -544,7 +544,7 @@ This prevents markdown formatting from being applied to the editable input area.
 
 (defun claude-code-buffer--clean-input-area ()
   "Remove any text properties that might interfere with editing in the input area.
-This is called on post-command-hook to ensure the input area stays editable."
+This is called on `post-command-hook' to ensure the input area stays editable."
   (when (and claude-code-buffer-input-start-marker
              (claude-code-buffer-in-input-area-p))
     (let ((input-start (marker-position claude-code-buffer-input-start-marker))
@@ -673,7 +673,7 @@ Saves and restores positions of input-start and prompt-start markers."
 
 (defun claude-code-buffer-propertize-region (start end properties)
   "Apply PROPERTIES (a plist) to region from START to END.
-More convenient than multiple put-text-property calls.
+More convenient than multiple `put-text-property' calls.
 
 Example:
   (claude-code-buffer-propertize-region
@@ -1189,7 +1189,7 @@ prompt-start and input-start markers to prevent memory leaks."
   (cond
    ;; No input marker set up
    ((not claude-code-buffer-input-start-marker)
-    (user-error "No input area available. Try reopening the buffer"))
+    (user-error "No input area available.  Try reopening the buffer"))
 
    ;; Input not complete or empty
    ((not (claude-code-buffer-input-complete-p))
@@ -1261,7 +1261,7 @@ prompt-start and input-start markers to prevent memory leaks."
 
 (defun claude-code-buffer-history-search-backward (pattern)
   "Search backward in history for entries matching PATTERN (regex).
-Updates input area with first match found. When called repeatedly,
+Updates input area with first match found.  When called repeatedly,
 continues searching through older matches."
   (interactive "sSearch history backward (regex): ")
   (setq-local claude-code-buffer-input-history-pattern pattern)
@@ -1298,7 +1298,7 @@ continues searching through older matches."
 
 (defun claude-code-buffer-history-search-forward (pattern)
   "Search forward in history for entries matching PATTERN (regex).
-Updates input area with first match found. When called repeatedly,
+Updates input area with first match found.  When called repeatedly,
 continues searching through newer matches."
   (interactive "sSearch history forward (regex): ")
   (setq-local claude-code-buffer-input-history-pattern pattern)
