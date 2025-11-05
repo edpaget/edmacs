@@ -732,7 +732,8 @@ Uses the configured separator style from `claude-code-separator-style'."
 
 (defun claude-code-buffer--format-todo-list (todos)
   "Format TODOS list for TodoWrite tool in a readable way.
-TODOS should be a list or vector of todo items with content, status, and activeForm."
+TODOS should be a list or vector of todo items with content, status,
+and activeForm."
   (let ((lines nil)
         (status-icons '((completed . "✓")
                        (in_progress . "▶")
