@@ -73,6 +73,14 @@ Default is 600 seconds (10 minutes)."
   :type 'integer
   :group 'claude-code-approval)
 
+(defcustom claude-code-approval-silent t
+  "When non-nil, suppress informational messages during approval.
+This prevents the minibuffer from growing with verbose output.
+Errors and important notifications will still be shown.
+Default is t (silent mode enabled)."
+  :type 'boolean
+  :group 'claude-code-approval)
+
 ;;; Internal Variables
 
 (defvar claude-code-approval-servers (make-hash-table :test 'equal)
@@ -107,11 +115,13 @@ Prevents duplicate responses if filter is called multiple times.")
 (defvar claude-code-approval--current-proc nil
   "Current client process for this approval request.")
 
-;; Forward declarations to suppress byte-compiler warnings
-(declare-function claude-code-approval--check-policy "claude-code-approval")
-(declare-function claude-code-approval--send-response "claude-code-approval")
-(declare-function claude-code-approval--make-hook-response "claude-code-approval")
-(declare-function claude-code-approval--get-decision-async "claude-code-approval")
+;;; Helper Functions
+
+(defun claude-code-approval--message (format-string &rest args)
+  "Display a message unless `claude-code-approval-silent' is non-nil.
+FORMAT-STRING and ARGS are passed to `message'."
+  (unless claude-code-approval-silent
+    (apply #'message format-string args)))
 
 ;;; Socket Server Lifecycle
 
@@ -129,7 +139,7 @@ Returns the socket path."
     ;; Stop any existing server for this project
     (claude-code-approval-stop-server project-root)
 
-    (message "starting server %s" (format "cc-approval-%s"
+    (claude-code-approval--message "starting server %s" (format "cc-approval-%s"
                                           (secure-hash 'md5 project-root)))
     (condition-case err
         (let ((server (make-network-process
@@ -147,7 +157,7 @@ Returns the socket path."
                    (list :server server :socket-path socket-path)
                    claude-code-approval-servers)
 
-          (message "Claude Code approval server listening on %s" socket-path)
+          (claude-code-approval--message "Claude Code approval server listening on %s" socket-path)
           socket-path)
 
       (error
@@ -171,14 +181,14 @@ Returns the socket path."
     ;; Remove from hash table
     (remhash project-root claude-code-approval-servers)
 
-    (message "Claude Code approval server stopped for %s" project-root)))
+    (claude-code-approval--message "Claude Code approval server stopped for %s" project-root)))
 
 (defun claude-code-approval--socket-sentinel (proc event)
   "Sentinel function for approval socket server.
 PROC is the process, EVENT is the event string."
-  (message "Socket sentinel for %s: %s (live: %s)" proc (string-trim event) (process-live-p proc))
+  (claude-code-approval--message "Socket sentinel for %s: %s (live: %s)" proc (string-trim event) (process-live-p proc))
   (unless (process-live-p proc)
-    (message "Claude Code approval socket closed: %s" (string-trim event))
+    (claude-code-approval--message "Claude Code approval socket closed: %s" (string-trim event))
     ;; Clean up all references
     (remhash proc claude-code-approval--active-processes)
     (remhash proc claude-code-approval--responded-processes)))
@@ -187,20 +197,20 @@ PROC is the process, EVENT is the event string."
   "Handle incoming approval request from hook via nc.
 PROC is the client connection process.
 STRING is the JSON request data."
-  (message "Socket filter called for %s: %S (length: %d)" proc string (length string))
+  (claude-code-approval--message "Socket filter called for %s: %S (length: %d)" proc string (length string))
 
   (cond
    ;; Ignore if we've already processed/responded to this connection
    ((gethash proc claude-code-approval--responded-processes)
-    (message "Already responded to process %s, ignoring" proc))
+    (claude-code-approval--message "Already responded to process %s, ignoring" proc))
 
    ;; Ignore empty or whitespace-only data
    ((string-match-p "\\`[[:space:]]*\\'" string)
-    (message "Received empty/whitespace data, ignoring"))
+    (claude-code-approval--message "Received empty/whitespace data, ignoring"))
 
    ;; Only process if it looks like JSON
    ((not (string-match-p "\\`[[:space:]]*{" string))
-    (message "Data doesn't look like JSON, ignoring: %S" string))
+    (claude-code-approval--message "Data doesn't look like JSON, ignoring: %S" string))
 
    ;; Process the JSON request
    (t
@@ -216,7 +226,7 @@ STRING is the JSON request data."
 
           ;; Keep a strong reference to the client process
           (puthash proc t claude-code-approval--active-processes)
-          (message "Processing approval request for tool: %s" tool)
+          (claude-code-approval--message "Processing approval request for tool: %s" tool)
 
           ;; Get approval decision asynchronously
           ;; The callback will send the response through the process
@@ -240,11 +250,11 @@ STRING is the JSON request data."
 
 (defun claude-code-approval--send-response (proc decision)
   "Send DECISION response through PROC and close connection."
-  (message "Sending response: %s (proc live: %s)" decision (process-live-p proc))
+  (claude-code-approval--message "Sending response: %s (proc live: %s)" decision (process-live-p proc))
   (when (process-live-p proc)
     (let ((response (json-encode decision)))
       (process-send-string proc (concat response "\n"))
-      (message "Response sent, closing connection")
+      (claude-code-approval--message "Response sent, closing connection")
       ;; Close the connection after sending response
       (process-send-eof proc)))
   ;; Remove the strong reference to allow GC
@@ -420,10 +430,11 @@ This function returns immediately after showing the UI."
     (select-window (get-buffer-window buffer))
     (raise-frame)
 
-    ;; Force evil-mode to emacs state if it's active
+    ;; Force evil-mode to motion state if it's active
+    ;; This allows vim motions while keeping our keybindings active
     (with-current-buffer buffer
-      (when (and (boundp 'evil-mode) evil-mode (fboundp 'evil-emacs-state))
-        (evil-emacs-state)))
+      (when (and (boundp 'evil-mode) evil-mode (fboundp 'evil-motion-state))
+        (evil-motion-state)))
 
     ;; Start timeout timer
     (setq claude-code-approval--decision-timer
@@ -617,9 +628,10 @@ This function returns immediately after showing the UI."
         truncate-lines nil)
   ;; Ensure our keymap takes precedence over special-mode-map
   (use-local-map claude-code-approval-mode-map)
-  ;; Configure evil-mode to use emacs state if available
+  ;; Configure evil-mode to use motion state if available
+  ;; This allows vim motions (h/j/k/l) while keeping our keybindings active
   (when (fboundp 'evil-set-initial-state)
-    (evil-set-initial-state 'claude-code-approval-mode 'emacs)))
+    (evil-set-initial-state 'claude-code-approval-mode 'motion)))
 
 ;;; Buffer-local variables for approval requests
 

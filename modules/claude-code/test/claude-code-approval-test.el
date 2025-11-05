@@ -80,7 +80,7 @@
   ;; and test the complete flow.
 
   (describe "Evil-mode integration"
-    (it "sets initial state to emacs when evil-mode is available"
+    (it "sets initial state to motion when evil-mode is available"
       (with-temp-buffer
         ;; Mock evil-mode functions
         (let ((evil-state-called nil)
@@ -95,7 +95,7 @@
             ;; Check that evil integration was called with correct arguments
             (expect evil-state-called :to-be t)
             (expect (car evil-state-arg) :to-equal 'claude-code-approval-mode)
-            (expect (cadr evil-state-arg) :to-equal 'emacs)))))
+            (expect (cadr evil-state-arg) :to-equal 'motion)))))
 
     (it "defines keybindings that work in the approval buffer"
       (with-temp-buffer
