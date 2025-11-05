@@ -65,9 +65,11 @@ Deny rules take precedence over allow rules."
                  (const :tag "Deny" deny))
   :group 'claude-code-approval)
 
-(defcustom claude-code-approval-timeout 30
+(defcustom claude-code-approval-timeout 600
   "Timeout in seconds for interactive approval requests.
-After this timeout, the request is automatically denied."
+After this timeout, the request is automatically denied.
+This also sets the timeout for the Claude Code hook execution.
+Default is 600 seconds (10 minutes)."
   :type 'integer
   :group 'claude-code-approval)
 

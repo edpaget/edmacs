@@ -155,7 +155,8 @@ Optional MODEL to use instead of default."
          (settings-json (json-encode
                          `((hooks . ((PreToolUse . [((matcher . "*")
                                                      (hooks . [((type . "command")
-                                                                (command . ,(format "python3 -c \"import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect('%s'); d=sys.stdin.read(); s.sendall(d.encode()); sys.stdout.write(s.recv(65536).decode()); s.close()\"" socket-path)))]))])))
+                                                                (command . ,(format "python3 -c \"import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect('%s'); d=sys.stdin.read(); s.sendall(d.encode()); sys.stdout.write(s.recv(65536).decode()); s.close()\"" socket-path))
+                                                                (timeout . ,claude-code-approval-timeout))]))])))
                            (defaultMode . "default"))))
          
          ;; Write settings to temp file
