@@ -4,7 +4,7 @@
 
 ;; Author: Claude Code Contributors
 ;; Version: 0.2.0
-;; Package-Requires: ((emacs "30.2") (markdown-mode "2.7") (projectile "2.9.1"))
+;; Package-Requires: ((emacs "29.1") (markdown-mode "2.7") (projectile "2.9.1"))
 ;; Keywords: tools, ai, claude
 ;; URL: https://github.com/edpaget/edmacs/modules/claude-code
 
@@ -169,8 +169,8 @@ session continuity."
 MODE can be: interactive, auto-approve, deny-all, or hybrid."
   (interactive
    (list (intern (completing-read "Approval mode: "
-                                   '("interactive" "auto-approve" "deny-all" "hybrid")
-                                   nil t))))
+                                  '("interactive" "auto-approve" "deny-all" "hybrid")
+                                  nil t))))
   (setq claude-code-approval-mode mode)
   (message "Claude Code approval mode set to: %s" mode))
 
@@ -181,14 +181,14 @@ MODE can be: interactive, auto-approve, deny-all, or hybrid."
     (with-current-buffer buffer
       (erase-buffer)
       (insert (propertize "Claude Code Approval Policy\n"
-                         'face '(:weight bold :height 1.2))
+                          'face '(:weight bold :height 1.2))
               (propertize (make-string 60 ?=) 'face 'shadow)
               "\n\n")
 
       ;; Current mode
       (insert (propertize "Current Mode: " 'face 'bold)
               (propertize (symbol-name claude-code-approval-mode)
-                         'face '(:foreground "cyan" :weight bold))
+                          'face '(:foreground "cyan" :weight bold))
               "\n\n")
 
       ;; Default action
@@ -204,11 +204,11 @@ MODE can be: interactive, auto-approve, deny-all, or hybrid."
                 (action (plist-get rule 'action))
                 (pattern (plist-get rule 'pattern)))
             (insert (format "  • %s: %s"
-                           (propertize (symbol-name action)
-                                      'face (if (eq action 'allow)
-                                               'success
-                                             'error))
-                           tool))
+                            (propertize (symbol-name action)
+                                        'face (if (eq action 'allow)
+                                                  'success
+                                                'error))
+                            tool))
             (when pattern
               (insert (format " (pattern: %s)" pattern)))
             (insert "\n"))))
@@ -220,11 +220,11 @@ MODE can be: interactive, auto-approve, deny-all, or hybrid."
           (insert "  No session rules.\n")
         (maphash (lambda (key value)
                    (insert (format "  • %s: %s\n"
-                                  (propertize (symbol-name value)
-                                             'face (if (eq value 'allow)
-                                                      'success
-                                                    'error))
-                                  key)))
+                                   (propertize (symbol-name value)
+                                               'face (if (eq value 'allow)
+                                                         'success
+                                                       'error))
+                                   key)))
                  claude-code-approval-session-rules))
 
       (goto-char (point-min))

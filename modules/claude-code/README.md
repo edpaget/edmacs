@@ -1,303 +1,158 @@
-# Claude Code REPL Integration
+# Claude Code for Emacs
 
-![CI](https://github.com/USERNAME/REPO/workflows/CI/badge.svg)
-![Checks](https://github.com/USERNAME/REPO/workflows/Checks/badge.svg)
-[![Emacs](https://img.shields.io/badge/Emacs-28.1+-purple.svg)](https://www.gnu.org/software/emacs/)
+[![CI](https://github.com/edpaget/edmacs/actions/workflows/claude-code.yml/badge.svg)](https://github.com/edpaget/edmacs/actions/workflows/claude-code.yml)
+[![Emacs](https://img.shields.io/badge/Emacs-29.1+-purple.svg)](https://www.gnu.org/software/emacs/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Status**: Phases 1-4 Complete ✅
-
-A beautiful, **true interactive REPL** for Claude Code in Emacs. Type prompts directly in the buffer and send with RET, just like CIDER. Features markdown rendering, syntax highlighting, structured conversation history, and powerful navigation.
-
-## What's Implemented
-
-### Phase 1: Core Process Management ✅
-### Phase 2: Response Buffer UI ✅
-### Phase 3: Navigation and History ✅
-### Phase 4: Interactive REPL Input ✅
+An Emacs integration for the [Claude Code CLI](https://github.com/anthropics/claude-code). Provides a REPL-style interface with markdown rendering, syntax highlighting, and conversation continuity.
 
 ## Features
 
-### 🎨 Beautiful Response Buffer
+### Interactive REPL
 
-- **Markdown rendering**: Full markdown support with syntax highlighting
-- **Structured layout**: Clear sections for prompts, responses, and tools
-- **Real-time streaming**: Watch responses appear as Claude types
-- **Custom faces**: Distinct styling for different elements
-- **Conversation history**: All interactions in one persistent buffer per project
-- **Code block support**: Syntax-highlighted code with copy commands
+- Type prompts directly in the buffer and send with `RET`
+- Multi-line input with `C-j` for newlines
+- Input history navigation with `M-p`/`M-n`
+- Session continuity: conversations persist within each buffer using `--resume`
+- Real-time response streaming
 
-### ⚙️ Robust Process Management
+### Response Buffer
 
-- **Project-aware**: One process per project root (using Projectile)
-- **Streaming JSON**: Handles `--output-format stream-json` responses
-- **Lifecycle management**: Start, stop, monitor, and error recovery
-- **Callback system**: Extensible event handling
-- **Process isolation**: Each project has its own Claude instance
+- Markdown rendering with syntax highlighting
+- Structured layout for prompts, responses, and tool output
+- Code block navigation and copying
+- Per-project conversation buffers
 
-### 🛠️ Developer-Friendly Commands
+### Process Management
 
-- **Ask Claude**: Quick question/answer with beautiful output
-- **Buffer management**: Open, clear, and navigate response buffers
-- **Process control**: Start, stop, and monitor Claude processes
-- **Debug tools**: Raw event inspection for troubleshooting
+- One Claude process per project (uses Projectile)
+- Handles `--output-format stream-json` from Claude CLI
+- Process lifecycle management (start, stop, monitor)
+- Extensible callback system for events
 
-### 🧭 Navigation and History (Phase 3)
+### Navigation
 
-- **Interaction navigation**: Jump between prompt/response pairs
-- **Code block navigation**: Quick movement between code examples
-- **Re-send prompts**: Iterate on previous questions with one command
-- **Search conversations**: Find text across all interactions
-- **Interaction history**: All completed interactions tracked and accessible
+- Jump between prompt/response pairs
+- Navigate between code blocks
+- Re-send previous prompts
+- Search within conversations
+- Interaction history tracking
 
-### ⌨️ Interactive REPL Input (Phase 4) **NEW!**
+### Tool Approval System
 
-- **Type directly in buffer**: No more minibuffer prompts!
-- **RET to send**: Press RET in input area to send prompt (like CIDER)
-- **Multi-line input**: Use C-j for newlines, RET to send
-- **Input history**: M-p/M-n to navigate previous prompts
-- **Smart read-only**: Responses are protected, input area is editable
-- **Continuous conversation**: Claude remembers previous prompts in the same buffer!
-  - Uses session-based continuity with `--resume`
-  - Each buffer maintains its own conversation thread
-  - No configuration needed - it just works!
+- Interactive approval prompts for file operations and bash commands
+- Configurable auto-approval patterns via hooks
+- Integration with evil-mode for vim-style navigation in approval buffers
 
 ## Quick Start
 
-After reloading your Emacs configuration:
+With Spacemacs keybindings:
 
 ```
 SPC a c a                    # Open Claude Code REPL
 ```
 
-A beautiful REPL buffer opens with a "> " prompt. **Now just type and press RET:**
-
-```
-> What is the best way to learn Emacs?
-[Press RET]
-
-## Response
-
-The best way to learn Emacs is...
-
-> How do I configure key bindings?
-[Press RET]
-
-## Response
-
-To configure key bindings in Emacs...
-```
-
-Features you'll see:
-- Your prompts with timestamps
-- Claude's responses streaming in real-time
-- Markdown formatting and syntax highlighting
-- Token usage and response duration
-- Input history with M-p/M-n
-
-**No more switching to the minibuffer - it's a true REPL!**
+Type your prompt at the `> ` prompt and press `RET` to send. Use `C-j` for newlines within multi-line prompts. Responses stream in real-time with markdown formatting and syntax highlighting.
 
 ## Keybindings
 
 ### Main Commands (`SPC a c`)
 
-- `SPC a c a` - **Ask Claude** - Start a conversation
-- `SPC a c b` - **Open buffer** - View conversation history
-- `SPC a c c` - **Clear buffer** - Start fresh
+- `SPC a c a` - Start a conversation
+- `SPC a c b` - Open conversation buffer
+- `SPC a c c` - Clear buffer
 - `SPC a c s` - Start process for current project
 - `SPC a c k` - Kill process for current project
 - `SPC a c K` - Kill all processes
 - `SPC a c l` - List all processes
 - `SPC a c i` - Show process status
-- `SPC a c t` - Test prompt (debug mode)
 
-### Buffer Mode Commands
+### Response Buffer Commands
 
-When in a Claude Code response buffer:
-
-**Basic Commands:**
 - `q` - Quit window
 - `g` - Refresh buffer
 - `c` - Copy last response to kill ring
 - `C-c C-c` - Copy code block at point
 
-**Interactive REPL (Phase 4):** **NEW!**
+**Input:**
 - `RET` - Send input (when in input area)
-- `C-c RET` - Send input (explicit, works anywhere)
+- `C-c RET` - Send input (works anywhere)
 - `C-j` - Insert newline without sending
 - `M-p` - Previous input from history
 - `M-n` - Next input from history
 
-**Navigation (Phase 3):**
+**Navigation:**
 - `C-c C-n` - Next interaction
 - `C-c C-p` - Previous interaction
 - `C-M-n` - Next code block
 - `C-M-p` - Previous code block
 
-**Actions (Phase 3):**
+**Actions:**
 - `C-c C-r` - Re-send prompt at point
 - `C-c C-s` - Search in interactions
 
-### Testing Phase 1
-
-After loading your Emacs configuration:
-
-1. **Start a process**:
-   ```
-   M-x claude-code-process-start-current-project
-   ```
-
-2. **Quick test**:
-   ```
-   M-x claude-code-quick-ask
-   Prompt: What is 2+2?
-   ```
-
-   This will:
-   - Create a new Claude process
-   - Send your prompt
-   - Display streaming responses in `*claude-code-response*` buffer
-
-3. **Debug test**:
-   ```
-   M-x claude-code-test-prompt
-   Prompt: Hello Claude!
-   ```
-
-   This shows raw JSON events in `*claude-code-test-output*` buffer for debugging.
-
-4. **View processes**:
-   ```
-   M-x claude-code-show-processes
-   ```
-
 ## Architecture
 
-### Process Object Structure
+Each Claude Code process is represented by a `claude-code-process` struct containing the project root, Emacs process object, session ID, callbacks, and metadata. The module manages one process per project root (determined via Projectile).
 
-Each Claude Code process is represented by a `claude-code-process` struct:
+JSON events from `--output-format stream-json` are processed line-by-line:
+1. Process filter accumulates partial lines
+2. Complete lines are parsed as JSON
+3. Events are dispatched to registered callbacks
+4. Callbacks update the UI and response buffer
 
-```elisp
-(cl-defstruct claude-code-process
-  project-root          ; Where this process belongs
-  process               ; Emacs process object
-  session-id            ; Claude session ID (for --resume)
-  buffer                ; Process output buffer
-  partial-json          ; Accumulated partial JSON
-  response-callbacks    ; Functions to call on events
-  error-callbacks       ; Functions to call on errors
-  status                ; running, stopped, error
-  last-prompt           ; Last prompt sent
-  last-response         ; Last complete response
-  metadata)             ; Additional data (model, timestamps, etc.)
+Main event types: `message_start`, `content_block_start`, `content_block_delta`, `tool_use`, `message_stop`.
+
+## Project Structure
+
 ```
-
-### JSON Event Flow
-
-1. Claude outputs JSON events line-by-line
-2. Process filter accumulates partial lines
-3. Complete lines are parsed as JSON
-4. Events are dispatched to registered callbacks
-5. Callbacks update UI, buffers, etc.
-
-### Event Types
-
-Based on `--output-format stream-json`:
-
-- `message_start` - New message starting
-- `content_block_start` - New content block
-- `content_block_delta` - Text chunk (streaming)
-- `tool_use` - Claude using a tool
-- `message_stop` - Response complete
-
-## API Reference
-
-### Starting/Stopping Processes
-
-```elisp
-;; Start a process for a specific project
-(claude-code-process-start "/path/to/project")
-
-;; Get existing process or create new one
-(claude-code-process-get-or-create "/path/to/project")
-
-;; Get current project's process
-(claude-code-process-current)
-
-;; Kill a process
-(claude-code-process-kill proc-obj)
-```
-
-### Sending Prompts
-
-```elisp
-;; Send a prompt to a process
-(claude-code-process-send-prompt proc-obj "Explain this code")
-```
-
-### Callbacks
-
-```elisp
-;; Add a response callback
-(claude-code-process-add-response-callback
- proc-obj
- (lambda (event)
-   (message "Got event: %s" (alist-get 'type event))))
-
-;; Add an error callback
-(claude-code-process-add-error-callback
- proc-obj
- (lambda (error-event)
-   (message "Process error: %s" error-event)))
-```
-
-## Next Steps (Future Phases)
-
-- **Phase 2**: Response buffer UI with markdown rendering
-- **Phase 3**: Navigation and history
-- **Phase 4**: Enhanced prompt interface
-- **Phase 5**: Inline evaluation
-- **Phase 6**: Session management
-- **Phase 7**: Tool integration visualization
-- **Phase 8**: Advanced features
-
-## Known Limitations (Phase 1)
-
-- Raw JSON output (no pretty formatting yet)
-- No conversation history UI
-- No session persistence across Emacs restarts
-- Each prompt creates a new process (no --continue support yet)
-- No inline evaluation
-- No response buffer management
-
-These will be addressed in future phases.
-
-## Troubleshooting
-
-### Process won't start
-
-Check that `claude` is in your PATH:
-```elisp
-M-: (executable-find "claude")
-```
-
-### No JSON output
-
-Make sure you're using a recent version of Claude Code CLI that supports `--output-format stream-json`.
-
-### Callbacks not firing
-
-Check the process buffer for raw output:
-```elisp
-M-x claude-code-show-processes
-;; Then visit the buffer shown
+modules/claude-code/
+├── claude-code.el           # Main entry point
+├── claude-code-core.el      # User commands
+├── claude-code-process.el   # Process management
+├── claude-code-buffer.el    # Buffer management and UI
+├── claude-code-approval.el  # Tool approval system
+├── test/
+│   ├── test-helper.el                  # Test utilities
+│   ├── claude-code-approval-test.el
+│   ├── claude-code-buffer-test.el
+│   ├── claude-code-core-test.el
+│   └── claude-code-process-test.el
+└── Eldev                    # Build configuration
 ```
 
 ## Development
 
-To add new functionality:
+This project uses [Eldev](https://github.com/doublep/eldev) for building and testing.
 
-1. Add core functions to `claude-code-process.el`
+### Running Tests
+
+```bash
+eldev test                  # Run all tests
+eldev test approval         # Run tests matching pattern
+```
+
+Tests use the [Buttercup](https://github.com/jorgenschaefer/emacs-buttercup) framework. Test files are in `test/` and must end with `-test.el`.
+
+### Compilation and Linting
+
+```bash
+eldev compile               # Byte-compile all files
+eldev lint                  # Run linters (checkdoc, byte-compile warnings)
+eldev clean                 # Remove compiled files
+```
+
+### Adding Functionality
+
+1. Add core functions to the appropriate module (`claude-code-process.el`, `claude-code-buffer.el`, etc.)
 2. Add user-facing commands to `claude-code-core.el`
 3. Register keybindings in `claude-code-core-setup-keybindings`
-4. Test with simple prompts first
+4. Add tests to the corresponding test file in `test/`
+5. Run `eldev test` and `eldev compile` to verify
+
+### Requirements
+
+- Emacs 29.1 or later
+- [Claude Code CLI](https://github.com/anthropics/claude-code) in PATH
+- Projectile (for project detection)
+- markdown-mode (for rendering)
