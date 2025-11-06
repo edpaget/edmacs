@@ -6,7 +6,7 @@
 
 An Emacs integration for the [Claude Code CLI](https://github.com/anthropics/claude-repl). Provides a REPL-style interface with markdown rendering, syntax highlighting, and conversation continuity.
 
-<img width="1512" height="982" alt="Screenshot 2025-11-05 at 8 53 12 AM" src="https://github.com/user-attachments/assets/bf3f431c-004d-4a86-95ea-9ae7eab9c23d" />
+<img width="1512" height="982" alt="Screenshot 2025-11-06 at 10 47 24 AM 1" src="https://github.com/user-attachments/assets/349eeb78-f58f-4468-85b8-704a04ae44cd" />
 
 ## Installation
 
