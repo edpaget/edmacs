@@ -1,4 +1,4 @@
-;;; Directory Local Variables for claude-code
+;;; Directory Local Variables for claude-repl
 ;;; For more information see (info "(emacs) Directory Variables")
 
 ((emacs-lisp-mode

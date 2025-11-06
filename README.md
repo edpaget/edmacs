@@ -9,7 +9,7 @@ A modern, modular Emacs configuration with evil-mode, version-locked packages, a
 - **Modular Design**: Clean separation of concerns across modules
 - **Modern Completion**: Vertico + Corfu + Consult ecosystem
 - **LSP Support**: Full IDE features with LSP-mode
-- **AI Integration**: Claude AI assistant via claude-code-ide.el
+- **AI Integration**: Claude AI assistant via claude-repl
 - **Beautiful UI**: Catppuccin theme with Nano Modeline
 - **Org Mode**: Enhanced with org-roam, org-modern, and org-appear
 - **Git Integration**: Magit, diff-hl, and git-timemachine

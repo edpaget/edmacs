@@ -1,15 +1,15 @@
-name: Claude Code CI
+name: Claude REPL CI
 
 on:
   push:
     branches: [ main ]
     paths:
-      - 'modules/claude-code/**'
-      - '.github/workflows/claude-code.yml'
+      - 'modules/claude-repl/**'
+      - '.github/workflows/claude-repl.yml'
   pull_request:
     paths:
-      - 'modules/claude-code/**'
-      - '.github/workflows/claude-code.yml'
+      - 'modules/claude-repl/**'
+      - '.github/workflows/claude-repl.yml'
   workflow_dispatch:
 
 jobs:
@@ -51,17 +51,17 @@ jobs:
         run: eldev --version
 
       - name: Install dependencies
-        working-directory: modules/claude-code
+        working-directory: modules/claude-repl
         run: eldev -dtT prepare
 
       - name: Run tests
-        working-directory: modules/claude-code
+        working-directory: modules/claude-repl
         run: eldev -dtT test
 
       - name: Byte-compile
-        working-directory: modules/claude-code
+        working-directory: modules/claude-repl
         run: eldev -dtT compile --warnings-as-errors
 
       - name: Run linter
-        working-directory: modules/claude-code
+        working-directory: modules/claude-repl
         run: eldev -dtT lint

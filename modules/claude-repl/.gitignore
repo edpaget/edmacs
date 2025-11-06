@@ -1,0 +1,28 @@
+# Development and planning documents (keep locally, don't commit)
+PHASE*.md
+APPROVAL_INTEGRATION_PLAN.md
+CLAUDE.md
+CONVERSATION_CONTINUITY.md
+HOOKS_*.md
+PACKAGE_LINT_SUPPORT.md
+TIMEOUT_*.md
+CI_SETUP.md
+QUICKSTART.md
+TESTING.md
+DEVELOPMENT.md
+
+# Emacs files
+*.elc
+*~
+\#*\#
+.\#*
+*.log
+
+# Auto-generated files
+*-autoloads.el
+
+# Test files
+emacs-joke.txt
+
+# Claude Code configuration
+.claude/

@@ -1,4 +1,4 @@
-;;; claude-code-process.el --- Process management for Claude Code -*- lexical-binding: t -*-
+;;; claude-repl-process.el --- Process management for Claude Code -*- lexical-binding: t -*-
 
 ;;; Commentary:
 ;; Manages non-interactive Claude Code processes per project.
@@ -8,27 +8,27 @@
 
 (require 'json)
 (require 'projectile)
-(require 'claude-code-approval)
+(require 'claude-repl-approval)
 
 ;; ============================================================================
 ;; Variables
 ;; ============================================================================
 
-(defvar claude-code-processes (make-hash-table :test 'equal)
+(defvar claude-repl-processes (make-hash-table :test 'equal)
   "Hash table mapping project roots to Claude Code process objects.")
 
-(defvar claude-code-executable "claude"
+(defvar claude-repl-executable "claude"
   "Path to the Claude Code executable.")
 
-(defvar claude-code-default-model "sonnet"
+(defvar claude-repl-default-model "sonnet"
   "Default model to use for Claude Code sessions.")
 
 ;; ============================================================================
 ;; Process Object Structure
 ;; ============================================================================
 
-(cl-defstruct (claude-code-process
-               (:constructor claude-code-process--create)
+(cl-defstruct (claude-repl-process
+               (:constructor claude-repl-process--create)
                (:copier nil))
   "Structure representing a Claude Code process."
   project-root          ; Project root directory
@@ -49,17 +49,17 @@
 ;; Core Process Functions
 ;; ============================================================================
 
-(defun claude-code-process--get-project-root ()
+(defun claude-repl-process--get-project-root ()
   "Get the current project root directory."
   (or (projectile-project-root)
       default-directory))
 
-(defun claude-code-process--make-buffer-name (project-root)
+(defun claude-repl-process--make-buffer-name (project-root)
   "Create a buffer name for the Claude Code process for PROJECT-ROOT."
-  (format "*claude-code-process: %s*"
+  (format "*claude-repl-process: %s*"
           (file-name-nondirectory (directory-file-name project-root))))
 
-(defun claude-code-process--parse-json-event (json-string)
+(defun claude-repl-process--parse-json-event (json-string)
   "Parse JSON-STRING event from Claude Code output.
 Returns the parsed object or nil if parsing fails."
   (condition-case err
@@ -68,34 +68,34 @@ Returns the parsed object or nil if parsing fails."
      (message "Claude Code: Failed to parse JSON: %s" (error-message-string err))
      nil)))
 
-(defun claude-code-process--handle-json-line (proc-obj line)
+(defun claude-repl-process--handle-json-line (proc-obj line)
   "Handle a complete JSON line from the Claude process.
-PROC-OBJ is the claude-code-process structure.
+PROC-OBJ is the claude-repl-process structure.
 LINE is the complete JSON string to process."
-  (when-let* ((event (claude-code-process--parse-json-event line)))
+  (when-let* ((event (claude-repl-process--parse-json-event line)))
     ;; Store the last response for debugging
-    (setf (claude-code-process-last-response proc-obj) event)
+    (setf (claude-repl-process-last-response proc-obj) event)
 
     ;; Call registered callbacks
-    (dolist (callback (claude-code-process-response-callbacks proc-obj))
+    (dolist (callback (claude-repl-process-response-callbacks proc-obj))
       (condition-case err
           (funcall callback event)
         (error
          (message "Claude Code: Callback error: %s" (error-message-string err)))))))
 
-(defun claude-code-process--filter (process output)
+(defun claude-repl-process--filter (process output)
   "Process filter for Claude Code process.
 PROCESS is the Emacs process object.
 OUTPUT is the new output string."
   (when-let* ((proc-obj (gethash (process-get process 'project-root)
-                                 claude-code-processes)))
-    (with-current-buffer (claude-code-process-buffer proc-obj)
+                                 claude-repl-processes)))
+    (with-current-buffer (claude-repl-process-buffer proc-obj)
       ;; Append output to buffer
       (goto-char (point-max))
       (insert output)
 
       ;; Accumulate partial JSON
-      (let ((partial (or (claude-code-process-partial-json proc-obj) "")))
+      (let ((partial (or (claude-repl-process-partial-json proc-obj) "")))
         (setq partial (concat partial output))
 
         ;; Process complete JSON lines
@@ -104,51 +104,51 @@ OUTPUT is the new output string."
               ;; All lines are complete
               (progn
                 (dolist (line lines)
-                  (claude-code-process--handle-json-line proc-obj line))
-                (setf (claude-code-process-partial-json proc-obj) ""))
+                  (claude-repl-process--handle-json-line proc-obj line))
+                (setf (claude-repl-process-partial-json proc-obj) ""))
             ;; Last line is incomplete
             (let ((complete-lines (butlast lines))
                   (incomplete-line (car (last lines))))
               (dolist (line complete-lines)
-                (claude-code-process--handle-json-line proc-obj line))
-              (setf (claude-code-process-partial-json proc-obj) incomplete-line))))))))
+                (claude-repl-process--handle-json-line proc-obj line))
+              (setf (claude-repl-process-partial-json proc-obj) incomplete-line))))))))
 
-(defun claude-code-process--sentinel (process event)
+(defun claude-repl-process--sentinel (process event)
   "Process sentinel for Claude Code process.
 PROCESS is the Emacs process object.
 EVENT is the process event string."
   (when-let* ((project-root (process-get process 'project-root))
-              (proc-obj (gethash project-root claude-code-processes)))
+              (proc-obj (gethash project-root claude-repl-processes)))
     (cond
      ((string-match-p "^finished" event)
-      (setf (claude-code-process-status proc-obj) 'stopped)
+      (setf (claude-repl-process-status proc-obj) 'stopped)
       (message "Claude Code process finished for %s"
                (file-name-nondirectory (directory-file-name project-root))))
 
      ((string-match-p "^exited abnormally\\|^failed\\|^killed" event)
-      (setf (claude-code-process-status proc-obj) 'error)
+      (setf (claude-repl-process-status proc-obj) 'error)
       (message "Claude Code process error for %s: %s"
                (file-name-nondirectory (directory-file-name project-root))
                (string-trim event))
 
       ;; Call error callbacks
-      (dolist (callback (claude-code-process-error-callbacks proc-obj))
+      (dolist (callback (claude-repl-process-error-callbacks proc-obj))
         (condition-case err
             (funcall callback event)
           (error
            (message "Claude Code: Error callback failed: %s"
                     (error-message-string err)))))))))
 
-(defun claude-code-process-start (project-root &optional session-id model)
+(defun claude-repl-process-start (project-root &optional session-id model)
   "Start a new Claude Code process for PROJECT-ROOT.
 Optional SESSION-ID to resume a specific session.
 Optional MODEL to use instead of default."
-  (let* ((buffer-name (claude-code-process--make-buffer-name project-root))
+  (let* ((buffer-name (claude-repl-process--make-buffer-name project-root))
          (buffer (generate-new-buffer buffer-name))
-         (model (or model claude-code-default-model))
+         (model (or model claude-repl-default-model))
 
          ;; Start approval server first
-         (socket-path (claude-code-approval-start-server project-root))
+         (socket-path (claude-repl-approval-start-server project-root))
 
          ;; Generate settings JSON with inline hook
          ;; Use Python for reliable stdin/stdout handling over Unix socket
@@ -156,7 +156,7 @@ Optional MODEL to use instead of default."
                          `((hooks . ((PreToolUse . [((matcher . "*")
                                                      (hooks . [((type . "command")
                                                                 (command . ,(format "python3 -c \"import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect('%s'); d=sys.stdin.read(); s.sendall(d.encode()); sys.stdout.write(s.recv(65536).decode()); s.close()\"" socket-path))
-                                                                (timeout . ,claude-code-approval-timeout))]))])))
+                                                                (timeout . ,claude-repl-approval-timeout))]))])))
                            (defaultMode . "default"))))
          
          ;; Write settings to temp file
@@ -181,13 +181,13 @@ Optional MODEL to use instead of default."
     ;; Start the process
     (setq process
           (make-process
-           :name (format "claude-code-%s"
+           :name (format "claude-repl-%s"
                          (file-name-nondirectory (directory-file-name project-root)))
            :buffer buffer
-           :command (cons claude-code-executable args)
+           :command (cons claude-repl-executable args)
            :connection-type 'pipe
-           :filter #'claude-code-process--filter
-           :sentinel #'claude-code-process--sentinel
+           :filter #'claude-repl-process--filter
+           :sentinel #'claude-repl-process--sentinel
            :noquery t))
 
     ;; Store project root in process for lookup
@@ -195,7 +195,7 @@ Optional MODEL to use instead of default."
 
     ;; Create process object
     (setq proc-obj
-          (claude-code-process--create
+          (claude-repl-process--create
            :project-root project-root
            :process process
            :session-id session-id
@@ -211,7 +211,7 @@ Optional MODEL to use instead of default."
            :settings-file settings-file))
 
     ;; Store in hash table
-    (puthash project-root proc-obj claude-code-processes)
+    (puthash project-root proc-obj claude-repl-processes)
 
     (message "Started Claude Code process for %s (model: %s)"
              (file-name-nondirectory (directory-file-name project-root))
@@ -219,27 +219,27 @@ Optional MODEL to use instead of default."
 
     proc-obj))
 
-(defun claude-code-process-get (project-root)
+(defun claude-repl-process-get (project-root)
   "Get the Claude Code process for PROJECT-ROOT, or nil if none exists."
-  (gethash project-root claude-code-processes))
+  (gethash project-root claude-repl-processes))
 
-(defun claude-code-process-get-or-create (project-root)
+(defun claude-repl-process-get-or-create (project-root)
   "Get or create a Claude Code process for PROJECT-ROOT."
-  (or (claude-code-process-get project-root)
-      (claude-code-process-start project-root)))
+  (or (claude-repl-process-get project-root)
+      (claude-repl-process-start project-root)))
 
-(defun claude-code-process-send-prompt (proc-obj prompt)
+(defun claude-repl-process-send-prompt (proc-obj prompt)
   "Send PROMPT to the Claude Code process PROC-OBJ.
 Returns t if successful, nil otherwise."
-  (unless (claude-code-process-p proc-obj)
+  (unless (claude-repl-process-p proc-obj)
     (error "Invalid Claude Code process object"))
 
-  (let ((process (claude-code-process-process proc-obj)))
+  (let ((process (claude-repl-process-process proc-obj)))
     (unless (and process (process-live-p process))
       (error "Claude Code process is not running"))
 
     ;; Store the prompt
-    (setf (claude-code-process-last-prompt proc-obj) prompt)
+    (setf (claude-repl-process-last-prompt proc-obj) prompt)
 
     ;; Send the prompt followed by EOF
     ;; Note: EOF ends this process session, so each prompt is independent
@@ -254,15 +254,15 @@ Returns t if successful, nil otherwise."
        (message "Claude Code: Failed to send prompt: %s" (error-message-string err))
        nil))))
 
-(defun claude-code-process-kill (proc-obj)
+(defun claude-repl-process-kill (proc-obj)
   "Kill the Claude Code process PROC-OBJ and clean up resources."
-  (unless (claude-code-process-p proc-obj)
+  (unless (claude-repl-process-p proc-obj)
     (error "Invalid Claude Code process object"))
 
-  (let ((process (claude-code-process-process proc-obj))
-        (buffer (claude-code-process-buffer proc-obj))
-        (project-root (claude-code-process-project-root proc-obj))
-        (settings-file (claude-code-process-settings-file proc-obj)))
+  (let ((process (claude-repl-process-process proc-obj))
+        (buffer (claude-repl-process-buffer proc-obj))
+        (project-root (claude-repl-process-project-root proc-obj))
+        (settings-file (claude-repl-process-settings-file proc-obj)))
 
     ;; Kill the process
     (when (and process (process-live-p process))
@@ -273,91 +273,91 @@ Returns t if successful, nil otherwise."
       (kill-buffer buffer))
 
     ;; Stop approval server
-    (claude-code-approval-stop-server project-root)
+    (claude-repl-approval-stop-server project-root)
 
     ;; Delete temp settings file
     (when (and settings-file (file-exists-p settings-file))
       (ignore-errors (delete-file settings-file)))
 
     ;; Remove from hash table
-    (remhash project-root claude-code-processes)
+    (remhash project-root claude-repl-processes)
 
     (message "Killed Claude Code process for %s"
              (file-name-nondirectory (directory-file-name project-root)))))
 
-(defun claude-code-process-kill-all ()
+(defun claude-repl-process-kill-all ()
   "Kill all Claude Code processes."
   (interactive)
   (maphash (lambda (_key proc-obj)
-             (claude-code-process-kill proc-obj))
-           claude-code-processes)
+             (claude-repl-process-kill proc-obj))
+           claude-repl-processes)
   (message "Killed all Claude Code processes"))
 
-(defun claude-code-process-add-response-callback (proc-obj callback)
+(defun claude-repl-process-add-response-callback (proc-obj callback)
   "Add a response CALLBACK to PROC-OBJ.
 CALLBACK should be a function that takes a single argument (the JSON event)."
-  (push callback (claude-code-process-response-callbacks proc-obj)))
+  (push callback (claude-repl-process-response-callbacks proc-obj)))
 
-(defun claude-code-process-add-error-callback (proc-obj callback)
+(defun claude-repl-process-add-error-callback (proc-obj callback)
   "Add an error CALLBACK to PROC-OBJ.
 CALLBACK should be a function that takes a single argument (the error event)."
-  (push callback (claude-code-process-error-callbacks proc-obj)))
+  (push callback (claude-repl-process-error-callbacks proc-obj)))
 
-(defun claude-code-process-alive-p (proc-obj)
+(defun claude-repl-process-alive-p (proc-obj)
   "Return t if PROC-OBJ's process is alive."
-  (when-let* ((process (claude-code-process-process proc-obj)))
+  (when-let* ((process (claude-repl-process-process proc-obj)))
     (process-live-p process)))
 
 ;; ============================================================================
 ;; Utility Functions
 ;; ============================================================================
 
-(defun claude-code-process-list-all ()
+(defun claude-repl-process-list-all ()
   "Return a list of all active Claude Code process objects."
   (let (processes)
     (maphash (lambda (_key proc-obj)
                (push proc-obj processes))
-             claude-code-processes)
+             claude-repl-processes)
     processes))
 
-(defun claude-code-process-current ()
+(defun claude-repl-process-current ()
   "Get the Claude Code process for the current project."
-  (claude-code-process-get (claude-code-process--get-project-root)))
+  (claude-repl-process-get (claude-repl-process--get-project-root)))
 
-(defun claude-code-process-current-or-create ()
+(defun claude-repl-process-current-or-create ()
   "Get or create the Claude Code process for the current project."
-  (claude-code-process-get-or-create (claude-code-process--get-project-root)))
+  (claude-repl-process-get-or-create (claude-repl-process--get-project-root)))
 
 ;; ============================================================================
 ;; Interactive Commands
 ;; ============================================================================
 
-(defun claude-code-process-start-current-project ()
+(defun claude-repl-process-start-current-project ()
   "Start a Claude Code process for the current project."
   (interactive)
-  (let ((project-root (claude-code-process--get-project-root)))
-    (if (claude-code-process-get project-root)
+  (let ((project-root (claude-repl-process--get-project-root)))
+    (if (claude-repl-process-get project-root)
         (message "Claude Code process already running for this project")
-      (claude-code-process-start project-root))))
+      (claude-repl-process-start project-root))))
 
-(defun claude-code-process-kill-current-project ()
+(defun claude-repl-process-kill-current-project ()
   "Kill the Claude Code process for the current project."
   (interactive)
-  (if-let* ((proc-obj (claude-code-process-current)))
-      (claude-code-process-kill proc-obj)
+  (if-let* ((proc-obj (claude-repl-process-current)))
+      (claude-repl-process-kill proc-obj)
     (message "No Claude Code process running for this project")))
 
-(defun claude-code-process-status-current-project ()
+(defun claude-repl-process-status-current-project ()
   "Show the status of the Claude Code process for the current project."
   (interactive)
-  (if-let* ((proc-obj (claude-code-process-current)))
-      (let* ((status (claude-code-process-status proc-obj))
-             (metadata (claude-code-process-metadata proc-obj))
+  (if-let* ((proc-obj (claude-repl-process-current)))
+      (let* ((status (claude-repl-process-status proc-obj))
+             (metadata (claude-repl-process-metadata proc-obj))
              (model (plist-get metadata :model))
-             (alive (claude-code-process-alive-p proc-obj)))
+             (alive (claude-repl-process-alive-p proc-obj)))
         (message "Claude Code: status=%s, alive=%s, model=%s"
                  status alive model))
     (message "No Claude Code process running for this project")))
 
-(provide 'claude-code-process)
-;;; claude-code-process.el ends here
+(provide 'claude-repl-process)
+;;; claude-repl-process.el ends here

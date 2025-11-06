@@ -53,4 +53,7 @@ history
 /transient/
 /PLAN.md
 /tree-sitter/
-/modules/claude-code/.eldev/
+/modules/claude-repl/.eldev/
+
+# Claude planning documents
+/claude-plans/

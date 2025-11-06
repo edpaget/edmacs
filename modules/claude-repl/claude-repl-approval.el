@@ -1,4 +1,4 @@
-;;; claude-code-approval.el --- Tool approval system for Claude Code -*- lexical-binding: t; -*-
+;;; claude-repl-approval.el --- Tool approval system for Claude Code -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025
 
@@ -20,14 +20,17 @@
 (require 'json)
 (require 'cl-lib)
 
+;; Forward declarations
+(declare-function claude-repl-interrupt-and-ask "claude-repl-core")
+
 ;;; Custom Variables
 
-(defgroup claude-code-approval nil
+(defgroup claude-repl-approval nil
   "Tool approval settings for Claude Code."
-  :group 'claude-code
-  :prefix "claude-code-approval-")
+  :group 'claude-repl
+  :prefix "claude-repl-approval-")
 
-(defcustom claude-code-approval-mode 'hybrid
+(defcustom claude-repl-approval-mode 'hybrid
   "Approval mode for Claude Code tool usage.
 - \\='interactive: Always show UI, wait for user decision
 - \\='auto-approve: Use policy rules, no UI interaction
@@ -37,9 +40,9 @@
                  (const :tag "Auto-approve (use rules)" auto-approve)
                  (const :tag "Deny all (read-only)" deny-all)
                  (const :tag "Hybrid (safe tools auto, risky ask)" hybrid))
-  :group 'claude-code-approval)
+  :group 'claude-repl-approval)
 
-(defcustom claude-code-approval-rules
+(defcustom claude-repl-approval-rules
   '((tool "Read" action allow)
     (tool "Grep" action allow)
     (tool "Glob" action allow)
@@ -54,9 +57,9 @@ Each rule is a plist with the following keys:
 Rules are evaluated in order.  First matching rule wins.
 Deny rules take precedence over allow rules."
   :type '(repeat (plist :key-type symbol))
-  :group 'claude-code-approval)
+  :group 'claude-repl-approval)
 
-(defcustom claude-code-approval-default-action 'ask
+(defcustom claude-repl-approval-default-action 'ask
   "Default action when no rule matches in auto-approve mode.
 - \\='ask: Show interactive UI
 - \\='allow: Allow by default
@@ -64,69 +67,69 @@ Deny rules take precedence over allow rules."
   :type '(choice (const :tag "Ask user" ask)
                  (const :tag "Allow" allow)
                  (const :tag "Deny" deny))
-  :group 'claude-code-approval)
+  :group 'claude-repl-approval)
 
-(defcustom claude-code-approval-timeout 600
+(defcustom claude-repl-approval-timeout 600
   "Timeout in seconds for interactive approval requests.
 After this timeout, the request is automatically denied.
 This also sets the timeout for the Claude Code hook execution.
 Default is 600 seconds (10 minutes)."
   :type 'integer
-  :group 'claude-code-approval)
+  :group 'claude-repl-approval)
 
-(defcustom claude-code-approval-silent t
+(defcustom claude-repl-approval-silent t
   "When non-nil, suppress informational messages during approval.
 This prevents the minibuffer from growing with verbose output.
 Errors and important notifications will still be shown.
 Default is t (silent mode enabled)."
   :type 'boolean
-  :group 'claude-code-approval)
+  :group 'claude-repl-approval)
 
 ;;; Internal Variables
 
-(defvar claude-code-approval-servers (make-hash-table :test 'equal)
+(defvar claude-repl-approval-servers (make-hash-table :test 'equal)
   "Hash table mapping project roots to socket server info.
 Each entry is a plist with :server (process) and :socket-path (string).")
 
-(defvar claude-code-approval-session-rules (make-hash-table :test 'equal)
+(defvar claude-repl-approval-session-rules (make-hash-table :test 'equal)
   "Session-wide \"always allow/deny\" rules created during interactive approval.
 Each entry maps a rule key to \\='allow or \\='deny.")
 
-(defvar claude-code-approval--pending-requests (make-hash-table :test 'equal)
+(defvar claude-repl-approval--pending-requests (make-hash-table :test 'equal)
   "Hash table of pending approval requests.
 Maps request ID to plist with :process, :tool, :input, :timer.
 This keeps strong references to client processes to prevent GC.")
 
-(defvar claude-code-approval--active-processes (make-hash-table :test 'eq)
+(defvar claude-repl-approval--active-processes (make-hash-table :test 'eq)
   "Hash table keeping strong references to active client processes.
 Maps process object to t to prevent garbage collection.")
 
-(defvar claude-code-approval--responded-processes (make-hash-table :test 'eq)
+(defvar claude-repl-approval--responded-processes (make-hash-table :test 'eq)
   "Hash table tracking processes we've already responded to.
 Prevents duplicate responses if filter is called multiple times.")
 
 ;; Declare buffer-local variables to suppress byte-compiler warnings
 ;; These are set via setq-local in the approval UI buffer
-(defvar claude-code-approval--current-tool nil
+(defvar claude-repl-approval--current-tool nil
   "Current tool name being approved in this buffer.")
-(defvar claude-code-approval--current-input nil
+(defvar claude-repl-approval--current-input nil
   "Current tool input being approved in this buffer.")
-(defvar claude-code-approval--current-id nil
+(defvar claude-repl-approval--current-id nil
   "Current request ID being approved in this buffer.")
-(defvar claude-code-approval--current-proc nil
+(defvar claude-repl-approval--current-proc nil
   "Current client process for this approval request.")
-(defvar claude-code-approval--previous-buffer nil
+(defvar claude-repl-approval--previous-buffer nil
   "Buffer that was active before the approval buffer was displayed.")
 
 ;;; Helper Functions
 
-(defun claude-code-approval--message (format-string &rest args)
-  "Display a message unless `claude-code-approval-silent' is non-nil.
+(defun claude-repl-approval--message (format-string &rest args)
+  "Display a message unless `claude-repl-approval-silent' is non-nil.
 FORMAT-STRING and ARGS are passed to `message'."
-  (unless claude-code-approval-silent
+  (unless claude-repl-approval-silent
     (apply #'message format-string args)))
 
-(defun claude-code-approval--format-tool-input (input)
+(defun claude-repl-approval--format-tool-input (input)
   "Format tool INPUT in a readable way.
 Returns a string with nicely formatted key-value pairs."
   (if (null input)
@@ -150,7 +153,7 @@ Returns a string with nicely formatted key-value pairs."
 
 ;;; Socket Server Lifecycle
 
-(defun claude-code-approval-start-server (project-root)
+(defun claude-repl-approval-start-server (project-root)
   "Start Unix socket server for approval requests in PROJECT-ROOT.
 Returns the socket path."
   (let* ((socket-name (format "cc-approval-%s.sock"
@@ -162,9 +165,9 @@ Returns the socket path."
       (delete-file socket-path))
 
     ;; Stop any existing server for this project
-    (claude-code-approval-stop-server project-root)
+    (claude-repl-approval-stop-server project-root)
 
-    (claude-code-approval--message "starting server %s" (format "cc-approval-%s"
+    (claude-repl-approval--message "starting server %s" (format "cc-approval-%s"
                                           (secure-hash 'md5 project-root)))
     (condition-case err
         (let ((server (make-network-process
@@ -173,25 +176,25 @@ Returns the socket path."
                        :server t
                        :family 'local
                        :service socket-path
-                       :filter #'claude-code-approval--socket-filter
-                       :sentinel #'claude-code-approval--socket-sentinel
+                       :filter #'claude-repl-approval--socket-filter
+                       :sentinel #'claude-repl-approval--socket-sentinel
                        :noquery t
                        :coding 'utf-8-unix)))
 
           (puthash project-root
                    (list :server server :socket-path socket-path)
-                   claude-code-approval-servers)
+                   claude-repl-approval-servers)
 
-          (claude-code-approval--message "Claude Code approval server listening on %s" socket-path)
+          (claude-repl-approval--message "Claude Code approval server listening on %s" socket-path)
           socket-path)
 
       (error
        (message "Failed to start approval server: %s" (error-message-string err))
        nil))))
 
-(defun claude-code-approval-stop-server (project-root)
+(defun claude-repl-approval-stop-server (project-root)
   "Stop the approval server for PROJECT-ROOT and clean up resources."
-  (when-let* ((server-info (gethash project-root claude-code-approval-servers))
+  (when-let* ((server-info (gethash project-root claude-repl-approval-servers))
               (server (plist-get server-info :server))
               (socket-path (plist-get server-info :socket-path)))
 
@@ -204,38 +207,38 @@ Returns the socket path."
       (ignore-errors (delete-file socket-path)))
 
     ;; Remove from hash table
-    (remhash project-root claude-code-approval-servers)
+    (remhash project-root claude-repl-approval-servers)
 
-    (claude-code-approval--message "Claude Code approval server stopped for %s" project-root)))
+    (claude-repl-approval--message "Claude Code approval server stopped for %s" project-root)))
 
-(defun claude-code-approval--socket-sentinel (proc event)
+(defun claude-repl-approval--socket-sentinel (proc event)
   "Sentinel function for approval socket server.
 PROC is the process, EVENT is the event string."
-  (claude-code-approval--message "Socket sentinel for %s: %s (live: %s)" proc (string-trim event) (process-live-p proc))
+  (claude-repl-approval--message "Socket sentinel for %s: %s (live: %s)" proc (string-trim event) (process-live-p proc))
   (unless (process-live-p proc)
-    (claude-code-approval--message "Claude Code approval socket closed: %s" (string-trim event))
+    (claude-repl-approval--message "Claude Code approval socket closed: %s" (string-trim event))
     ;; Clean up all references
-    (remhash proc claude-code-approval--active-processes)
-    (remhash proc claude-code-approval--responded-processes)))
+    (remhash proc claude-repl-approval--active-processes)
+    (remhash proc claude-repl-approval--responded-processes)))
 
-(defun claude-code-approval--socket-filter (proc string)
+(defun claude-repl-approval--socket-filter (proc string)
   "Handle incoming approval request from hook via nc.
 PROC is the client connection process.
 STRING is the JSON request data."
-  (claude-code-approval--message "Socket filter called for %s: %S (length: %d)" proc string (length string))
+  (claude-repl-approval--message "Socket filter called for %s: %S (length: %d)" proc string (length string))
 
   (cond
    ;; Ignore if we've already processed/responded to this connection
-   ((gethash proc claude-code-approval--responded-processes)
-    (claude-code-approval--message "Already responded to process %s, ignoring" proc))
+   ((gethash proc claude-repl-approval--responded-processes)
+    (claude-repl-approval--message "Already responded to process %s, ignoring" proc))
 
    ;; Ignore empty or whitespace-only data
    ((string-match-p "\\`[[:space:]]*\\'" string)
-    (claude-code-approval--message "Received empty/whitespace data, ignoring"))
+    (claude-repl-approval--message "Received empty/whitespace data, ignoring"))
 
    ;; Only process if it looks like JSON
    ((not (string-match-p "\\`[[:space:]]*{" string))
-    (claude-code-approval--message "Data doesn't look like JSON, ignoring: %S" string))
+    (claude-repl-approval--message "Data doesn't look like JSON, ignoring: %S" string))
 
    ;; Process the JSON request
    (t
@@ -247,15 +250,15 @@ STRING is the JSON request data."
                        (format "%s-%d" tool (random 100000)))))
 
           ;; Mark as being processed to prevent duplicate processing
-          (puthash proc t claude-code-approval--responded-processes)
+          (puthash proc t claude-repl-approval--responded-processes)
 
           ;; Keep a strong reference to the client process
-          (puthash proc t claude-code-approval--active-processes)
-          (claude-code-approval--message "Processing approval request for tool: %s" tool)
+          (puthash proc t claude-repl-approval--active-processes)
+          (claude-repl-approval--message "Processing approval request for tool: %s" tool)
 
           ;; Get approval decision asynchronously
           ;; The callback will send the response through the process
-          (claude-code-approval--get-decision-async
+          (claude-repl-approval--get-decision-async
            tool input id proc))
 
       (error
@@ -264,28 +267,28 @@ STRING is the JSON request data."
                                 (error-message-string err))))
          (message "Claude Code approval error: %s" error-msg)
          (when (and (process-live-p proc)
-                    (not (gethash proc claude-code-approval--responded-processes)))
-           (puthash proc t claude-code-approval--responded-processes)
-           (let ((response (json-encode (claude-code-approval--make-hook-response "deny" error-msg))))
+                    (not (gethash proc claude-repl-approval--responded-processes)))
+           (puthash proc t claude-repl-approval--responded-processes)
+           (let ((response (json-encode (claude-repl-approval--make-hook-response "deny" error-msg))))
              (process-send-string proc (concat response "\n"))))
          ;; Remove reference
-         (remhash proc claude-code-approval--active-processes)))))))
+         (remhash proc claude-repl-approval--active-processes)))))))
 
 ;;; Decision Logic
 
-(defun claude-code-approval--send-response (proc decision)
+(defun claude-repl-approval--send-response (proc decision)
   "Send DECISION response through PROC and close connection."
-  (claude-code-approval--message "Sending response: %s (proc live: %s)" decision (process-live-p proc))
+  (claude-repl-approval--message "Sending response: %s (proc live: %s)" decision (process-live-p proc))
   (when (process-live-p proc)
     (let ((response (json-encode decision)))
       (process-send-string proc (concat response "\n"))
-      (claude-code-approval--message "Response sent, closing connection")
+      (claude-repl-approval--message "Response sent, closing connection")
       ;; Close the connection after sending response
       (process-send-eof proc)))
   ;; Remove the strong reference to allow GC
-  (remhash proc claude-code-approval--active-processes))
+  (remhash proc claude-repl-approval--active-processes))
 
-(defun claude-code-approval--make-hook-response (decision reason)
+(defun claude-repl-approval--make-hook-response (decision reason)
   "Create a properly formatted hook response for PreToolUse.
 DECISION should be \"allow\", \"deny\", or \"ask\".
 REASON is the explanation string."
@@ -293,49 +296,49 @@ REASON is the explanation string."
                            (permissionDecision . ,decision)
                            (permissionDecisionReason . ,reason)))))
 
-(defun claude-code-approval--get-decision-async (tool input id proc)
+(defun claude-repl-approval--get-decision-async (tool input id proc)
   "Get approval decision for TOOL with INPUT asynchronously.
 ID is the request identifier.
 PROC is the client process to send the response to.
 Calls callback with decision alist containing \\='behavior and \\='message."
-  (pcase claude-code-approval-mode
+  (pcase claude-repl-approval-mode
     ('deny-all
-     (claude-code-approval--send-response
+     (claude-repl-approval--send-response
       proc
-      (claude-code-approval--make-hook-response "deny" "All tools denied by policy")))
+      (claude-repl-approval--make-hook-response "deny" "All tools denied by policy")))
 
     ('auto-approve
-     (claude-code-approval--send-response
+     (claude-repl-approval--send-response
       proc
-      (claude-code-approval--check-policy tool input)))
+      (claude-repl-approval--check-policy tool input)))
 
     ('interactive
-     (claude-code-approval--request-user-approval-async tool input id proc))
+     (claude-repl-approval--request-user-approval-async tool input id proc))
 
     ('hybrid
      ;; Check policy first, fall back to interactive if no match
-     (let* ((policy-decision (claude-code-approval--check-policy tool input))
+     (let* ((policy-decision (claude-repl-approval--check-policy tool input))
             (hook-output (alist-get 'hookSpecificOutput policy-decision))
             (permission (alist-get 'permissionDecision hook-output)))
        (if (string= permission "ask")
-           (claude-code-approval--request-user-approval-async tool input id proc)
-         (claude-code-approval--send-response proc policy-decision))))
+           (claude-repl-approval--request-user-approval-async tool input id proc)
+         (claude-repl-approval--send-response proc policy-decision))))
 
     (_
-     (claude-code-approval--send-response
+     (claude-repl-approval--send-response
       proc
-      (claude-code-approval--make-hook-response "deny" "Unknown approval mode")))))
+      (claude-repl-approval--make-hook-response "deny" "Unknown approval mode")))))
 
-(defun claude-code-approval--check-policy (tool input)
+(defun claude-repl-approval--check-policy (tool input)
   "Check policy rules for TOOL with INPUT and return decision.
 Returns properly formatted hook response."
   ;; First check session rules (from \"always allow/deny\" during session)
-  (let ((session-key (claude-code-approval--make-rule-key tool input))
+  (let ((session-key (claude-repl-approval--make-rule-key tool input))
         session-action)
-    (setq session-action (gethash session-key claude-code-approval-session-rules))
+    (setq session-action (gethash session-key claude-repl-approval-session-rules))
     (if session-action
         ;; Found session rule, return it
-        (claude-code-approval--make-hook-response
+        (claude-repl-approval--make-hook-response
          (symbol-name session-action)
          (format "Session rule: %s %s" session-action tool))
 
@@ -344,8 +347,8 @@ Returns properly formatted hook response."
             (allow-rules nil))
 
         ;; Separate deny and allow rules
-        (dolist (rule claude-code-approval-rules)
-          (when (claude-code-approval--rule-matches-p rule tool input)
+        (dolist (rule claude-repl-approval-rules)
+          (when (claude-repl-approval--rule-matches-p rule tool input)
             (let ((action (plist-get rule 'action)))
               (if (eq action 'deny)
                   (push rule deny-rules)
@@ -354,36 +357,36 @@ Returns properly formatted hook response."
         ;; Deny rules take precedence
         (cond
          (deny-rules
-          (claude-code-approval--make-hook-response
+          (claude-repl-approval--make-hook-response
            "deny"
            (format "Denied by policy: %s" tool)))
 
          (allow-rules
-          (claude-code-approval--make-hook-response
+          (claude-repl-approval--make-hook-response
            "allow"
            (format "Allowed by policy: %s" tool)))
 
          ;; No matching rule - use default action
          (t
-          (pcase claude-code-approval-default-action
+          (pcase claude-repl-approval-default-action
             ('allow
-             (claude-code-approval--make-hook-response
+             (claude-repl-approval--make-hook-response
               "allow"
               (format "Allowed by default: %s" tool)))
             ('deny
-             (claude-code-approval--make-hook-response
+             (claude-repl-approval--make-hook-response
               "deny"
               (format "Denied by default: %s" tool)))
             ('ask
-             (claude-code-approval--make-hook-response
+             (claude-repl-approval--make-hook-response
               "ask"
               (format "No policy match for %s, interactive approval needed" tool)))
             (_
-             (claude-code-approval--make-hook-response
+             (claude-repl-approval--make-hook-response
               "deny"
               "Invalid default action")))))))))
 
-(defun claude-code-approval--rule-matches-p (rule tool input)
+(defun claude-repl-approval--rule-matches-p (rule tool input)
   "Check if RULE matches TOOL with INPUT.
 RULE is a plist with :tool, :action, and optional :pattern."
   (let ((rule-tool (plist-get rule 'tool))
@@ -395,9 +398,9 @@ RULE is a plist with :tool, :action, and optional :pattern."
       (if (not pattern)
           t
         ;; Otherwise check pattern against input
-        (claude-code-approval--pattern-matches-input-p pattern input)))))
+        (claude-repl-approval--pattern-matches-input-p pattern input)))))
 
-(defun claude-code-approval--pattern-matches-input-p (pattern input)
+(defun claude-repl-approval--pattern-matches-input-p (pattern input)
   "Check if PATTERN matches INPUT.
 PATTERN can be a glob pattern or regex.
 INPUT is the tool input parameters (alist from JSON)."
@@ -413,19 +416,19 @@ INPUT is the tool input parameters (alist from JSON)."
      (t
       (string-match-p (regexp-quote pattern) input-str)))))
 
-(defun claude-code-approval--make-rule-key (tool input)
+(defun claude-repl-approval--make-rule-key (tool input)
   "Create a hash key for TOOL and INPUT for session rules."
   (format "%s:%s" tool (json-encode input)))
 
 ;;; Interactive Approval UI
 
-(defvar claude-code-approval--decision-timer nil
+(defvar claude-repl-approval--decision-timer nil
   "Timer for approval timeout countdown.")
 
-(defvar claude-code-approval--timeout-remaining 0
+(defvar claude-repl-approval--timeout-remaining 0
   "Remaining seconds before timeout.")
 
-(defun claude-code-approval--request-user-approval-async (tool input id proc)
+(defun claude-repl-approval--request-user-approval-async (tool input id proc)
   "Show interactive approval UI asynchronously.
 TOOL is the tool name, INPUT is the tool parameters, ID is the request ID.
 PROC is the client process to send the response to.
@@ -434,23 +437,23 @@ This function returns immediately after showing the UI."
         (previous-buffer (current-buffer)))
 
     ;; Reset timeout
-    (setq claude-code-approval--timeout-remaining claude-code-approval-timeout)
+    (setq claude-repl-approval--timeout-remaining claude-repl-approval-timeout)
 
     ;; Set up the approval buffer
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (claude-code-approval-mode)
+        (claude-repl-approval-mode)
 
         ;; Store request info for callbacks
-        (setq-local claude-code-approval--current-tool tool
-                    claude-code-approval--current-input input
-                    claude-code-approval--current-id id
-                    claude-code-approval--current-proc proc
-                    claude-code-approval--previous-buffer previous-buffer)
+        (setq-local claude-repl-approval--current-tool tool
+                    claude-repl-approval--current-input input
+                    claude-repl-approval--current-id id
+                    claude-repl-approval--current-proc proc
+                    claude-repl-approval--previous-buffer previous-buffer)
 
         ;; Render the approval UI
-        (claude-code-approval--render-ui tool input)))
+        (claude-repl-approval--render-ui tool input)))
 
     ;; Display the buffer and ensure it has focus
     (pop-to-buffer buffer)
@@ -464,10 +467,10 @@ This function returns immediately after showing the UI."
         (evil-motion-state)))
 
     ;; Start timeout timer
-    (setq claude-code-approval--decision-timer
-          (run-with-timer 1 1 #'claude-code-approval--update-timeout-async buffer))))
+    (setq claude-repl-approval--decision-timer
+          (run-with-timer 1 1 #'claude-repl-approval--update-timeout-async buffer))))
 
-(defun claude-code-approval--render-ui (tool input)
+(defun claude-repl-approval--render-ui (tool input)
   "Render the approval UI for TOOL with INPUT in current buffer."
   (let ((inhibit-read-only t))
     (erase-buffer)
@@ -485,13 +488,13 @@ This function returns immediately after showing the UI."
 
     ;; Tool parameters - formatted nicely
     (insert (propertize "Parameters:\n" 'face 'bold))
-    (insert (claude-code-approval--format-tool-input input))
+    (insert (claude-repl-approval--format-tool-input input))
     (insert "\n\n")
 
     ;; Timeout warning
     (insert (propertize "⏱ " 'face 'warning)
             (propertize (format "Auto-deny in %d seconds"
-                                claude-code-approval--timeout-remaining)
+                                claude-repl-approval--timeout-remaining)
                         'face 'warning
                         'claude-timeout-marker t)
             "\n\n")
@@ -500,37 +503,46 @@ This function returns immediately after showing the UI."
     (insert (propertize "Actions:\n" 'face 'bold))
     (insert "  ")
     (insert-text-button "[ a ] Allow"
-                        'action #'claude-code-approval--action-allow
+                        'action #'claude-repl-approval--action-allow
                         'follow-link t
                         'face '(:background "green" :foreground "black" :weight bold))
     (insert "  ")
     (insert-text-button "[ d ] Deny"
-                        'action #'claude-code-approval--action-deny
+                        'action #'claude-repl-approval--action-deny
                         'follow-link t
                         'face '(:background "red" :foreground "white" :weight bold))
     (insert "\n  ")
     (insert-text-button "[ A ] Allow Always (this session)"
-                        'action #'claude-code-approval--action-allow-always
+                        'action #'claude-repl-approval--action-allow-always
                         'follow-link t
                         'face '(:background "dark green" :foreground "white"))
     (insert "  ")
     (insert-text-button "[ D ] Deny Always (this session)"
-                        'action #'claude-code-approval--action-deny-always
+                        'action #'claude-repl-approval--action-deny-always
                         'follow-link t
                         'face '(:background "dark red" :foreground "white"))
+    (insert "\n  ")
+    (insert-text-button "[ i ] Interrupt & Ask New Question"
+                        'action #'claude-repl-approval--action-interrupt
+                        'follow-link t
+                        'face '(:background "orange" :foreground "black"))
     (insert "\n\n")
 
     ;; Help text
-    (insert (propertize "Press the button or use keyboard shortcuts (a/d/A/D)\n"
+    (insert (propertize "Press the button or use keyboard shortcuts\n"
+                        'face 'shadow))
+    (insert (propertize "  a = Allow once  |  d = Deny once  |  A/D = Allow/Deny always\n"
+                        'face 'shadow))
+    (insert (propertize "  i = Interrupt and ask new question  |  C-c C-k = Same as 'i'\n"
                         'face 'shadow))
 
     (goto-char (point-min))))
 
-(defun claude-code-approval--update-timeout-async (buffer)
+(defun claude-repl-approval--update-timeout-async (buffer)
   "Update the timeout countdown in BUFFER asynchronously."
   (when (buffer-live-p buffer)
-    (setq claude-code-approval--timeout-remaining
-          (1- claude-code-approval--timeout-remaining))
+    (setq claude-repl-approval--timeout-remaining
+          (1- claude-repl-approval--timeout-remaining))
 
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
@@ -543,26 +555,26 @@ This function returns immediately after showing the UI."
               (delete-region start end)
               (goto-char start)
               (insert (propertize (format "Auto-deny in %d seconds"
-                                          claude-code-approval--timeout-remaining)
+                                          claude-repl-approval--timeout-remaining)
                                   'face 'warning
                                   'claude-timeout-marker t))))))
 
       ;; Auto-deny on timeout
-      (when (<= claude-code-approval--timeout-remaining 0)
-        (let ((previous-buf claude-code-approval--previous-buffer))
-          (when (timerp claude-code-approval--decision-timer)
-            (cancel-timer claude-code-approval--decision-timer)
-            (setq claude-code-approval--decision-timer nil))
+      (when (<= claude-repl-approval--timeout-remaining 0)
+        (let ((previous-buf claude-repl-approval--previous-buffer))
+          (when (timerp claude-repl-approval--decision-timer)
+            (cancel-timer claude-repl-approval--decision-timer)
+            (setq claude-repl-approval--decision-timer nil))
           ;; Send deny response
-          (claude-code-approval--send-response
-           claude-code-approval--current-proc
-           (claude-code-approval--make-hook-response "deny" "Approval request timed out"))
+          (claude-repl-approval--send-response
+           claude-repl-approval--current-proc
+           (claude-repl-approval--make-hook-response "deny" "Approval request timed out"))
           ;; Restore previous buffer and kill approval buffer
           (when (and previous-buf (buffer-live-p previous-buf))
             (switch-to-buffer previous-buf))
           (kill-buffer buffer))))))
 
-(defun claude-code-approval--show-feedback (message-text)
+(defun claude-repl-approval--show-feedback (message-text)
   "Show feedback MESSAGE-TEXT in the approval buffer before closing."
   (let ((inhibit-read-only t))
     (goto-char (point-max))
@@ -575,13 +587,13 @@ This function returns immediately after showing the UI."
   ;; Show the message briefly before closing
   (sit-for 0.5))
 
-(defun claude-code-approval--cleanup-request ()
+(defun claude-repl-approval--cleanup-request ()
   "Clean up approval request state and restore previous buffer."
-  (when (timerp claude-code-approval--decision-timer)
-    (cancel-timer claude-code-approval--decision-timer)
-    (setq claude-code-approval--decision-timer nil))
+  (when (timerp claude-repl-approval--decision-timer)
+    (cancel-timer claude-repl-approval--decision-timer)
+    (setq claude-repl-approval--decision-timer nil))
   (let ((buffer (current-buffer))
-        (previous-buffer claude-code-approval--previous-buffer))
+        (previous-buffer claude-repl-approval--previous-buffer))
     ;; Switch back to previous buffer if it's still alive
     (when (and previous-buffer (buffer-live-p previous-buffer))
       (switch-to-buffer previous-buffer))
@@ -589,109 +601,125 @@ This function returns immediately after showing the UI."
     (when (buffer-live-p buffer)
       (kill-buffer buffer))))
 
-(defun claude-code-approval--action-allow (&optional _button)
+(defun claude-repl-approval--action-allow (&optional _button)
   "Action for Allow button."
   (interactive)
-  (let ((decision (claude-code-approval--make-hook-response
+  (let ((decision (claude-repl-approval--make-hook-response
                    "allow"
-                   (format "User approved: %s" claude-code-approval--current-tool))))
-    (claude-code-approval--show-feedback "✓ ALLOWED - Sending response...")
-    (claude-code-approval--send-response claude-code-approval--current-proc decision)
-    (claude-code-approval--cleanup-request)))
+                   (format "User approved: %s" claude-repl-approval--current-tool))))
+    (claude-repl-approval--show-feedback "✓ ALLOWED - Sending response...")
+    (claude-repl-approval--send-response claude-repl-approval--current-proc decision)
+    (claude-repl-approval--cleanup-request)))
 
-(defun claude-code-approval--action-deny (&optional _button)
+(defun claude-repl-approval--action-deny (&optional _button)
   "Action for Deny button."
   (interactive)
-  (let ((decision (claude-code-approval--make-hook-response
+  (let ((decision (claude-repl-approval--make-hook-response
                    "deny"
-                   (format "User denied: %s" claude-code-approval--current-tool))))
-    (claude-code-approval--show-feedback "✗ DENIED - Sending response...")
-    (claude-code-approval--send-response claude-code-approval--current-proc decision)
-    (claude-code-approval--cleanup-request)))
+                   (format "User denied: %s" claude-repl-approval--current-tool))))
+    (claude-repl-approval--show-feedback "✗ DENIED - Sending response...")
+    (claude-repl-approval--send-response claude-repl-approval--current-proc decision)
+    (claude-repl-approval--cleanup-request)))
 
-(defun claude-code-approval--action-allow-always (&optional _button)
+(defun claude-repl-approval--action-allow-always (&optional _button)
   "Action for Allow Always button."
   (interactive)
-  (let* ((rule-key (claude-code-approval--make-rule-key
-                    claude-code-approval--current-tool
-                    claude-code-approval--current-input))
-         (decision (claude-code-approval--make-hook-response
+  (let* ((rule-key (claude-repl-approval--make-rule-key
+                    claude-repl-approval--current-tool
+                    claude-repl-approval--current-input))
+         (decision (claude-repl-approval--make-hook-response
                     "allow"
                     (format "User approved always (session): %s"
-                            claude-code-approval--current-tool))))
-    (puthash rule-key 'allow claude-code-approval-session-rules)
-    (claude-code-approval--show-feedback "✓ ALLOWED ALWAYS (this session) - Sending response...")
-    (claude-code-approval--send-response claude-code-approval--current-proc decision)
-    (claude-code-approval--cleanup-request)))
+                            claude-repl-approval--current-tool))))
+    (puthash rule-key 'allow claude-repl-approval-session-rules)
+    (claude-repl-approval--show-feedback "✓ ALLOWED ALWAYS (this session) - Sending response...")
+    (claude-repl-approval--send-response claude-repl-approval--current-proc decision)
+    (claude-repl-approval--cleanup-request)))
 
-(defun claude-code-approval--action-deny-always (&optional _button)
+(defun claude-repl-approval--action-deny-always (&optional _button)
   "Action for Deny Always button."
   (interactive)
-  (let* ((rule-key (claude-code-approval--make-rule-key
-                    claude-code-approval--current-tool
-                    claude-code-approval--current-input))
-         (decision (claude-code-approval--make-hook-response
+  (let* ((rule-key (claude-repl-approval--make-rule-key
+                    claude-repl-approval--current-tool
+                    claude-repl-approval--current-input))
+         (decision (claude-repl-approval--make-hook-response
                     "deny"
                     (format "User denied always (session): %s"
-                            claude-code-approval--current-tool))))
-    (puthash rule-key 'deny claude-code-approval-session-rules)
-    (claude-code-approval--show-feedback "✗ DENIED ALWAYS (this session) - Sending response...")
-    (claude-code-approval--send-response claude-code-approval--current-proc decision)
-    (claude-code-approval--cleanup-request)))
+                            claude-repl-approval--current-tool))))
+    (puthash rule-key 'deny claude-repl-approval-session-rules)
+    (claude-repl-approval--show-feedback "✗ DENIED ALWAYS (this session) - Sending response...")
+    (claude-repl-approval--send-response claude-repl-approval--current-proc decision)
+    (claude-repl-approval--cleanup-request)))
+
+(defun claude-repl-approval--action-interrupt ()
+  "Deny current approval request and interrupt to ask a new question.
+This kills the approval buffer, denies the current request, and prompts
+for a new question to ask Claude."
+  (interactive)
+  (when claude-repl-approval--current-proc
+    ;; Deny the current request
+    (let ((decision (claude-repl-approval--make-hook-response "deny" "Interrupted by user")))
+      (claude-repl-approval--send-response claude-repl-approval--current-proc decision))
+    (claude-repl-approval--cleanup-request))
+  ;; Now prompt for new question and interrupt
+  (require 'claude-repl-core)
+  (call-interactively #'claude-repl-interrupt-and-ask))
 
 ;;; Major Mode for Approval Buffer
 
-(defvar claude-code-approval-mode-map
+(defvar claude-repl-approval-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "a") #'claude-code-approval--action-allow)
-    (define-key map (kbd "d") #'claude-code-approval--action-deny)
-    (define-key map (kbd "A") #'claude-code-approval--action-allow-always)
-    (define-key map (kbd "D") #'claude-code-approval--action-deny-always)
-    (define-key map (kbd "q") #'claude-code-approval--action-deny)
-    (define-key map (kbd "RET") #'claude-code-approval--action-allow)
+    (define-key map (kbd "a") #'claude-repl-approval--action-allow)
+    (define-key map (kbd "d") #'claude-repl-approval--action-deny)
+    (define-key map (kbd "A") #'claude-repl-approval--action-allow-always)
+    (define-key map (kbd "D") #'claude-repl-approval--action-deny-always)
+    (define-key map (kbd "q") #'claude-repl-approval--action-deny)
+    (define-key map (kbd "RET") #'claude-repl-approval--action-allow)
+    (define-key map (kbd "i") #'claude-repl-approval--action-interrupt)
+    (define-key map (kbd "C-c C-k") #'claude-repl-approval--action-interrupt)
     map)
   "Keymap for Claude Code approval buffer.")
 
-(define-derived-mode claude-code-approval-mode special-mode "Claude-Approval"
+(define-derived-mode claude-repl-approval-mode special-mode "Claude-Approval"
   "Major mode for Claude Code tool approval requests.
-\\{claude-code-approval-mode-map}"
+\\{claude-repl-approval-mode-map}"
   (setq buffer-read-only t
         truncate-lines nil)
   ;; Ensure our keymap takes precedence over special-mode-map
-  (use-local-map claude-code-approval-mode-map)
+  (use-local-map claude-repl-approval-mode-map)
   ;; Configure evil-mode to use motion state if available
   ;; This allows vim motions (h/j/k/l) while keeping our keybindings active
   (when (fboundp 'evil-set-initial-state)
-    (evil-set-initial-state 'claude-code-approval-mode 'motion)))
+    (evil-set-initial-state 'claude-repl-approval-mode 'motion)))
 
 ;;; Buffer-local variables for approval requests
 ;; These are already declared as defvar above to suppress byte-compiler warnings
 ;; Here we make them explicitly buffer-local
 
-(make-variable-buffer-local 'claude-code-approval--current-tool)
-(make-variable-buffer-local 'claude-code-approval--current-input)
-(make-variable-buffer-local 'claude-code-approval--current-id)
-(make-variable-buffer-local 'claude-code-approval--current-proc)
-(make-variable-buffer-local 'claude-code-approval--previous-buffer)
+(make-variable-buffer-local 'claude-repl-approval--current-tool)
+(make-variable-buffer-local 'claude-repl-approval--current-input)
+(make-variable-buffer-local 'claude-repl-approval--current-id)
+(make-variable-buffer-local 'claude-repl-approval--current-proc)
+(make-variable-buffer-local 'claude-repl-approval--previous-buffer)
 
 ;;; Utility Functions
 
-(defun claude-code-approval-clear-session-rules ()
+(defun claude-repl-approval-clear-session-rules ()
   "Clear all session-based approval rules."
   (interactive)
-  (clrhash claude-code-approval-session-rules)
+  (clrhash claude-repl-approval-session-rules)
   (message "Cleared all session approval rules"))
 
-(defun claude-code-approval-show-session-rules ()
+(defun claude-repl-approval-show-session-rules ()
   "Display current session approval rules."
   (interactive)
-  (if (hash-table-empty-p claude-code-approval-session-rules)
+  (if (hash-table-empty-p claude-repl-approval-session-rules)
       (message "No session approval rules")
     (let ((rules nil))
       (maphash (lambda (key value)
                  (push (format "%s -> %s" key value) rules))
-               claude-code-approval-session-rules)
+               claude-repl-approval-session-rules)
       (message "Session approval rules:\n%s" (string-join rules "\n")))))
 
-(provide 'claude-code-approval)
-;;; claude-code-approval.el ends here
+(provide 'claude-repl-approval)
+;;; claude-repl-approval.el ends here

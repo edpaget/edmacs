@@ -1,6 +1,6 @@
-;;; Eldev --- Build and test configuration for claude-code -*- mode: emacs-lisp; lexical-binding: t; -*-
+;;; Eldev --- Build and test configuration for claude-repl -*- mode: emacs-lisp; lexical-binding: t; -*-
 
-;; This file configures Eldev for the claude-code project.
+;; This file configures Eldev for the claude-repl project.
 ;; See https://emacs-eldev.github.io/eldev/ for documentation.
 
 ;; ============================================================================
@@ -8,7 +8,7 @@
 ;; ============================================================================
 
 ;; These are inferred from the package headers, but can be overridden here
-;; (setf eldev-project-name "claude-code")
+;; (setf eldev-project-name "claude-repl")
 ;; (setf eldev-project-version "0.1.0")
 
 ;; ============================================================================
@@ -66,7 +66,7 @@
 ;; Note: We disable package-lint because:
 ;; 1. It generates many false positives about Emacs version requirements
 ;;    (complains about needing emacs 24.x when we already require 29.1)
-;; 2. Even with package-lint-main-file set to claude-code-core.el, it still
+;; 2. Even with package-lint-main-file set to claude-repl-core.el, it still
 ;;    checks all files and complains about function usage that's fine for 29.1+
 ;; 3. Checkdoc catches the important documentation style issues
 ;; 4. Byte-compilation (run separately) catches actual code problems
@@ -100,33 +100,33 @@
 ;; Custom Commands
 ;; ============================================================================
 
-(eldev-defcommand claude-code-demo (&rest parameters)
-                  "Run a quick demo/smoke test of claude-code functionality."
+(eldev-defcommand claude-repl-demo (&rest parameters)
+                  "Run a quick demo/smoke test of claude-repl functionality."
                   :aliases (demo)
-                  (message "Running claude-code demo...")
+                  (message "Running claude-repl demo...")
 
                   ;; Load dependencies first - ensure both are activated
                   (eldev-load-project-dependencies 'runtime nil t)
 
                   ;; Load all source files
-                  (load (expand-file-name "claude-code-core.el") nil t)
-                  (load (expand-file-name "claude-code-process.el") nil t)
-                  (load (expand-file-name "claude-code-buffer.el") nil t)
+                  (load (expand-file-name "claude-repl-core.el") nil t)
+                  (load (expand-file-name "claude-repl-process.el") nil t)
+                  (load (expand-file-name "claude-repl-buffer.el") nil t)
 
                   (message "✓ All modules loaded successfully")
 
                   ;; Check that key functions exist
-                  (unless (fboundp 'claude-code-process-start)
-                    (error "claude-code-process-start not defined"))
-                  (unless (fboundp 'claude-code-buffer-get-or-create)
-                    (error "claude-code-buffer-get-or-create not defined"))
-                  (unless (fboundp 'claude-code-ask)
-                    (error "claude-code-ask not defined"))
+                  (unless (fboundp 'claude-repl-process-start)
+                    (error "claude-repl-process-start not defined"))
+                  (unless (fboundp 'claude-repl-buffer-get-or-create)
+                    (error "claude-repl-buffer-get-or-create not defined"))
+                  (unless (fboundp 'claude-repl-ask)
+                    (error "claude-repl-ask not defined"))
 
                   (message "✓ All key functions defined")
                   (message "✓ Demo complete! Claude Code is ready."))
 
-(eldev-defcommand claude-code-check-all (&rest parameters)
+(eldev-defcommand claude-repl-check-all (&rest parameters)
                   "Run all checks: compile, test, and lint."
                   :aliases (check)
                   (message "Running all checks...")

@@ -14,89 +14,89 @@
   (add-to-list 'load-path project-dir))
 
 ;; Load the modules
-(require 'claude-code-approval)
-(require 'claude-code-process)
-(require 'claude-code-buffer)
-(require 'claude-code-core)
+(require 'claude-repl-approval)
+(require 'claude-repl-process)
+(require 'claude-repl-buffer)
+(require 'claude-repl-core)
 
 ;; ============================================================================
 ;; Test Configuration
 ;; ============================================================================
 
-(defvar claude-code-test-project-root "/tmp/claude-code-test/"
+(defvar claude-repl-test-project-root "/tmp/claude-repl-test/"
   "Temporary project root for testing.")
 
-(defvar claude-code-test-debug nil
+(defvar claude-repl-test-debug nil
   "Enable debug output during tests.")
 
 ;; ============================================================================
 ;; Cleanup Utilities
 ;; ============================================================================
 
-(defun claude-code-test-cleanup ()
+(defun claude-repl-test-cleanup ()
   "Clean up all test resources."
   ;; Kill all processes (this also stops approval servers)
-  (claude-code-process-kill-all)
+  (claude-repl-process-kill-all)
 
-  ;; Kill all claude-code buffers
+  ;; Kill all claude-repl buffers
   (dolist (buf (buffer-list))
-    (when (string-match-p "\\*claude-code\\|\\*Claude Code Approval\\*" (buffer-name buf))
+    (when (string-match-p "\\*claude-repl\\|\\*Claude Code Approval\\*" (buffer-name buf))
       (kill-buffer buf)))
 
   ;; Clear the process hash table
-  (clrhash claude-code-processes)
+  (clrhash claude-repl-processes)
 
   ;; Clear approval-related hash tables
-  (clrhash claude-code-approval-servers)
-  (clrhash claude-code-approval-session-rules)
-  (clrhash claude-code-approval--active-processes)
-  (clrhash claude-code-approval--responded-processes))
+  (clrhash claude-repl-approval-servers)
+  (clrhash claude-repl-approval-session-rules)
+  (clrhash claude-repl-approval--active-processes)
+  (clrhash claude-repl-approval--responded-processes))
 
 ;; ============================================================================
 ;; Mock Process Creation
 ;; ============================================================================
 
-(defvar claude-code-test-mock-process nil
+(defvar claude-repl-test-mock-process nil
   "Mock process object for testing.")
 
-(defvar claude-code-test-mock-process-buffer nil
+(defvar claude-repl-test-mock-process-buffer nil
   "Buffer for mock process.")
 
-(defun claude-code-test-create-mock-process ()
+(defun claude-repl-test-create-mock-process ()
   "Create a mock process for testing."
-  (setq claude-code-test-mock-process-buffer
+  (setq claude-repl-test-mock-process-buffer
         (generate-new-buffer " *mock-claude-process*"))
-  (setq claude-code-test-mock-process
+  (setq claude-repl-test-mock-process
         (make-process
          :name "mock-claude"
-         :buffer claude-code-test-mock-process-buffer
+         :buffer claude-repl-test-mock-process-buffer
          :command '("cat")  ; Dummy command that does nothing
          :noquery t))
-  claude-code-test-mock-process)
+  claude-repl-test-mock-process)
 
-(defun claude-code-test-kill-mock-process ()
+(defun claude-repl-test-kill-mock-process ()
   "Kill the mock process and its buffer."
-  (when (and claude-code-test-mock-process
-             (process-live-p claude-code-test-mock-process))
-    (kill-process claude-code-test-mock-process))
-  (when (and claude-code-test-mock-process-buffer
-             (buffer-live-p claude-code-test-mock-process-buffer))
-    (kill-buffer claude-code-test-mock-process-buffer))
-  (setq claude-code-test-mock-process nil
-        claude-code-test-mock-process-buffer nil))
+  (when (and claude-repl-test-mock-process
+             (process-live-p claude-repl-test-mock-process))
+    (kill-process claude-repl-test-mock-process))
+  (when (and claude-repl-test-mock-process-buffer
+             (buffer-live-p claude-repl-test-mock-process-buffer))
+    (kill-buffer claude-repl-test-mock-process-buffer))
+  (setq claude-repl-test-mock-process nil
+        claude-repl-test-mock-process-buffer nil))
 
 ;; ============================================================================
 ;; Mock JSON Events
 ;; ============================================================================
 
-(defvar claude-code-test-system-event
+(defvar claude-repl-test-system-event
   '((type . "system")
     (subtype . "init")
     (session_id . "test-session-123")
     (model . "claude-sonnet-4-5-20250929"))
   "Mock system initialization event.")
 
-(defvar claude-code-test-assistant-event-text
+(defvar claude-repl-test-assistant-event-text
   '((type . "assistant")
     (message . ((model . "claude-sonnet-4-5-20250929")
                 (id . "msg_test123")
@@ -104,7 +104,7 @@
                              (text . "This is a test response from Claude."))]))))
   "Mock assistant event with text content.")
 
-(defvar claude-code-test-assistant-event-tool
+(defvar claude-repl-test-assistant-event-tool
   '((type . "assistant")
     (message . ((model . "claude-sonnet-4-5-20250929")
                 (id . "msg_test456")
@@ -114,7 +114,7 @@
                              (input . ((file_path . "/test/file.el"))))]))))
   "Mock assistant event with tool use.")
 
-(defvar claude-code-test-result-event
+(defvar claude-repl-test-result-event
   '((type . "result")
     (subtype . "success")
     (is_error . :json-false)
@@ -128,19 +128,19 @@
 ;; Helper Functions
 ;; ============================================================================
 
-(defun claude-code-test-json-string (event)
+(defun claude-repl-test-json-string (event)
   "Convert EVENT to a JSON string."
   (json-encode event))
 
-(defun claude-code-test-simulate-process-output (proc-obj output)
+(defun claude-repl-test-simulate-process-output (proc-obj output)
   "Simulate PROCESS receiving OUTPUT.
-PROC-OBJ is the claude-code-process object."
-  (let ((process (claude-code-process-process proc-obj)))
+PROC-OBJ is the claude-repl-process object."
+  (let ((process (claude-repl-process-process proc-obj)))
     (when (process-live-p process)
       ;; Call the filter function directly
-      (funcall #'claude-code-process--filter process output))))
+      (funcall #'claude-repl-process--filter process output))))
 
-(defun claude-code-test-wait-for (predicate &optional timeout)
+(defun claude-repl-test-wait-for (predicate &optional timeout)
   "Wait for PREDICATE to return non-nil, with optional TIMEOUT in seconds."
   (let ((start (current-time))
         (timeout (or timeout 5)))
@@ -153,20 +153,20 @@ PROC-OBJ is the claude-code-process object."
 ;; Spy Helpers
 ;; ============================================================================
 
-(defun claude-code-test-spy-on-make-process ()
+(defun claude-repl-test-spy-on-make-process ()
   "Spy on make-process and return a mock process."
-  (spy-on 'make-process :and-return-value (claude-code-test-create-mock-process)))
+  (spy-on 'make-process :and-return-value (claude-repl-test-create-mock-process)))
 
 ;; ============================================================================
 ;; Buffer Helpers
 ;; ============================================================================
 
-(defun claude-code-test-buffer-contents (buffer)
+(defun claude-repl-test-buffer-contents (buffer)
   "Get the contents of BUFFER as a string."
   (with-current-buffer buffer
     (buffer-string)))
 
-(defun claude-code-test-buffer-contains-p (buffer regexp)
+(defun claude-repl-test-buffer-contains-p (buffer regexp)
   "Return t if BUFFER contains text matching REGEXP."
   (with-current-buffer buffer
     (save-excursion
@@ -177,13 +177,13 @@ PROC-OBJ is the claude-code-process object."
 ;; Fixtures
 ;; ============================================================================
 
-(defvar claude-code-test-fixtures-dir
+(defvar claude-repl-test-fixtures-dir
   (expand-file-name "fixtures" (file-name-directory load-file-name))
   "Directory containing test fixtures.")
 
-(defun claude-code-test-load-fixture (filename)
+(defun claude-repl-test-load-fixture (filename)
   "Load a test fixture file named FILENAME."
-  (let ((fixture-path (expand-file-name filename claude-code-test-fixtures-dir)))
+  (let ((fixture-path (expand-file-name filename claude-repl-test-fixtures-dir)))
     (when (file-exists-p fixture-path)
       (with-temp-buffer
         (insert-file-contents fixture-path)
@@ -209,27 +209,27 @@ PROC-OBJ is the claude-code-process object."
 (buttercup-define-matcher :to-match-buffer (buffer regexp)
                           (let ((buf (funcall buffer))
                                 (rx (funcall regexp)))
-                            (if (claude-code-test-buffer-contains-p buf rx)
+                            (if (claude-repl-test-buffer-contains-p buf rx)
                                 t
                               (cons nil (format "Expected buffer to contain text matching '%s', but it did not.\nBuffer contents:\n%s"
                                                 rx
-                                                (claude-code-test-buffer-contents buf))))))
+                                                (claude-repl-test-buffer-contents buf))))))
 
 ;; ============================================================================
 ;; Setup and Teardown
 ;; ============================================================================
 
-(defun claude-code-test-setup ()
+(defun claude-repl-test-setup ()
   "Set up test environment."
-  (when claude-code-test-debug
+  (when claude-repl-test-debug
     (message "Setting up test environment...")))
 
-(defun claude-code-test-teardown ()
+(defun claude-repl-test-teardown ()
   "Tear down test environment."
-  (when claude-code-test-debug
+  (when claude-repl-test-debug
     (message "Tearing down test environment..."))
-  (claude-code-test-cleanup)
-  (claude-code-test-kill-mock-process))
+  (claude-repl-test-cleanup)
+  (claude-repl-test-kill-mock-process))
 
 (provide 'test-helper)
 ;;; test-helper.el ends here
