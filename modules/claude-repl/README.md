@@ -8,6 +8,8 @@ An Emacs integration for the [Claude Code CLI](https://github.com/anthropics/cla
 
 <img width="1512" height="982" alt="Screenshot 2025-11-06 at 10 47 24 AM 1" src="https://github.com/user-attachments/assets/349eeb78-f58f-4468-85b8-704a04ae44cd" />
 
+<img width="1512" height="982" alt="Screenshot 2025-11-06 at 10 49 35 AM" src="https://github.com/user-attachments/assets/61233d7a-644b-4b98-8e28-09a98dbe0966" />
+
 ## Installation
 
 ### Prerequisites
