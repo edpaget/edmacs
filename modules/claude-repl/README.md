@@ -21,7 +21,7 @@ An Emacs integration for the [Claude Code CLI](https://github.com/anthropics/cla
 First, install the Claude Code CLI:
 
 ```bash
-npm install -g @anthropic/claude-repl
+npm install -g @anthropic/claude-code
 ```
 
 ### Install claude-repl
