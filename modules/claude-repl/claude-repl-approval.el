@@ -120,6 +120,8 @@ Prevents duplicate responses if filter is called multiple times.")
   "Current client process for this approval request.")
 (defvar claude-repl-approval--previous-buffer nil
   "Buffer that was active before the approval buffer was displayed.")
+(defvar claude-repl-approval--previous-window-config nil
+  "Window configuration before the approval buffer was displayed.")
 
 ;;; Helper Functions
 
@@ -434,7 +436,8 @@ TOOL is the tool name, INPUT is the tool parameters, ID is the request ID.
 PROC is the client process to send the response to.
 This function returns immediately after showing the UI."
   (let ((buffer (get-buffer-create "*Claude Code Approval*"))
-        (previous-buffer (current-buffer)))
+        (previous-buffer (current-buffer))
+        (previous-window-config (current-window-configuration)))
 
     ;; Reset timeout
     (setq claude-repl-approval--timeout-remaining claude-repl-approval-timeout)
@@ -450,13 +453,17 @@ This function returns immediately after showing the UI."
                     claude-repl-approval--current-input input
                     claude-repl-approval--current-id id
                     claude-repl-approval--current-proc proc
-                    claude-repl-approval--previous-buffer previous-buffer)
+                    claude-repl-approval--previous-buffer previous-buffer
+                    claude-repl-approval--previous-window-config previous-window-config)
 
         ;; Render the approval UI
         (claude-repl-approval--render-ui tool input)))
 
-    ;; Display the buffer and ensure it has focus
-    (pop-to-buffer buffer)
+    ;; Display the buffer in a temporary window
+    ;; Use display-buffer with specific action to avoid window proliferation
+    (display-buffer buffer '((display-buffer-reuse-window
+                              display-buffer-pop-up-window)
+                             (inhibit-same-window . t)))
     (select-window (get-buffer-window buffer))
     (raise-frame)
 
@@ -561,7 +568,7 @@ This function returns immediately after showing the UI."
 
       ;; Auto-deny on timeout
       (when (<= claude-repl-approval--timeout-remaining 0)
-        (let ((previous-buf claude-repl-approval--previous-buffer))
+        (let ((previous-window-config claude-repl-approval--previous-window-config))
           (when (timerp claude-repl-approval--decision-timer)
             (cancel-timer claude-repl-approval--decision-timer)
             (setq claude-repl-approval--decision-timer nil))
@@ -569,10 +576,10 @@ This function returns immediately after showing the UI."
           (claude-repl-approval--send-response
            claude-repl-approval--current-proc
            (claude-repl-approval--make-hook-response "deny" "Approval request timed out"))
-          ;; Restore previous buffer and kill approval buffer
-          (when (and previous-buf (buffer-live-p previous-buf))
-            (switch-to-buffer previous-buf))
-          (kill-buffer buffer))))))
+          ;; Kill approval buffer and restore window configuration
+          (kill-buffer buffer)
+          (when previous-window-config
+            (set-window-configuration previous-window-config)))))))
 
 (defun claude-repl-approval--show-feedback (message-text)
   "Show feedback MESSAGE-TEXT in the approval buffer before closing."
@@ -588,18 +595,19 @@ This function returns immediately after showing the UI."
   (sit-for 0.5))
 
 (defun claude-repl-approval--cleanup-request ()
-  "Clean up approval request state and restore previous buffer."
+  "Clean up approval request state and restore previous window configuration."
   (when (timerp claude-repl-approval--decision-timer)
     (cancel-timer claude-repl-approval--decision-timer)
     (setq claude-repl-approval--decision-timer nil))
   (let ((buffer (current-buffer))
-        (previous-buffer claude-repl-approval--previous-buffer))
-    ;; Switch back to previous buffer if it's still alive
-    (when (and previous-buffer (buffer-live-p previous-buffer))
-      (switch-to-buffer previous-buffer))
-    ;; Kill the approval buffer
+        (previous-window-config claude-repl-approval--previous-window-config))
+    ;; Kill the approval buffer first
     (when (buffer-live-p buffer)
-      (kill-buffer buffer))))
+      (kill-buffer buffer))
+    ;; Restore the previous window configuration
+    ;; This ensures the window layout is exactly as it was before the approval popup
+    (when previous-window-config
+      (set-window-configuration previous-window-config))))
 
 (defun claude-repl-approval--action-allow (&optional _button)
   "Action for Allow button."
@@ -701,6 +709,7 @@ for a new question to ask Claude."
 (make-variable-buffer-local 'claude-repl-approval--current-id)
 (make-variable-buffer-local 'claude-repl-approval--current-proc)
 (make-variable-buffer-local 'claude-repl-approval--previous-buffer)
+(make-variable-buffer-local 'claude-repl-approval--previous-window-config)
 
 ;;; Utility Functions
 

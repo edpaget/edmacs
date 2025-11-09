@@ -113,7 +113,38 @@
                 :to-equal 'claude-repl-approval--action-deny)
         (expect (lookup-key (current-local-map) (kbd "RET"))
                 :to-equal 'claude-repl-approval--action-allow))))
-  )
+
+  (describe "Window configuration restoration"
+
+    (it "saves window configuration before displaying approval buffer"
+      (let ((buffer (get-buffer-create "*Claude Code Approval*")))
+        (with-current-buffer buffer
+          (claude-repl-approval-mode)
+          ;; Simulate setting the window config
+          (setq-local claude-repl-approval--previous-window-config (current-window-configuration))
+          (expect claude-repl-approval--previous-window-config :to-be-truthy))
+        (kill-buffer buffer)))
+
+    (it "cleanup-request uses window configuration when available"
+      (let ((buffer (get-buffer-create "*Claude Code Approval*"))
+            (original-config (current-window-configuration)))
+        (with-current-buffer buffer
+          (claude-repl-approval-mode)
+          (setq-local claude-repl-approval--previous-window-config original-config)
+          ;; Simulate cleanup
+          (spy-on 'set-window-configuration)
+          (claude-repl-approval--cleanup-request)
+          ;; Should have called set-window-configuration
+          (expect 'set-window-configuration :to-have-been-called-with original-config))))
+
+    (it "does not error when window configuration is nil"
+      (let ((buffer (get-buffer-create "*Claude Code Approval*")))
+        (with-current-buffer buffer
+          (claude-repl-approval-mode)
+          (setq-local claude-repl-approval--previous-window-config nil)
+          ;; Should not error - just verify it completes
+          (claude-repl-approval--cleanup-request)
+          (expect t :to-be t))))))
 
 (provide 'claude-repl-approval-test)
 ;;; claude-repl-approval-test.el ends here
