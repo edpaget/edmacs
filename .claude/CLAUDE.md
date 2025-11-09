@@ -62,10 +62,12 @@ modules/claude-repl/
 ├── claude-repl-process.el   # Process management
 ├── claude-repl-buffer.el    # Buffer management and UI
 ├── claude-repl-approval.el  # Tool approval system
+├── approval-hook.py         # Approval hook script (handles large responses)
 ├── test/
-│   ├── test-helper.el              # Test utilities
+│   ├── test-helper.el                    # Test utilities
 │   ├── claude-repl-approval-test.el
 │   ├── claude-repl-buffer-test.el
+│   ├── claude-repl-buffer-autoscroll-test.el
 │   ├── claude-repl-core-test.el
 │   └── claude-repl-process-test.el
 ├── Eldev                    # Eldev configuration

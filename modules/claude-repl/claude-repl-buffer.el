@@ -547,26 +547,38 @@ This dynamically updates the response header in the buffer."
 This prevents markdown formatting from being applied to the editable input area."
   (when claude-repl-buffer-input-start-marker
     (let ((input-start (marker-position claude-repl-buffer-input-start-marker)))
-      (when (and input-start (< start input-start))
-        ;; Only fontify up to the input area boundary
-        (font-lock-fontify-region start (min end input-start))))))
+      (when input-start
+        (cond
+         ;; Region is entirely before input area - fontify it
+         ((< end input-start)
+          (font-lock-fontify-region start end))
+         ;; Region starts before input area - fontify only the history part
+         ((< start input-start)
+          (font-lock-fontify-region start input-start))
+         ;; Region is entirely in input area - don't fontify at all
+         (t
+          nil))))))
 
 (defun claude-repl-buffer--clean-input-area ()
   "Remove any text properties that might interfere with editing in the input area.
 This is called on `post-command-hook' to ensure the input area stays editable."
-  (when (and claude-repl-buffer-input-start-marker
-             (claude-repl-buffer-in-input-area-p))
+  (when claude-repl-buffer-input-start-marker
     (let ((input-start (marker-position claude-repl-buffer-input-start-marker))
           (inhibit-read-only t))
-      (when (<= input-start (point-max))
+      (when (and input-start (<= input-start (point-max)))
         ;; Remove problematic properties from input area
+        ;; This includes markdown formatting properties that make text invisible
         (remove-text-properties input-start (point-max)
                                '(read-only nil
                                  keymap nil
                                  syntax-table nil
+                                 face nil
                                  font-lock-face nil
                                  fontified nil
                                  font-lock-multiline nil
+                                 invisible nil
+                                 display nil
+                                 composition nil
                                  rear-nonsticky nil
                                  front-sticky nil))))))
 
@@ -1183,9 +1195,9 @@ can be called from the buffer."
       ;; Mark the start of the input area
       (setq-local claude-repl-buffer-input-start-marker (point-marker))
       (set-marker-insertion-type claude-repl-buffer-input-start-marker nil)
-      ;; Apply input area background from marker to end of buffer
-      (let ((input-start (marker-position claude-repl-buffer-input-start-marker)))
-        (put-text-property input-start (point-max) 'face 'claude-repl-input-area))))
+      ;; Note: We don't apply face property here to avoid any formatting interference
+      ;; The input area should remain completely unformatted for easy editing
+      ))
   ;; Set up text properties for read-only history area
   (when claude-repl-buffer-input-start-marker
     (let ((inhibit-read-only t)
@@ -1197,15 +1209,20 @@ can be called from the buffer."
           (put-text-property (point-min) history-end 'read-only t)
           (put-text-property (point-min) history-end 'keymap claude-repl-buffer-readonly-map)))
       ;; Explicitly ensure the input area is NOT read-only and has NO special keymap
-      ;; Also remove any markdown or font-lock properties that might interfere
+      ;; Also remove any markdown or font-lock properties that might interfere with editing
+      ;; This is critical to prevent markdown formatting from making input text invisible
       (when (<= marker-pos (point-max))
         (remove-text-properties marker-pos (point-max)
                                '(read-only nil
                                  keymap nil
                                  syntax-table nil
+                                 face nil
                                  font-lock-face nil
                                  fontified nil
-                                 font-lock-multiline nil)))))
+                                 font-lock-multiline nil
+                                 invisible nil
+                                 display nil
+                                 composition nil)))))
   ;; Move point to input area
   (goto-char (point-max))
   (message "Input area ready. Type your message and press C-c RET to send."))
