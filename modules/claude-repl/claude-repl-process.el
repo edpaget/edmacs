@@ -178,17 +178,18 @@ Optional MODEL to use instead of default."
     (message "Socket path: %s" socket-path)
     (message "Settings file: %s" settings-file)
 
-    ;; Start the process
+    ;; Start the process with default-directory set to project-root
     (setq process
-          (make-process
-           :name (format "claude-repl-%s"
-                         (file-name-nondirectory (directory-file-name project-root)))
-           :buffer buffer
-           :command (cons claude-repl-executable args)
-           :connection-type 'pipe
-           :filter #'claude-repl-process--filter
-           :sentinel #'claude-repl-process--sentinel
-           :noquery t))
+          (let ((default-directory project-root))
+            (make-process
+             :name (format "claude-repl-%s"
+                           (file-name-nondirectory (directory-file-name project-root)))
+             :buffer buffer
+             :command (cons claude-repl-executable args)
+             :connection-type 'pipe
+             :filter #'claude-repl-process--filter
+             :sentinel #'claude-repl-process--sentinel
+             :noquery t)))
 
     ;; Store project root in process for lookup
     (process-put process 'project-root project-root)

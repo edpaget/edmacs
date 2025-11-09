@@ -246,6 +246,14 @@ Default is the Unicode box-drawing light horizontal character (U+2500)."
   :type 'integer
   :group 'claude-repl-buffer)
 
+(defcustom claude-repl-auto-scroll t
+  "Whether to automatically scroll to bottom during streaming output.
+When enabled, the buffer will automatically scroll to show new output as it
+arrives.  Auto-scrolling is disabled if the user moves the cursor away from
+the end of the buffer."
+  :type 'boolean
+  :group 'claude-repl-buffer)
+
 ;; ============================================================================
 ;; Styling Helper Functions
 ;; ============================================================================
@@ -615,6 +623,8 @@ responses, tool usage, and metadata.
   ;; Initialize input history ring
   (setq-local claude-repl-buffer-input-ring (make-ring claude-repl-buffer-input-ring-size))
   (setq-local claude-repl-buffer-input-ring-index nil)
+  ;; Initialize auto-scroll tracking
+  (setq-local claude-repl-buffer-auto-scroll-enabled claude-repl-auto-scroll)
   ;; Enable markdown syntax highlighting if available
   ;; Only apply to history area, not input area
   (when (fboundp 'markdown-mode)
@@ -629,6 +639,10 @@ responses, tool usage, and metadata.
   ;; Add post-command hook to keep input area clean
   (add-hook 'post-command-hook
             #'claude-repl-buffer--clean-input-area
+            nil t)
+  ;; Add post-command hook to detect user cursor movement
+  (add-hook 'post-command-hook
+            #'claude-repl-buffer--handle-cursor-movement
             nil t)
   ;; Ensure mode-line is updated
   (force-mode-line-update))
@@ -821,6 +835,13 @@ Returns a formatted string with markdown-style bullet points."
                           :status 'streaming
                           :metadata nil)))
         (setq-local claude-repl-buffer-current-interaction interaction)
+
+        ;; Re-enable auto-scroll when starting a new interaction
+        (setq-local claude-repl-buffer-auto-scroll-enabled claude-repl-auto-scroll)
+
+        ;; Auto-scroll to show the new interaction
+        (claude-repl-buffer--maybe-auto-scroll)
+
         interaction))))
 
 (defun claude-repl-buffer-append-text (buffer text)
@@ -839,7 +860,10 @@ Returns a formatted string with markdown-style bullet points."
                claude-repl-buffer-current-interaction)
               (concat (claude-repl-interaction-response-text
                        claude-repl-buffer-current-interaction)
-                      text))))))
+                      text))
+
+        ;; Auto-scroll if enabled
+        (claude-repl-buffer--maybe-auto-scroll)))))
 
 (defun claude-repl-buffer-add-tool-use (buffer tool-name tool-input)
   "Add a tool use entry to BUFFER for TOOL-NAME with TOOL-INPUT."
@@ -1382,6 +1406,57 @@ continues searching through newer matches."
                      (ring-length claude-repl-buffer-input-ring)
                      (truncate-string-to-width found 50 nil nil "...")))
         (message "No match for: %s" pattern)))))
+
+;; ============================================================================
+;; Auto-scroll Support
+;; ============================================================================
+
+(defun claude-repl-buffer--at-end-of-buffer-p ()
+  "Return t if point is at or near the end of the buffer.
+Considers point to be at the end if it's within the input area or at the
+last position in the history area."
+  (or
+   ;; Point is in the input area
+   (and claude-repl-buffer-input-start-marker
+        (>= (point) claude-repl-buffer-input-start-marker))
+   ;; Point is at the very end of buffer
+   (>= (point) (point-max))
+   ;; Point is at the end of the current interaction (if streaming)
+   (and claude-repl-buffer-current-interaction
+        (>= (point) (claude-repl-interaction-end-marker
+                     claude-repl-buffer-current-interaction)))))
+
+(defun claude-repl-buffer--handle-cursor-movement ()
+  "Detect when user moves cursor and disable auto-scroll if not at end.
+This is called via post-command-hook."
+  (when (and (boundp 'claude-repl-buffer-auto-scroll-enabled)
+             claude-repl-buffer-auto-scroll-enabled
+             ;; Only check for commands that move the cursor
+             (memq this-command '(previous-line next-line
+                                 forward-char backward-char
+                                 beginning-of-line end-of-line
+                                 beginning-of-buffer end-of-buffer
+                                 scroll-up-command scroll-down-command
+                                 mouse-set-point
+                                 evil-previous-line evil-next-line
+                                 evil-forward-char evil-backward-char
+                                 evil-beginning-of-line evil-end-of-line
+                                 evil-goto-first-line evil-goto-line
+                                 evil-scroll-up evil-scroll-down)))
+    ;; If cursor moved away from the end, disable auto-scroll
+    (unless (claude-repl-buffer--at-end-of-buffer-p)
+      (setq-local claude-repl-buffer-auto-scroll-enabled nil))))
+
+(defun claude-repl-buffer--maybe-auto-scroll ()
+  "Scroll to bottom if auto-scroll is enabled and we're in a visible window."
+  (when (and (boundp 'claude-repl-buffer-auto-scroll-enabled)
+             claude-repl-buffer-auto-scroll-enabled)
+    ;; For each window showing this buffer, scroll to the end
+    (dolist (window (get-buffer-window-list (current-buffer) nil t))
+      (with-selected-window window
+        (goto-char (point-max))
+        ;; Recenter to show some context above the new text
+        (recenter -1)))))
 
 ;; ============================================================================
 ;; Event Handlers (for use with process callbacks)
