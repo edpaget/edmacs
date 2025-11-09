@@ -23,6 +23,14 @@
 (defvar claude-repl-default-model "sonnet"
   "Default model to use for Claude Code sessions.")
 
+(defun claude-repl-process--get-hook-script-path ()
+  "Get the absolute path to the approval-hook.py script.
+The script is located in the same directory as this file."
+  (expand-file-name "approval-hook.py"
+                    (file-name-directory (or load-file-name
+                                             buffer-file-name
+                                             default-directory))))
+
 ;; ============================================================================
 ;; Process Object Structure
 ;; ============================================================================
@@ -146,16 +154,15 @@ Optional MODEL to use instead of default."
   (let* ((buffer-name (claude-repl-process--make-buffer-name project-root))
          (buffer (generate-new-buffer buffer-name))
          (model (or model claude-repl-default-model))
-
-         ;; Start approval server first
          (socket-path (claude-repl-approval-start-server project-root))
-
-         ;; Generate settings JSON with inline hook
-         ;; Use Python for reliable stdin/stdout handling over Unix socket
+         (hook-script (claude-repl-process--get-hook-script-path))
+         ;; Generate settings JSON with approval hook
+         ;; Uses standalone Python script for reliable stdin/stdout handling over Unix socket
+         ;; The script properly reads the full response by looping until complete JSON is received
          (settings-json (json-encode
                          `((hooks . ((PreToolUse . [((matcher . "*")
                                                      (hooks . [((type . "command")
-                                                                (command . ,(format "python3 -c \"import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect('%s'); d=sys.stdin.read(); s.sendall(d.encode()); sys.stdout.write(s.recv(65536).decode()); s.close()\"" socket-path))
+                                                                (command . ,(format "python3 %s %s" hook-script socket-path))
                                                                 (timeout . ,claude-repl-approval-timeout))]))])))
                            (defaultMode . "default"))))
          
