@@ -19,6 +19,7 @@
 
 (require 'json)
 (require 'cl-lib)
+(require 'claude-repl-diff)
 
 ;; Forward declarations
 (declare-function claude-repl-interrupt-and-ask "claude-repl-core")
@@ -108,6 +109,10 @@ Maps process object to t to prevent garbage collection.")
   "Hash table tracking processes we've already responded to.
 Prevents duplicate responses if filter is called multiple times.")
 
+(defvar claude-repl-approval--process-buffers (make-hash-table :test 'eq)
+  "Hash table mapping client processes to accumulated input data.
+Used to buffer incomplete JSON data across multiple socket filter calls.")
+
 ;; Declare buffer-local variables to suppress byte-compiler warnings
 ;; These are set via setq-local in the approval UI buffer
 (defvar claude-repl-approval--current-tool nil
@@ -122,6 +127,8 @@ Prevents duplicate responses if filter is called multiple times.")
   "Buffer that was active before the approval buffer was displayed.")
 (defvar claude-repl-approval--previous-window-config nil
   "Window configuration before the approval buffer was displayed.")
+(defvar claude-repl-approval--current-diff-buffer nil
+  "Buffer containing the diff/preview for the current approval request.")
 
 ;;; Helper Functions
 
@@ -141,17 +148,72 @@ Returns a string with nicely formatted key-value pairs."
         (let* ((key (symbol-name (car pair)))
                (value (cdr pair))
                (value-str (cond
-                          ((stringp value)
-                           (if (> (length value) 100)
-                               (concat (substring value 0 100) "...")
-                             value))
-                          ((null value) "nil")
-                          (t (format "%S" value)))))
+                           ((stringp value)
+                            (if (> (length value) 100)
+                                (concat (substring value 0 100) "...")
+                              value))
+                           ((null value) "nil")
+                           (t (format "%S" value)))))
           (push (format "  %s: %s"
-                       (propertize key 'face '(:foreground "#8be9fd" :weight bold))
-                       (propertize value-str 'face 'font-lock-string-face))
+                        (propertize key 'face '(:foreground "#8be9fd" :weight bold))
+                        (propertize value-str 'face 'font-lock-string-face))
                 lines)))
       (string-join (nreverse lines) "\n"))))
+
+(defun claude-repl-approval--generate-diff (tool input)
+  "Generate diff/preview buffer for TOOL with INPUT if applicable.
+Returns diff buffer or nil."
+  (condition-case err
+      (cond
+       ((string= tool "Edit")
+        (claude-repl-diff-for-edit input))
+       ((string= tool "Write")
+        (claude-repl-diff-for-write input))
+       (t nil))
+    (error
+     (message "Error generating diff for %s: %s" tool (error-message-string err))
+     nil)))
+
+(defun claude-repl-approval--insert-diff-section (diff-buffer)
+  "Insert diff/preview section from DIFF-BUFFER into current approval buffer."
+  (when (and diff-buffer (buffer-live-p diff-buffer))
+    (let* ((stats (claude-repl-diff-get-statistics diff-buffer))
+           (added (or (plist-get stats :added) 0))
+           (removed (or (plist-get stats :removed) 0)))
+      ;; Insert section header with statistics
+      (insert (propertize "Diff Preview:" 'face 'bold))
+      (when (or (> added 0) (> removed 0))
+        (insert (format "    [+%d, -%d lines]" added removed)))
+      (insert "\n")
+      (insert (propertize (make-string 60 ?─) 'face 'shadow))
+      (insert "\n")
+
+      ;; Insert the diff content
+      (let ((diff-start (point))
+            (diff-content (with-current-buffer diff-buffer
+                            (buffer-string))))
+        (insert diff-content)
+
+        ;; Apply diff-mode font-locking to the inserted region
+        (let ((diff-end (point)))
+          (save-excursion
+            (goto-char diff-start)
+            (while (< (point) diff-end)
+              (cond
+               ((looking-at "^\\+")
+                (put-text-property (line-beginning-position) (line-end-position)
+                                   'face 'diff-added))
+               ((looking-at "^-")
+                (put-text-property (line-beginning-position) (line-end-position)
+                                   'face 'diff-removed))
+               ((looking-at "^@")
+                (put-text-property (line-beginning-position) (line-end-position)
+                                   'face 'diff-header)))
+              (forward-line 1)))))
+
+      (insert "\n")
+      (insert (propertize (make-string 60 ?─) 'face 'shadow))
+      (insert "\n\n"))))
 
 ;;; Socket Server Lifecycle
 
@@ -170,7 +232,7 @@ Returns the socket path."
     (claude-repl-approval-stop-server project-root)
 
     (claude-repl-approval--message "starting server %s" (format "cc-approval-%s"
-                                          (secure-hash 'md5 project-root)))
+                                                                (secure-hash 'md5 project-root)))
     (condition-case err
         (let ((server (make-network-process
                        :name (format "cc-approval-%s"
@@ -221,60 +283,67 @@ PROC is the process, EVENT is the event string."
     (claude-repl-approval--message "Claude Code approval socket closed: %s" (string-trim event))
     ;; Clean up all references
     (remhash proc claude-repl-approval--active-processes)
-    (remhash proc claude-repl-approval--responded-processes)))
+    (remhash proc claude-repl-approval--responded-processes)
+    (remhash proc claude-repl-approval--process-buffers)))
 
 (defun claude-repl-approval--socket-filter (proc string)
   "Handle incoming approval request from hook via nc.
 PROC is the client connection process.
-STRING is the JSON request data."
-  (claude-repl-approval--message "Socket filter called for %s: %S (length: %d)" proc string (length string))
+STRING is the JSON request data (possibly partial)."
+  (claude-repl-approval--message "Socket filter called for %s: received %d bytes" proc (length string))
 
-  (cond
-   ;; Ignore if we've already processed/responded to this connection
-   ((gethash proc claude-repl-approval--responded-processes)
-    (claude-repl-approval--message "Already responded to process %s, ignoring" proc))
+  ;; Skip if we've already responded to this connection
+  (unless (gethash proc claude-repl-approval--responded-processes)
+    ;; Accumulate data for this process
+    (let ((accumulated (concat (gethash proc claude-repl-approval--process-buffers "") string)))
+      (puthash proc accumulated claude-repl-approval--process-buffers)
+      (claude-repl-approval--message "Accumulated %d bytes for %s" (length accumulated) proc)
 
-   ;; Ignore empty or whitespace-only data
-   ((string-match-p "\\`[[:space:]]*\\'" string)
-    (claude-repl-approval--message "Received empty/whitespace data, ignoring"))
+      ;; Try to parse the accumulated data as JSON
+      (condition-case err
+          (let* ((request (json-read-from-string accumulated))
+                 (tool (alist-get 'tool_name request))
+                 (input (alist-get 'tool_input request))
+                 (id (or (alist-get 'id request)
+                         (format "%s-%d" tool (random 100000)))))
 
-   ;; Only process if it looks like JSON
-   ((not (string-match-p "\\`[[:space:]]*{" string))
-    (claude-repl-approval--message "Data doesn't look like JSON, ignoring: %S" string))
+            ;; Successfully parsed complete JSON!
+            (claude-repl-approval--message "Successfully parsed complete JSON for tool: %s" tool)
 
-   ;; Process the JSON request
-   (t
-    (condition-case err
-        (let* ((request (json-read-from-string string))
-               (tool (alist-get 'tool_name request))
-               (input (alist-get 'tool_input request))
-               (id (or (alist-get 'id request)
-                       (format "%s-%d" tool (random 100000)))))
+            ;; Mark as being processed to prevent duplicate processing
+            (puthash proc t claude-repl-approval--responded-processes)
 
-          ;; Mark as being processed to prevent duplicate processing
-          (puthash proc t claude-repl-approval--responded-processes)
+            ;; Keep a strong reference to the client process
+            (puthash proc t claude-repl-approval--active-processes)
 
-          ;; Keep a strong reference to the client process
-          (puthash proc t claude-repl-approval--active-processes)
-          (claude-repl-approval--message "Processing approval request for tool: %s" tool)
+            ;; Clean up accumulated buffer for this process
+            (remhash proc claude-repl-approval--process-buffers)
 
-          ;; Get approval decision asynchronously
-          ;; The callback will send the response through the process
-          (claude-repl-approval--get-decision-async
-           tool input id proc))
+            ;; Get approval decision asynchronously
+            ;; The callback will send the response through the process
+            (claude-repl-approval--get-decision-async
+             tool input id proc))
 
-      (error
-       ;; On error, deny by default
-       (let ((error-msg (format "Error processing request: %s"
-                                (error-message-string err))))
-         (message "Claude Code approval error: %s" error-msg)
-         (when (and (process-live-p proc)
-                    (not (gethash proc claude-repl-approval--responded-processes)))
-           (puthash proc t claude-repl-approval--responded-processes)
-           (let ((response (json-encode (claude-repl-approval--make-hook-response "deny" error-msg))))
-             (process-send-string proc (concat response "\n"))))
-         ;; Remove reference
-         (remhash proc claude-repl-approval--active-processes)))))))
+        (json-readtable-error
+         ;; Incomplete JSON - just wait for more data
+         (claude-repl-approval--message "Incomplete JSON, waiting for more data..."))
+
+        (json-end-of-file
+         ;; Incomplete JSON - just wait for more data
+         (claude-repl-approval--message "JSON end-of-file, waiting for more data..."))
+
+        (error
+         ;; Real error - deny by default
+         (let ((error-msg (format "Error processing request: %s"
+                                  (error-message-string err))))
+           (message "Claude Code approval error: %s" error-msg)
+           (when (process-live-p proc)
+             (puthash proc t claude-repl-approval--responded-processes)
+             (let ((response (json-encode (claude-repl-approval--make-hook-response "deny" error-msg))))
+               (process-send-string proc (concat response "\n"))))
+           ;; Remove references
+           (remhash proc claude-repl-approval--active-processes)
+           (remhash proc claude-repl-approval--process-buffers)))))))
 
 ;;; Decision Logic
 
@@ -498,6 +567,13 @@ This function returns immediately after showing the UI."
     (insert (claude-repl-approval--format-tool-input input))
     (insert "\n\n")
 
+    ;; Diff/Preview section (if applicable)
+    (let ((diff-buf (claude-repl-approval--generate-diff tool input)))
+      (when diff-buf
+        (claude-repl-approval--insert-diff-section diff-buf)
+        ;; Store diff buffer for later cleanup
+        (setq-local claude-repl-approval--current-diff-buffer diff-buf)))
+
     ;; Timeout warning
     (insert (propertize "⏱ " 'face 'warning)
             (propertize (format "Auto-deny in %d seconds"
@@ -600,8 +676,12 @@ This function returns immediately after showing the UI."
     (cancel-timer claude-repl-approval--decision-timer)
     (setq claude-repl-approval--decision-timer nil))
   (let ((buffer (current-buffer))
-        (previous-window-config claude-repl-approval--previous-window-config))
-    ;; Kill the approval buffer first
+        (previous-window-config claude-repl-approval--previous-window-config)
+        (diff-buffer claude-repl-approval--current-diff-buffer))
+    ;; Kill the diff buffer if it exists
+    (when (and diff-buffer (buffer-live-p diff-buffer))
+      (kill-buffer diff-buffer))
+    ;; Kill the approval buffer
     (when (buffer-live-p buffer)
       (kill-buffer buffer))
     ;; Restore the previous window configuration
@@ -710,6 +790,7 @@ for a new question to ask Claude."
 (make-variable-buffer-local 'claude-repl-approval--current-proc)
 (make-variable-buffer-local 'claude-repl-approval--previous-buffer)
 (make-variable-buffer-local 'claude-repl-approval--previous-window-config)
+(make-variable-buffer-local 'claude-repl-approval--current-diff-buffer)
 
 ;;; Utility Functions
 
