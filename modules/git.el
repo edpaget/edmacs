@@ -8,6 +8,7 @@
 ;; ============================================================================
 ;; Magit - The best Git interface
 ;; ============================================================================
+;; Note: transient and its dependencies are loaded early in core.el
 
 (use-package magit
   :commands (magit-status magit-diff-unstaged magit-diff-staged magit-commit

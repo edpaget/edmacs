@@ -6,6 +6,20 @@
 ;;; Code:
 
 ;; ============================================================================
+;; Transient - Load early as it's used by multiple packages
+;; ============================================================================
+;; Transient is used by magit, combobulate, and other packages.
+;; Load it early with all dependencies to avoid load-order issues.
+
+(straight-use-package 'compat)
+(straight-use-package 'cond-let)
+(straight-use-package 'transient)
+
+(require 'compat)
+(require 'cond-let)
+(require 'transient)
+
+;; ============================================================================
 ;; Environment Variables from Shell
 ;; ============================================================================
 

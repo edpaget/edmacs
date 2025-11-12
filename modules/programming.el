@@ -208,6 +208,7 @@
 ;; ============================================================================
 ;; Combobulate - Structural Editing with Tree-Sitter
 ;; ============================================================================
+;; Note: transient (required by combobulate) is loaded early in core.el
 
 (use-package combobulate
   :straight (combobulate :type git
