@@ -3,27 +3,28 @@
 ;;; Commentary:
 ;; Clojure development setup with CIDER and related tools.
 ;; This file is loaded on-demand when opening Clojure files.
+;; Uses clojure-ts-mode for tree-sitter support.
 
 ;;; Code:
 
 ;; ============================================================================
-;; Clojure Mode
+;; Clojure Mode (Tree-sitter)
 ;; ============================================================================
 
-(use-package clojure-mode
-  :mode (("\\.clj\\'" . clojure-mode)
-         ("\\.cljs\\'" . clojurescript-mode)
-         ("\\.cljc\\'" . clojurec-mode)
-         ("\\.edn\\'" . clojure-mode))
+(use-package clojure-ts-mode
+  :mode (("\\.clj\\'" . clojure-ts-mode)
+         ("\\.cljs\\'" . clojure-ts-mode)
+         ("\\.cljc\\'" . clojure-ts-mode)
+         ("\\.edn\\'" . clojure-ts-mode))
   :config
   ;; Indentation rules
-  (setq clojure-indent-style 'align-arguments
-        clojure-align-forms-automatically t)
+  (setq clojure-ts-indent-style 'align-arguments)
 
   ;; Enable LSP
-  (add-hook 'clojure-mode-hook #'lsp-deferred)
-  (add-hook 'clojurescript-mode-hook #'lsp-deferred)
-  (add-hook 'clojurec-mode-hook #'lsp-deferred))
+  (add-hook 'clojure-ts-mode-hook #'lsp-deferred)
+
+  ;; Enable smartparens for structural editing
+  (add-hook 'clojure-ts-mode-hook #'smartparens-strict-mode))
 
 ;; ============================================================================
 ;; CIDER - Clojure Interactive Development Environment
@@ -50,7 +51,7 @@
   ;; CIDER keybindings with local leader
   (general-define-key
    :states 'normal
-   :keymaps '(clojure-mode-map clojurescript-mode-map clojurec-mode-map)
+   :keymaps 'clojure-ts-mode-map
    :prefix ","
    "" '(:ignore t :which-key "clojure")
 
@@ -104,7 +105,7 @@
 ;; ============================================================================
 
 (use-package clj-refactor
-  :hook (clojure-mode . clj-refactor-mode)
+  :hook (clojure-ts-mode . clj-refactor-mode)
   :config
   (setq cljr-warn-on-eval nil
         cljr-suppress-middleware-warnings t)

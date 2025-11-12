@@ -131,6 +131,136 @@
   (require 'smartparens-config))
 
 ;; ============================================================================
+;; Evil Tree-Sitter Text Objects
+;; ============================================================================
+
+(use-package evil-textobj-tree-sitter
+  :after evil
+  :config
+  ;; Define text objects for various code structures
+  ;; Inner/outer function
+  (define-key evil-outer-text-objects-map "f"
+    (evil-textobj-tree-sitter-get-textobj "function.outer"))
+  (define-key evil-inner-text-objects-map "f"
+    (evil-textobj-tree-sitter-get-textobj "function.inner"))
+
+  ;; Inner/outer class
+  (define-key evil-outer-text-objects-map "c"
+    (evil-textobj-tree-sitter-get-textobj "class.outer"))
+  (define-key evil-inner-text-objects-map "c"
+    (evil-textobj-tree-sitter-get-textobj "class.inner"))
+
+  ;; Inner/outer loop
+  (define-key evil-outer-text-objects-map "l"
+    (evil-textobj-tree-sitter-get-textobj "loop.outer"))
+  (define-key evil-inner-text-objects-map "l"
+    (evil-textobj-tree-sitter-get-textobj "loop.inner"))
+
+  ;; Inner/outer conditional
+  (define-key evil-outer-text-objects-map "o"
+    (evil-textobj-tree-sitter-get-textobj "conditional.outer"))
+  (define-key evil-inner-text-objects-map "o"
+    (evil-textobj-tree-sitter-get-textobj "conditional.inner"))
+
+  ;; Inner/outer call (function call)
+  (define-key evil-outer-text-objects-map "a"
+    (evil-textobj-tree-sitter-get-textobj "call.outer"))
+  (define-key evil-inner-text-objects-map "a"
+    (evil-textobj-tree-sitter-get-textobj "call.inner"))
+
+  ;; Inner/outer comment
+  (define-key evil-outer-text-objects-map "/"
+    (evil-textobj-tree-sitter-get-textobj "comment.outer"))
+  (define-key evil-inner-text-objects-map "/"
+    (evil-textobj-tree-sitter-get-textobj "comment.inner"))
+
+  ;; Parameter/argument text object (special - inner only makes sense)
+  (define-key evil-inner-text-objects-map "a"
+    (evil-textobj-tree-sitter-get-textobj "parameter.inner"))
+
+  ;; Navigation with goto-textobj
+  ;; Jump to next/previous function
+  (general-define-key
+   :states '(normal visual)
+   "]f" (lambda ()
+          (interactive)
+          (evil-textobj-tree-sitter-goto-textobj "function.outer"))
+   "[f" (lambda ()
+          (interactive)
+          (evil-textobj-tree-sitter-goto-textobj "function.outer" t))
+
+   ;; Jump to next/previous class
+   "]c" (lambda ()
+          (interactive)
+          (evil-textobj-tree-sitter-goto-textobj "class.outer"))
+   "[c" (lambda ()
+          (interactive)
+          (evil-textobj-tree-sitter-goto-textobj "class.outer" t))
+
+   ;; Jump to next/previous conditional
+   "]o" (lambda ()
+          (interactive)
+          (evil-textobj-tree-sitter-goto-textobj "conditional.outer"))
+   "[o" (lambda ()
+          (interactive)
+          (evil-textobj-tree-sitter-goto-textobj "conditional.outer" t))))
+
+;; ============================================================================
+;; Combobulate - Structural Editing with Tree-Sitter
+;; ============================================================================
+
+(use-package combobulate
+  :after treesit
+  :hook ((python-ts-mode . combobulate-mode)
+         (js-ts-mode . combobulate-mode)
+         (typescript-ts-mode . combobulate-mode)
+         (tsx-ts-mode . combobulate-mode)
+         (rust-ts-mode . combobulate-mode)
+         (clojure-ts-mode . combobulate-mode)
+         (json-ts-mode . combobulate-mode)
+         (yaml-ts-mode . combobulate-mode)
+         (css-ts-mode . combobulate-mode)
+         (html-ts-mode . combobulate-mode))
+
+  :config
+  ;; Evil-friendly keybindings for combobulate
+  (general-define-key
+   :states '(normal visual)
+   :keymaps 'combobulate-key-map
+   :prefix "SPC k"
+   "" '(:ignore t :which-key "combobulate")
+
+   ;; Navigation
+   "n" '(combobulate-navigate-next :which-key "next node")
+   "p" '(combobulate-navigate-previous :which-key "previous node")
+   "u" '(combobulate-navigate-up :which-key "up to parent")
+   "d" '(combobulate-navigate-down :which-key "down to child")
+
+   ;; Editing
+   "k" '(combobulate-drag-up :which-key "drag up")
+   "j" '(combobulate-drag-down :which-key "drag down")
+   "r" '(combobulate-splice-up :which-key "splice up")
+   "s" '(combobulate-splice-down :which-key "splice down")
+   "c" '(combobulate-clone-node-dwim :which-key "clone node")
+   "x" '(combobulate-vanish-node :which-key "vanish/delete node")
+
+   ;; Marking/Selection
+   "m" '(combobulate-mark-node-dwim :which-key "mark node")
+   "e" '(combobulate-envelop-node :which-key "envelop node")
+
+   ;; Transient menu
+   "o" '(combobulate :which-key "combobulate menu"))
+
+  ;; Also bind some common operations to more accessible keys
+  (general-define-key
+   :states 'normal
+   :keymaps 'combobulate-key-map
+   "M-j" 'combobulate-drag-down
+   "M-k" 'combobulate-drag-up
+   "M-h" 'combobulate-navigate-previous
+   "M-l" 'combobulate-navigate-next))
+
+;; ============================================================================
 ;; Code Folding
 ;; ============================================================================
 

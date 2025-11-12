@@ -159,6 +159,36 @@
   (interactive)
   (other-window -1))
 
+(defun tiles-new-window ()
+  "Create a new window within the current layout.
+Prompts for a buffer to display in the new window, adds it to the
+managed buffer list, and reapplies the current layout."
+  (interactive)
+  (let* ((all-buffers (tiles--get-displayable-buffers))
+         (managed (tiles--get-managed-buffers))
+         ;; Only show buffers not currently managed
+         (available (seq-remove (lambda (buf) (memq buf managed)) all-buffers))
+         (buffer (if available
+                     (get-buffer
+                      (completing-read "Buffer for new window: "
+                                       (mapcar #'buffer-name available)
+                                       nil t))
+                   ;; If all buffers are managed, allow any buffer
+                   (get-buffer
+                    (completing-read "Buffer for new window: "
+                                     (mapcar #'buffer-name all-buffers)
+                                     nil t)))))
+    (when buffer
+      ;; Add buffer to managed list if not already there
+      (unless (memq buffer tiles--buffer-list)
+        (setq tiles--buffer-list (append tiles--buffer-list (list buffer))))
+      ;; Reapply layout with the new buffer
+      (tiles-refresh)
+      ;; Try to select the window showing the new buffer
+      (let ((win (get-buffer-window buffer)))
+        (when win
+          (select-window win))))))
+
 ;;;###autoload
 (define-minor-mode tiles-mode
   "Minor mode for tiling window management."

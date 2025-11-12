@@ -4,59 +4,189 @@
 
 ;;; Commentary:
 ;; Configuration for JavaScript, TypeScript, JSX, and TSX development.
+;; Uses tree-sitter modes for enhanced syntax understanding.
 
 ;;; Code:
 
-;; JavaScript Mode
-(use-package js
-  :straight nil
-  :mode (("\\.js\\'" . js-mode)
-         ("\\.mjs\\'" . js-mode)
-         ("\\.cjs\\'" . js-mode))
-  :custom
-  (js-indent-level 2)
-  (js-switch-indent-offset 2)
-  :hook (js-mode . lsp-deferred)
-  :config
-  (setq-default js-indent-level 2))
+;; ============================================================================
+;; JavaScript Mode (Tree-sitter)
+;; ============================================================================
 
-;; TypeScript Mode
-(use-package typescript-mode
-  :mode (("\\.ts\\'" . typescript-mode)
-         ("\\.tsx\\'" . typescript-tsx-mode))
-  :custom
-  (typescript-indent-level 2)
-  :hook ((typescript-mode . lsp-deferred)
-         (typescript-tsx-mode . lsp-deferred))
-  :config
-  (define-derived-mode typescript-tsx-mode typescript-mode "TypeScript[TSX]")
-  (setq-default typescript-indent-level 2))
+;; js-ts-mode is automatically enabled by treesit-auto for .js files
+;; No need to explicitly configure mode associations
 
-;; JSX Support
-(use-package rjsx-mode
-  :mode "\\.jsx\\'"
-  :custom
-  (js-indent-level 2)
-  (sgml-basic-offset 2)
-  :hook (rjsx-mode . lsp-deferred)
-  :config
-  (setq-default js-indent-level 2))
+(with-eval-after-load 'js
+  ;; JavaScript settings
+  (setq js-indent-level 2
+        js-switch-indent-offset 2)
 
-;; JSON Mode
-(use-package json-mode
-  :mode "\\.json\\'"
-  :custom (json-reformat:indent-width 2)
-  :hook (json-mode . lsp-deferred))
+  ;; Enable LSP for JavaScript
+  (add-hook 'js-ts-mode-hook #'lsp-deferred)
 
+  ;; Enable smartparens for structural editing
+  (add-hook 'js-ts-mode-hook #'smartparens-mode))
+
+;; ============================================================================
+;; TypeScript Mode (Tree-sitter)
+;; ============================================================================
+
+;; typescript-ts-mode and tsx-ts-mode are automatically enabled by treesit-auto
+;; for .ts and .tsx files respectively
+
+(with-eval-after-load 'typescript-ts-mode
+  ;; TypeScript settings
+  (setq typescript-ts-mode-indent-offset 2)
+
+  ;; Enable LSP for TypeScript
+  (add-hook 'typescript-ts-mode-hook #'lsp-deferred)
+  (add-hook 'tsx-ts-mode-hook #'lsp-deferred)
+
+  ;; Enable smartparens for structural editing
+  (add-hook 'typescript-ts-mode-hook #'smartparens-mode)
+  (add-hook 'tsx-ts-mode-hook #'smartparens-mode))
+
+;; ============================================================================
+;; JSON Mode (Tree-sitter)
+;; ============================================================================
+
+(with-eval-after-load 'json-ts-mode
+  ;; Enable LSP for JSON
+  (add-hook 'json-ts-mode-hook #'lsp-deferred))
+
+;; ============================================================================
+;; Language-Specific Keybindings
+;; ============================================================================
+
+;; JavaScript keybindings with local leader
+(with-eval-after-load 'js
+  (general-define-key
+   :states 'normal
+   :keymaps 'js-ts-mode-map
+   :prefix ","
+   "" '(:ignore t :which-key "javascript")
+
+   ;; Running/Building
+   "r" '(:ignore t :which-key "run")
+   "rr" '(nodejs-repl :which-key "node repl")
+   "re" '(nodejs-repl-send-last-expression :which-key "send expression")
+   "rb" '(nodejs-repl-send-buffer :which-key "send buffer")
+
+   ;; Testing (assuming jest or similar)
+   "t" '(:ignore t :which-key "test")
+   "tt" '(projectile-test-project :which-key "test project")
+   "tf" '(projectile-find-test-file :which-key "find test file")
+
+   ;; Refactoring
+   "=" '(:ignore t :which-key "refactor")
+   "=i" '(lsp-organize-imports :which-key "organize imports")
+   "=r" '(lsp-rename :which-key "rename")
+
+   ;; Documentation
+   "d" '(:ignore t :which-key "doc")
+   "dd" '(lsp-describe-thing-at-point :which-key "describe")))
+
+;; TypeScript keybindings with local leader
+(with-eval-after-load 'typescript-ts-mode
+  (general-define-key
+   :states 'normal
+   :keymaps '(typescript-ts-mode-map tsx-ts-mode-map)
+   :prefix ","
+   "" '(:ignore t :which-key "typescript")
+
+   ;; Compilation/Building
+   "c" '(:ignore t :which-key "compile")
+   "cc" '(projectile-compile-project :which-key "compile project")
+   "cr" '(projectile-run-project :which-key "run project")
+
+   ;; Testing
+   "t" '(:ignore t :which-key "test")
+   "tt" '(projectile-test-project :which-key "test project")
+   "tf" '(projectile-find-test-file :which-key "find test file")
+
+   ;; Refactoring
+   "=" '(:ignore t :which-key "refactor")
+   "=i" '(lsp-organize-imports :which-key "organize imports")
+   "=r" '(lsp-rename :which-key "rename")
+   "=a" '(lsp-execute-code-action :which-key "code action")
+
+   ;; Documentation
+   "d" '(:ignore t :which-key "doc")
+   "dd" '(lsp-describe-thing-at-point :which-key "describe")))
+
+;; ============================================================================
 ;; LSP Configuration
-(with-eval-after-load 'lsp-mode
-  (setq lsp-typescript-suggest-auto-imports t)
-  (setq lsp-eslint-auto-fix-on-save t))
+;; ============================================================================
 
-;; Prettier Integration
+(with-eval-after-load 'lsp-mode
+  ;; TypeScript/JavaScript LSP settings
+  (setq lsp-typescript-suggest-auto-imports t
+        lsp-typescript-preferences-import-module-specifier "relative"
+        lsp-typescript-preferences-quote-style "single"
+        lsp-javascript-suggest-auto-imports t)
+
+  ;; ESLint auto-fix on save
+  (setq lsp-eslint-auto-fix-on-save t
+        lsp-eslint-enable t))
+
+;; ============================================================================
+;; Consult-LSP Integration
+;; ============================================================================
+
+(with-eval-after-load 'consult-lsp
+  (general-define-key
+   :states 'normal
+   :keymaps '(js-ts-mode-map typescript-ts-mode-map tsx-ts-mode-map)
+   :prefix "SPC c"
+   "s" '(consult-lsp-symbols :which-key "workspace symbols")
+   "S" '(consult-lsp-file-symbols :which-key "file symbols")))
+
+;; ============================================================================
+;; Apheleia - Format on save with Prettier
+;; ============================================================================
+
 (with-eval-after-load 'apheleia
-  (dolist (mode '(js-mode typescript-mode typescript-tsx-mode rjsx-mode json-mode))
+  ;; Use Prettier for JS/TS files
+  (dolist (mode '(js-ts-mode typescript-ts-mode tsx-ts-mode json-ts-mode))
     (add-to-list 'apheleia-mode-alist (cons mode 'prettier))))
+
+;; ============================================================================
+;; Node.js REPL Integration
+;; ============================================================================
+
+(use-package nodejs-repl
+  :commands (nodejs-repl nodejs-repl-send-last-expression nodejs-repl-send-buffer)
+  :config
+  (setq nodejs-repl-command "node"))
+
+;; ============================================================================
+;; NPM Integration
+;; ============================================================================
+
+;; Add npm script runner keybindings
+(with-eval-after-load 'js
+  (general-define-key
+   :states 'normal
+   :keymaps '(js-ts-mode-map typescript-ts-mode-map tsx-ts-mode-map)
+   :prefix ", n"
+   "" '(:ignore t :which-key "npm")
+   "i" '((lambda () (interactive)
+           (projectile-run-shell-command-in-root "npm install"))
+         :which-key "npm install")
+   "r" '((lambda () (interactive)
+           (projectile-run-shell-command-in-root "npm run"))
+         :which-key "npm run")
+   "t" '((lambda () (interactive)
+           (projectile-run-shell-command-in-root "npm test"))
+         :which-key "npm test")
+   "s" '((lambda () (interactive)
+           (projectile-run-shell-command-in-root "npm start"))
+         :which-key "npm start")
+   "b" '((lambda () (interactive)
+           (projectile-run-shell-command-in-root "npm run build"))
+         :which-key "npm build")
+   "l" '((lambda () (interactive)
+           (projectile-run-shell-command-in-root "npm run lint"))
+         :which-key "npm lint")))
 
 (provide 'javascript)
 ;;; javascript.el ends here

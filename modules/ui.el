@@ -169,7 +169,7 @@
   :load-path "modules/tiles"
   :commands (tiles-mode tiles-setup tiles-refresh)
   :custom
-  (tiles-default-layout 'horizontal)
+  (tiles-default-layout 'master-stack)
   (tiles-master-window-ratio 0.5)
   (tiles-auto-balance t)
   :config
