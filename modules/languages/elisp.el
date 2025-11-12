@@ -107,8 +107,8 @@
    ;; Slurping and barfing
    ">" '(sp-forward-slurp-sexp :which-key "slurp forward")
    "<" '(sp-forward-barf-sexp :which-key "barf forward")
-   "B" '(sp-backward-slurp-sexp :which-key "slurp backward")
-   "b" '(sp-backward-barf-sexp :which-key "barf backward")
+   "S" '(sp-backward-slurp-sexp :which-key "slurp backward")
+   "B" '(sp-backward-barf-sexp :which-key "barf backward")
 
    ;; Wrapping
    "w" '(:ignore t :which-key "wrap")

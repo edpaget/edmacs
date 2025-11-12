@@ -23,13 +23,17 @@
 (defvar claude-repl-default-model "sonnet"
   "Default model to use for Claude Code sessions.")
 
+(defvar claude-repl-process-directory
+  (file-name-directory (or load-file-name
+                           buffer-file-name
+                           (error "Cannot determine claude-repl directory")))
+  "Directory where claude-repl-process.el is installed.
+This is captured at load-time to reliably locate the approval-hook.py script.")
+
 (defun claude-repl-process--get-hook-script-path ()
   "Get the absolute path to the approval-hook.py script.
 The script is located in the same directory as this file."
-  (expand-file-name "approval-hook.py"
-                    (file-name-directory (or load-file-name
-                                             buffer-file-name
-                                             default-directory))))
+  (expand-file-name "approval-hook.py" claude-repl-process-directory))
 
 ;; ============================================================================
 ;; Process Object Structure

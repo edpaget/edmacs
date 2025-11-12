@@ -140,43 +140,43 @@
   ;; Define text objects for various code structures
   ;; Inner/outer function
   (define-key evil-outer-text-objects-map "f"
-    (evil-textobj-tree-sitter-get-textobj "function.outer"))
+              (evil-textobj-tree-sitter-get-textobj "function.outer"))
   (define-key evil-inner-text-objects-map "f"
-    (evil-textobj-tree-sitter-get-textobj "function.inner"))
+              (evil-textobj-tree-sitter-get-textobj "function.inner"))
 
   ;; Inner/outer class
   (define-key evil-outer-text-objects-map "c"
-    (evil-textobj-tree-sitter-get-textobj "class.outer"))
+              (evil-textobj-tree-sitter-get-textobj "class.outer"))
   (define-key evil-inner-text-objects-map "c"
-    (evil-textobj-tree-sitter-get-textobj "class.inner"))
+              (evil-textobj-tree-sitter-get-textobj "class.inner"))
 
   ;; Inner/outer loop
   (define-key evil-outer-text-objects-map "l"
-    (evil-textobj-tree-sitter-get-textobj "loop.outer"))
+              (evil-textobj-tree-sitter-get-textobj "loop.outer"))
   (define-key evil-inner-text-objects-map "l"
-    (evil-textobj-tree-sitter-get-textobj "loop.inner"))
+              (evil-textobj-tree-sitter-get-textobj "loop.inner"))
 
   ;; Inner/outer conditional
   (define-key evil-outer-text-objects-map "o"
-    (evil-textobj-tree-sitter-get-textobj "conditional.outer"))
+              (evil-textobj-tree-sitter-get-textobj "conditional.outer"))
   (define-key evil-inner-text-objects-map "o"
-    (evil-textobj-tree-sitter-get-textobj "conditional.inner"))
+              (evil-textobj-tree-sitter-get-textobj "conditional.inner"))
 
   ;; Inner/outer call (function call)
   (define-key evil-outer-text-objects-map "a"
-    (evil-textobj-tree-sitter-get-textobj "call.outer"))
+              (evil-textobj-tree-sitter-get-textobj "call.outer"))
   (define-key evil-inner-text-objects-map "a"
-    (evil-textobj-tree-sitter-get-textobj "call.inner"))
+              (evil-textobj-tree-sitter-get-textobj "call.inner"))
 
   ;; Inner/outer comment
   (define-key evil-outer-text-objects-map "/"
-    (evil-textobj-tree-sitter-get-textobj "comment.outer"))
+              (evil-textobj-tree-sitter-get-textobj "comment.outer"))
   (define-key evil-inner-text-objects-map "/"
-    (evil-textobj-tree-sitter-get-textobj "comment.inner"))
+              (evil-textobj-tree-sitter-get-textobj "comment.inner"))
 
   ;; Parameter/argument text object (special - inner only makes sense)
   (define-key evil-inner-text-objects-map "a"
-    (evil-textobj-tree-sitter-get-textobj "parameter.inner"))
+              (evil-textobj-tree-sitter-get-textobj "parameter.inner"))
 
   ;; Navigation with goto-textobj
   ;; Jump to next/previous function
@@ -210,6 +210,10 @@
 ;; ============================================================================
 
 (use-package combobulate
+  :straight (combobulate :type git
+                         :host github
+                         :repo "mickeynp/combobulate"
+                         :branch "development")
   :after treesit
   :hook ((python-ts-mode . combobulate-mode)
          (js-ts-mode . combobulate-mode)
