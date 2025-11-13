@@ -37,7 +37,26 @@
              (long-content (string-join (make-list 20 "line") "\n"))
              (tool-input '((file_path . "test.txt")))
              (formatted (claude-repl-tool-output-format-read tool-input long-content)))
-        (expect formatted :to-match "truncated"))))
+        (expect formatted :to-match "truncated")))
+
+    (it "filters out system reminders"
+      (let* ((tool-input '((file_path . "test.el")))
+             (tool-output "before\n<system-reminder>This is a reminder</system-reminder>\nafter")
+             (formatted (claude-repl-tool-output-format-read tool-input tool-output)))
+        (expect formatted :not :to-match "system-reminder")
+        (expect formatted :not :to-match "This is a reminder")
+        (expect formatted :to-match "before")
+        (expect formatted :to-match "after")))
+
+    (it "filters multiple system reminders"
+      (let* ((tool-input '((file_path . "test.el")))
+             (tool-output "line1\n<system-reminder>rem1</system-reminder>\nline2\n<system-reminder>rem2</system-reminder>\nline3")
+             (formatted (claude-repl-tool-output-format-read tool-input tool-output)))
+        (expect formatted :not :to-match "rem1")
+        (expect formatted :not :to-match "rem2")
+        (expect formatted :to-match "line1")
+        (expect formatted :to-match "line2")
+        (expect formatted :to-match "line3"))))
 
   (describe "claude-repl-tool-output-format"
     (it "uses registered formatter for Read tool"
@@ -57,6 +76,37 @@
         (expect formatted :to-match "Error formatting"))))
 
   (describe "Tool output helpers"
+    (describe "claude-repl-tool-output--filter-system-reminders"
+      (it "removes system reminder blocks"
+        (let* ((content "before\n<system-reminder>reminder text</system-reminder>\nafter")
+               (filtered (claude-repl-tool-output--filter-system-reminders content)))
+          (expect filtered :not :to-match "system-reminder")
+          (expect filtered :not :to-match "reminder text")
+          (expect filtered :to-match "before")
+          (expect filtered :to-match "after")))
+
+      (it "removes multiple system reminder blocks"
+        (let* ((content "<system-reminder>a</system-reminder>text<system-reminder>b</system-reminder>")
+               (filtered (claude-repl-tool-output--filter-system-reminders content)))
+          (expect filtered :not :to-match "system-reminder")
+          (expect filtered :to-match "text")))
+
+      (it "handles content with no system reminders"
+        (let* ((content "just normal content")
+               (filtered (claude-repl-tool-output--filter-system-reminders content)))
+          (expect filtered :to-equal content)))
+
+      (it "handles nil content"
+        (expect (claude-repl-tool-output--filter-system-reminders nil) :to-be nil))
+
+      (it "removes multiline system reminder blocks"
+        (let* ((content "before\n<system-reminder>\nThis is a multiline\nreminder text\n</system-reminder>\nafter")
+               (filtered (claude-repl-tool-output--filter-system-reminders content)))
+          (expect filtered :not :to-match "system-reminder")
+          (expect filtered :not :to-match "reminder text")
+          (expect filtered :to-match "before")
+          (expect filtered :to-match "after"))))
+
     (describe "claude-repl-tool-output--truncate-content"
       (it "returns content unchanged when under limit"
         (let* ((content "line 1\nline 2")

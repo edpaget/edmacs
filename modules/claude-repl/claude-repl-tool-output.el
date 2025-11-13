@@ -102,6 +102,20 @@ Returns emoji or empty string."
     ("TodoWrite" "☑")
     (_ "🔧")))
 
+(defun claude-repl-tool-output--filter-system-reminders (content)
+  "Remove <system-reminder> blocks from CONTENT.
+Returns cleaned content string."
+  (if (null content)
+      content
+    (with-temp-buffer
+      (insert content)
+      (goto-char (point-min))
+      ;; Remove all <system-reminder>...</system-reminder> blocks
+      ;; Use \(?:.|\n\) to match any character including newlines
+      (while (re-search-forward "<system-reminder>\\(?:.\\|\n\\)*?</system-reminder>" nil t)
+        (replace-match "" nil nil))
+      (buffer-string))))
+
 (defun claude-repl-tool-output--truncate-content (content max-lines)
   "Truncate CONTENT to MAX-LINES if necessary.
 Returns (truncated-content . was-truncated-p)."
@@ -191,9 +205,11 @@ FORMATTER-FN should be a function taking (tool-input tool-output)."
 TOOL-INPUT is an alist with file_path, etc.
 TOOL-OUTPUT is the file content (string or alist)."
   (let* ((file-path (alist-get 'file_path tool-input))
-         (content (if (stringp tool-output)
-                      tool-output
-                    (alist-get 'content tool-output)))
+         (raw-content (if (stringp tool-output)
+                          tool-output
+                        (alist-get 'content tool-output)))
+         ;; Filter out system reminders
+         (content (claude-repl-tool-output--filter-system-reminders raw-content))
          (lines (when content (length (split-string content "\n"))))
          (size (when content (length content)))
          ;; Truncate if needed

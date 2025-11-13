@@ -210,14 +210,14 @@
     (it "adds tool use to buffer"
       (let ((buffer (claude-repl-buffer-get-or-create "/tmp/test/")))
         (claude-repl-buffer-start-interaction buffer "Prompt")
-        (claude-repl-buffer-add-tool-use buffer "Read" '((file_path . "/test.el")))
+        (claude-repl-buffer-add-tool-use buffer "toolu_123" "Read" '((file_path . "/test.el")))
 
         (expect buffer :to-match-buffer "Tool: Read")))
 
     (it "formats tool input as markdown list"
       (let ((buffer (claude-repl-buffer-get-or-create "/tmp/test/")))
         (claude-repl-buffer-start-interaction buffer "Prompt")
-        (claude-repl-buffer-add-tool-use buffer "Bash" '((command . "ls -la")))
+        (claude-repl-buffer-add-tool-use buffer "toolu_456" "Bash" '((command . "ls -la")))
 
         (expect buffer :to-match-buffer "command")
         (expect buffer :to-match-buffer "ls -la")))
@@ -225,12 +225,13 @@
     (it "stores tool use in interaction"
       (let ((buffer (claude-repl-buffer-get-or-create "/tmp/test/")))
         (claude-repl-buffer-start-interaction buffer "Prompt")
-        (claude-repl-buffer-add-tool-use buffer "Grep" '((pattern . "test")))
+        (claude-repl-buffer-add-tool-use buffer "toolu_789" "Grep" '((pattern . "test")))
 
         (with-current-buffer buffer
           (let ((tools (claude-repl-interaction-tool-uses
                         claude-repl-buffer-current-interaction)))
             (expect tools :to-be-truthy)
+            (expect (plist-get (car tools) :id) :to-equal "toolu_789")
             (expect (plist-get (car tools) :tool) :to-equal "Grep")))))
 
     (it "handles TodoWrite tool with special formatting"
@@ -238,6 +239,7 @@
         (claude-repl-buffer-start-interaction buffer "Prompt")
         (claude-repl-buffer-add-tool-use
          buffer
+         "toolu_todo1"
          "TodoWrite"
          '((todos . [((content . "Task 1")
                       (status . completed)
@@ -255,6 +257,7 @@
         (claude-repl-buffer-start-interaction buffer "Prompt")
         (claude-repl-buffer-add-tool-use
          buffer
+         "toolu_todo2"
          "TodoWrite"
          '((todos . (((content . "Task 1")
                       (status . pending)
@@ -326,10 +329,29 @@
                                                     (tool_name . "Read")
                                                     (input . ((file_path . "test.el"))))]))))))
         (claude-repl-buffer-start-interaction buffer "Test")
+        ;; First add the tool use so it can be matched by ID
+        (claude-repl-buffer-add-tool-use buffer "toolu_123" "Read" '((file_path . "test.el")))
+        ;; Then handle the tool result
         (claude-repl-buffer-handle-user-event buffer user-event)
 
         (expect buffer :to-match-buffer "Read: test.el")
         (expect buffer :to-match-buffer "defun foo")))
+
+    (it "matches tool_result to tool_use by ID"
+      (let ((buffer (claude-repl-buffer-get-or-create "/tmp/test/"))
+            ;; Tool result without tool_name or input - should look them up via ID
+            (user-event '((type . "user")
+                          (message . ((content . [((type . "tool_result")
+                                                    (tool_use_id . "toolu_match_test")
+                                                    (content . "file contents here"))]))))))
+        (claude-repl-buffer-start-interaction buffer "Test")
+        ;; Add tool use with specific ID
+        (claude-repl-buffer-add-tool-use buffer "toolu_match_test" "Grep" '((pattern . "test")))
+        ;; Handle tool result - should match by ID and use Grep name/input
+        (claude-repl-buffer-handle-user-event buffer user-event)
+
+        (expect buffer :to-match-buffer "Grep")
+        (expect buffer :to-match-buffer "pattern")))
 
     (it "handles result event"
       (let ((buffer (claude-repl-buffer-get-or-create "/tmp/test/")))
@@ -896,7 +918,7 @@
     (it "applies tool-header face to tool names"
       (let ((buffer (claude-repl-buffer-get-or-create "/tmp/test/")))
         (claude-repl-buffer-start-interaction buffer "Test")
-        (claude-repl-buffer-add-tool-use buffer "Read" '((file_path . "/test.el")))
+        (claude-repl-buffer-add-tool-use buffer "toolu_face1" "Read" '((file_path . "/test.el")))
 
         (with-current-buffer buffer
           (save-excursion

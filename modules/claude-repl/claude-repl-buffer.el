@@ -880,8 +880,9 @@ Returns a formatted string with markdown-style bullet points."
         ;; Auto-scroll if enabled
         (claude-repl-buffer--maybe-auto-scroll)))))
 
-(defun claude-repl-buffer-add-tool-use (buffer tool-name tool-input)
-  "Add a tool use entry to BUFFER for TOOL-NAME with TOOL-INPUT."
+(defun claude-repl-buffer-add-tool-use (buffer tool-id tool-name tool-input)
+  "Add a tool use entry to BUFFER for TOOL-NAME with TOOL-INPUT.
+TOOL-ID is the unique identifier for this tool use."
   (with-current-buffer buffer
     (when claude-repl-buffer-current-interaction
       (let ((inhibit-read-only t))
@@ -925,28 +926,41 @@ Returns a formatted string with markdown-style bullet points."
                        claude-repl-buffer-current-interaction)
                       (point)))
 
-        ;; Update interaction
-        (push (list :tool tool-name :input tool-input)
+        ;; Update interaction - store tool-id for matching with results
+        (push (list :id tool-id :tool tool-name :input tool-input)
               (claude-repl-interaction-tool-uses
                claude-repl-buffer-current-interaction))))))
 
-(defun claude-repl-buffer-add-tool-output (buffer tool-name tool-input tool-output)
-  "Add tool output to BUFFER for TOOL-NAME.
-TOOL-INPUT is the tool parameters alist.
+(defun claude-repl-buffer-add-tool-output (buffer tool-use-id tool-name tool-input tool-output)
+  "Add tool output to BUFFER for tool with TOOL-USE-ID.
+TOOL-NAME and TOOL-INPUT may be provided directly, or looked up via TOOL-USE-ID.
 TOOL-OUTPUT is the tool result (string or alist).
 Formats and displays the output using `claude-repl-tool-output-format'."
   (with-current-buffer buffer
     (when claude-repl-buffer-current-interaction
-      (let ((inhibit-read-only t))
+      ;; Look up the matching tool use by ID to get accurate name/input
+      (let* ((tool-uses (claude-repl-interaction-tool-uses
+                         claude-repl-buffer-current-interaction))
+             (matching-use (cl-find-if (lambda (use)
+                                         (equal (plist-get use :id) tool-use-id))
+                                       tool-uses))
+             ;; Use matched tool data if available, otherwise fall back to provided values
+             (actual-name (if matching-use
+                              (plist-get matching-use :tool)
+                            tool-name))
+             (actual-input (if matching-use
+                               (plist-get matching-use :input)
+                             tool-input))
+             (inhibit-read-only t))
         (save-excursion
           (goto-char (claude-repl-interaction-end-marker
                       claude-repl-buffer-current-interaction))
           (insert "\n")
           (claude-repl-buffer--insert-spacing claude-repl-section-spacing)
 
-          ;; Format and insert tool output
+          ;; Format and insert tool output using matched data
           (let ((formatted-output (claude-repl-tool-output-format
-                                   tool-name tool-input tool-output)))
+                                   actual-name actual-input tool-output)))
             (insert formatted-output)
             (insert "\n"))
 
@@ -955,7 +969,10 @@ Formats and displays the output using `claude-repl-tool-output-format'."
                       (point)))
 
         ;; Update interaction with tool output
-        (push (list :tool tool-name :input tool-input :output tool-output)
+        (push (list :tool-use-id tool-use-id
+                    :tool actual-name
+                    :input actual-input
+                    :output tool-output)
               (claude-repl-interaction-tool-outputs
                claude-repl-buffer-current-interaction))
 
@@ -1526,11 +1543,15 @@ User events may contain tool_result content blocks."
         (let ((block-type (alist-get 'type block)))
           ;; Only handle tool_result blocks from user events
           (when (equal block-type "tool_result")
-            (let ((tool-use-id (alist-get 'tool_use_id block))
-                  (tool-output (alist-get 'content block))
-                  (tool-name (or (alist-get 'tool_name block) "Unknown"))
-                  (tool-input (or (alist-get 'input block) nil)))
-              (claude-repl-buffer-add-tool-output buffer tool-name tool-input tool-output))))))))
+            (let* ((tool-use-id (alist-get 'tool_use_id block))
+                   (raw-output (alist-get 'content block))
+                   ;; Filter system reminders from tool output
+                   (tool-output (if (stringp raw-output)
+                                    (claude-repl-tool-output--filter-system-reminders raw-output)
+                                  raw-output))
+                   (tool-name (or (alist-get 'tool_name block) "Unknown"))
+                   (tool-input (or (alist-get 'input block) nil)))
+              (claude-repl-buffer-add-tool-output buffer tool-use-id tool-name tool-input tool-output))))))))
 
 (defun claude-repl-buffer-handle-assistant-event (buffer event)
   "Handle an \\='assistant\\=' event in BUFFER from EVENT."
@@ -1549,9 +1570,10 @@ User events may contain tool_result content blocks."
 
            ;; Tool use
            ((equal block-type "tool_use")
-            (let ((tool-name (alist-get 'name block))
+            (let ((tool-id (alist-get 'id block))
+                  (tool-name (alist-get 'name block))
                   (tool-input (alist-get 'input block)))
-              (claude-repl-buffer-add-tool-use buffer tool-name tool-input)))))))))
+              (claude-repl-buffer-add-tool-use buffer tool-id tool-name tool-input)))))))))
 
 (defun claude-repl-buffer-handle-result-event (buffer event)
   "Handle a \\='result\\=' event in BUFFER from EVENT."
