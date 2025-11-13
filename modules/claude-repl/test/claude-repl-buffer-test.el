@@ -16,7 +16,9 @@
       (expect 'claude-repl-buffer-start-interaction :to-have-function)
       (expect 'claude-repl-buffer-append-text :to-have-function)
       (expect 'claude-repl-buffer-add-tool-use :to-have-function)
+      (expect 'claude-repl-buffer-add-tool-output :to-have-function)
       (expect 'claude-repl-buffer-complete-interaction :to-have-function)
+      (expect 'claude-repl-buffer-handle-user-event :to-have-function)
       (expect 'claude-repl-buffer-handle-assistant-event :to-have-function)
       (expect 'claude-repl-buffer-handle-result-event :to-have-function)
       (expect 'claude-repl-buffer-clear :to-have-function)))
@@ -314,6 +316,20 @@
          claude-repl-test-assistant-event-tool)
 
         (expect buffer :to-match-buffer "Tool: Read")))
+
+    (it "handles user event with tool_result"
+      (let ((buffer (claude-repl-buffer-get-or-create "/tmp/test/"))
+            (user-event '((type . "user")
+                          (message . ((content . [((type . "tool_result")
+                                                    (tool_use_id . "toolu_123")
+                                                    (content . ";;; test file\n(defun foo ())")
+                                                    (tool_name . "Read")
+                                                    (input . ((file_path . "test.el"))))]))))))
+        (claude-repl-buffer-start-interaction buffer "Test")
+        (claude-repl-buffer-handle-user-event buffer user-event)
+
+        (expect buffer :to-match-buffer "Read: test.el")
+        (expect buffer :to-match-buffer "defun foo")))
 
     (it "handles result event"
       (let ((buffer (claude-repl-buffer-get-or-create "/tmp/test/")))

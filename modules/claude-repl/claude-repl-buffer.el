@@ -8,6 +8,7 @@
 
 (require 'markdown-mode)
 (require 'claude-repl-process)
+(require 'claude-repl-tool-output)
 
 ;; ============================================================================
 ;; Forward Declarations
@@ -674,6 +675,7 @@ responses, tool usage, and metadata.
   prompt-time         ; Timestamp when prompt was sent
   response-text       ; Accumulated response text
   tool-uses           ; List of tools used
+  tool-outputs        ; List of tool outputs (tool-name tool-input tool-output)
   start-marker        ; Buffer position where interaction starts
   end-marker          ; Buffer position where interaction ends
   status              ; Status: streaming, complete, error
@@ -842,6 +844,7 @@ Returns a formatted string with markdown-style bullet points."
                           :prompt-time (current-time)
                           :response-text ""
                           :tool-uses nil
+                          :tool-outputs nil
                           :start-marker (copy-marker start-pos)
                           :end-marker (point-marker)
                           :status 'streaming
@@ -926,6 +929,38 @@ Returns a formatted string with markdown-style bullet points."
         (push (list :tool tool-name :input tool-input)
               (claude-repl-interaction-tool-uses
                claude-repl-buffer-current-interaction))))))
+
+(defun claude-repl-buffer-add-tool-output (buffer tool-name tool-input tool-output)
+  "Add tool output to BUFFER for TOOL-NAME.
+TOOL-INPUT is the tool parameters alist.
+TOOL-OUTPUT is the tool result (string or alist).
+Formats and displays the output using `claude-repl-tool-output-format'."
+  (with-current-buffer buffer
+    (when claude-repl-buffer-current-interaction
+      (let ((inhibit-read-only t))
+        (save-excursion
+          (goto-char (claude-repl-interaction-end-marker
+                      claude-repl-buffer-current-interaction))
+          (insert "\n")
+          (claude-repl-buffer--insert-spacing claude-repl-section-spacing)
+
+          ;; Format and insert tool output
+          (let ((formatted-output (claude-repl-tool-output-format
+                                   tool-name tool-input tool-output)))
+            (insert formatted-output)
+            (insert "\n"))
+
+          (set-marker (claude-repl-interaction-end-marker
+                       claude-repl-buffer-current-interaction)
+                      (point)))
+
+        ;; Update interaction with tool output
+        (push (list :tool tool-name :input tool-input :output tool-output)
+              (claude-repl-interaction-tool-outputs
+               claude-repl-buffer-current-interaction))
+
+        ;; Auto-scroll if enabled
+        (claude-repl-buffer--maybe-auto-scroll)))))
 
 (defun claude-repl-buffer-complete-interaction (buffer &optional metadata)
   "Mark the current interaction in BUFFER as complete with optional METADATA."
@@ -1478,6 +1513,24 @@ This is called via post-command-hook."
 ;; ============================================================================
 ;; Event Handlers (for use with process callbacks)
 ;; ============================================================================
+
+(defun claude-repl-buffer-handle-user-event (buffer event)
+  "Handle a \\='user\\=' event in BUFFER from EVENT.
+User events may contain tool_result content blocks."
+  (when-let* ((message (alist-get 'message event))
+              (content (alist-get 'content message)))
+    ;; Convert vector to list if needed
+    (let ((content-list (if (vectorp content) (append content nil) content)))
+      ;; Process each content block
+      (dolist (block content-list)
+        (let ((block-type (alist-get 'type block)))
+          ;; Only handle tool_result blocks from user events
+          (when (equal block-type "tool_result")
+            (let ((tool-use-id (alist-get 'tool_use_id block))
+                  (tool-output (alist-get 'content block))
+                  (tool-name (or (alist-get 'tool_name block) "Unknown"))
+                  (tool-input (or (alist-get 'input block) nil)))
+              (claude-repl-buffer-add-tool-output buffer tool-name tool-input tool-output))))))))
 
 (defun claude-repl-buffer-handle-assistant-event (buffer event)
   "Handle an \\='assistant\\=' event in BUFFER from EVENT."

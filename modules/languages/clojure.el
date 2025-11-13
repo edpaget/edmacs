@@ -7,6 +7,8 @@
 
 ;;; Code:
 
+(require 'lisp-common)
+
 ;; ============================================================================
 ;; Clojure Mode (Tree-sitter)
 ;; ============================================================================
@@ -100,49 +102,8 @@
    "ra" '(cljr-add-require-to-ns :which-key "add require")
    "ri" '(cljr-add-import-to-ns :which-key "add import"))
 
-  ;; Smartparens keybindings for structural editing
-  (with-eval-after-load 'smartparens
-    (general-define-key
-     :states 'normal
-     :keymaps 'clojure-ts-mode-map
-     :prefix ", k"
-     "" '(:ignore t :which-key "smartparens")
-
-     ;; Navigation
-     "f" '(sp-forward-sexp :which-key "forward sexp")
-     "b" '(sp-backward-sexp :which-key "backward sexp")
-     "d" '(sp-down-sexp :which-key "down sexp")
-     "u" '(sp-up-sexp :which-key "up sexp")
-     "n" '(sp-next-sexp :which-key "next sexp")
-     "p" '(sp-previous-sexp :which-key "previous sexp")
-
-     ;; Slurping and barfing (essential for Lisp!)
-     ">" '(sp-forward-slurp-sexp :which-key "slurp forward")
-     "<" '(sp-forward-barf-sexp :which-key "barf forward")
-     "S" '(sp-backward-slurp-sexp :which-key "slurp backward")
-     "B" '(sp-backward-barf-sexp :which-key "barf backward")
-
-     ;; Wrapping
-     "w" '(:ignore t :which-key "wrap")
-     "w(" '(sp-wrap-round :which-key "wrap ()")
-     "w[" '(sp-wrap-square :which-key "wrap []")
-     "w{" '(sp-wrap-curly :which-key "wrap {}")
-
-     ;; Unwrapping/Splicing
-     "s" '(sp-splice-sexp :which-key "splice")
-     "r" '(sp-raise-sexp :which-key "raise sexp")
-     "j" '(sp-join-sexp :which-key "join sexp")
-     "t" '(sp-transpose-sexp :which-key "transpose")
-
-     ;; Killing
-     "k" '(sp-kill-sexp :which-key "kill sexp")
-     "K" '(sp-backward-kill-sexp :which-key "backward kill sexp")
-     "c" '(sp-copy-sexp :which-key "copy sexp")
-
-     ;; Depth changing
-     "D" '(sp-splice-sexp-killing-around :which-key "splice killing around")
-     "F" '(sp-splice-sexp-killing-forward :which-key "splice killing forward")
-     "B" '(sp-splice-sexp-killing-backward :which-key "splice killing backward"))))
+  ;; Set up smartparens keybindings using shared Lisp configuration
+  (lisp-common-setup-smartparens-keys 'clojure-ts-mode-map ", k"))
 
 ;; ============================================================================
 ;; clj-refactor - Refactoring support

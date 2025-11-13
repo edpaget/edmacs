@@ -50,6 +50,7 @@ The script is located in the same directory as this file."
   partial-json          ; Partial JSON string being accumulated
   response-callbacks    ; List of callbacks for response events
   error-callbacks       ; List of callbacks for error events
+  tool-result-callbacks ; List of callbacks for tool result events
   status                ; Process status: running, stopped, error
   last-prompt           ; Last prompt sent
   last-response         ; Last complete response received
@@ -88,7 +89,12 @@ LINE is the complete JSON string to process."
     ;; Store the last response for debugging
     (setf (claude-repl-process-last-response proc-obj) event)
 
-    ;; Call registered callbacks
+    ;; Debug: Log event type
+    (let ((event-type (alist-get 'type event)))
+      (message "Claude Code event: %s" event-type))
+
+    ;; Call registered response callbacks (for all events)
+    ;; Tool results are handled as content blocks within assistant/user events
     (dolist (callback (claude-repl-process-response-callbacks proc-obj))
       (condition-case err
           (funcall callback event)
@@ -215,6 +221,7 @@ Optional MODEL to use instead of default."
            :partial-json ""
            :response-callbacks nil
            :error-callbacks nil
+           :tool-result-callbacks nil
            :status 'running
            :last-prompt nil
            :last-response nil
@@ -314,6 +321,14 @@ CALLBACK should be a function that takes a single argument (the JSON event)."
   "Add an error CALLBACK to PROC-OBJ.
 CALLBACK should be a function that takes a single argument (the error event)."
   (push callback (claude-repl-process-error-callbacks proc-obj)))
+
+(defun claude-repl-process-add-tool-result-callback (proc-obj callback)
+  "Add a tool result CALLBACK to PROC-OBJ.
+CALLBACK should be a function that takes three arguments:
+  - TOOL-NAME: String name of the tool (e.g., \"Read\", \"Edit\")
+  - TOOL-INPUT: Alist of tool input parameters
+  - TOOL-OUTPUT: Tool output data (string or alist)"
+  (push callback (claude-repl-process-tool-result-callbacks proc-obj)))
 
 (defun claude-repl-process-alive-p (proc-obj)
   "Return t if PROC-OBJ's process is alive."

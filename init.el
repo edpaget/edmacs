@@ -107,6 +107,9 @@ LANGUAGE should be the name without the .el extension."
 ;; Language-specific configurations
 ;; ============================================================================
 
+;; Add languages directory to load path for shared modules
+(add-to-list 'load-path (expand-file-name "modules/languages" user-emacs-directory))
+
 ;; Load language configs eagerly - use-package will defer actual package loading
 ;; via :mode, :hook, and :after directives in each language config file
 (load-language-config "elisp")

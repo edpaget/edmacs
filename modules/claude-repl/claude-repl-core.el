@@ -60,8 +60,8 @@ they will be determined automatically."
          (response-buffer (claude-repl-buffer-get-or-create project-root))
          ;; Get session ID from buffer for conversation continuity
          (session-id (or session-id
-                        (with-current-buffer response-buffer
-                          claude-repl-buffer-session-id)))
+                         (with-current-buffer response-buffer
+                           claude-repl-buffer-session-id)))
          ;; Start new process with session-id to continue conversation
          (proc-obj (claude-repl-process-start project-root session-id)))
 
@@ -85,9 +85,14 @@ they will be determined automatically."
                (setq-local claude-repl-buffer-session-id session-id))
              (message "Claude Code: Session ID captured (%s)" session-id)))
 
+          ;; User message - may contain tool results
+          ((equal event-type "user")
+           (claude-repl-buffer-handle-user-event response-buffer event))
+
           ;; Assistant message - contains the actual response
           ((equal event-type "assistant")
            (claude-repl-buffer-handle-assistant-event response-buffer event))
+
 
           ;; Result - final summary
           ((equal event-type "result")
@@ -108,6 +113,9 @@ they will be determined automatically."
          (let ((inhibit-read-only t))
            (goto-char (point-max))
            (insert (format "\n\n**ERROR:** %s\n" event))))))
+
+    ;; Note: Tool results are handled as content blocks within assistant events,
+    ;; so they're processed by claude-repl-buffer-handle-assistant-event
 
     ;; Send the prompt
     (if (claude-repl-process-send-prompt proc-obj prompt)
