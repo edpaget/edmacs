@@ -959,10 +959,14 @@ Formats and displays the output using `claude-repl-tool-output-format'."
           (claude-repl-buffer--insert-spacing claude-repl-section-spacing)
 
           ;; Format and insert tool output using matched data
-          (let ((formatted-output (claude-repl-tool-output-format
+          (let ((tool-output-start (point))
+                (formatted-output (claude-repl-tool-output-format
                                    actual-name actual-input tool-output)))
             (insert formatted-output)
-            (insert "\n"))
+            (insert "\n")
+            ;; Remove markdown formatting from tool output to prevent italics/bold/etc
+            (remove-text-properties tool-output-start (point)
+                                   '(font-lock-face nil face nil fontified nil)))
 
           (set-marker (claude-repl-interaction-end-marker
                        claude-repl-buffer-current-interaction)
