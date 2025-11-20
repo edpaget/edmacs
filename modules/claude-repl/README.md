@@ -37,11 +37,13 @@ Add to your Emacs configuration:
        :lisp-dir "modules/claude-repl")
   :after (projectile markdown-mode)
   :config
-  ;; Set up keybindings (Spacemacs-style by default)
-  (claude-repl-setup-keybindings)
-
   ;; Optional: Configure auto-approval for safe tools
-  (setq claude-repl-approval-mode 'hybrid))
+  (setq claude-repl-approval-mode 'hybrid)
+
+  ;; Optional: Set up custom keybindings (see Custom Keybindings section below)
+  (global-set-key (kbd "C-c a a") #'claude-repl-ask)
+  (global-set-key (kbd "C-c a b") #'claude-repl-open-buffer)
+  (global-set-key (kbd "C-c a k") #'claude-repl-process-kill-current-project))
 ```
 
 Then run `M-x package-vc-install RET` and select `claude-repl`, or evaluate the above configuration and restart Emacs.
@@ -56,10 +58,13 @@ Then run `M-x package-vc-install RET` and select `claude-repl`, or evaluate the 
                          :files ("modules/claude-repl/*.el"))
   :after (projectile markdown-mode)
   :config
-  (claude-repl-setup-keybindings)
-
   ;; Optional: Configure auto-approval for safe tools
-  (setq claude-repl-approval-mode 'hybrid))
+  (setq claude-repl-approval-mode 'hybrid)
+
+  ;; Optional: Set up custom keybindings (see Custom Keybindings section below)
+  (global-set-key (kbd "C-c a a") #'claude-repl-ask)
+  (global-set-key (kbd "C-c a b") #'claude-repl-open-buffer)
+  (global-set-key (kbd "C-c a k") #'claude-repl-process-kill-current-project))
 ```
 
 #### Manual Installation
@@ -75,10 +80,14 @@ Add to your Emacs configuration:
 ```elisp
 (add-to-list 'load-path "/path/to/edmacs/modules/claude-repl")
 (require 'claude-repl-core)
-(claude-repl-setup-keybindings)
 
 ;; Optional: Configure auto-approval for safe tools
 (setq claude-repl-approval-mode 'hybrid)
+
+;; Optional: Set up custom keybindings (see Custom Keybindings section below)
+(global-set-key (kbd "C-c a a") #'claude-repl-ask)
+(global-set-key (kbd "C-c a b") #'claude-repl-open-buffer)
+(global-set-key (kbd "C-c a k") #'claude-repl-process-kill-current-project)
 ```
 
 ### Configuration Options
@@ -102,14 +111,25 @@ Safe auto-approved tools in hybrid mode: `Read`, `Grep`, `Glob`, `WebFetch`, `We
 
 #### Custom Keybindings
 
-If you don't use Spacemacs-style keybindings, you can set up your own:
+The claude-repl module doesn't define global keybindings by default. You should set up your own keybindings in your configuration. Here are some examples:
 
 ```elisp
+;; Basic example - simple global keybindings
 (with-eval-after-load 'claude-repl-core
-  (global-set-key (kbd "C-c a a") #'claude-repl-start-conversation)
-  (global-set-key (kbd "C-c a b") #'claude-repl-show-buffer)
-  (global-set-key (kbd "C-c a k") #'claude-repl-kill-process))
+  (global-set-key (kbd "C-c a a") #'claude-repl-ask)
+  (global-set-key (kbd "C-c a b") #'claude-repl-open-buffer)
+  (global-set-key (kbd "C-c a c") #'claude-repl-clear-buffer)
+  (global-set-key (kbd "C-c a s") #'claude-repl-process-start-current-project)
+  (global-set-key (kbd "C-c a k") #'claude-repl-process-kill-current-project))
+
+;; Or using use-package :bind
+(use-package claude-repl
+  :bind (("C-c a a" . claude-repl-ask)
+         ("C-c a b" . claude-repl-open-buffer)
+         ("C-c a c" . claude-repl-clear-buffer)))
 ```
+
+For evil-mode/general.el integration (Spacemacs-style), see your editor configuration.
 
 ## Features
 
@@ -151,26 +171,25 @@ If you don't use Spacemacs-style keybindings, you can set up your own:
 
 ## Quick Start
 
-With Spacemacs keybindings:
+Start a conversation with `M-x claude-repl-ask` (or use your configured keybinding, e.g., `C-c a a`).
 
-```
-SPC a c a                    # Open Claude Code REPL
-```
-
-Type your prompt at the `> ` prompt and press `RET` to send. Use `C-j` for newlines within multi-line prompts. Responses stream in real-time with markdown formatting and syntax highlighting.
+Type your prompt at the `claude> ` prompt and press `RET` to send. Use `C-j` for newlines within multi-line prompts. Responses stream in real-time with markdown formatting and syntax highlighting.
 
 ## Keybindings
 
-### Main Commands (`SPC a c`)
+The claude-repl module provides keybindings in the buffer itself, but doesn't set up global keybindings automatically. You can set up your own keybindings for the main commands (see the Custom Keybindings section above).
 
-- `SPC a c a` - Start a conversation
-- `SPC a c b` - Open conversation buffer
-- `SPC a c c` - Clear buffer
-- `SPC a c s` - Start process for current project
-- `SPC a c k` - Kill process for current project
-- `SPC a c K` - Kill all processes
-- `SPC a c l` - List all processes
-- `SPC a c i` - Show process status
+### Available Commands
+
+- `claude-repl-ask` - Start a conversation or ask a question
+- `claude-repl-interrupt-and-ask` - Interrupt current process and ask new question
+- `claude-repl-open-buffer` - Open the conversation buffer
+- `claude-repl-clear-buffer` - Clear the conversation buffer
+- `claude-repl-process-start-current-project` - Start Claude process for current project
+- `claude-repl-process-kill-current-project` - Kill process for current project
+- `claude-repl-process-kill-all` - Kill all Claude processes
+- `claude-repl-show-processes` - List all running Claude processes
+- `claude-repl-process-status-current-project` - Show process status
 
 ### Response Buffer Commands
 
@@ -251,9 +270,10 @@ eldev clean                 # Remove compiled files
 
 1. Add core functions to the appropriate module (`claude-repl-process.el`, `claude-repl-buffer.el`, etc.)
 2. Add user-facing commands to `claude-repl-core.el`
-3. Register keybindings in `claude-repl-core-setup-keybindings`
-4. Add tests to the corresponding test file in `test/`
-5. Run `eldev test` and `eldev compile` to verify
+3. Add tests to the corresponding test file in `test/`
+4. Run `eldev test` and `eldev compile` to verify
+
+Note: Global keybindings should be configured by users in their own configuration (not in the module itself).
 
 ## License
 

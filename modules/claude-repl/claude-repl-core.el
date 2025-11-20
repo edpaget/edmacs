@@ -327,40 +327,5 @@ MODE can be: interactive, auto-approve, deny-all, or hybrid."
             (tool "WebFetch" pattern "domain:github.com" action allow)))
     (message "Approval rules reset to defaults")))
 
-;; ============================================================================
-;; Keybindings
-;; ============================================================================
-
-(defun claude-repl-core-setup-keybindings ()
-  "Set up keybindings for Claude Code core functions."
-  (when (fboundp 'general-define-key)
-    (general-define-key
-     :states 'normal
-     :prefix "SPC a c"
-     "" '(:ignore t :which-key "claude code (repl)")
-     "a" '(claude-repl-ask :which-key "ask claude")
-     "I" '(claude-repl-interrupt-and-ask :which-key "interrupt and ask")
-     "b" '(claude-repl-open-buffer :which-key "open buffer")
-     "c" '(claude-repl-clear-buffer :which-key "clear buffer")
-     "s" '(claude-repl-process-start-current-project :which-key "start process")
-     "k" '(claude-repl-process-kill-current-project :which-key "kill process")
-     "K" '(claude-repl-process-kill-all :which-key "kill all processes")
-     "l" '(claude-repl-show-processes :which-key "list processes")
-     "i" '(claude-repl-process-status-current-project :which-key "status")
-     "t" '(claude-repl-test-prompt :which-key "test prompt (debug)"))
-
-    ;; Approval management keybindings
-    (general-define-key
-     :states 'normal
-     :prefix "SPC a c p"
-     "" '(:ignore t :which-key "approval policy")
-     "m" '(claude-repl-approval-set-mode :which-key "set mode")
-     "s" '(claude-repl-approval-show-policy :which-key "show policy")
-     "a" '(claude-repl-approval-add-allow-rule :which-key "add allow rule")
-     "d" '(claude-repl-approval-add-deny-rule :which-key "add deny rule")
-     "r" '(claude-repl-approval-reset-rules :which-key "reset rules")
-     "c" '(claude-repl-approval-clear-session-rules :which-key "clear session rules")
-     "l" '(claude-repl-approval-show-session-rules :which-key "show session rules"))))
-
 (provide 'claude-repl-core)
 ;;; claude-repl-core.el ends here
