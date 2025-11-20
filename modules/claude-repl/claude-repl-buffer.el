@@ -926,8 +926,11 @@ TOOL-ID is the unique identifier for this tool use."
                        claude-repl-buffer-current-interaction)
                       (point)))
 
-        ;; Update interaction - store tool-id for matching with results
-        (push (list :id tool-id :tool tool-name :input tool-input)
+        ;; Update interaction - store tool-id and the end marker position for appending output
+        (push (list :id tool-id
+                    :tool tool-name
+                    :input tool-input
+                    :section-end-marker (copy-marker (point)))
               (claude-repl-interaction-tool-uses
                claude-repl-buffer-current-interaction))))))
 
@@ -938,7 +941,7 @@ TOOL-OUTPUT is the tool result (string or alist).
 Formats and displays the output using `claude-repl-tool-output-format'."
   (with-current-buffer buffer
     (when claude-repl-buffer-current-interaction
-      ;; Look up the matching tool use by ID to get accurate name/input
+      ;; Look up the matching tool use by ID to get accurate name/input and section marker
       (let* ((tool-uses (claude-repl-interaction-tool-uses
                          claude-repl-buffer-current-interaction))
              (matching-use (cl-find-if (lambda (use)
@@ -951,23 +954,45 @@ Formats and displays the output using `claude-repl-tool-output-format'."
              (actual-input (if matching-use
                                (plist-get matching-use :input)
                              tool-input))
+             (section-end-marker (when matching-use
+                                   (plist-get matching-use :section-end-marker)))
              (inhibit-read-only t))
+
         (save-excursion
-          (goto-char (claude-repl-interaction-end-marker
-                      claude-repl-buffer-current-interaction))
-          (insert "\n")
-          (claude-repl-buffer--insert-spacing claude-repl-section-spacing)
+          ;; If we have a section marker, append to the existing tool use section
+          ;; Otherwise, create a new section (fallback for older code paths)
+          (if section-end-marker
+              ;; Append output to existing tool use section
+              (progn
+                (goto-char section-end-marker)
+                (insert "\n\n")
+                ;; Format and insert tool output
+                (let ((tool-output-start (point))
+                      (formatted-output (claude-repl-tool-output-format
+                                         actual-name actual-input tool-output)))
+                  (insert formatted-output)
+                  ;; Remove markdown formatting from tool output
+                  (remove-text-properties tool-output-start (point)
+                                         '(font-lock-face nil face nil fontified nil)))
+                ;; Update the section marker to the new end
+                (set-marker section-end-marker (point)))
 
-          ;; Format and insert tool output using matched data
-          (let ((tool-output-start (point))
-                (formatted-output (claude-repl-tool-output-format
-                                   actual-name actual-input tool-output)))
-            (insert formatted-output)
-            (insert "\n")
-            ;; Remove markdown formatting from tool output to prevent italics/bold/etc
-            (remove-text-properties tool-output-start (point)
-                                   '(font-lock-face nil face nil fontified nil)))
+            ;; Fallback: create new section at end (for when marker not available)
+            (progn
+              (goto-char (claude-repl-interaction-end-marker
+                          claude-repl-buffer-current-interaction))
+              (insert "\n")
+              (claude-repl-buffer--insert-spacing claude-repl-section-spacing)
 
+              (let ((tool-output-start (point))
+                    (formatted-output (claude-repl-tool-output-format
+                                       actual-name actual-input tool-output)))
+                (insert formatted-output)
+                (insert "\n")
+                (remove-text-properties tool-output-start (point)
+                                       '(font-lock-face nil face nil fontified nil)))))
+
+          ;; Always update the interaction end marker
           (set-marker (claude-repl-interaction-end-marker
                        claude-repl-buffer-current-interaction)
                       (point)))
