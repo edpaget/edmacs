@@ -20,7 +20,7 @@
          ("\\.edn\\'" . clojure-ts-mode))
   :config
   ;; Indentation rules
-  (setq clojure-ts-indent-style 'align-arguments)
+  (setq clojure-ts-indent-style 'fixed)
 
   ;; Enable LSP
   (add-hook 'clojure-ts-mode-hook #'lsp-deferred)
