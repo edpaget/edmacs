@@ -144,7 +144,94 @@
           (setq-local claude-repl-approval--previous-window-config nil)
           ;; Should not error - just verify it completes
           (claude-repl-approval--cleanup-request)
-          (expect t :to-be t))))))
+          (expect t :to-be t)))))
+
+  (describe "Concurrent request queueing"
+    (before-each
+      ;; Clear the queue and current request before each test
+      (setq claude-repl-approval--request-queue nil
+            claude-repl-approval--current-request nil))
+
+    (it "enqueues request when another is already being shown"
+      (let ((proc1 (make-process :name "test1" :command '("cat")))
+            (proc2 (make-process :name "test2" :command '("cat"))))
+        ;; Set a current request to simulate one being shown
+        (setq claude-repl-approval--current-request
+              (list :tool "Read" :input '((file "test.txt")) :id "1" :proc proc1))
+        ;; Try to add another request - should be queued
+        (claude-repl-approval--enqueue-request "Write" '((file "test2.txt")) "2" proc2)
+        ;; Check that it was queued
+        (expect (length claude-repl-approval--request-queue) :to-equal 1)
+        (let ((queued-req (car claude-repl-approval--request-queue)))
+          (expect (plist-get queued-req :tool) :to-equal "Write")
+          (expect (plist-get queued-req :id) :to-equal "2"))
+        ;; Cleanup
+        (delete-process proc1)
+        (delete-process proc2)))
+
+    (it "shows request immediately when no current request"
+      (let ((proc1 (make-process :name "test1" :command '("cat"))))
+        ;; No current request
+        (expect claude-repl-approval--current-request :to-be nil)
+        ;; Mock the show function to verify it's called
+        (spy-on 'claude-repl-approval--show-approval-ui)
+        ;; Request should be shown immediately, not queued
+        (claude-repl-approval--request-user-approval-async "Read" '((file "test.txt")) "1" proc1)
+        ;; Check that show was called
+        (expect 'claude-repl-approval--show-approval-ui :to-have-been-called)
+        ;; Cleanup
+        (delete-process proc1)))
+
+    (it "processes next request from queue after cleanup"
+      (let ((proc1 (make-process :name "test1" :command '("cat")))
+            (proc2 (make-process :name "test2" :command '("cat")))
+            (buffer (get-buffer-create "*Claude Code Approval*")))
+        ;; Set up first request as current
+        (setq claude-repl-approval--current-request
+              (list :tool "Read" :input '((file "test.txt")) :id "1" :proc proc1))
+        ;; Queue second request
+        (claude-repl-approval--enqueue-request "Write" '((file "test2.txt")) "2" proc2)
+        (expect (length claude-repl-approval--request-queue) :to-equal 1)
+        ;; Mock show function to verify it gets called for queued request
+        (spy-on 'claude-repl-approval--show-approval-ui)
+        ;; Simulate cleanup (in real scenario, this is called after user decision)
+        (with-current-buffer buffer
+          (claude-repl-approval-mode)
+          (setq-local claude-repl-approval--previous-window-config nil)
+          (claude-repl-approval--cleanup-request))
+        ;; Check that the queued request was processed
+        (expect 'claude-repl-approval--show-approval-ui :to-have-been-called)
+        (expect (length claude-repl-approval--request-queue) :to-equal 0)
+        ;; Cleanup
+        (delete-process proc1)
+        (delete-process proc2)))
+
+    (it "dequeues requests in FIFO order"
+      (let ((proc1 (make-process :name "test1" :command '("cat")))
+            (proc2 (make-process :name "test2" :command '("cat")))
+            (proc3 (make-process :name "test3" :command '("cat"))))
+        ;; Queue multiple requests
+        (claude-repl-approval--enqueue-request "Read" '((file "1.txt")) "1" proc1)
+        (claude-repl-approval--enqueue-request "Write" '((file "2.txt")) "2" proc2)
+        (claude-repl-approval--enqueue-request "Edit" '((file "3.txt")) "3" proc3)
+        (expect (length claude-repl-approval--request-queue) :to-equal 3)
+        ;; Dequeue and check order
+        (let ((req1 (claude-repl-approval--dequeue-request)))
+          (expect (plist-get req1 :tool) :to-equal "Read")
+          (expect (plist-get req1 :id) :to-equal "1"))
+        (let ((req2 (claude-repl-approval--dequeue-request)))
+          (expect (plist-get req2 :tool) :to-equal "Write")
+          (expect (plist-get req2 :id) :to-equal "2"))
+        (let ((req3 (claude-repl-approval--dequeue-request)))
+          (expect (plist-get req3 :tool) :to-equal "Edit")
+          (expect (plist-get req3 :id) :to-equal "3"))
+        ;; Queue should be empty now
+        (expect (length claude-repl-approval--request-queue) :to-equal 0)
+        (expect (claude-repl-approval--dequeue-request) :to-be nil)
+        ;; Cleanup
+        (delete-process proc1)
+        (delete-process proc2)
+        (delete-process proc3)))))
 
 (provide 'claude-repl-approval-test)
 ;;; claude-repl-approval-test.el ends here

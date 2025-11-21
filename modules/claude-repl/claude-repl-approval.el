@@ -113,6 +113,14 @@ Prevents duplicate responses if filter is called multiple times.")
   "Hash table mapping client processes to accumulated input data.
 Used to buffer incomplete JSON data across multiple socket filter calls.")
 
+(defvar claude-repl-approval--request-queue nil
+  "Queue of pending approval requests waiting to be displayed.
+Each element is a plist with :tool, :input, :id, and :proc keys.")
+
+(defvar claude-repl-approval--current-request nil
+  "The currently displayed approval request, or nil if none.
+A plist with :tool, :input, :id, and :proc keys.")
+
 ;; Declare buffer-local variables to suppress byte-compiler warnings
 ;; These are set via setq-local in the approval UI buffer
 (defvar claude-repl-approval--current-tool nil
@@ -491,6 +499,36 @@ INPUT is the tool input parameters (alist from JSON)."
   "Create a hash key for TOOL and INPUT for session rules."
   (format "%s:%s" tool (json-encode input)))
 
+;;; Request Queue Management
+
+(defun claude-repl-approval--enqueue-request (tool input id proc)
+  "Add a new approval request to the queue.
+TOOL, INPUT, ID, and PROC are the request parameters."
+  (let ((request (list :tool tool :input input :id id :proc proc)))
+    (setq claude-repl-approval--request-queue
+          (append claude-repl-approval--request-queue (list request)))
+    (claude-repl-approval--message "Queued approval request for %s (queue size: %d)"
+                                    tool (length claude-repl-approval--request-queue))))
+
+(defun claude-repl-approval--dequeue-request ()
+  "Remove and return the next request from the queue, or nil if empty."
+  (when claude-repl-approval--request-queue
+    (let ((request (car claude-repl-approval--request-queue)))
+      (setq claude-repl-approval--request-queue (cdr claude-repl-approval--request-queue))
+      (claude-repl-approval--message "Dequeued approval request for %s (remaining: %d)"
+                                      (plist-get request :tool)
+                                      (length claude-repl-approval--request-queue))
+      request)))
+
+(defun claude-repl-approval--process-next-request ()
+  "Process the next approval request from the queue if available."
+  (when-let* ((request (claude-repl-approval--dequeue-request)))
+    (claude-repl-approval--show-approval-ui
+     (plist-get request :tool)
+     (plist-get request :input)
+     (plist-get request :id)
+     (plist-get request :proc))))
+
 ;;; Interactive Approval UI
 
 (defvar claude-repl-approval--decision-timer nil
@@ -500,13 +538,31 @@ INPUT is the tool input parameters (alist from JSON)."
   "Remaining seconds before timeout.")
 
 (defun claude-repl-approval--request-user-approval-async (tool input id proc)
-  "Show interactive approval UI asynchronously.
+  "Request user approval for TOOL with INPUT, queueing if necessary.
 TOOL is the tool name, INPUT is the tool parameters, ID is the request ID.
 PROC is the client process to send the response to.
-This function returns immediately after showing the UI."
+This function returns immediately - approval is shown asynchronously."
+  (if claude-repl-approval--current-request
+      ;; Already showing an approval - add to queue
+      (progn
+        (claude-repl-approval--enqueue-request tool input id proc)
+        (message "Claude approval request queued (%d pending)"
+                 (length claude-repl-approval--request-queue)))
+    ;; No current approval - show immediately
+    (claude-repl-approval--show-approval-ui tool input id proc)))
+
+(defun claude-repl-approval--show-approval-ui (tool input id proc)
+  "Show interactive approval UI for TOOL with INPUT.
+TOOL is the tool name, INPUT is the tool parameters, ID is the request ID.
+PROC is the client process to send the response to.
+This function displays the UI and returns immediately."
   (let ((buffer (get-buffer-create "*Claude Code Approval*"))
         (previous-buffer (current-buffer))
         (previous-window-config (current-window-configuration)))
+
+    ;; Mark this request as current
+    (setq claude-repl-approval--current-request
+          (list :tool tool :input input :id id :proc proc))
 
     ;; Reset timeout
     (setq claude-repl-approval--timeout-remaining claude-repl-approval-timeout)
@@ -560,7 +616,19 @@ This function returns immediately after showing the UI."
     ;; Tool name with icon
     (insert (propertize "🔧 Tool: " 'face 'bold)
             (propertize tool 'face '(:foreground "#50fa7b" :weight bold))
-            "\n\n")
+            "\n")
+
+    ;; Queue status (if there are pending requests)
+    (when (> (length claude-repl-approval--request-queue) 0)
+      (insert (propertize "📋 Queue: " 'face 'bold)
+              (propertize (format "%d more request%s pending"
+                                  (length claude-repl-approval--request-queue)
+                                  (if (= (length claude-repl-approval--request-queue) 1)
+                                      "" "s"))
+                          'face '(:foreground "#ffb86c"))
+              "\n"))
+
+    (insert "\n")
 
     ;; Tool parameters - formatted nicely
     (insert (propertize "Parameters:\n" 'face 'bold))
@@ -644,18 +712,16 @@ This function returns immediately after showing the UI."
 
       ;; Auto-deny on timeout
       (when (<= claude-repl-approval--timeout-remaining 0)
-        (let ((previous-window-config claude-repl-approval--previous-window-config))
-          (when (timerp claude-repl-approval--decision-timer)
-            (cancel-timer claude-repl-approval--decision-timer)
-            (setq claude-repl-approval--decision-timer nil))
-          ;; Send deny response
-          (claude-repl-approval--send-response
-           claude-repl-approval--current-proc
-           (claude-repl-approval--make-hook-response "deny" "Approval request timed out"))
-          ;; Kill approval buffer and restore window configuration
-          (kill-buffer buffer)
-          (when previous-window-config
-            (set-window-configuration previous-window-config)))))))
+        (when (timerp claude-repl-approval--decision-timer)
+          (cancel-timer claude-repl-approval--decision-timer)
+          (setq claude-repl-approval--decision-timer nil))
+        ;; Send deny response
+        (claude-repl-approval--send-response
+         claude-repl-approval--current-proc
+         (claude-repl-approval--make-hook-response "deny" "Approval request timed out"))
+        ;; Clean up and process next request
+        (claude-repl-approval--cleanup-request)))))
+
 
 (defun claude-repl-approval--show-feedback (message-text)
   "Show feedback MESSAGE-TEXT in the approval buffer before closing."
@@ -671,23 +737,40 @@ This function returns immediately after showing the UI."
   (sit-for 0.5))
 
 (defun claude-repl-approval--cleanup-request ()
-  "Clean up approval request state and restore previous window configuration."
+  "Clean up approval request state and process next queued request if any."
+  ;; Cancel the timeout timer
   (when (timerp claude-repl-approval--decision-timer)
     (cancel-timer claude-repl-approval--decision-timer)
     (setq claude-repl-approval--decision-timer nil))
+
   (let ((buffer (current-buffer))
         (previous-window-config claude-repl-approval--previous-window-config)
         (diff-buffer claude-repl-approval--current-diff-buffer))
+
     ;; Kill the diff buffer if it exists
     (when (and diff-buffer (buffer-live-p diff-buffer))
       (kill-buffer diff-buffer))
-    ;; Kill the approval buffer
-    (when (buffer-live-p buffer)
-      (kill-buffer buffer))
-    ;; Restore the previous window configuration
-    ;; This ensures the window layout is exactly as it was before the approval popup
-    (when previous-window-config
-      (set-window-configuration previous-window-config))))
+
+    ;; Clear the current request marker
+    (setq claude-repl-approval--current-request nil)
+
+    ;; Check if there are more requests in the queue
+    (if claude-repl-approval--request-queue
+        ;; More requests pending - process the next one
+        (progn
+          (claude-repl-approval--message "Processing next approval from queue (%d remaining)"
+                                          (length claude-repl-approval--request-queue))
+          (claude-repl-approval--process-next-request))
+
+      ;; No more requests - clean up completely
+      (progn
+        ;; Kill the approval buffer
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))
+        ;; Restore the previous window configuration
+        ;; This ensures the window layout is exactly as it was before the approval popup
+        (when previous-window-config
+          (set-window-configuration previous-window-config))))))
 
 (defun claude-repl-approval--action-allow (&optional _button)
   "Action for Allow button."
