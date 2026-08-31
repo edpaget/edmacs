@@ -92,8 +92,7 @@ edmacs/
 │   ├── git.el             # Magit and git tools
 │   ├── vterm.el           # Terminal configuration
 │   ├── claude-repl/       # Standalone claude-repl package
-│   ├── languages/         # Language-specific configs
-│   └── tiles/             # Tiling window management
+│   └── languages/         # Language-specific configs
 ├── straight/
 │   └── versions/          # Package version lockfiles (committed)
 └── README.md              # Main repository documentation

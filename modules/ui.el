@@ -176,11 +176,19 @@
 
 (use-package rotate
   :commands (rotate-layout rotate-window rotate-main-vertical rotate-main-horizontal)
-  :custom
-  ;; Matches the upstream default; explicit here so a future default
-  ;; change doesn't silently start sweeping dedicated windows (e.g.
-  ;; treemacs/dired-sidebar) into a rotate.
-  (rotate-skip-dedicated-windows t))
+  ;; `:init' (plain `setq'), not `:custom': `rotate' is autoloaded via
+  ;; `:commands' above, so `rotate-skip-dedicated-windows' has no
+  ;; `defcustom' yet at this point in the load sequence. `:custom' records
+  ;; the value on a `use-package' custom theme that only takes effect once
+  ;; `rotate.el' itself defines the variable, which would leave it unbound
+  ;; from boot until the first rotate command runs. Setting it here with
+  ;; plain `setq' binds it immediately; `defcustom' honors an
+  ;; already-bound value when `rotate.el' later loads, so the intent
+  ;; (matches the upstream default; explicit here so a future default
+  ;; change doesn't silently start sweeping dedicated windows, e.g.
+  ;; treemacs/dired-sidebar, into a rotate) is preserved either way.
+  :init
+  (setq rotate-skip-dedicated-windows t))
 
 ;; rotate.el reassigns buffers to windows via plain `set-window-buffer'
 ;; (`rotate-window') or by deleting windows outright and rebuilding via
