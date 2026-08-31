@@ -28,6 +28,7 @@
  ("emacs-gradle-mode" . "e4d665d5784ecda7ddfba015f07c69be3cfc45f2")
  ("emacs-libvterm" . "70921114908ebb260d6686db8cbe2445a64f90a2")
  ("emacs-request" . "c22e3c23a6dd90f64be536e176ea0ed6113a5ba6")
+ ("emacs-rotate" . "d61c7643b8dbe3fdd59f8ee40212f27bd14cfb61")
  ("emacs-shift-number" . "52f4d32080cca50da0f88b2141d597827c7341cf")
  ("emacs-which-key" . "38d4308d1143b61e4004b6e7a940686784e51500")
  ("emacsmirror-mirror" . "5e2e68ca1f074bf5de41b691029b461a1aefb050")
