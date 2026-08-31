@@ -81,7 +81,6 @@
  ("pfuture" . "19b53aebbc0f2da31de6326c495038901bffb73c")
  ("posframe" . "6f89c0acd29306cb2cd023418d18134cfc507800")
  ("project" . "ffb38d7798d86c7fa6623db0f64b461abb6572c2")
- ("projectile" . "3a6a99926809d8ed0aecf802bdc2942ce0d82009")
  ("queue" . "8df1334d54d4735d2f821790422a850dfaaa08ef")
  ("quickrun" . "a25264bead36ea4cb8c6fe6ba3755508f5cb8d83")
  ("rainbow-delimiters" . "f40ece58df8b2f0fb6c8576b527755a552a5e763")
