@@ -200,34 +200,66 @@
 ;; `display-buffer-alist' entry) does not travel with the buffer it was
 ;; styling: it is left behind on the now-repurposed window, or deleted
 ;; along with the window that carried it. Snapshot each window's
-;; parameters keyed by its buffer before the rotate and reapply them to
-;; whichever window ends up showing that buffer afterward. Also wraps
-;; `window-layout-transpose' as a cheap safety net, since it too rebuilds
-;; part of the window subtree rather than merely reshaping existing
-;; windows. These `advice-add' calls are deliberately top-level (not
-;; inside `use-package rotate''s `:config') so `window-layout-transpose'
-;; -- native to Emacs, not part of the `rotate' package -- is protected
-;; even when invoked before `rotate' has been autoloaded; advice on the
-;; still-autoloaded `rotate-*' symbols is honored the same way.
+;; parameters keyed by both its buffer and the window object itself
+;; before the rotate, then transfer them to whichever window ends up
+;; showing that buffer afterward -- and strip them from any window that
+;; kept the parameter but lost the buffer it belonged to. A plain
+;; `set-window-buffer' swap (exactly what `rotate-window' does) never
+;; touches a window's own parameter slot, so restoring only additively
+;; would leave the departing window's old parameters in place to bleed
+;; onto whatever buffer now occupies it -- e.g. swapping an Embark
+;; Collect window (styled with `(mode-line-format . none)') with a plain
+;; buffer window would correctly give the Embark buffer's new window a
+;; hidden mode-line, but would also leave the plain buffer's new window
+;; with a hidden mode-line it never asked for, inherited from the window
+;; object it now occupies. Also wraps `window-layout-transpose' as a
+;; cheap safety net, since it too rebuilds part of the window subtree
+;; rather than merely reshaping existing windows. These `advice-add'
+;; calls are deliberately top-level (not inside `use-package rotate''s
+;; `:config') so `window-layout-transpose' -- native to Emacs, not part
+;; of the `rotate' package -- is protected even when invoked before
+;; `rotate' has been autoloaded; advice on the still-autoloaded
+;; `rotate-*' symbols is honored the same way.
 (defun edmacs--rotate-capture-window-parameters ()
-  "Return an alist of (BUFFER . PARAMETERS) for the selected frame's windows."
-  (let (captured)
+  "Snapshot window-parameters for the selected frame's windows.
+Returns a cons (BY-BUFFER . BY-WINDOW): BY-BUFFER maps each window's
+buffer to its parameter alist, used to reapply parameters onto
+whichever window ends up showing that buffer; BY-WINDOW maps each
+window object itself to the same alist, used to detect and strip a
+parameter a window no longer needs once it shows a different buffer."
+  (let (by-buffer by-window)
     (dolist (w (window-list nil nil (minibuffer-window)))
       (let ((params (window-parameters w)))
         (when params
-          (push (cons (window-buffer w) params) captured))))
-    captured))
+          (push (cons (window-buffer w) params) by-buffer)
+          (push (cons w params) by-window))))
+    (cons by-buffer by-window)))
 
 (defun edmacs--rotate-restore-window-parameters (captured)
-  "Reapply CAPTURED window-parameters to windows now showing that buffer.
-Fills in only the specific parameter keys a window doesn't already carry
--- checking per key, not per window, since Emacs itself stamps an
-unrelated `quit-restore' parameter onto nearly every window, and an
-all-or-nothing per-window check would see that and skip restoration."
-  (dolist (w (window-list nil nil (minibuffer-window)))
-    (dolist (param (alist-get (window-buffer w) captured))
-      (unless (window-parameter w (car param))
-        (set-window-parameter w (car param) (cdr param))))))
+  "Transfer CAPTURED window-parameters with the buffer they styled.
+CAPTURED is the (BY-BUFFER . BY-WINDOW) cons produced by
+`edmacs--rotate-capture-window-parameters'.
+
+For every window still live after the rotate, first strip any
+parameter key the window carried before whose value no longer matches
+what the window's *current* buffer is entitled to -- this is the half
+a purely additive restore misses, since `set-window-buffer' never
+clears a window's own parameters when the buffer it shows changes.
+Then fill in any parameter key the current buffer had captured but the
+window doesn't yet carry. Both steps check per key, not per window,
+since Emacs itself stamps an unrelated `quit-restore' parameter onto
+nearly every window, and an all-or-nothing per-window check would see
+that and skip restoration."
+  (let ((by-buffer (car captured))
+        (by-window (cdr captured)))
+    (dolist (w (window-list nil nil (minibuffer-window)))
+      (let ((current-params (alist-get (window-buffer w) by-buffer)))
+        (dolist (param (alist-get w by-window))
+          (unless (equal (cdr param) (alist-get (car param) current-params))
+            (set-window-parameter w (car param) nil)))
+        (dolist (param current-params)
+          (unless (window-parameter w (car param))
+            (set-window-parameter w (car param) (cdr param))))))))
 
 (defun edmacs--rotate-preserve-window-parameters (orig-fn &rest args)
   "Preserve per-buffer window-parameters across a rotate/transpose ORIG-FN."
