@@ -204,6 +204,14 @@
 ;; there's no local pin to hold back since this is the current corfu HEAD.
 ;; Nothing to do here but wait for upstream to update; revisit if a future
 ;; corfu release still emits it and it starts feeling worth patching locally.
+;;
+;; For the record (re-verified after the initial upgrade pass overstated
+;; this): a fresh -nw or GUI boot logs on the order of twenty informational
+;; *Messages* lines (per-module "Loading module: ..."/"Loading language
+;; config: ..." lines, recentf/custom.el loads, a Flycheck "no syntax
+;; checker" note, the startup-time line) in addition to this one warning.
+;; "Boots clean" for this phase's Done condition means zero errors/
+;; backtraces and an empty *Warnings* buffer, not zero *Messages* output.
 (use-package corfu-popupinfo
   :straight nil
   :after corfu
