@@ -16,7 +16,7 @@ An Emacs integration for the [Claude Code CLI](https://github.com/anthropics/cla
 
 - Emacs 29.1 or later
 - [Claude Code CLI](https://github.com/anthropics/claude-repl) installed and in PATH
-- Required Emacs packages: `projectile`, `markdown-mode`
+- Required Emacs packages: `markdown-mode` (project.el is built into Emacs 29+)
 
 First, install the Claude Code CLI:
 
@@ -35,7 +35,7 @@ Add to your Emacs configuration:
   :vc (:url "https://github.com/edpaget/edmacs"
        :branch "main"
        :lisp-dir "modules/claude-repl")
-  :after (projectile markdown-mode)
+  :after (markdown-mode)
   :config
   ;; Optional: Configure auto-approval for safe tools
   (setq claude-repl-approval-mode 'hybrid)
@@ -56,7 +56,7 @@ Then run `M-x package-vc-install RET` and select `claude-repl`, or evaluate the 
                          :host github
                          :repo "edpaget/edmacs"
                          :files ("modules/claude-repl/*.el"))
-  :after (projectile markdown-mode)
+  :after (markdown-mode)
   :config
   ;; Optional: Configure auto-approval for safe tools
   (setq claude-repl-approval-mode 'hybrid)
