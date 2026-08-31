@@ -196,6 +196,14 @@
   (add-hook 'minibuffer-setup-hook #'corfu-enable-in-minibuffer))
 
 ;; Corfu extensions
+;; NOTE (Emacs 31 upgrade triage): byte-compiling this file logs
+;;   "corfu-popupinfo.el: Warning: 'when-let' is an obsolete macro (as of
+;;   31.1); use 'when-let*' or 'and-let*' instead."
+;; on every fresh build. It's a harmless upstream deprecation warning (not a
+;; build failure, doesn't affect straight-check-all) in corfu's own source;
+;; there's no local pin to hold back since this is the current corfu HEAD.
+;; Nothing to do here but wait for upstream to update; revisit if a future
+;; corfu release still emits it and it starts feeling worth patching locally.
 (use-package corfu-popupinfo
   :straight nil
   :after corfu

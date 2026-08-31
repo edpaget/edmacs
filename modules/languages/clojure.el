@@ -109,6 +109,14 @@
 ;; clj-refactor - Refactoring support
 ;; ============================================================================
 
+;; clj-refactor depends on paredit, whose MELPA recipe fetches from
+;; https://paredit.org/paredit.git. That host is currently unresolvable
+;; (NXDOMAIN; unrelated to the Emacs 31 upgrade this module was written for)
+;; and blocks straight.el bootstrap entirely, so pin the fetch to the
+;; emacsmirror instead. Revisit if paredit.org comes back and this override
+;; is no longer needed.
+(straight-use-package '(paredit :type git :host github :repo "emacsmirror/paredit"))
+
 (use-package clj-refactor
   :hook (clojure-ts-mode . clj-refactor-mode)
   :config
