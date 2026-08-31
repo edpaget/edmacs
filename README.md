@@ -28,15 +28,33 @@ A modern, modular Emacs configuration with evil-mode, version-locked packages, a
 If you have an existing Emacs configuration, back it up first:
 
 ```bash
-mv ~/.emacs.d ~/.emacs.d.backup
-mv ~/.emacs ~/.emacs.backup  # if you have one
+mv ~/.config/emacs ~/.config/emacs.backup
+mv ~/.emacs.d ~/.emacs.d.backup   # if you have one
+mv ~/.emacs ~/.emacs.backup       # if you have one
 ```
+
+`~/.emacs.d` matters even if you only intend to use the XDG path. Emacs
+"prefer[s] the XDG location only if the `.emacs.d` location does not
+exist" (`startup.el`), so a leftover `~/.emacs.d` silently wins and
+`~/.config/emacs` is never read.
 
 ### 2. Clone This Repository
 
+This config lives at the XDG location, `~/.config/emacs`:
+
 ```bash
-git clone https://github.com/yourusername/edmacs.git ~/.emacs.d
+git clone https://github.com/yourusername/edmacs.git ~/.config/emacs
 ```
+
+If you keep the checkout elsewhere — this machine keeps it at
+`~/Projects/edmacs` — symlink it instead:
+
+```bash
+ln -s ~/Projects/edmacs ~/.config/emacs
+```
+
+Emacs 27+ honours `XDG_CONFIG_HOME`; if you set it, substitute
+`$XDG_CONFIG_HOME/emacs` for `~/.config/emacs` throughout.
 
 ### 3. First Launch
 
@@ -290,7 +308,9 @@ Example structure:
 
 ### Personal Customizations
 
-Create a `custom.el` file in `~/.emacs.d/` for personal customizations:
+Create a `custom.el` file in `~/.config/emacs/` for personal customizations
+(`init.el` sets `custom-file` from `user-emacs-directory`, so this follows
+the config wherever it lives):
 
 ```elisp
 ;;; custom.el --- Personal customizations
