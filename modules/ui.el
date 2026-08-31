@@ -165,12 +165,70 @@
 ;; ============================================================================
 
 ;; Native Emacs 31 `window.el': let `C-x w t' / `SPC w t t' transpose a
-;; layout even when a dedicated window (e.g. a vterm popup) is part of it.
+;; layout even when a dedicated window is part of it. Nothing in this
+;; config currently marks a window dedicated -- vterm-toggle's own notion
+;; of "dedicated" (`vterm-toggle--dedicated-p') is an unrelated
+;; buffer-selection flag, not core window dedication -- so this has no
+;; effect today, but it heads off a `user-error' the moment a real
+;; dedicated window (a sidebar, or a future `(dedicated . t)'
+;; display-buffer-alist action) becomes part of the layout.
 (setq transpose-dedicated-windows t)
 
 (use-package rotate
   :commands (rotate-layout rotate-window rotate-main-vertical rotate-main-horizontal)
   :custom
+  ;; Matches the upstream default; explicit here so a future default
+  ;; change doesn't silently start sweeping dedicated windows (e.g.
+  ;; treemacs/dired-sidebar) into a rotate.
   (rotate-skip-dedicated-windows t))
+
+;; rotate.el reassigns buffers to windows via plain `set-window-buffer'
+;; (`rotate-window') or by deleting windows outright and rebuilding via
+;; `split-window' + `set-window-buffer' (`rotate-main-vertical' /
+;; `rotate-main-horizontal' / `rotate-layout', through
+;; `rotate--refresh-window') -- never `window-swap-states' -- so a
+;; window-parameter attached to a window (e.g. Embark's
+;; `(mode-line-format . none)' from modules/completion.el's
+;; `display-buffer-alist' entry) does not travel with the buffer it was
+;; styling: it is left behind on the now-repurposed window, or deleted
+;; along with the window that carried it. Snapshot each window's
+;; parameters keyed by its buffer before the rotate and reapply them to
+;; whichever window ends up showing that buffer afterward. Also wraps
+;; `window-layout-transpose' as a cheap safety net, since it too rebuilds
+;; part of the window subtree rather than merely reshaping existing
+;; windows. These `advice-add' calls are deliberately top-level (not
+;; inside `use-package rotate''s `:config') so `window-layout-transpose'
+;; -- native to Emacs, not part of the `rotate' package -- is protected
+;; even when invoked before `rotate' has been autoloaded; advice on the
+;; still-autoloaded `rotate-*' symbols is honored the same way.
+(defun edmacs--rotate-capture-window-parameters ()
+  "Return an alist of (BUFFER . PARAMETERS) for the selected frame's windows."
+  (let (captured)
+    (dolist (w (window-list nil nil (minibuffer-window)))
+      (let ((params (window-parameters w)))
+        (when params
+          (push (cons (window-buffer w) params) captured))))
+    captured))
+
+(defun edmacs--rotate-restore-window-parameters (captured)
+  "Reapply CAPTURED window-parameters to windows now showing that buffer.
+Fills in only the specific parameter keys a window doesn't already carry
+-- checking per key, not per window, since Emacs itself stamps an
+unrelated `quit-restore' parameter onto nearly every window, and an
+all-or-nothing per-window check would see that and skip restoration."
+  (dolist (w (window-list nil nil (minibuffer-window)))
+    (dolist (param (alist-get (window-buffer w) captured))
+      (unless (window-parameter w (car param))
+        (set-window-parameter w (car param) (cdr param))))))
+
+(defun edmacs--rotate-preserve-window-parameters (orig-fn &rest args)
+  "Preserve per-buffer window-parameters across a rotate/transpose ORIG-FN."
+  (let ((captured (edmacs--rotate-capture-window-parameters)))
+    (prog1 (apply orig-fn args)
+      (edmacs--rotate-restore-window-parameters captured))))
+
+(dolist (fn '(rotate-window rotate-main-vertical rotate-main-horizontal
+              rotate-layout window-layout-transpose))
+  (advice-add fn :around #'edmacs--rotate-preserve-window-parameters))
 
 ;;; ui.el ends here
