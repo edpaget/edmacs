@@ -136,9 +136,6 @@ LANGUAGE should be the name without the .el extension."
           (lambda ()
             (message "Emacs loaded in %.2f seconds with %d garbage collections."
                      (float-time (time-subtract after-init-time before-init-time))
-                     gcs-done)
-            ;; Display projectile projects list
-            (when (fboundp 'projectile-switch-project)
-              (projectile-switch-project))))
+                     gcs-done)))
 
 ;;; init.el ends here

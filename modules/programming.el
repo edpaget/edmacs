@@ -313,50 +313,19 @@
   (editorconfig-mode 1))
 
 ;; ============================================================================
-;; Projectile - Project management
-;; ============================================================================
-
-(use-package projectile
-  :diminish projectile-mode
-  :config
-  (projectile-mode +1)
-
-  ;; Projectile settings
-  (setq projectile-completion-system 'default
-        projectile-enable-caching t
-        projectile-indexing-method 'alien
-        projectile-sort-order 'recentf)
-
-  ;; Projectile keybindings
-  (general-define-key
-   :states 'normal
-   :prefix "SPC p"
-   "" '(:ignore t :which-key "project")
-   "p" '(projectile-switch-project :which-key "switch project")
-   "f" '(projectile-find-file :which-key "find file")
-   "d" '(projectile-find-dir :which-key "find dir")
-   "b" '(projectile-switch-to-buffer :which-key "switch buffer")
-   "k" '(projectile-kill-buffers :which-key "kill buffers")
-   "r" '(projectile-recentf :which-key "recent files")
-   "g" '(projectile-grep :which-key "grep")
-   "c" '(projectile-compile-project :which-key "compile")
-   "T" '(projectile-test-project :which-key "test")
-   "t" '(projectile-toggle-between-implementation-and-test :which-key "switch to test")
-   "i" '(projectile-invalidate-cache :which-key "invalidate cache")
-   "R" '(projectile-replace :which-key "replace")
-   "x" '(projectile-run-shell-command-in-root :which-key "run shell cmd")))
-
-;; ============================================================================
 ;; Project.el enhancements (built-in alternative to projectile)
 ;; ============================================================================
 
-;; Add project keybindings for built-in project.el (as backup)
-;; (general-define-key
-;;  :states 'normal
-;;  :prefix "SPC P"
-;;  "c" '(project-compile :which-key "compile")
-;;  "k" '(project-kill-buffers :which-key "kill buffers")
-;;  "e" '(project-eshell :which-key "eshell"))
+;; project.el is configured in modules/core.el; keybindings.el owns SPC p.
+;; Add extra project keybindings under SPC P for actions project.el has
+;; that projectile's SPC p prefix used to cover.
+(general-define-key
+ :states 'normal
+ :prefix "SPC P"
+ "" '(:ignore t :which-key "project (extra)")
+ "c" '(project-compile :which-key "compile")
+ "k" '(project-kill-buffers :which-key "kill buffers")
+ "e" '(project-eshell :which-key "eshell"))
 
 ;; ============================================================================
 ;; YAML Mode - YAML file editing

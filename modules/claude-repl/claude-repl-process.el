@@ -7,7 +7,7 @@
 ;;; Code:
 
 (require 'json)
-(require 'projectile)
+(require 'project)
 (require 'claude-repl-approval)
 
 ;; ============================================================================
@@ -63,9 +63,13 @@ The script is located in the same directory as this file."
 ;; ============================================================================
 
 (defun claude-repl-process--get-project-root ()
-  "Get the current project root directory."
-  (or (projectile-project-root)
-      default-directory))
+  "Get the current project root directory.
+Resolves via project.el, mirroring how claude-code-ide.el resolves a
+session's working directory, so both tools agree on the same root for
+the same buffer."
+  (if-let* ((proj (project-current)))
+      (project-root proj)
+    default-directory))
 
 (defun claude-repl-process--make-buffer-name (project-root)
   "Create a buffer name for the Claude Code process for PROJECT-ROOT."

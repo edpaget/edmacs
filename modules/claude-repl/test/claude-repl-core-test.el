@@ -28,8 +28,8 @@
     (it "creates a process and buffer"
       (claude-repl-test-spy-on-make-process)
 
-      ;; Mock projectile-project-root
-      (spy-on 'projectile-project-root :and-return-value "/tmp/test/")
+      ;; Mock claude-repl-process--get-project-root
+      (spy-on 'claude-repl-process--get-project-root :and-return-value "/tmp/test/")
 
       (claude-repl-ask "Test prompt")
 
@@ -38,7 +38,7 @@
 
     (it "starts interaction in buffer"
       (claude-repl-test-spy-on-make-process)
-      (spy-on 'projectile-project-root :and-return-value "/tmp/test/")
+      (spy-on 'claude-repl-process--get-project-root :and-return-value "/tmp/test/")
 
       (claude-repl-ask "My question")
 
@@ -47,7 +47,7 @@
 
     (it "sets up response callback"
       (claude-repl-test-spy-on-make-process)
-      (spy-on 'projectile-project-root :and-return-value "/tmp/test/")
+      (spy-on 'claude-repl-process--get-project-root :and-return-value "/tmp/test/")
 
       (claude-repl-ask "Test")
 
@@ -57,7 +57,7 @@
 
     (it "sets up error callback"
       (claude-repl-test-spy-on-make-process)
-      (spy-on 'projectile-project-root :and-return-value "/tmp/test/")
+      (spy-on 'claude-repl-process--get-project-root :and-return-value "/tmp/test/")
 
       (claude-repl-ask "Test")
 
@@ -71,7 +71,7 @@
       (claude-repl-test-teardown))
 
     (it "opens buffer for current project"
-      (spy-on 'projectile-project-root :and-return-value "/tmp/test/")
+      (spy-on 'claude-repl-process--get-project-root :and-return-value "/tmp/test/")
       (spy-on 'pop-to-buffer)
 
       (claude-repl-open-buffer)
@@ -86,7 +86,7 @@
       (claude-repl-test-teardown))
 
     (it "clears existing buffer"
-      (spy-on 'projectile-project-root :and-return-value "/tmp/test/")
+      (spy-on 'claude-repl-process--get-project-root :and-return-value "/tmp/test/")
 
       (let ((buffer (claude-repl-buffer-get-or-create "/tmp/test/")))
         (claude-repl-buffer-start-interaction buffer "Test")
@@ -98,7 +98,7 @@
           (expect (string-match-p "> " (buffer-string)) :to-be-truthy))))
 
     (it "does nothing if buffer doesn't exist"
-      (spy-on 'projectile-project-root :and-return-value "/tmp/nonexistent/")
+      (spy-on 'claude-repl-process--get-project-root :and-return-value "/tmp/nonexistent/")
 
       ;; Should not error
       (expect (claude-repl-clear-buffer) :not :to-throw)))

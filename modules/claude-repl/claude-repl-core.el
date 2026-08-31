@@ -4,7 +4,7 @@
 
 ;; Author: Claude Code Contributors
 ;; Version: 0.2.0
-;; Package-Requires: ((emacs "29.1") (markdown-mode "2.7") (projectile "2.9.1"))
+;; Package-Requires: ((emacs "29.1") (markdown-mode "2.7"))
 ;; Keywords: tools, ai, claude
 ;; URL: https://github.com/edpaget/edmacs/modules/claude-repl
 

@@ -61,6 +61,21 @@
   (add-hook 'json-ts-mode-hook #'lsp-deferred))
 
 ;; ============================================================================
+;; Project.el helpers (projectile replacements)
+;; ============================================================================
+
+(defun edmacs-js--project-root ()
+  "Return the current project root via project.el, or `default-directory'."
+  (if-let* ((proj (project-current)))
+      (project-root proj)
+    default-directory))
+
+(defun edmacs-js--run-in-project-root (command)
+  "Run shell COMMAND with `default-directory' bound to the project root."
+  (let ((default-directory (edmacs-js--project-root)))
+    (compile command)))
+
+;; ============================================================================
 ;; Language-Specific Keybindings
 ;; ============================================================================
 
@@ -79,8 +94,12 @@
 
  ;; Testing (assuming jest or similar)
  "t" '(:ignore t :which-key "test")
- "tt" '(projectile-test-project :which-key "test project")
- "tf" '(projectile-find-test-file :which-key "find test file")
+ "tt" '((lambda () (interactive) (edmacs-js--run-in-project-root "npm test"))
+        :which-key "test project")
+ ;; NOTE: projectile-find-test-file has no project.el equivalent
+ ;; (project.el has no filename-heuristic test/source pairing); the
+ ;; binding is dropped rather than left pointing at an undefined
+ ;; function. Use `project-find-file' (SPC p f) directly.
 
  ;; Refactoring
  "=" '(:ignore t :which-key "refactor")
@@ -100,13 +119,17 @@
 
  ;; Compilation/Building
  "c" '(:ignore t :which-key "compile")
- "cc" '(projectile-compile-project :which-key "compile project")
- "cr" '(projectile-run-project :which-key "run project")
+ "cc" '(project-compile :which-key "compile project")
+ "cr" '((lambda () (interactive)
+          (edmacs-js--run-in-project-root (read-shell-command "Run: ")))
+        :which-key "run project")
 
  ;; Testing
  "t" '(:ignore t :which-key "test")
- "tt" '(projectile-test-project :which-key "test project")
- "tf" '(projectile-find-test-file :which-key "find test file")
+ "tt" '((lambda () (interactive) (edmacs-js--run-in-project-root "npm test"))
+        :which-key "test project")
+ ;; NOTE: projectile-find-test-file has no project.el equivalent; see
+ ;; the js-ts-mode-map binding above for the same rationale.
 
  ;; Refactoring
  "=" '(:ignore t :which-key "refactor")
@@ -174,22 +197,22 @@
  :prefix ", n"
  "" '(:ignore t :which-key "npm")
  "i" '((lambda () (interactive)
-         (projectile-run-shell-command-in-root "npm install"))
+         (edmacs-js--run-in-project-root "npm install"))
        :which-key "npm install")
  "r" '((lambda () (interactive)
-         (projectile-run-shell-command-in-root "npm run"))
+         (edmacs-js--run-in-project-root "npm run"))
        :which-key "npm run")
  "t" '((lambda () (interactive)
-         (projectile-run-shell-command-in-root "npm test"))
+         (edmacs-js--run-in-project-root "npm test"))
        :which-key "npm test")
  "s" '((lambda () (interactive)
-         (projectile-run-shell-command-in-root "npm start"))
+         (edmacs-js--run-in-project-root "npm start"))
        :which-key "npm start")
  "b" '((lambda () (interactive)
-         (projectile-run-shell-command-in-root "npm run build"))
+         (edmacs-js--run-in-project-root "npm run build"))
        :which-key "npm build")
  "l" '((lambda () (interactive)
-         (projectile-run-shell-command-in-root "npm run lint"))
+         (edmacs-js--run-in-project-root "npm run lint"))
        :which-key "npm lint"))
 
 (provide 'javascript)

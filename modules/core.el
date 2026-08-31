@@ -233,7 +233,30 @@
         '((project-find-file "Find file")
           (project-find-regexp "Find regexp")
           (project-dired "Dired")
-          (project-shell "Shell"))))
+          (project-shell "Shell")))
+
+  ;; No directories are excluded from the project list by default.
+  (setq project-list-exclude nil)
+
+  ;; rdm reaps worktrees on disk out from under project.el's memory of
+  ;; them; prune entries that no longer exist so stale paths don't
+  ;; linger in `project-list-file'. project.el's real symbol for this
+  ;; is `project-forget-zombie-projects' (not the
+  ;; `project-prune-zombie-projects' name sometimes used informally).
+  (when (fboundp 'project-forget-zombie-projects)
+    (add-hook 'emacs-startup-hook #'project-forget-zombie-projects))
+
+  ;; One-time walk to register every live rdm worktree so it shows up
+  ;; in `project-list-file' (and hence `C-x v w s') without needing to
+  ;; be visited interactively first.
+  (defun edmacs--register-project-worktrees ()
+    "Register every rdm worktree under ~/Projects/*__worktrees/ with project.el."
+    (ignore-errors
+      (dolist (worktrees-dir (file-expand-wildcards
+                               (expand-file-name "*__worktrees" "~/Projects")))
+        (when (file-directory-p worktrees-dir)
+          (project-remember-projects-under worktrees-dir t)))))
+  (add-hook 'emacs-startup-hook #'edmacs--register-project-worktrees))
 
 ;; ============================================================================
 ;; Display Line Numbers
