@@ -161,18 +161,16 @@
 ;; (add-to-list 'default-frame-alist '(alpha . (95 . 95)))
 
 ;; ============================================================================
-;; Tiling Window Manager
+;; Window Rotation (tmux layout replacement)
 ;; ============================================================================
 
-(use-package tiles
-  :straight nil
-  :load-path "modules/tiles"
-  :commands (tiles-mode tiles-setup tiles-refresh)
+;; Native Emacs 31 `window.el': let `C-x w t' / `SPC w t t' transpose a
+;; layout even when a dedicated window (e.g. a vterm popup) is part of it.
+(setq transpose-dedicated-windows t)
+
+(use-package rotate
+  :commands (rotate-layout rotate-window rotate-main-vertical rotate-main-horizontal)
   :custom
-  (tiles-default-layout 'master-stack)
-  (tiles-master-window-ratio 0.5)
-  (tiles-auto-balance t)
-  :config
-  (message "Tiles module loaded"))
+  (rotate-skip-dedicated-windows t))
 
 ;;; ui.el ends here

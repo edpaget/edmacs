@@ -73,15 +73,17 @@
   "wl" '(evil-window-right :which-key "window right")
   "w=" '(balance-windows :which-key "balance windows")
 
-  ;; Tiling (window layouts)
-  "wt" '(:ignore t :which-key "tiles")
-  "wtt" '(tiles-mode :which-key "toggle tiles mode")
-  "wts" '(tiles-setup :which-key "setup tiles")
-  "wtr" '(tiles-refresh :which-key "refresh layout")
-  "wtl" '(tiles-set-layout :which-key "set layout")
-  "wtc" '(tiles-cycle-layout :which-key "cycle layout")
-  "wtn" '(tiles-focus-next :which-key "focus next")
-  "wtp" '(tiles-focus-previous :which-key "focus previous")
+  ;; Window rotation (tmux layout replacement)
+  "wt" '(:ignore t :which-key "rotate")
+  "wtt" '(window-layout-transpose :which-key "transpose layout")
+  "wtr" '(rotate-layout :which-key "cycle layout")
+  "wtv" '(rotate-main-vertical :which-key "main vertical")
+  "wth" '(rotate-main-horizontal :which-key "main horizontal")
+  "wtj" '(rotate-window :which-key "swap window")
+  ;; Same primitive as wtj: tmux's `bind Enter' (promote) and `bind -r
+  ;; C-j'/`C-k' (swap-pane) both map to rotate-window, per the phase's own
+  ;; framing of "rotate-window or C-x w o <right>" as interchangeable.
+  "wte" '(rotate-window :which-key "promote window")
 
   ;; Search
   "s" '(:ignore t :which-key "search")
