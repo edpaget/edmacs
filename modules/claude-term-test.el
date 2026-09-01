@@ -18,6 +18,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'subr-x)
 
 (ert-deftest claude-term-test-leaf ()
   (should (equal (claude-term--leaf "/foo/bar-baz/") "bar-baz"))
@@ -147,9 +148,139 @@
           (let ((win (claude-term--display-buffer buf)))
             ;; `rotate--window-list' filters with `(cl-remove-if
             ;; #'window-dedicated-p ...)'; side windows return the
-            ;; symbol `side', which is non-nil.
+            ;; symbol `side', which is non-nil.  See the two tests below
+            ;; for coverage that actually runs rotate.el's real commands
+            ;; against a side window rather than only asserting the
+            ;; property its filter depends on.
             (should (window-dedicated-p win)))
         (kill-buffer buf)))))
+
+;; ----------------------------------------------------------------------------
+;; rotate.el, for real
+;; ----------------------------------------------------------------------------
+;; The dedication check above is cheap but only a proxy: it never runs an
+;; actual rotate.el command.  These two tests load the real, installed
+;; `rotate.el' (no straight bootstrap required -- it is a single
+;; self-contained file depending only on the built-in `cl-lib') and drive
+;; its two distinct code paths -- `rotate-window' (buffer-list swap) and
+;; `rotate-main-vertical' (delete-and-rebuild via `rotate--refresh-window',
+;; the more destructive of the two: it deletes every window
+;; `rotate--window-list' returns and splits fresh ones from the selected
+;; window) -- against a real layout containing a side window from
+;; `claude-term--display-buffer'.  `rotate-skip-dedicated-windows' is bound
+;; to `t' here to mirror the value `modules/ui.el' forces at boot; that is
+;; the exact property under test, so these would fail without it.
+
+(defun claude-term-test--locate-real-rotate ()
+  "Return the path to the real `rotate.el' straight build, or nil.
+Tries this checkout's own straight/build first -- present once this
+worktree has itself been opened as a real Emacs config and straight has
+bootstrapped it -- then falls back to the sibling main `edmacs' checkout's
+straight/build: this repo's roadmap worktrees live under
+`<parent>/edmacs__worktrees/<name>', sibling to the main `<parent>/edmacs'
+checkout, and straight's build cache is per-checkout, not shared, so a
+freshly created worktree has no build of its own yet.  Returns nil rather
+than erroring when neither is found -- e.g. a machine that has never
+bootstrapped this repo -- so the caller can skip with a clear message
+instead of failing."
+  (or
+   (let ((here (expand-file-name "straight/build/rotate/rotate.el" default-directory)))
+     (and (file-exists-p here) here))
+   (let* ((root (directory-file-name (expand-file-name default-directory)))
+          (worktrees-dir (directory-file-name (file-name-directory root))))
+     (when (string-suffix-p "__worktrees" worktrees-dir)
+       (let* ((projects-dir (file-name-directory worktrees-dir))
+              (repo-name (string-remove-suffix
+                          "__worktrees" (file-name-nondirectory worktrees-dir)))
+              (main-rotate (expand-file-name
+                            (concat repo-name "/straight/build/rotate/rotate.el")
+                            projects-dir)))
+         (and (file-exists-p main-rotate) main-rotate))))))
+
+(defun claude-term-test--ensure-real-rotate ()
+  "Load the real `rotate.el', skipping the calling test if unavailable."
+  (unless (featurep 'rotate)
+    (let ((path (claude-term-test--locate-real-rotate)))
+      (unless path
+        (ert-skip "rotate.el's straight build was not found in this checkout \
+or its sibling main checkout; bootstrap straight once (open this worktree \
+in a real Emacs session) to enable this test"))
+      (load path nil t))))
+
+(ert-deftest claude-term-test-rotate-window-preserves-side-window ()
+  (claude-term-test--ensure-real-rotate)
+  (claude-term-test--with-fresh-slots
+    (let ((window-sides-slots '(nil nil 3 nil))
+          (rotate-skip-dedicated-windows t)
+          (main-buf (generate-new-buffer "claude-term-test-rotate-window-main"))
+          (other-buf (generate-new-buffer "claude-term-test-rotate-window-other"))
+          (side-buf (generate-new-buffer "claude-term-test-rotate-window-side")))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (set-window-buffer (selected-window) main-buf)
+            (let ((main-win (selected-window))
+                  (other-win (split-window (selected-window) nil 'below)))
+              (set-window-buffer other-win other-buf)
+              (select-window main-win)
+              (let ((side-win (claude-term--display-buffer side-buf)))
+                (should side-win)
+                (select-window main-win)
+                ;; The real command, not a re-implementation of its filter.
+                (rotate-window)
+                (should (window-live-p side-win))
+                (should (eq (window-buffer side-win) side-buf))
+                (should (eq (window-parameter side-win 'window-side) 'right))
+                ;; The two ordinary windows' buffers did swap -- confirms
+                ;; the command actually ran rather than no-op'ing.
+                (should (equal (list (window-buffer main-win) (window-buffer other-win))
+                                (list other-buf main-buf))))))
+        (kill-buffer main-buf)
+        (kill-buffer other-buf)
+        (kill-buffer side-buf)
+        (delete-other-windows)))))
+
+(ert-deftest claude-term-test-rotate-main-vertical-preserves-side-window ()
+  (claude-term-test--ensure-real-rotate)
+  (claude-term-test--with-fresh-slots
+    (let ((window-sides-slots '(nil nil 3 nil))
+          (rotate-skip-dedicated-windows t)
+          (main-buf (generate-new-buffer "claude-term-test-rotate-layout-main"))
+          (other-buf (generate-new-buffer "claude-term-test-rotate-layout-other"))
+          (side-buf (generate-new-buffer "claude-term-test-rotate-layout-side")))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (set-window-buffer (selected-window) main-buf)
+            (let* ((main-win (selected-window))
+                   (other-win (split-window main-win nil 'below)))
+              (set-window-buffer other-win other-buf)
+              (select-window main-win)
+              (let ((side-win (claude-term--display-buffer side-buf)))
+                (should side-win)
+                (select-window main-win)
+                ;; `rotate-main-vertical' goes through
+                ;; `rotate--refresh-window', which deletes every window
+                ;; `rotate--window-list' returns and rebuilds the layout
+                ;; from scratch -- the code path most likely to disturb a
+                ;; side window if the dedication filter were not in effect.
+                (rotate-main-vertical)
+                (should (window-live-p side-win))
+                (should (eq (window-buffer side-win) side-buf))
+                (should (eq (window-parameter side-win 'window-side) 'right))
+                (should (window-no-other-p side-win))
+                ;; `other-win' was deleted and rebuilt by
+                ;; `rotate--refresh-window' -- confirms the destructive
+                ;; rebuild actually ran rather than no-op'ing -- yet both
+                ;; ordinary buffers still have exactly one window each in
+                ;; the new arrangement.
+                (should-not (window-live-p other-win))
+                (should (get-buffer-window main-buf))
+                (should (get-buffer-window other-buf)))))
+        (kill-buffer main-buf)
+        (kill-buffer other-buf)
+        (kill-buffer side-buf)
+        (delete-other-windows)))))
 
 (ert-deftest claude-term-test-no-other-window-excludes-side-window ()
   (claude-term-test--with-fresh-slots
