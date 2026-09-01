@@ -1,0 +1,479 @@
+#!/usr/bin/env bash
+#
+# startup-bench.sh -- reproducible Emacs startup benchmark for edmacs
+#
+# WHY THIS EXISTS
+#   Every roadmap phase in this repo's performance work claims a number
+#   (e.g. "saves 0.4s"). Without a committed, rerunnable way to reproduce
+#   those numbers, the claims decay into folklore -- see
+#   edmacs-straight-hygiene/phase-1, whose commit message claimed a result
+#   "verified by a batch script" that could not have run against the
+#   checkout it claimed to verify. This script is that rerunnable harness.
+#
+# THE --batch TRAP (read this before "fixing" this script to use --batch)
+#   `emacs --batch` implies `-q`: it NEVER loads early-init.el or init.el,
+#   and never sets `after-init-time`. A batch run of this config reports
+#   something like ~0.006s and looks like a spectacular optimization result
+#   -- it is actually measuring nothing. Interactive startup cost can only
+#   be measured by actually running an interactive (`-nw`) Emacs through a
+#   pty, which is what this script does via `script -q /dev/null`.
+#
+# WHY A PTY (`script`) AND NOT A PLAIN SUBPROCESS
+#   `emacs -nw` needs a controlling terminal to create its frame; a bare
+#   subprocess with redirected stdio has no tty and Emacs will refuse to
+#   start (or behave differently). `script -q /dev/null <cmd...>` allocates
+#   a pty and runs <cmd...> attached to it, with no session log kept
+#   (BSD/macOS: the log path argument is mandatory, so we point it at
+#   /dev/null). This is Darwin/BSD `script` syntax, matching this
+#   environment. GNU/Linux's `script` takes the command differently:
+#     script -qc "emacs -nw ..." /dev/null
+#   If this script is ever ported to Linux, swap the invocation accordingly.
+#   `script` itself adds a small amount of overhead on top of Emacs's own
+#   startup; the -Q control run below exists specifically to bound that
+#   overhead so it doesn't get misread as "config load time".
+#
+# HOW EACH TIMED RUN IS MADE TO EXIT ON ITS OWN
+#   `script` obscures Emacs's own reported timing (and there is no timing
+#   to report anyway under -nw), so this script times full wall-clock
+#   process duration from outside. For that duration to reflect only
+#   startup, each timed Emacs process must quit itself right after startup
+#   finishes. This is done by adding a function to `emacs-startup-hook`
+#   (appended, so it runs after this config's own startup-hook work) that
+#   calls `(kill-emacs)`. `emacs-startup-hook` runs once, after the init
+#   file has fully loaded and the initial frame exists, which is exactly
+#   the point at which "startup" is over. This was checked empirically
+#   against the installed Emacs (31.1): plain command-line --eval switches
+#   run during `command-line-1`, which happens strictly AFTER the init
+#   file has been loaded but BEFORE `emacs-startup-hook` is run -- so an
+#   --eval that does `(add-hook 'emacs-startup-hook #'kill-emacs t)` reaches
+#   the hook in time, and does not race native-comp's async compilation
+#   queue or straight's own modification checks -- those run synchronously
+#   as part of module loading (see the --eval section below: they can, in
+#   fact, make module loading itself dramatically slower depending on
+#   `straight-check-for-modifications`), so by the time emacs-startup-hook
+#   fires they have already finished one way or the other; nothing is
+#   left running in the background for the kill to race against, and any
+#   package rebuild a run actually triggers has already completed on disk
+#   (a normal, idempotent straight build) before the process exits.
+#   A `-Q` control run whose min/mean/max come back far above tens of
+#   milliseconds means this kill strategy is stalling, not that the
+#   harness is somehow measuring something real -- treat that as a bug in
+#   this script, not a finding about Emacs.
+#
+# WHY A PLAIN --eval IS TOO LATE, AND WHAT THIS SCRIPT DOES INSTEAD
+#   The naive design threads --eval straight into the timed Emacs command
+#   line. That is provably too late for the two things this script needs
+#   --eval for, and this was confirmed empirically, not assumed:
+#
+#     - use-package-compute-statistics: `use-package` is a macro. With
+#       this repo's modules loaded as plain .el source (checked: only the
+#       vendored claude-repl module ships .elc files, the top-level
+#       modules/*.el do not), the macro re-expands on every startup by
+#       reading `use-package-compute-statistics` at the moment each
+#       module file is loaded -- so the variable must be t before
+#       init.el's `load-module` calls run. A plain --eval runs during
+#       `command-line-1`, which happens strictly AFTER the init file has
+#       already fully loaded (this is the same ordering the kill-hook
+#       trick above relies on). A stats run using a plain --eval to set
+#       the flag reports an empty `use-package-statistics` table --
+#       confirmed by actually running it that way.
+#
+#     - straight-check-for-modifications: the whole point of --eval'ing
+#       this knob is to change how straight checks each package during
+#       init.el's own `straight-use-package`/`use-package` calls. Setting
+#       it after init.el has already loaded is a no-op on that startup --
+#       confirmed empirically: a real-config run with a plain trailing
+#       --eval "(setq straight-check-for-modifications '(check-on-save))"
+#       measured within noise of a run with no --eval at all.
+#
+#   The fix used for BOTH --eval and --stats, via write_shim_init_dir()
+#   below: generate a throwaway directory containing a shim
+#   `early-init.el` *and* a shim `init.el`, and hand the directory to
+#   Emacs via `--init-directory=<shim>`. Both shim files are required --
+#   this was the single hardest thing to get right in this script, found
+#   by actually reading Emacs 31.1's startup.el, not by assuming:
+#   `--init-directory` sets `user-emacs-directory` early, and Emacs loads
+#   `<user-emacs-directory>/early-init.el` from that location, so the
+#   shim early-init.el runs and can apply the extra form and then reset
+#   `user-emacs-directory` back to this repo's real root. BUT Emacs
+#   decides which directory it will look in for *init.el* itself
+#   (internally, `startup-init-directory`) from `user-emacs-directory`'s
+#   value ONCE, before early-init.el runs, and does not re-derive it
+#   afterward -- resetting `user-emacs-directory` inside early-init.el
+#   changes where module files, custom-file, and straight's bootstrap
+#   path resolve to (those all run later, after the reset, and use the
+#   variable directly), but it does NOT change where Emacs itself goes
+#   looking for init.el. An earlier version of this script only shipped
+#   the shim early-init.el and assumed the reset would redirect Emacs to
+#   this repo's real init.el; instead Emacs found no init.el in the
+#   throwaway shim directory at all, silently skipped the entire config
+#   (no modules, no packages), and finished in ~0.06s -- a broken harness
+#   that looked, at a glance, like a real (and wildly wrong) result. The
+#   fix is the second shim file: a one-line `init.el` in the same
+#   throwaway directory that just `load`s this repo's real init.el
+#   explicitly, sidestepping Emacs's frozen directory lookup entirely.
+#   No tracked file (init.el, early-init.el, or anything under modules/)
+#   is ever edited; both shim files live entirely in a throwaway temp
+#   directory created and removed by this script. When there is no
+#   --eval, the real-config run skips the shim entirely and uses
+#   --init-directory=$REPO_ROOT directly, since there is nothing that
+#   needs to run early in that case.
+#
+# HOW THE STATS REPORT IS EXTRACTED
+#   The interactive `use-package-report` command opens a tabulated-list
+#   buffer -- useless with no display in -nw/pty. Instead, a trailing
+#   --eval walks the `use-package-statistics` hash table directly, sorts
+#   entries by `use-package-statistics-time` descending, and writes a
+#   plain-text table via `with-temp-file` to a throwaway file path (NOT
+#   captured from the pty's stdout stream -- writing straight to a file
+#   sidesteps needing to strip pty-introduced control characters, and is
+#   the more robust choice actually used here). The wrapper script then
+#   cats that file (still passed through `tr -d '\r'` defensively, in
+#   case a future change routes output through the pty after all) and
+#   deletes the temp file/dir afterward.
+#
+# BASELINE TABLE (dated -- diff future runs against this)
+#   Recorded 2026-09-01, on the installed Emacs 31.1, this repo's config,
+#   with straight's packages already built (a cold straight bootstrap
+#   inflates the first run enormously and is not part of steady-state
+#   startup cost):
+#     Real config   (5 runs): min 1.44s / mean 1.46s / max 1.48s
+#     Control (-Q)  (5 runs): ~0.04s
+#     Costliest single use-package form (--stats): rustic, ~0.63-0.78s
+#       (observed 0.63s and 0.78s across separate measurement sessions
+#       the same day; treat this one entry as noisier than the rest of
+#       the table and re-run --stats before trusting a small drift here).
+#     --eval "(setq straight-check-for-modifications '(check-on-save))"
+#       does NOT save time -- it costs roughly SIX SECONDS MORE (measured
+#       mean ~7.8s, up from the ~1.46s baseline above). This directly
+#       contradicts an earlier, unverified claim (that this same knob
+#       shifts the mean by roughly -0.42s) which motivated including it
+#       in this script's own acceptance criteria as the --eval example to
+#       verify against. Built this script specifically to stop trusting
+#       claims like that, so: verified empirically (--stats + manual
+#       inspection of the run's own output, not just the timing) that
+#       dropping `find-at-startup` from the list makes straight unable to
+#       confirm on the cheap that ~10 packages are unmodified, so it
+#       rebuilds them (visibly: "Building vertico...", "Building
+#       magit...", etc.) on every single startup instead of skipping that
+#       work -- the opposite of the intended effect. This is exactly the
+#       kind of folklore this script exists to catch; don't restore the
+#       old "-0.42s" framing without re-running the comparison yourself.
+#   Run-to-run variance from OS scheduling, thermal state, disk cache
+#   warmth, and background native-comp finishing across runs is real;
+#   N=5 mitigates but does not eliminate it. A single outlier run is not
+#   a regression -- rerun before trusting a delta smaller than a few
+#   tenths of a second.
+#
+# USAGE
+#   scripts/startup-bench.sh                    # 5 real-config runs + -Q control
+#   scripts/startup-bench.sh -n 10               # more runs, tighter mean
+#   scripts/startup-bench.sh --no-control        # skip the -Q run, faster iteration
+#   scripts/startup-bench.sh --eval '(setq straight-check-for-modifications (quote (check-on-save)))'
+#                                                 # A/B one Lisp knob without editing the config
+#   scripts/startup-bench.sh --stats             # per-package use-package timing report
+#
+#   No GUI is ever created (every invocation passes -nw) and no controlling
+#   terminal is required beyond what `script` itself provides, so this runs
+#   fine over ssh, in tmux, or from a CI runner with no tty at all:
+#     ssh headless-box 'cd edmacs && scripts/startup-bench.sh -n 3'
+#
+set -euo pipefail
+
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+RUNS=5
+EXTRA_EVAL=""
+STATS_MODE=0
+RUN_CONTROL=1
+
+usage() {
+  cat <<'USAGE'
+Usage: startup-bench.sh [options]
+
+  -n, --runs N     Number of timed runs per configuration (default: 5)
+      --eval LISP  Extra Lisp form evaluated in every timed real-config run,
+                   after the init file loads and before the process exits.
+                   Lets you A/B one knob without editing the config, e.g.:
+                     --eval "(setq straight-check-for-modifications '(check-on-save))"
+      --stats      Instead of timing, run one startup with
+                   use-package-compute-statistics enabled and print a
+                   per-package elapsed-time report, sorted descending.
+      --no-control Skip the -Q control run (faster iteration; the control
+                   run is what proves the harness measures config load and
+                   not process-spawn overhead, so don't skip it by default).
+  -h, --help       Show this help and exit.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n|--runs)
+      RUNS="$2"
+      shift 2
+      ;;
+    --eval)
+      EXTRA_EVAL="$2"
+      shift 2
+      ;;
+    --stats)
+      STATS_MODE=1
+      shift
+      ;;
+    --no-control)
+      RUN_CONTROL=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+# Wall-clock timestamp with sub-second precision, portable across the
+# GNU-vs-BSD `date` split (BSD date has no %N) and across bash versions
+# (EPOCHREALTIME needs bash >= 5, not guaranteed to be /bin/bash on macOS).
+# perl ships with macOS regardless of either of those, so it's the most
+# reliable common denominator here.
+now() {
+  perl -MTime::HiRes=time -e 'printf "%.6f", time'
+}
+
+elapsed_since() {
+  # $1 = start timestamp (from now()); prints elapsed seconds to stdout.
+  local start="$1" end
+  end=$(now)
+  perl -e "printf('%.6f', $end - $start)"
+}
+
+# Appended (non-nil third arg) so this runs after this config's own
+# emacs-startup-hook work (resetting gc-cons-threshold, the startup
+# message) rather than pre-empting it -- see header comment for why this
+# hook, and not a plain trailing --eval, is what reliably ends each run
+# right after startup finishes.
+KILL_EVAL='(add-hook (quote emacs-startup-hook) (function kill-emacs) t)'
+
+cleanup_tmp() {
+  # Written as an if/fi (not a bare `cond && cmd`) on purpose: under
+  # `set -e`, a bare `[[ ... ]] && rm ...` whose test is false returns
+  # exit status 1, and since this runs as an EXIT trap, THAT would become
+  # the whole script's exit status even after a fully successful run.
+  if [[ -n "${REAL_CONFIG_SHIM_DIR:-}" && -d "$REAL_CONFIG_SHIM_DIR" ]]; then
+    rm -rf "$REAL_CONFIG_SHIM_DIR"
+  fi
+}
+trap cleanup_tmp EXIT
+
+# Run one interactive Emacs through a pty and print elapsed seconds on
+# stdout. Extra args are passed straight through to Emacs argv (as a bash
+# array, so nested quotes/parens in --eval strings survive intact -- macOS
+# `script` execs the given command directly, it does not re-parse it
+# through a shell).
+#
+# `script` itself can occasionally fail to attach its pty (seen in some
+# sandboxed/nested-shell contexts as "tcgetattr/ioctl: ... on socket") --
+# a transient failure of `script`, unrelated to Emacs or this config. A
+# naive "|| true" around that call would silently record a bogus
+# near-zero elapsed time for a run that never actually measured Emacs at
+# all. Instead, retry a bounded number of times and only give up (return
+# non-zero, print nothing) once every attempt has failed, so the caller
+# can skip the sample instead of polluting the average with a fake zero.
+run_timed() {
+  local max_attempts=5 attempt=1 start
+  while (( attempt <= max_attempts )); do
+    start=$(now)
+    if script -q /dev/null emacs -nw "$@" >/dev/null 2>&1; then
+      elapsed_since "$start"
+      return 0
+    fi
+    echo "warning: script/emacs invocation failed (attempt $attempt/$max_attempts) -- retrying" >&2
+    attempt=$((attempt + 1))
+  done
+  echo "warning: giving up after $max_attempts failed attempts -- skipping this sample" >&2
+  return 1
+}
+
+# Reads one float per line on stdin; prints "min mean max" (3 decimals).
+summarize() {
+  awk '
+    { sum += $1; n++; if (n == 1 || $1 < min) min = $1; if (n == 1 || $1 > max) max = $1 }
+    END {
+      if (n == 0) { print "0.000 0.000 0.000"; exit }
+      printf "%.3f %.3f %.3f\n", min, sum / n, max
+    }
+  '
+}
+
+print_table_row() {
+  # $1 = label, $2 = "min mean max"
+  local label="$1" mmm="$2"
+  local min mean max
+  read -r min mean max <<<"$mmm"
+  printf "  %-16s min %8ss   mean %8ss   max %8ss\n" "$label" "$min" "$mean" "$max"
+}
+
+# Emits (on stdout) the --init-directory value to use for the timed
+# real-config run: the repo root directly when there is no extra --eval,
+# or a generated shim directory that applies EXTRA_EVAL before delegating
+# to the real config, when there is -- see header comment for why a plain
+# --eval on the Emacs command line cannot do this in time.
+REAL_CONFIG_SHIM_DIR=""
+
+build_real_config_init_dir() {
+  if [[ -z "$EXTRA_EVAL" ]]; then
+    printf '%s' "$REPO_ROOT"
+    return
+  fi
+  REAL_CONFIG_SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/startup-bench-eval-initdir.XXXXXX")
+  write_shim_init_dir "$REAL_CONFIG_SHIM_DIR" "$EXTRA_EVAL"
+  printf '%s' "$REAL_CONFIG_SHIM_DIR"
+}
+
+# Writes a shim early-init.el AND init.el into DIR (both required -- see
+# below), applying EXTRA_FORM before delegating to this repo's real
+# config. Used by both --eval and --stats.
+#
+# CRITICAL, verified against Emacs 31.1's own startup.el source: Emacs
+# decides which directory it will look in for init.el (internally,
+# `startup-init-directory`) ONCE, from `user-emacs-directory`'s value
+# BEFORE early-init.el runs -- and does NOT re-derive it afterward. Only
+# a couple of specific things (native-comp-eln-load-path,
+# package-user-dir) get explicitly "amended again" after early-init.el
+# runs; init.el's own lookup path is not one of them. This was found the
+# hard way: an earlier version of this script only reset
+# `user-emacs-directory` inside a shim early-init.el and relied on Emacs
+# to pick up REPO_ROOT/init.el on its own -- it never did, so every
+# --eval/--stats run silently skipped the entire real config (no modules,
+# no packages) and finished in ~0.06s, which looked like a real (and
+# wildly wrong) result instead of a broken harness. The fix: place an
+# init.el in the shim directory too, that explicitly `load`s the real
+# one. `user-emacs-directory`-relative lookups *inside* the real init.el
+# and its modules (module files, custom-file, straight's bootstrap path)
+# still resolve correctly, because those run later, after early-init.el
+# has already reset `user-emacs-directory` to REPO_ROOT.
+write_shim_init_dir() {
+  local dir="$1" extra_form="$2"
+  cat >"$dir/early-init.el" <<EOF
+;; Generated by scripts/startup-bench.sh -- not part of the config.
+;; See write_shim_init_dir()'s comment in the script for why both this
+;; file and the init.el next to it exist.
+$extra_form
+(setq user-emacs-directory (file-name-as-directory "$REPO_ROOT"))
+(load (expand-file-name "early-init.el" user-emacs-directory) nil 'nomessage)
+EOF
+  cat >"$dir/init.el" <<EOF
+;; Generated by scripts/startup-bench.sh -- not part of the config.
+;; See write_shim_init_dir()'s comment in the script: Emacs's own
+;; init-file lookup does not follow user-emacs-directory changes made in
+;; early-init.el, so this file exists purely to \`load' the real one.
+(load (expand-file-name "init.el" user-emacs-directory) nil 'nomessage)
+EOF
+}
+
+run_real_config_bench() {
+  echo "Extra --eval: ${EXTRA_EVAL:-none}"
+  echo "Runs: $RUNS"
+  echo
+
+  local init_dir
+  init_dir=$(build_real_config_init_dir)
+  local args=(--init-directory="$init_dir" --eval "$KILL_EVAL")
+
+  local times=() i t
+  for ((i = 1; i <= RUNS; i++)); do
+    if t=$(run_timed "${args[@]}"); then
+      times+=("$t")
+    fi
+  done
+  if [[ "${#times[@]}" -eq 0 ]]; then
+    echo "error: every real-config run failed -- see warnings above" >&2
+    exit 1
+  fi
+
+  local real_summary
+  real_summary=$(printf '%s\n' "${times[@]}" | summarize)
+  echo "Results (${#times[@]}/$RUNS runs succeeded):"
+  print_table_row "Real config:" "$real_summary"
+
+  if [[ "$RUN_CONTROL" -eq 1 ]]; then
+    local control_times=() ct
+    for ((i = 1; i <= RUNS; i++)); do
+      if ct=$(run_timed -Q --eval "$KILL_EVAL"); then
+        control_times+=("$ct")
+      fi
+    done
+    if [[ "${#control_times[@]}" -eq 0 ]]; then
+      echo "error: every -Q control run failed -- see warnings above" >&2
+      exit 1
+    fi
+    local control_summary
+    control_summary=$(printf '%s\n' "${control_times[@]}" | summarize)
+    print_table_row "Control (-Q) (${#control_times[@]}/$RUNS):" "$control_summary"
+    echo
+    echo "If Control (-Q) is not on the order of milliseconds, the kill"
+    echo "strategy above is stalling -- treat that as a harness bug, not"
+    echo "a real result (see header comment)."
+  fi
+}
+
+run_stats_mode() {
+  local tmp_initdir tmp_report
+  tmp_initdir=$(mktemp -d "${TMPDIR:-/tmp}/startup-bench-initdir.XXXXXX")
+  tmp_report=$(mktemp "${TMPDIR:-/tmp}/startup-bench-stats.XXXXXX")
+  trap 'rm -rf "$tmp_initdir" "$tmp_report"' RETURN
+
+  # Shim early-init.el + init.el: set the statistics flag before
+  # delegating to the real config -- see write_shim_init_dir()'s comment
+  # for why both files (not just early-init.el) are required.
+  write_shim_init_dir "$tmp_initdir" "(setq use-package-compute-statistics t)"
+
+  local report_eval
+  report_eval=$(cat <<EOF
+(let ((rows nil))
+  (maphash (lambda (pkg stats)
+             (push (cons pkg (use-package-statistics-time stats)) rows))
+           use-package-statistics)
+  (setq rows (sort rows (lambda (a b) (> (cdr a) (cdr b)))))
+  (with-temp-file "$tmp_report"
+    (dolist (row rows)
+      (insert (format "%-30s %.3f\n" (car row) (cdr row))))))
+EOF
+)
+
+  echo "Running one instrumented startup (use-package-compute-statistics)..."
+  local attempt=1 max_attempts=5 succeeded=0
+  while (( attempt <= max_attempts )); do
+    if script -q /dev/null emacs -nw --init-directory="$tmp_initdir" \
+         --eval "$report_eval" --eval "$KILL_EVAL" >/dev/null 2>&1; then
+      succeeded=1
+      break
+    fi
+    echo "warning: script/emacs invocation failed (attempt $attempt/$max_attempts) -- retrying" >&2
+    attempt=$((attempt + 1))
+  done
+  if [[ "$succeeded" -ne 1 ]]; then
+    echo "error: giving up after $max_attempts failed attempts" >&2
+    exit 1
+  fi
+
+  echo
+  echo "=== use-package statistics, sorted by elapsed seconds (descending) ==="
+  if [[ -s "$tmp_report" ]]; then
+    tr -d '\r' <"$tmp_report"
+  else
+    echo "(no statistics captured -- see script header for how --stats works" \
+         "and what to check if this is empty)"
+  fi
+}
+
+if [[ "$STATS_MODE" -eq 1 ]]; then
+  run_stats_mode
+else
+  run_real_config_bench
+fi
