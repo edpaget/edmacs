@@ -51,6 +51,12 @@
 ;;   This is the load-bearing property the phase's inline-renderer
 ;;   decision (`"tui": "default"', the companion dotfiles-repo commit)
 ;;   depends on for isearch to traverse the whole transcript.
+;; - `claude-term-live-test-claude-cli-editor-mode-not-vim' reads every
+;;   settings-tier file the Claude CLI resolves `editorMode' from and
+;;   asserts none of them sets it to `"vim"'. Unlike the two tests
+;;   above, this needs no stub: it reads real files on disk (skipping
+;;   ones that don't exist) rather than driving a subprocess or the
+;;   vendored package source.
 ;;
 ;; Run:
 ;;   emacs -Q --batch -l ert -l modules/claude-term.el \
@@ -460,6 +466,67 @@ way an alt-screen TUI buffer would be."
           (should (string-match-p "transcript-line-1\n" (buffer-string)))
           (goto-char (point-max))
           (should (search-backward "transcript-line-1\n" nil t)))))))
+
+;; ============================================================================
+;; Claude CLI editor mode stays out of vim (cross-repo prerequisite)
+;; ============================================================================
+;; The phase body's "disable Claude CLI's own vi-mode via /config ->
+;; editor mode `normal'" prerequisite looked, on an earlier pass, like it
+;; had no on-disk artifact at all -- `/config' seemed to be the only
+;; interface to it. Reading the installed CLI binary's own bundled
+;; source (`strings -a "$(which claude)"') tells a fuller story:
+;; `editorMode' IS a real settings key, schema enum `["normal" "vim"]',
+;; with a DEFAULT of `"normal"' baked into the binary -- the CLI's own
+;; resolver falls back to that default when no settings tier sets the
+;; key. See modules/claude-term.el's commentary just above
+;; `claude-term-send-escape' for the full citation. This test is the
+;; regression guard for that finding: it checks every settings tier the
+;; CLI reads for an explicit `"editorMode": "vim"' override, rather than
+;; treating the whole prerequisite as permanently unverifiable. It is
+;; NOT a substitute for the one-time interactive `/config' check -- a
+;; future CLI version changing its baked-in default is a gap this test
+;; cannot see, only an explicit "vim" override left in a settings file.
+
+(defconst claude-term-live-test--editor-mode-setting-files
+  (list (expand-file-name "~/.claude.json")
+        (expand-file-name "~/.claude/settings.json")
+        (expand-file-name "~/.claude/settings.local.json")
+        (expand-file-name "../.claude/settings.json"
+                           (file-name-directory (or load-file-name buffer-file-name)))
+        (expand-file-name "../.claude/settings.local.json"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+  "Every settings-tier file the Claude CLI reads `editorMode' from.
+Precedence among tiers does not matter for this test -- it only checks
+whether any of them sets an explicit \"vim\" override, not what the
+resolved value is.")
+
+(defun claude-term-live-test--file-sets-editor-mode-vim-p (file)
+  "Non-nil when FILE exists, parses as JSON, and sets editorMode to vim.
+Any read or parse failure is treated as \"does not set it\" -- this
+test's job is to catch an explicit override, not to validate the
+settings file's syntax."
+  (and (file-exists-p file)
+       (let ((json (condition-case nil
+                        (with-temp-buffer
+                          (insert-file-contents file)
+                          (json-parse-buffer :object-type 'alist))
+                      (error nil))))
+         (and (listp json)
+              (equal (alist-get 'editorMode json) "vim")))))
+
+(ert-deftest claude-term-live-test-claude-cli-editor-mode-not-vim ()
+  "No local settings tier overrides the Claude CLI's `editorMode' to
+`vim'. With no override present, the CLI's own baked-in default of
+`\"normal\"' governs (see this file's Commentary above and
+modules/claude-term.el's commentary near `claude-term-send-escape'),
+which is what keeps evil-ghostel's ESC handling from fighting the CLI's
+own vi-mode (the \"triple-ESC\" symptom in
+manzaltu/claude-code-ide.el#52)."
+  (require 'json)
+  (let ((offenders
+         (seq-filter #'claude-term-live-test--file-sets-editor-mode-vim-p
+                      claude-term-live-test--editor-mode-setting-files)))
+    (should (null offenders))))
 
 (provide 'claude-term-live-test)
 ;;; claude-term-live-test.el ends here
