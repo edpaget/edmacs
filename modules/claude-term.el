@@ -30,6 +30,16 @@
   :straight t
   :defer t)
 
+;; evil-ghostel gives, without work, insert-state on entry, ESC to normal
+;; with cursor snapping, hjkl/w/b/e motion, and d/c/r/p implemented through
+;; the shell -- a separate 1,025-line package with its own test suite, not
+;; reimplemented here.  `:hook (ghostel-mode . evil-ghostel-mode)' is the
+;; package's own documented enable recipe (evil-ghostel.el's Commentary).
+(use-package evil-ghostel
+  :straight t
+  :after (ghostel evil)
+  :hook (ghostel-mode . evil-ghostel-mode))
+
 ;; inheritenv is a tiny, dependency-free utility with no startup cost of its
 ;; own (no hooks, no spawned process) -- unlike ghostel it is safe to load
 ;; eagerly, mirroring core.el's eager `compat'/`transient' loading.
@@ -50,6 +60,13 @@
 (defvar ghostel-buffer-name-function)
 (defvar ghostel-exit-functions)
 (declare-function ghostel-exec "ghostel")
+
+;; evil-ghostel is loaded lazily via its own `:hook' above; declare its API
+;; surface here for the same byte-compiler reason as the ghostel symbols.
+(defvar evil-ghostel-escape)
+(defvar evil-ghostel-mode-map)
+(declare-function ghostel-send-string "ghostel")
+(declare-function evil-define-key* "evil-core")
 
 ;; ============================================================================
 ;; Customization
@@ -224,6 +241,66 @@ buffer."
                  (and buf (not (equal (buffer-local-value 'claude-term--root buf) root))))
           (setq n (1+ n)))
         (number-to-string n)))))
+
+;; ============================================================================
+;; Evil integration
+;; ============================================================================
+;; Two renderers, and only one matters here: fullscreen (alt-screen)
+;; TUIs vs. the inline renderer this module is configured for (see
+;; ~/Projects/dotfiles/claude/settings.json's "tui": "default", edited
+;; alongside this phase but tracked in that separate repo). Inline keeps
+;; the whole transcript as ordinary buffer text, traversable by isearch
+;; and evil motions -- most of the reason to run the agent inside Emacs
+;; at all -- so ESC should always reach evil here, never the terminal.
+;;
+;; `evil-ghostel-escape' is a global-by-default defcustom, but its value
+;; is read fresh into the buffer-local `evil-ghostel--escape-mode' every
+;; time `evil-ghostel-mode' turns on, so a buffer-local override set
+;; beforehand is honored (confirmed by reading evil-ghostel.el's
+;; mode-enable body). It is set here, from a `ghostel-mode-hook'
+;; function, rather than from `claude-term--exec's own pre-`ghostel-exec'
+;; setq block: `ghostel-mode' derives from `fundamental-mode', and its
+;; first-ever invocation on a buffer -- true on every buffer's first
+;; `ghostel-exec' call -- runs `kill-all-local-variables', which wipes
+;; any buffer-local value set before that point. A `ghostel-mode-hook'
+;; function runs after that wipe, so its `setq-local' survives it.
+
+(defun claude-term--configure-evil-escape ()
+  "Route insert-state ESC to evil, buffer-locally, in claude-term buffers.
+Added to `ghostel-mode-hook' at an early depth so it runs before
+`evil-ghostel-mode' (hooked onto `ghostel-mode-hook' at the default
+depth by this module's `use-package evil-ghostel' form) reads
+`evil-ghostel-escape' into its own buffer-local state. Scoped by buffer
+NAME rather than `claude-term--root': name is intrinsic to the buffer
+and survives `kill-all-local-variables' (this hook itself runs after
+that wipe on a first spawn), whereas the buffer-local
+`claude-term--root' does not survive it."
+  (when (claude-term--parse-buffer-name (buffer-name))
+    (setq-local evil-ghostel-escape 'evil)))
+
+;; Negative DEPTH (Emacs 30+; this repo runs 31.1) guarantees this runs
+;; before `evil-ghostel-mode's own `ghostel-mode-hook' entry regardless
+;; of file/require load order.
+(add-hook 'ghostel-mode-hook #'claude-term--configure-evil-escape -90)
+
+(defun claude-term-send-escape ()
+  "Send a raw ESC to the terminal, interrupting a running Claude response.
+With `evil-ghostel-escape' routed to evil (see
+`claude-term--configure-evil-escape'), insert-state ESC no longer
+reaches the terminal, so Claude Code's own interrupt key needs a
+separate binding -- this one line mirrors claude-code.el's C-g handler
+\(claude-code.el:1087\)."
+  (interactive)
+  (ghostel-send-string "\e"))
+
+;; Bound to C-g in insert state, once evil-ghostel is loaded. This
+;; deliberately shadows ghostel's default passthrough of a raw C-g to
+;; the terminal, where Claude Code's own default binding is "edit
+;; prompt in external editor" -- an accepted trade-off per the phase
+;; body, remediable via ~/.claude/keybindings.json if it proves painful.
+(with-eval-after-load 'evil-ghostel
+  (evil-define-key* 'insert evil-ghostel-mode-map
+    (kbd "C-g") #'claude-term-send-escape))
 
 ;; ============================================================================
 ;; Spawn argument resolution

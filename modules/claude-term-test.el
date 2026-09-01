@@ -10,15 +10,19 @@
 ;;         -f ert-run-tests-batch-and-exit
 ;;
 ;; (Loading claude-term.el under `-Q' prints a benign "Unrecognized
-;; keyword: :straight" notice from the `use-package ghostel' form, since
-;; straight.el is not bootstrapped in this bare batch harness; that error
-;; is caught internally by use-package and does not abort the load or
-;; affect any test below.)
+;; keyword: :straight" notice from each of the `use-package ghostel' and
+;; `use-package evil-ghostel' forms, since straight.el is not bootstrapped
+;; in this bare batch harness; that error is caught internally by
+;; use-package and does not abort the load or affect any test below --
+;; evil-ghostel itself is never actually loaded, so
+;; `claude-term--configure-evil-escape' below is tested against the plain
+;; `defvar' declared in claude-term.el, not the real package.)
 
 ;;; Code:
 
 (require 'ert)
 (require 'subr-x)
+(require 'cl-lib)
 
 (ert-deftest claude-term-test-leaf ()
   (should (equal (claude-term--leaf "/foo/bar-baz/") "bar-baz"))
@@ -34,6 +38,30 @@
   (should (equal (claude-term--parse-buffer-name "*claude-term:bar-baz:2*") '("bar-baz" . "2")))
   (should (equal (claude-term--parse-buffer-name "*claude-term:bar-baz*") '("bar-baz" . nil)))
   (should-not (claude-term--parse-buffer-name "*vterm*")))
+
+;; ============================================================================
+;; Evil integration
+;; ============================================================================
+
+(ert-deftest claude-term-test-configure-evil-escape-sets-buffer-locally ()
+  (with-temp-buffer
+    (rename-buffer "*claude-term:demo*")
+    (claude-term--configure-evil-escape)
+    (should (eq (buffer-local-value 'evil-ghostel-escape (current-buffer)) 'evil))))
+
+(ert-deftest claude-term-test-configure-evil-escape-ignores-unrelated-buffer ()
+  (with-temp-buffer
+    (rename-buffer "*scratch-unrelated*")
+    (claude-term--configure-evil-escape)
+    (should-not (local-variable-p 'evil-ghostel-escape))))
+
+(ert-deftest claude-term-test-send-escape-sends-raw-escape ()
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'ghostel-send-string)
+               (lambda (s) (push s calls))))
+      (with-temp-buffer
+        (claude-term-send-escape)))
+    (should (equal calls '("\e")))))
 
 (ert-deftest claude-term-test-spawn-args-appends-call-args ()
   (let ((claude-term-extra-args '("--foo")))
