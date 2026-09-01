@@ -99,6 +99,9 @@ LANGUAGE should be the name without the .el extension."
 ;; AI assistant integration
 (load-module "ai")
 
+;; Claude terminal launcher (ghostel-based)
+(load-module "claude-term")
+
 ;; Org mode
 ;; (load-module "org-config")
 
