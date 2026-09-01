@@ -406,7 +406,34 @@ This function never recomputes it, including on restart."
     ;; `get-buffer-create' otherwise inherits `default-directory' from
     ;; whatever buffer was current at creation time, not ROOT -- and
     ;; `ghostel-exec' takes cwd from the buffer's `default-directory'.
+    ;; Safe to set before the spawn, unlike everything below it: this one
+    ;; variable carries a non-nil `permanent-local' property, so
+    ;; `kill-all-local-variables' preserves it.
     (setq default-directory root)
+    ;; `ghostel-exec' hard-passes `extra-env' nil to `ghostel--spawn-pty',
+    ;; so environment customization must go through `inheritenv' (or
+    ;; `ghostel-pre-spawn-hook'), not a `let'-bound `process-environment'
+    ;; around the call.
+    (inheritenv (ghostel-exec buffer "claude" args))
+    ;; EVERY buffer-local below is deliberately set AFTER `ghostel-exec'
+    ;; returns, and must stay that way. `ghostel-exec' calls
+    ;; `ghostel--init-buffer', which runs
+    ;; `(unless (derived-mode-p 'ghostel-mode) (ghostel-mode))', and
+    ;; `ghostel-mode' derives from `fundamental-mode' -- so on a buffer's
+    ;; FIRST spawn it runs `kill-all-local-variables' and discards
+    ;; anything set beforehand.  Setting these earlier silently reverted
+    ;; `ghostel-kill-buffer-on-exit' to its global default of t and
+    ;; dropped the exit hook entirely, so ghostel killed the buffer on
+    ;; exit and `claude-term--on-exit' never ran -- leaving
+    ;; `claude-term-restart' unable to re-exec.
+    ;; `claude-term--configure-evil-escape' avoids the same trap from the
+    ;; other side, via a `ghostel-mode-hook' that runs after the wipe;
+    ;; its docstring names the hazard.
+    ;;
+    ;; Setting them after the spawn is not a race.  Every consumer below
+    ;; is read from ghostel's sentinel or its process filter, and neither
+    ;; can run before Emacs returns to the event loop -- which it cannot
+    ;; do until this function has returned.
     (setq claude-term--root root
           claude-term--instance instance
           claude-term--args args)
@@ -414,19 +441,16 @@ This function never recomputes it, including on restart."
     ;; instead of ghostel's own default kill-on-exit, so there is exactly
     ;; one place that decides what happens to a dead buffer.
     (setq-local ghostel-kill-buffer-on-exit nil)
-    ;; Left at its default (nil): OSC title escapes emitted by the
+    ;; Pinned buffer-locally to nil -- ghostel's own default, but pinned
+    ;; against a global override: OSC title escapes emitted by the
     ;; `claude' CLI/shell would otherwise rename the buffer out from
-    ;; under the parseable naming scheme above.
+    ;; under the parseable naming scheme above.  Read only by
+    ;; `ghostel--set-title', from the process filter.
     (setq-local ghostel-buffer-name-function nil)
     ;; A named function (not a closure) so `add-hook' is idempotent
     ;; across repeated exec calls on the same buffer (a restart) --
     ;; this never accumulates duplicate hook entries.
-    (add-hook 'ghostel-exit-functions #'claude-term--on-exit nil t)
-    ;; `ghostel-exec' hard-passes `extra-env' nil to `ghostel--spawn-pty',
-    ;; so environment customization must go through `inheritenv' (or
-    ;; `ghostel-pre-spawn-hook'), not a `let'-bound `process-environment'
-    ;; around the call.
-    (inheritenv (ghostel-exec buffer "claude" args))))
+    (add-hook 'ghostel-exit-functions #'claude-term--on-exit nil t)))
 
 (defun claude-term--deferred-reexec (buf root instance args)
   "Re-exec `claude' in BUF once ghostel's own sentinel has finished.
