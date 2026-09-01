@@ -7,6 +7,29 @@
 ;;; Code:
 
 ;; ============================================================================
+;; Straight.el modification checking
+;; ============================================================================
+
+;; Straight's computed default here is (find-at-startup find-when-checking
+;; only-once), which runs a `find(1)` pass over every package repo on every
+;; startup -- this alone costs ~0.9-1.0s of boot time on this machine
+;; (scripts/startup-bench.sh -n 10: ~1.56-1.62s mean before this setting vs
+;; ~0.62-0.64s mean after, reproduced across repeated quiet runs; phase 1's
+;; earlier A/B recorded ~0.8s, same ballpark). `check-on-save`
+;; drops the boot-time scan and instead marks a package dirty via
+;; before-save-hook when a file under straight/repos/<pkg>/ is edited and
+;; saved from inside Emacs -- the realistic editing path. It does NOT catch
+;; changes made by tooling outside Emacs (e.g. `git checkout` against a stale
+;; lockfile). That gap is intentionally left to
+;; edmacs-straight-hygiene/phase-2-drift-audit, which as of this change is
+;; still not-started -- there is no covering mechanism landed yet.
+;;
+;; This must be set before straight's own bootstrap.el loads below, since
+;; bootstrap.el consults this variable while checking straight.el's own repo,
+;; and every straight-use-package call after bootstrap reads it too.
+(setq straight-check-for-modifications '(check-on-save))
+
+;; ============================================================================
 ;; Bootstrap straight.el
 ;; ============================================================================
 
