@@ -80,15 +80,42 @@
 ;; `SPC T' bindings below.
 (setq tab-bar-define-keys nil)
 
+(defun edmacs-sessions--git-common-dir (root)
+  "Return the git common directory for the worktree at ROOT, or nil.
+Every worktree of one repository shares this path (it is the main
+checkout's `.git', per git-worktree(1)), so its parent directory names
+the repository independent of any individual worktree's own directory
+name."
+  (let ((default-directory root))
+    (with-temp-buffer
+      (when (zerop (call-process "git" nil t nil "rev-parse" "--git-common-dir"))
+        (string-trim (buffer-string))))))
+
 (defun edmacs-sessions--tab-name ()
   "Name the current tab after its project/worktree, falling back sanely.
 Uses `project-current' so each tab's label reflects the worktree it
 holds; when no project is found (e.g. a scratch tab), falls back to
 `tab-bar-tab-name-current' default behavior (buffer name of the
-selected window)."
+selected window).
+
+Two worktrees of *different* repositories can share a directory
+basename (e.g. both named `feature-x', or two rdm worktrees named
+`roadmap-foundation' from two different rdm projects), which a bare
+basename would render as identical, ambiguous tab names. Disambiguate
+by prefixing the owning repository's own directory name, derived from
+`--git-common-dir' (shared by every worktree of one repo, so it names
+the repo rather than the worktree)."
   (if-let* ((proj (project-current))
             (root (project-root proj)))
-      (file-name-nondirectory (directory-file-name root))
+      (let* ((base (file-name-nondirectory (directory-file-name root)))
+             (common (edmacs-sessions--git-common-dir root))
+             (repo (and common
+                        (file-name-nondirectory
+                         (directory-file-name
+                          (file-name-directory (directory-file-name (expand-file-name common))))))))
+        (if (and repo (not (string= repo base)))
+            (format "%s/%s" repo base)
+          base))
     (tab-bar-tab-name-current)))
 
 (setq tab-bar-tab-name-function #'edmacs-sessions--tab-name)
@@ -105,7 +132,13 @@ selected window)."
       desktop-path (list desktop-dirname)
       desktop-save t
       desktop-restore-frames t
-      desktop-load-locked-desktop t)
+      desktop-load-locked-desktop t
+      ;; Restore the first 10 buffers of each tab's list eagerly; the
+      ;; rest load lazily on idle. With bufferlo persisting every tab's
+      ;; *full* buffer list (not just what's visible), a worktree tab
+      ;; left with dozens of buried buffers would otherwise block
+      ;; daemon startup reopening all of them up front.
+      desktop-restore-eager 10)
 
 (unless (file-directory-p desktop-dirname)
   (make-directory desktop-dirname t))
@@ -120,6 +153,12 @@ selected window)."
 ;; claude-repl a proper "resume this project's session" path instead of
 ;; restoring a transcript with no process behind it (see the task filed
 ;; alongside this commit).
+;; `comint-mode' covers every other PTY/subprocess-backed buffer this
+;; config can open (M-x shell, inferior REPLs, etc.): none of them have
+;; a live process to reattach to after a restart either, and unlike
+;; vterm/claude-repl-buffer it is already loaded (part of Emacs) so no
+;; `with-eval-after-load' gate is needed.
+(add-to-list 'desktop-modes-not-to-save 'comint-mode)
 (with-eval-after-load 'vterm
   (add-to-list 'desktop-modes-not-to-save 'vterm-mode))
 (with-eval-after-load 'claude-repl-buffer
