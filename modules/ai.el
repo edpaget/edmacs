@@ -14,7 +14,25 @@
   :mode (("README\\.md\\'" . gfm-mode)
          ("\\.md\\'" . markdown-mode)
          ("\\.markdown\\'" . markdown-mode))
-  :init (setq markdown-command "multimarkdown"))
+  :init (setq markdown-command "multimarkdown")
+  :custom
+  (markdown-hide-markup t)
+  (markdown-fontify-code-blocks-natively t)
+  (markdown-header-scaling t)
+  ;; Hooked on `markdown-mode' specifically (never `text-mode') so this
+  ;; reaches markdown-mode/gfm-mode buffers only: gfm-mode is a
+  ;; `define-derived-mode' child of markdown-mode, so it runs
+  ;; markdown-mode-hook too, but claude-repl-buffer-mode derives from
+  ;; `text-mode' (it only borrows markdown's font-lock keywords for
+  ;; highlighting, not the mode itself), so the Claude transcript
+  ;; buffer is structurally unreachable by this hook.
+  :hook ((markdown-mode . variable-pitch-mode)
+         (markdown-mode . olivetti-mode)
+         (markdown-mode . (lambda () (setq-local line-spacing 0.15)))))
+
+(use-package olivetti
+  :straight t
+  :custom (olivetti-body-width 84))
 
 ;; ============================================================================
 ;; Claude REPL Integration

@@ -33,7 +33,12 @@
   "Current font size in use.")
 
 (defun set-iosevka-font (size)
-  "Set Iosevka font at SIZE points."
+  "Set Iosevka font at SIZE points.
+`default' and `fixed-pitch' use monospace Iosevka.  `variable-pitch'
+uses Iosevka Etoile (Iosevka's proportional slab sibling) so that
+`variable-pitch-mode' is not a no-op; if Etoile is not installed on
+this machine, `variable-pitch' is left alone rather than failing the
+whole function."
   (when (find-font (font-spec :name "Iosevka"))
     (set-face-attribute 'default nil
                         :font "Iosevka"
@@ -41,9 +46,10 @@
     (set-face-attribute 'fixed-pitch nil
                         :font "Iosevka"
                         :height (* size 10))
-    (set-face-attribute 'variable-pitch nil
-                        :font "Iosevka"
-                        :height (* size 10))
+    (when (find-font (font-spec :name "Iosevka Etoile"))
+      (set-face-attribute 'variable-pitch nil
+                          :font "Iosevka Etoile"
+                          :height (* size 10)))
     (setq font-size-current size)))
 
 (defun toggle-font-size ()
@@ -68,7 +74,26 @@
   :config
   ;; Catppuccin flavor: latte, frappe, macchiato, or mocha
   (setq catppuccin-flavor 'mocha)
-  (load-theme 'catppuccin :no-confirm))
+  (load-theme 'catppuccin :no-confirm)
+  ;; catppuccin redefines several markdown-mode faces with only
+  ;; :foreground, overriding markdown-mode's own upstream default of
+  ;; `:inherit fixed-pitch' on its code/table faces.  Under
+  ;; `variable-pitch-mode' that means code blocks, inline code, and
+  ;; tables would inherit proportional metrics instead of staying
+  ;; monospaced.  Patch them back in on the `user' pseudo-theme
+  ;; (rather than editing the vendored straight package): `user'
+  ;; always wins over a `load-theme'd theme regardless of load order,
+  ;; and per-attribute face merging means catppuccin's :foreground
+  ;; still applies alongside the added :inherit.  This override is
+  ;; global and persists across theme toggles, so if catppuccin is
+  ;; ever swapped out, re-check whether the new theme needs this too.
+  (with-eval-after-load 'markdown-mode
+    (custom-theme-set-faces
+     'user
+     '(markdown-code-face ((t (:inherit fixed-pitch))))
+     '(markdown-inline-code-face ((t (:inherit fixed-pitch))))
+     '(markdown-pre-face ((t (:inherit fixed-pitch))))
+     '(markdown-table-face ((t (:inherit fixed-pitch)))))))
 
 ;; ============================================================================
 ;; Nano Modeline

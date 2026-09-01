@@ -75,6 +75,7 @@
  ("nerd-icons.el" . "17faac7977242b470732efd417d3bcc8eb5a830e")
  ("nodejs-repl.el" . "c232b4964bd1c9f202fd515685b42c69af415f19")
  ("nongnu-elpa" . "d3cba693ba67ab9d41bfa1df06ce8738d3c1292c")
+ ("olivetti" . "d2ccae56b442d9c5b06dd2481057abbd7eb82551")
  ("orderless" . "51f677f464424ce3c46e3deacb7709784795a03b")
  ("paredit" . "af075775af91f2dbc63b915d762b4aec092946c4")
  ("parseclj" . "ca828c202c026e45bd60503984cf510d904cae50")
