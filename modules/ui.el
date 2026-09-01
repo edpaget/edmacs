@@ -87,6 +87,21 @@ whole function."
   ;; still applies alongside the added :inherit.  This override is
   ;; global and persists across theme toggles, so if catppuccin is
   ;; ever swapped out, re-check whether the new theme needs this too.
+  ;;
+  ;; Deliberately not a theme swap: modus-themes and ef-themes cover
+  ;; this exhaustively (a dedicated fixed-pitch face applied to 50+
+  ;; faces, including the whole markdown set), but adopting either
+  ;; means giving up catppuccin's palette, and there is no solarized
+  ;; equivalent in either family to fall back to (bbatsov/solarized-
+  ;; emacs is itself only partially correct here).  Patching the four
+  ;; faces catppuccin actually breaks keeps the current theme and
+  ;; meets this phase's "Done when" bar -- prose proportional, code/
+  ;; tables/indentation monospaced -- at far smaller a cost than a
+  ;; full theme migration.  See task/theme-fixed-pitch-coverage-audit
+  ;; for the deferred follow-up: auditing catppuccin against the
+  ;; modus-themes/ef-themes fixed-pitch face list beyond markdown
+  ;; (e.g. org-block/org-code/org-table, once org-config is
+  ;; re-enabled) instead of switching themes outright.
   (with-eval-after-load 'markdown-mode
     (custom-theme-set-faces
      'user
