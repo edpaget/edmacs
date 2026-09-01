@@ -29,9 +29,11 @@
 (push '(tool-bar-lines . 0) default-frame-alist)
 (push '(vertical-scroll-bars) default-frame-alist)
 
-;; Prevent unwanted runtime compilation
+;; Natively compile packages in the background as they are loaded, but keep the
+;; async compiler's warnings out of *Warnings* -- they are almost always
+;; upstream deprecations in third-party sources, not actionable here.
 (setq native-comp-async-report-warnings-errors nil)
-(setq native-comp-deferred-compilation nil)
+(setq native-comp-jit-compilation t)
 
 ;; Improve startup time by preventing premature loads
 (setq frame-inhibit-implied-resize t)

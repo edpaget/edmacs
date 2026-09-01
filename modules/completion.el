@@ -31,7 +31,6 @@
 (use-package vertico-directory
   :straight nil
   :after vertico
-  :load-path "straight/repos/vertico/extensions/"
   :bind (:map vertico-map
               ("RET" . vertico-directory-enter)
               ("DEL" . vertico-directory-delete-char)
@@ -196,26 +195,14 @@
   (add-hook 'minibuffer-setup-hook #'corfu-enable-in-minibuffer))
 
 ;; Corfu extensions
-;; NOTE (Emacs 31 upgrade triage): byte-compiling this file logs
-;;   "corfu-popupinfo.el: Warning: 'when-let' is an obsolete macro (as of
-;;   31.1); use 'when-let*' or 'and-let*' instead."
-;; on every fresh build. It's a harmless upstream deprecation warning (not a
-;; build failure, doesn't affect straight-check-all) in corfu's own source;
-;; there's no local pin to hold back since this is the current corfu HEAD.
-;; Nothing to do here but wait for upstream to update; revisit if a future
-;; corfu release still emits it and it starts feeling worth patching locally.
-;;
-;; For the record (re-verified after the initial upgrade pass overstated
-;; this): a fresh -nw or GUI boot logs on the order of twenty informational
-;; *Messages* lines (per-module "Loading module: ..."/"Loading language
-;; config: ..." lines, recentf/custom.el loads, a Flycheck "no syntax
-;; checker" note, the startup-time line) in addition to this one warning.
-;; "Boots clean" for this phase's Done condition means zero errors/
-;; backtraces and an empty *Warnings* buffer, not zero *Messages* output.
+;; straight flattens corfu's extensions/ into straight/build/corfu/ and
+;; byte-compiles them, and that directory is already on `load-path'.  Do NOT
+;; add a :load-path pointing at straight/repos/corfu/extensions/ -- it shadows
+;; the built .elc with raw source, which gets recompiled on every boot and
+;; spams corfu's upstream `when-let'/`if-let' obsolescence warnings.
 (use-package corfu-popupinfo
   :straight nil
   :after corfu
-  :load-path "straight/repos/corfu/extensions/"
   :bind (:map corfu-popupinfo-map
               ;; Vim-style scrolling in documentation popup
               ("C-d" . corfu-popupinfo-scroll-up)

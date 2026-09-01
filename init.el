@@ -10,8 +10,6 @@
 ;; Bootstrap straight.el
 ;; ============================================================================
 
-(setq warning-suppress-log-types '((files missing-lexbind-cookie)))
-
 (defvar bootstrap-version)
 (let ((bootstrap-file
        (expand-file-name "straight/repos/straight.el/bootstrap.el" user-emacs-directory))
@@ -40,8 +38,12 @@
             (setq gc-cons-threshold (* 16 1024 1024)  ; 16MB
                   gc-cons-percentage 0.1)))
 
-;; Run GC when Emacs loses focus
-(add-hook 'focus-out-hook #'garbage-collect)
+;; Run GC when every frame has lost focus.  `focus-out-hook' was obsoleted in
+;; 27.1 in favour of `after-focus-change-function' + `frame-focus-state'.
+(add-function :after after-focus-change-function
+              (lambda ()
+                (unless (seq-some #'frame-focus-state (frame-list))
+                  (garbage-collect))))
 
 ;; ============================================================================
 ;; Module Loading System
