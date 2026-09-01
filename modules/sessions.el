@@ -124,16 +124,27 @@ When ROOT is remote, git itself only ever prints a bare on-host path
 \"/home/user/repo/.git\" still needs ROOT's own TRAMP method/host
 prefix grafted back on by hand -- `expand-file-name' leaves an
 already-absolute NAME untouched and would otherwise silently drop the
-remote host, resolving to a same-named but purely local path."
+remote host, resolving to a same-named but purely local path.
+
+`process-file' can *signal* rather than merely exit non-zero -- e.g.
+`file-missing' when git itself isn't found, or when ROOT no longer
+exists on disk (a pruned worktree) or a TRAMP connection to it has
+dropped. The `condition-case' below folds that into the same nil
+result as an ordinary non-zero exit, so the caller's memoization-of-nil
+in `edmacs-sessions--git-common-dir' covers this case too instead of
+re-shelling-out (and re-signaling) on every subsequent tab-bar
+redisplay."
   (let ((default-directory root))
-    (with-temp-buffer
-      (when (zerop (process-file "git" nil t nil "rev-parse" "--git-common-dir"))
-        (let ((raw (string-trim (buffer-string)))
-              (remote (file-remote-p root)))
-          (cond
-           ((not (file-name-absolute-p raw)) (expand-file-name raw root))
-           ((and remote (not (file-remote-p raw))) (concat remote raw))
-           (t raw)))))))
+    (condition-case nil
+        (with-temp-buffer
+          (when (zerop (process-file "git" nil t nil "rev-parse" "--git-common-dir"))
+            (let ((raw (string-trim (buffer-string)))
+                  (remote (file-remote-p root)))
+              (cond
+               ((not (file-name-absolute-p raw)) (expand-file-name raw root))
+               ((and remote (not (file-remote-p raw))) (concat remote raw))
+               (t raw)))))
+      (file-error nil))))
 
 (defun edmacs-sessions--git-common-dir (root)
   "Return the absolute git common directory for the worktree at ROOT, or nil.
