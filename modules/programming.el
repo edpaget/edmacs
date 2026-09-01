@@ -229,7 +229,9 @@
 ;; ============================================================================
 ;; Combobulate - Structural Editing with Tree-Sitter
 ;; ============================================================================
-;; Note: transient (required by combobulate) is loaded early in core.el
+;; Note: transient is NOT force-loaded eagerly (see modules/core.el) --
+;; combobulate's own top-level code requires it directly when this package
+;; loads, so load order does not depend on core.el having required it first.
 
 (use-package combobulate
   :straight (combobulate :type git
@@ -308,11 +310,15 @@
 ;; ============================================================================
 
 (use-package quickrun
-  :config
-  (general-define-key
-   :states 'normal
-   :prefix "SPC c"
-   "r" '(quickrun :which-key "run code")))
+  :commands quickrun)
+
+;; Keybinding defined outside use-package so it exists immediately, even
+;; though quickrun itself loads lazily on first invocation (same convention
+;; as the magit keybindings in modules/git.el).
+(general-define-key
+ :states 'normal
+ :prefix "SPC c"
+ "r" '(quickrun :which-key "run code"))
 
 ;; ============================================================================
 ;; Comments
