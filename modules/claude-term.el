@@ -225,22 +225,47 @@ This function never recomputes it, including on restart."
     ;; around the call.
     (inheritenv (ghostel-exec buffer "claude" args))))
 
+(defun claude-term--deferred-reexec (buf root instance args)
+  "Re-exec `claude' in BUF once ghostel's own sentinel has finished.
+Scheduled via `run-at-time' from `claude-term--on-exit' rather than
+called directly from there -- see that function's docstring for why.
+Re-checks `buffer-live-p' since BUF could have been killed by the user
+in the interval between scheduling and firing."
+  (when (buffer-live-p buf)
+    (claude-term--exec buf root instance args)))
+
 (defun claude-term--on-exit (buf _event)
   "Handle the `claude' process in BUF exiting.
-Added to the buffer-local `ghostel-exit-functions' (2-arg call
-signature: buffer and exit-event string).  On a plain exit or an
-explicit kill, tears the buffer down -- `ghostel-kill-buffer-on-exit'
-is nil precisely so this is the single point of truth for that, and a
-killed buffer is definitionally absent from `claude-term--buffer-list',
-satisfying \"no phantom\" without a separate registry this phase.  On a
-restart in flight (`claude-term--restarting' non-nil), re-execs instead
-with the args frozen at the original spawn."
+Added to the buffer-local `ghostel-exit-functions', which ghostel's own
+`ghostel--sentinel' invokes with unconditional cleanup of its own still
+to run afterward in the SAME synchronous sentinel call: once this hook
+returns, `ghostel--sentinel' re-checks `buffer-live-p' and, when
+`ghostel-kill-buffer-on-exit' is nil (as this module always sets it),
+unconditionally stamps a \"[Process exited]\" banner into the buffer via
+a raw `insert' -- regardless of whether this hook already attached a
+brand-new live process to it.  Re-execing synchronously here would
+therefore corrupt the just-restarted terminal with that stray banner.
+
+On a plain exit or an explicit kill (`claude-term--restarting' nil),
+tears the buffer down -- `ghostel-kill-buffer-on-exit' is nil precisely
+so this is the single point of truth for that, and a killed buffer is
+definitionally absent from `claude-term--buffer-list', satisfying \"no
+phantom\" without a separate registry this phase.  On a restart in
+flight, defers the re-exec via `run-at-time' (0-second delay) so it
+runs on a later event-loop iteration, after `ghostel--sentinel's tail
+code for THIS exit has already finished touching the (still-dead-at-
+that-point) buffer; the deferred `claude-term--exec' call then erases
+the buffer via `ghostel-exec' -> `ghostel--init-buffer' as part of
+spawning the new process, discarding the stray banner along with
+everything else from the dead session."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (if claude-term--restarting
-          (progn
+          (let ((root claude-term--root)
+                (instance claude-term--instance)
+                (args claude-term--args))
             (setq claude-term--restarting nil)
-            (claude-term--exec buf claude-term--root claude-term--instance claude-term--args))
+            (run-at-time 0 nil #'claude-term--deferred-reexec buf root instance args))
         (kill-buffer buf)))))
 
 ;; ============================================================================
