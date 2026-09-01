@@ -130,8 +130,22 @@ whole function."
 
 ;; The first time you load your configuration on a new machine, you need to
 ;; run M-x nerd-icons-install-fonts to install the icon fonts.
-(use-package nerd-icons
-  :defer t)
+;;
+;; Deliberately NOT deferred.  `nerd-icons-completion' below gates on
+;; `:after (nerd-icons marginalia)', and marginalia-mode is enabled during
+;; startup (modules/completion.el), so nerd-icons is the only half of that
+;; gate that can go unsatisfied.  With a bare `:defer t' and no autoload
+;; trigger of its own, nothing ever loads it in a session that does not open
+;; dired -- `nerd-icons-completion-mode' then silently never activates and
+;; completion annotations lose their icons with no error or warning.
+;; Verified: with `:defer t', a startup that opens no dired buffer reports
+;; (featurep 'nerd-icons) => nil and nerd-icons-completion-mode => nil while
+;; marginalia-mode => t.
+;;
+;; Its measured cost is ~0.018s, so deferring it buys nothing worth a
+;; silently missing feature.  If this is revisited, the deferral must come
+;; with a real load trigger, not a bare `:defer t'.
+(use-package nerd-icons)
 
 ;; Nerd icons for dired
 (use-package nerd-icons-dired

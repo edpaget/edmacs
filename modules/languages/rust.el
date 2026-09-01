@@ -31,22 +31,6 @@
 ;; ============================================================================
 
 (use-package rustic
-  ;; Empirically, this config's `.rs' -> major-mode resolution is decided by
-  ;; auto-mode-alist ordering, and rustic's own top-level code is what wins
-  ;; that race (it prepends its own `.rs' entry and deletes the
-  ;; rust-mode/rust-ts-mode ones -- see rustic.el's "remove rust-mode and
-  ;; rust-ts-mode from auto-mode-alist" section). A bare `:defer t' here
-  ;; would mean nothing ever triggers rustic to load, so that mutation never
-  ;; runs and `.rs' files silently fall through to whatever treesit-auto left
-  ;; behind instead (confirmed via a batch probe: with rustic deferred and no
-  ;; autoload trigger, `.rs' resolves to treesit-auto's `rust-ts-mode-maybe'
-  ;; wrapper, which on this machine has no rust tree-sitter grammar available
-  ;; and falls back to plain `rust-mode' -- losing rustic-mode, its cargo
-  ;; keybindings, and its LSP wiring entirely). `:mode' keeps the autoload
-  ;; cookie + auto-mode-alist registration cheap and at startup (as today)
-  ;; while deferring rustic.el's actual `:config' body to the first `.rs'
-  ;; file open, which is the real win.
-  :mode ("\\.rs\\'" . rustic-mode)
   :config
   ;; Use rust-ts-mode for syntax highlighting instead of rustic's built-in mode
   (setq rustic-lsp-client 'lsp-mode)
