@@ -2,6 +2,9 @@
 
 ;;; Commentary:
 ;; Pure-function coverage only -- no live ghostel process is spawned here.
+;; See claude-term-live-test.el for coverage of the kill/restart/exit
+;; lifecycle, which drives claude-term--exec against real (non-ghostel)
+;; subprocesses instead.
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/claude-term.el -l modules/claude-term-test.el \
 ;;         -f ert-run-tests-batch-and-exit
