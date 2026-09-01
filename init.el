@@ -103,6 +103,9 @@ LANGUAGE should be the name without the .el extension."
 ;; Git integration
 (load-module "git")
 
+;; Tabs, layout persistence, and worktree switching (tmux replacement)
+(load-module "sessions")
+
 ;; ============================================================================
 ;; Language-specific configurations
 ;; ============================================================================
