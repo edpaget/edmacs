@@ -46,29 +46,65 @@
   (exec-path-from-shell-initialize))
 
 ;; ============================================================================
-;; Direnv Integration
+;; Environment Integration (mise)
 ;; ============================================================================
 
-;; Automatically load environment variables from .envrc files using direnv
-;; This allows per-project environment configuration
-(use-package envrc
+;; Per-project environment and tool versions come from the mise configuration
+;; chain: the closest `mise.toml' / `.mise.toml' / `.tool-versions', layered
+;; under `~/.config/mise/config.toml'.  mise.el discovers that whole chain via
+;; `mise config ls --json' and sets the resulting variables buffer-locally, the
+;; same per-buffer model envrc used for direnv, so a process launched from a
+;; project buffer sees that project's toolchain.
+;;
+;; Activated on `after-init' rather than at load time: mise.el shells out to the
+;; mise binary (`config ls', `trust --show', `env') and doing that during init
+;; costs real startup time for no benefit.  This is the same eager-activation
+;; trap envrc had here.
+;;
+;; Note: on first activation mise.el sets `experimental' to true in the *global*
+;; mise config if it is not already, because it relies on experimental CLI
+;; surface.  That is a write to ~/.config/mise/config.toml, not to this repo.
+(use-package mise
+  :hook (after-init . global-mise-mode)
   :config
-  ;; Enable envrc-mode globally to auto-load .envrc in all buffers
-  (envrc-global-mode)
+  ;; Prompt before trusting a newly-seen config rather than blanket-trusting.
+  ;; Answering yes runs `mise trust --all', which trusts the whole parent chain
+  ;; and subdirectories, not just the one file.
+  (setq mise-trust 'ask))
 
-  ;; Optional: Show direnv status in mode line
-  (setq envrc-mode-line-lighter " envrc"))
+(defun edmacs-mise-trust ()
+  "Trust the mise config chain for the current buffer's directory."
+  (interactive)
+  (let ((default-directory (or (and (buffer-file-name)
+                                    (file-name-directory (buffer-file-name)))
+                               default-directory)))
+    (if (zerop (call-process "mise" nil nil nil "trust"))
+        (progn (message "mise: trusted %s" default-directory)
+               (when (fboundp 'mise-update-buffer) (mise-update-buffer)))
+      (message "mise: trust failed in %s" default-directory))))
 
-;; Keybindings for manual control (using SPC-e prefix for environment)
+(defun edmacs-mise-untrust ()
+  "Stop trusting the mise config chain for the current buffer's directory."
+  (interactive)
+  (let ((default-directory (or (and (buffer-file-name)
+                                    (file-name-directory (buffer-file-name)))
+                               default-directory)))
+    (if (zerop (call-process "mise" nil nil nil "trust" "--untrust"))
+        (progn (message "mise: untrusted %s" default-directory)
+               (when (fboundp 'mise-update-buffer) (mise-update-buffer)))
+      (message "mise: untrust failed in %s" default-directory))))
+
+;; Keybindings for manual control (using SPC-e prefix for environment).
+;; Key strings are unchanged from the envrc bindings these replace.
 (with-eval-after-load 'general
   (general-define-key
    :states '(normal visual)
    :prefix "SPC e"
    "e" '(:ignore t :which-key "environment")
-   "ea" '(envrc-allow :which-key "direnv allow")
-   "ed" '(envrc-deny :which-key "direnv deny")
-   "er" '(envrc-reload :which-key "direnv reload")
-   "ep" '(envrc-reload-all :which-key "direnv reload all")))
+   "ea" '(edmacs-mise-trust :which-key "mise trust")
+   "ed" '(edmacs-mise-untrust :which-key "mise untrust")
+   "er" '(mise-update-buffer :which-key "mise reload buffer")
+   "ep" '(mise-update-dir :which-key "mise reload dir")))
 
 ;; ============================================================================
 ;; Basic Settings
