@@ -60,6 +60,36 @@
 #   harness is somehow measuring something real -- treat that as a bug in
 #   this script, not a finding about Emacs.
 #
+# A CAVEAT THIS KILL STRATEGY IMPLIES: A FRESH CHECKOUT/WORKTREE CAN LOOK
+# PATHOLOGICALLY SLOW, AND THIS SCRIPT CANNOT SELF-HEAL THAT
+#   straight defers saving its own build cache (`straight/build-cache.el`,
+#   git-ignored, per-checkout local state) to `post-command-hook` in an
+#   interactive session -- it is NOT written synchronously as each package
+#   finishes building (confirmed by reading straight.el's
+#   `straight--transaction-finalize-at-top-level`: it hooks
+#   `kill-emacs-hook` only when `noninteractive`, i.e. under `--batch`;
+#   an `-nw` session like every one this script runs instead hooks
+#   `post-command-hook`, which fires only once the command loop has
+#   processed its first command). This script's `emacs-startup-hook`-based
+#   kill fires BEFORE that command loop ever starts, so straight's build
+#   cache is never persisted by ANY run this script makes -- confirmed
+#   empirically: in a freshly created worktree whose build-cache.el had
+#   only ever seen one bootstrap entry, repeated runs of this script kept
+#   rebuilding the same ~25 packages every single time (mean >20s, not
+#   ~1.5s), because the cache never had a chance to record that they were
+#   already built. Pointed at this repo's main checkout instead -- whose
+#   build-cache.el was already fully populated from ordinary interactive
+#   use, i.e. a session that was allowed to run a real command and let
+#   `post-command-hook` fire -- the exact same script immediately measured
+#   the documented ~1.47s baseline. The fix is not in this script: open
+#   `emacs -nw --init-directory=<dir>` by hand ONCE (not through this
+#   script) and let it sit past its first real keystroke so straight can
+#   save its cache, before trusting this script's numbers for that
+#   directory. A "Real config" mean stuck an order of magnitude above the
+#   documented baseline, with "Building ..." lines visible if you drop
+#   the `>/dev/null 2>&1` redirect for a manual look, is this condition --
+#   not a startup regression.
+#
 # WHY A PLAIN --eval IS TOO LATE, AND WHAT THIS SCRIPT DOES INSTEAD
 #   The naive design threads --eval straight into the timed Emacs command
 #   line. That is provably too late for the two things this script needs
@@ -139,10 +169,20 @@
 #   startup cost):
 #     Real config   (5 runs): min 1.44s / mean 1.46s / max 1.48s
 #     Control (-Q)  (5 runs): ~0.04s
-#     Costliest single use-package form (--stats): rustic, ~0.63-0.78s
-#       (observed 0.63s and 0.78s across separate measurement sessions
-#       the same day; treat this one entry as noisier than the rest of
-#       the table and re-run --stats before trusting a small drift here).
+#     Costliest single use-package form (--stats): rustic, ~0.8-0.9s on an
+#       otherwise-idle machine (observed 0.80-0.89s across 8 consecutive
+#       --stats runs with no other CPU-bound process running). This entry
+#       is dramatically more load-sensitive than every other row in this
+#       table -- re-running --stats back-to-back with unrelated background
+#       CPU load present (other builds, other Emacs/native-comp jobs, etc.)
+#       reproduced readings as low as 0.24s and as high as 1.7s for the
+#       *same* rustic use-package form on the *same* commit, because its
+#       :config code shells out to external tools (rustc/cargo/rust-analyzer
+#       discovery) whose fork+exec latency swings hard with contention --
+#       unlike the rest of the table, which is pure Elisp load time. Do
+#       not trust a single --stats invocation for this row; take several
+#       back-to-back with the machine otherwise quiet, or treat any one
+#       reading only as "rustic is the top entry", not as a precise number.
 #     --eval "(setq straight-check-for-modifications '(check-on-save))"
 #       does NOT save time -- it costs roughly SIX SECONDS MORE (measured
 #       mean ~7.8s, up from the ~1.46s baseline above). This directly
@@ -235,6 +275,21 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Validate --runs/-n right after parsing, before it is ever used as an
+# arithmetic loop bound. Two failure modes were observed with no
+# validation: a non-numeric value (e.g. `--runs abc`) blew up deep inside
+# a `for ((...))` arithmetic context with a raw `bash: abc: unbound
+# variable` under `set -u`, naming neither the flag nor a valid value;
+# and `--runs 0` (or a negative count) produced a loop that never ran,
+# leaving the times array empty and misreporting "every real-config run
+# failed -- see warnings above" for a case where no run was ever
+# attempted and no warnings exist. Rejecting anything but a positive
+# integer here converts both into one clear, actionable message.
+if ! [[ "$RUNS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: --runs must be a positive integer, got '$RUNS'" >&2
+  exit 1
+fi
 
 # Wall-clock timestamp with sub-second precision, portable across the
 # GNU-vs-BSD `date` split (BSD date has no %N) and across bash versions
@@ -459,7 +514,16 @@ EOF
   done
   if [[ "$succeeded" -ne 1 ]]; then
     echo "error: giving up after $max_attempts failed attempts" >&2
-    exit 1
+    # `return`, not `exit`: the RETURN trap set above is this function's
+    # only cleanup for tmp_initdir/tmp_report (the top-level cleanup_tmp
+    # EXIT trap only ever touches REAL_CONFIG_SHIM_DIR, which this
+    # function never sets). A bash RETURN trap fires when the function
+    # actually returns -- it does NOT fire if the function instead calls
+    # `exit` and takes down the whole shell from inside. `return 1` here
+    # lets the trap run, then propagates the failure: under `set -e`, the
+    # top-level `run_stats_mode` call (below) still terminates the script
+    # with a non-zero status once this returns non-zero.
+    return 1
   fi
 
   echo
