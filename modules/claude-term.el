@@ -283,6 +283,22 @@ that wipe on a first spawn), whereas the buffer-local
 ;; of file/require load order.
 (add-hook 'ghostel-mode-hook #'claude-term--configure-evil-escape -90)
 
+;; MANUAL PREREQUISITE, not enforceable from this file: the Claude CLI's
+;; own vi-mode must be off, or its ESC handling fights evil-ghostel's
+;; (the "triple-ESC" symptom in manzaltu/claude-code-ide.el#52). Run
+;; `/config' inside a `claude-term' session and set "Editor mode" to
+;; "normal". This has no on-disk artifact to check or diff: as of
+;; 2026-09-01 it appears in neither `~/.claude/settings.json' nor
+;; `~/.claude.json' nor the dotfiles-repo `claude/settings.json' (all
+;; grepped for an `editorMode'-style key and found none) -- `/config'
+;; is the only interface to it, so there is nothing here for a test or
+;; a future reviewer's `git diff' to confirm against. If ESC ever needs
+;; more than one press from insert state to reach a stable evil normal
+;; state in a `claude-term' buffer, that is the symptom of this setting
+;; having reverted (a Claude CLI update, a fresh machine, etc.) --
+;; re-run `/config' and re-set it. See rdm task
+;; claude-cli-editor-mode-durability for tracking a more durable fix.
+
 (defun claude-term-send-escape ()
   "Send a raw ESC to the terminal, interrupting a running Claude response.
 With `evil-ghostel-escape' routed to evil (see

@@ -27,6 +27,31 @@
 ;; rendering, `ghostel-mode', or the actual `claude' CLI -- those need
 ;; an interactive Emacs and are out of scope for a batch harness.
 ;;
+;; Two further tests close gaps the same way, when this checkout's own
+;; straight repos happen to be present on disk (true on any machine
+;; that has actually run edmacs/eldev at least once locally, though not
+;; in a bare checkout or a fresh worktree -- both `ert-skip', not
+;; silently pass, when the source is absent):
+;;
+;; - `claude-term-live-test-real-evil-ghostel-escape-dispatches-to-evil'
+;;   reads `evil-ghostel--escape's actual, unmodified `defun' form
+;;   straight out of the vendored source with `read' and `eval's just
+;;   that one form -- not the whole file, whose other top-level forms
+;;   reference `ghostel-mode-map' and other infrastructure this harness
+;;   does not bootstrap.  That exercises the REAL package's dispatch
+;;   logic (not `claude-term.el's byte-compiler `defvar' stand-in for
+;;   `evil-ghostel-escape') and proves the buffer-local `'evil value
+;;   `claude-term--configure-evil-escape' sets actually routes ESC to
+;;   `evil-force-normal-state', never to the terminal.
+;; - `claude-term-live-test-full-transcript-remains-searchable' spawns a
+;;   real subprocess through `claude-term--exec' that prints far more
+;;   lines than a typical window height, and proves the whole output
+;;   stays present and reachable by `search-backward' -- the primitive
+;;   `isearch' is built on -- rather than being cleared or truncated.
+;;   This is the load-bearing property the phase's inline-renderer
+;;   decision (`"tui": "default"', the companion dotfiles-repo commit)
+;;   depends on for isearch to traverse the whole transcript.
+;;
 ;; Run:
 ;;   emacs -Q --batch -l ert -l modules/claude-term.el \
 ;;         -l modules/claude-term-live-test.el \
@@ -313,6 +338,110 @@ clobbering the first project's live buffer."
            (should (equal (length claude-term-live-test--spawn-log) 2)))
        (ignore-errors (delete-directory parent1 t))
        (ignore-errors (delete-directory parent2 t))))))
+
+;; ============================================================================
+;; Real evil-ghostel escape dispatch (source-extracted, when available)
+;; ============================================================================
+;; See this file's Commentary for why this reads the real `defun' form
+;; out of the vendored source instead of loading the whole file or
+;; reimplementing the dispatch logic.
+
+(defconst claude-term-live-test--evil-ghostel-source
+  (expand-file-name
+   "../straight/repos/ghostel/extensions/evil-ghostel/evil-ghostel.el"
+   (file-name-directory (or load-file-name buffer-file-name)))
+  "Path to the real evil-ghostel.el, when this checkout has fetched it.
+Computed relative to this file (modules/claude-term-live-test.el) so it
+resolves correctly regardless of which worktree/checkout runs the
+tests; straight installs package repos inside the Emacs config
+directory itself (see modules/claude-term.el's own commentary), so this
+is the same path production `use-package evil-ghostel' resolves to.")
+
+(defun claude-term-live-test--load-real-escape-defun ()
+  "Eval the real, unmodified `evil-ghostel--escape' `defun' form.
+Reads it out of `claude-term-live-test--evil-ghostel-source' with
+`read' rather than loading the whole file (see Commentary). Returns
+non-nil on success; nil (without erroring) when the source file is not
+present on disk."
+  (when (file-exists-p claude-term-live-test--evil-ghostel-source)
+    (with-temp-buffer
+      (insert-file-contents claude-term-live-test--evil-ghostel-source)
+      (goto-char (point-min))
+      (when (re-search-forward "^(defun evil-ghostel--escape " nil t)
+        (goto-char (match-beginning 0))
+        (eval (read (current-buffer)) t)
+        t))))
+
+(ert-deftest claude-term-live-test-real-evil-ghostel-escape-dispatches-to-evil ()
+  "With `evil-ghostel--escape-mode' `'evil' -- exactly what the real
+`evil-ghostel-mode' copies from `evil-ghostel-escape' on enable, which
+`claude-term--configure-evil-escape' sets buffer-locally to `'evil' --
+the REAL `evil-ghostel--escape' (loaded from the vendored source, not
+reimplemented) must call the evil insert-state escape path and must
+never reach the terminal path.  `evil-ghostel--escape' short-circuits
+`ghostel-alt-screen-p' entirely when the mode is not `'auto', so no
+alt-screen stub is needed for this branch."
+  (if (not (claude-term-live-test--load-real-escape-defun))
+      (ert-skip "No local straight checkout of ghostel/evil-ghostel found (see claude-term-live-test--evil-ghostel-source); run again after eldev/init.el has bootstrapped it once locally to exercise this.")
+    (defvar evil-ghostel--escape-mode)
+    (defvar evil-insert-state-map)
+    (let ((evil-ghostel--escape-mode 'evil)
+          (evil-insert-state-map (make-sparse-keymap))
+          (normal-state-calls 0))
+      (cl-letf (((symbol-function 'evil-force-normal-state)
+                 (lambda () (interactive) (cl-incf normal-state-calls)))
+                ((symbol-function 'ghostel--on-user-input)
+                 (lambda () (error "evil-ghostel--escape reached the terminal path with mode 'evil")))
+                ((symbol-function 'ghostel--send-encoded)
+                 (lambda (&rest _) (error "evil-ghostel--escape reached the terminal path with mode 'evil"))))
+        (evil-ghostel--escape)
+        (should (= normal-state-calls 1))))))
+
+;; ============================================================================
+;; Full transcript remains searchable (AC4 support)
+;; ============================================================================
+
+(defun claude-term-live-test--fake-exec-transcript (buffer program args)
+  "Stub for `ghostel-exec' spawning a real process that prints 200 lines.
+Stands in for ghostel's own real terminal-output insertion (ghostel
+itself is not bootstrapped here -- see this file's Commentary); relies
+on Emacs's default process filter, which inserts a process's output
+into its buffer when no explicit filter is set. Used only by
+`claude-term-live-test-full-transcript-remains-searchable'."
+  (push (list buffer program args) claude-term-live-test--spawn-log)
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t)) (erase-buffer))
+    (let ((proc (start-process
+                 "claude-term-live-test-transcript" buffer
+                 "sh" "-c"
+                 "i=1; while [ $i -le 200 ]; do echo \"transcript-line-$i\"; i=$((i+1)); done; sleep 3600")))
+      (set-process-sentinel proc #'claude-term-live-test--fake-ghostel-sentinel)
+      (set-process-query-on-exit-flag proc nil)
+      (setq-local ghostel--process proc)
+      proc)))
+
+(ert-deftest claude-term-live-test-full-transcript-remains-searchable ()
+  "The whole transcript stays in the buffer as ordinary text once a
+session's output exceeds a screenful, and `search-backward' -- the
+primitive `isearch' is built on -- finds text that has scrolled past
+point.  This is the load-bearing property behind AC4 (isearch traverses
+the whole transcript): the phase's inline-renderer decision means
+claude-term buffers are never cleared to a single visible screen the
+way an alt-screen TUI buffer would be."
+  (cl-letf (((symbol-function 'claude-term--ensure-ghostel) #'ignore)
+            ((symbol-function 'ghostel-exec) #'claude-term-live-test--fake-exec-transcript))
+    (let ((claude-term-live-test--spawn-log nil))
+      (claude-term-live-test--with-buffer buf "*claude-term-live-test:transcript*"
+        (claude-term--exec buf (temporary-file-directory) nil nil)
+        (should (claude-term-live-test--wait-until
+                 (lambda ()
+                   (with-current-buffer buf
+                     (string-match-p "transcript-line-200" (buffer-string))))
+                 5))
+        (with-current-buffer buf
+          (should (string-match-p "transcript-line-1\n" (buffer-string)))
+          (goto-char (point-max))
+          (should (search-backward "transcript-line-1\n" nil t)))))))
 
 (provide 'claude-term-live-test)
 ;;; claude-term-live-test.el ends here
