@@ -336,13 +336,18 @@ Edit `modules/ui.el` to change the font. The configuration tries several fonts i
 
 ### Theme
 
-To change the theme, edit `modules/ui.el`:
+edmacs uses modus-themes (bundled with Emacs since 28, so no package
+install is required). To change the variant, edit `modules/ui.el`:
 
 ```elisp
-(setq catppuccin-flavor 'mocha)  ; Options: latte, frappe, macchiato, mocha
+(load-theme 'modus-vivendi :no-confirm)   ; dark (default)
+;; (load-theme 'modus-operandi :no-confirm) ; light
 ```
 
-Or use a different theme entirely by replacing the catppuccin-theme use-package block.
+modus-themes and its sibling ef-themes both apply fixed-pitch inheritance
+correctly across markdown, org, and 50+ other faces, so proportional
+prose (see `variable-pitch-mode` in `modules/ai.el`) keeps code, tables,
+and indentation monospaced without any extra per-face patching.
 
 ## Troubleshooting
 

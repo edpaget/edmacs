@@ -67,48 +67,44 @@ whole function."
 (set-iosevka-font font-size-standard)
 
 ;; ============================================================================
-;; Theme - Catppuccin
+;; Theme - Modus Themes
 ;; ============================================================================
 
-(use-package catppuccin-theme
-  :config
-  ;; Catppuccin flavor: latte, frappe, macchiato, or mocha
-  (setq catppuccin-flavor 'mocha)
-  (load-theme 'catppuccin :no-confirm)
-  ;; catppuccin redefines several markdown-mode faces with only
-  ;; :foreground, overriding markdown-mode's own upstream default of
-  ;; `:inherit fixed-pitch' on its code/table faces.  Under
-  ;; `variable-pitch-mode' that means code blocks, inline code, and
-  ;; tables would inherit proportional metrics instead of staying
-  ;; monospaced.  Patch them back in on the `user' pseudo-theme
-  ;; (rather than editing the vendored straight package): `user'
-  ;; always wins over a `load-theme'd theme regardless of load order,
-  ;; and per-attribute face merging means catppuccin's :foreground
-  ;; still applies alongside the added :inherit.  This override is
-  ;; global and persists across theme toggles, so if catppuccin is
-  ;; ever swapped out, re-check whether the new theme needs this too.
-  ;;
-  ;; Deliberately not a theme swap: modus-themes and ef-themes cover
-  ;; this exhaustively (a dedicated fixed-pitch face applied to 50+
-  ;; faces, including the whole markdown set), but adopting either
-  ;; means giving up catppuccin's palette, and there is no solarized
-  ;; equivalent in either family to fall back to (bbatsov/solarized-
-  ;; emacs is itself only partially correct here).  Patching the four
-  ;; faces catppuccin actually breaks keeps the current theme and
-  ;; meets this phase's "Done when" bar -- prose proportional, code/
-  ;; tables/indentation monospaced -- at far smaller a cost than a
-  ;; full theme migration.  See task/theme-fixed-pitch-coverage-audit
-  ;; for the deferred follow-up: auditing catppuccin against the
-  ;; modus-themes/ef-themes fixed-pitch face list beyond markdown
-  ;; (e.g. org-block/org-code/org-table, once org-config is
-  ;; re-enabled) instead of switching themes outright.
-  (with-eval-after-load 'markdown-mode
-    (custom-theme-set-faces
-     'user
-     '(markdown-code-face ((t (:inherit fixed-pitch))))
-     '(markdown-inline-code-face ((t (:inherit fixed-pitch))))
-     '(markdown-pre-face ((t (:inherit fixed-pitch))))
-     '(markdown-table-face ((t (:inherit fixed-pitch)))))))
+;; Adopted in place of catppuccin-theme so that fixed-pitch inheritance is
+;; correct by construction rather than patched face-by-face.  catppuccin
+;; redefines several markdown-mode (and org-mode) faces with only
+;; :foreground, overriding markdown-mode's own upstream default of
+;; `:inherit fixed-pitch' on its code/table faces -- under
+;; `variable-pitch-mode' that meant code blocks, inline code, and tables
+;; inherited proportional metrics instead of staying monospaced, and only
+;; markdown was patchable without an exhaustive per-theme face audit.
+;; modus-themes (bundled with Emacs since 28, so no straight package or
+;; lockfile entry needed) applies a single `modus-themes-fixed-pitch'
+;; face to 50+ faces -- the whole markdown, markdown-treesitter, and org
+;; set (org-block/org-code/org-table included, ready for whenever
+;; org-config is re-enabled) -- so nothing needs a manual `user'-theme
+;; override here.  ef-themes covers the same ground and was the other
+;; candidate named by this phase; modus-themes was picked because it
+;; ships in Emacs core, so this swap adds zero new dependencies.  There
+;; is no solarized theme in either family (bbatsov/solarized-emacs is
+;; itself only partially correct on this front), so solarized was not
+;; considered further.  task/theme-fixed-pitch-coverage-audit, filed
+;; while catppuccin was still in place to track auditing it against this
+;; exact face list, is now moot and has been closed accordingly.
+;;
+;; `modus-themes-mixed-fonts' is what actually wires
+;; `modus-themes-fixed-pitch' to `:inherit fixed-pitch' -- it defaults to
+;; nil, in which case markdown/org/table faces that inherit
+;; `modus-themes-fixed-pitch' get NO font-family override at all and
+;; would render proportionally under `variable-pitch-mode' despite the
+;; face list above looking exhaustive.  Must be set before `load-theme'
+;; runs, since it is consulted while the theme's face list is built.
+(setq modus-themes-mixed-fonts t)
+
+;; modus-vivendi is the dark variant, closest in spirit to the catppuccin
+;; mocha flavor this replaces.  Swap to `modus-operandi' (or one of the
+;; other bundled modus/ef variants) for a light theme.
+(load-theme 'modus-vivendi :no-confirm)
 
 ;; ============================================================================
 ;; Nano Modeline
