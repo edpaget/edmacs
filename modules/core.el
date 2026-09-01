@@ -6,10 +6,23 @@
 ;;; Code:
 
 ;; ============================================================================
-;; Transient - Load early as it's used by multiple packages
+;; Transient - built and its dependencies force-loaded (not required eagerly)
 ;; ============================================================================
-;; Transient is used by magit, combobulate, and other packages.
-;; Load it early with all dependencies to avoid load-order issues.
+;; Transient is used by magit and combobulate. `compat'/`cond-let' are its
+;; own dependencies and must still be built here regardless of load timing.
+;;
+;; The eager `(require 'transient)' that used to sit here (with a comment
+;; claiming it avoided an unspecified load-order issue) was removed on
+;; 2026-09-01 as part of edmacs-performance/phase-2-defer-eager-use-package-forms,
+;; after re-testing found no reproduction of any such issue: magit is
+;; :commands-deferred (modules/git.el) and `require's transient internally
+;; the first time any magit command actually loads it, confirmed via a full
+;; interactive-equivalent boot of this config followed by `(require 'magit)'
+;; and `(call-interactively 'magit-status)' with an empty `*Warnings*'
+;; buffer and no error. If a load-order bug against transient ever
+;; resurfaces, reproduce it concretely (which package, which function, what
+;; error) before re-adding an eager require here -- don't restore this line
+;; on suspicion alone.
 
 (straight-use-package 'compat)
 (straight-use-package 'cond-let)
@@ -17,7 +30,6 @@
 
 (require 'compat)
 (require 'cond-let)
-(require 'transient)
 
 ;; ============================================================================
 ;; Environment Variables from Shell

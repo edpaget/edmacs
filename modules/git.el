@@ -52,24 +52,41 @@
 ;; ============================================================================
 
 (use-package diff-hl
+  ;; No :commands/:hook/:mode of our own -- diff-hl's global modes are
+  ;; activated below via an `after-init-hook' call to the package's own
+  ;; autoloaded entry points, which is what actually triggers the load.
+  ;; :defer t just keeps use-package itself from requiring it eagerly here.
+  :defer t
   :config
-  (global-diff-hl-mode)
-  (diff-hl-flydiff-mode)
-  (diff-hl-margin-mode)
-
-  ;; Integration with Magit
+  ;; Integration with Magit -- only matters once diff-hl has actually loaded,
+  ;; which by the time this :config body runs, it has.
   (add-hook 'magit-pre-refresh-hook 'diff-hl-magit-pre-refresh)
-  (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh)
+  (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh))
 
-  ;; Keybindings for diff-hl
-  (general-define-key
-   :states 'normal
-   :prefix "SPC g"
-   "h" '(:ignore t :which-key "hunk")
-   "hn" '(diff-hl-next-hunk :which-key "next hunk")
-   "hp" '(diff-hl-previous-hunk :which-key "previous hunk")
-   "hr" '(diff-hl-revert-hunk :which-key "revert hunk")
-   "hs" '(diff-hl-stage-current-hunk :which-key "stage hunk")))
+;; Activate diff-hl's global modes at after-init instead of eagerly at
+;; use-package-expansion time. Note: `after-init-hook' fires during the
+;; measured startup window (mise's own after-init hook shows up in
+;; --stats too), so this relocates diff-hl's activation cost within startup
+;; rather than removing it -- it only removes diff-hl from use-package's own
+;; eager :config timing. Calling these (real, autoloaded) commands is what
+;; triggers diff-hl(-flydiff/-margin) to actually load.
+(add-hook 'after-init-hook
+          (lambda ()
+            (global-diff-hl-mode)
+            (diff-hl-flydiff-mode)
+            (diff-hl-margin-mode)))
+
+;; Keybindings for diff-hl -- defined outside use-package so they exist
+;; immediately, even though diff-hl itself now loads at after-init (same
+;; convention as the magit/quickrun keybindings in this file).
+(general-define-key
+ :states 'normal
+ :prefix "SPC g"
+ "h" '(:ignore t :which-key "hunk")
+ "hn" '(diff-hl-next-hunk :which-key "next hunk")
+ "hp" '(diff-hl-previous-hunk :which-key "previous hunk")
+ "hr" '(diff-hl-revert-hunk :which-key "revert hunk")
+ "hs" '(diff-hl-stage-current-hunk :which-key "stage hunk"))
 
 ;; ============================================================================
 ;; Git Timemachine - Step through git history

@@ -128,11 +128,10 @@ whole function."
 ;; Icons - Nerd Icons
 ;; ============================================================================
 
+;; The first time you load your configuration on a new machine, you need to
+;; run M-x nerd-icons-install-fonts to install the icon fonts.
 (use-package nerd-icons
-  :config
-  ;; The first time you load your configuration on a new machine, you need to
-  ;; run M-x nerd-icons-install-fonts to install the icon fonts.
-  )
+  :defer t)
 
 ;; Nerd icons for dired
 (use-package nerd-icons-dired

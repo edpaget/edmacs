@@ -308,11 +308,15 @@
 ;; ============================================================================
 
 (use-package quickrun
-  :config
-  (general-define-key
-   :states 'normal
-   :prefix "SPC c"
-   "r" '(quickrun :which-key "run code")))
+  :commands quickrun)
+
+;; Keybinding defined outside use-package so it exists immediately, even
+;; though quickrun itself loads lazily on first invocation (same convention
+;; as the magit keybindings in modules/git.el).
+(general-define-key
+ :states 'normal
+ :prefix "SPC c"
+ "r" '(quickrun :which-key "run code"))
 
 ;; ============================================================================
 ;; Comments
