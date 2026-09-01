@@ -44,7 +44,7 @@
  ("evil-visualstar" . "06c053d8f7381f91c53311b1234872ca96ced752")
  ("exec-path-from-shell" . "6146fdc16e9882df270be7e58ae8d628032d6bc4")
  ("f.el" . "931b6d0667fe03e7bf1c6c282d6d8d7006143c52")
- ("flycheck" . "2a9a860400b29df67a91b7b20902f72f68c37b39")
+ ("flycheck" . "65b93d8e9f406ce276824675101cd20d8e1f2960")
  ("general.el" . "a48768f85a655fe77b5f45c2880b420da1b1b9c3")
  ("git-timemachine" . "d1346a76122595aeeb7ebb292765841c6cfd417b")
  ("gnu-elpa-mirror" . "f39608f7ff7a67cfd093635c6dcba36a6285de87")

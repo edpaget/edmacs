@@ -49,7 +49,9 @@
    "t" '(lsp-find-type-definition :which-key "type definition")
    "R" '(lsp-find-references :which-key "references")
    "s" '(consult-lsp-symbols :which-key "symbols")
-   "S" '(consult-lsp-file-symbols :which-key "file symbols")))
+   "S" '(consult-lsp-file-symbols :which-key "file symbols")
+   "w" '(consult-lsp-diagnostics :which-key "workspace diagnostics")
+   "W" '(lsp-treemacs-errors-list :which-key "workspace diagnostics tree")))
 
 ;; LSP UI - Enhanced UI for LSP
 (use-package lsp-ui
@@ -70,6 +72,11 @@
 (use-package consult-lsp
   :after (consult lsp-mode))
 
+;; LSP Treemacs - workspace-wide diagnostics tree (and symbols/call hierarchy)
+(use-package lsp-treemacs
+  :after lsp-mode
+  :commands lsp-treemacs-errors-list)
+
 ;; ============================================================================
 ;; Flycheck - Syntax checking
 ;; ============================================================================
@@ -80,6 +87,10 @@
   (setq flycheck-check-syntax-automatically '(save mode-enabled)
         flycheck-display-errors-delay 0.3)
 
+  ;; Inline diagnostics (eol/below), replacing the lsp-ui-sideline path
+  ;; (lsp-ui-sideline-enable stays nil; see the lsp-ui block above)
+  (global-flycheck-annotate-mode 1)
+
   ;; Flycheck keybindings
   (general-define-key
    :states 'normal
@@ -88,7 +99,8 @@
    "xl" '(flycheck-list-errors :which-key "list errors")
    "xn" '(flycheck-next-error :which-key "next error")
    "xp" '(flycheck-previous-error :which-key "previous error")
-   "xv" '(flycheck-verify-setup :which-key "verify setup")))
+   "xv" '(flycheck-verify-setup :which-key "verify setup")
+   "xa" '(flycheck-annotate-mode :which-key "toggle inline annotations")))
 
 ;; ============================================================================
 ;; Apheleia - Async code formatting
