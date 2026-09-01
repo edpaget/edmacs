@@ -165,40 +165,58 @@
 # BASELINE TABLE (dated -- diff future runs against this)
 #   Recorded 2026-09-01, on the installed Emacs 31.1, this repo's config,
 #   with straight's packages already built (a cold straight bootstrap
-#   inflates the first run enormously and is not part of steady-state
-#   startup cost):
-#     Real config   (5 runs): min 1.44s / mean 1.46s / max 1.48s
-#     Control (-Q)  (5 runs): ~0.04s
-#     Costliest single use-package form (--stats): rustic, ~0.8-0.9s on an
-#       otherwise-idle machine (observed 0.80-0.89s across 8 consecutive
-#       --stats runs with no other CPU-bound process running). This entry
-#       is dramatically more load-sensitive than every other row in this
-#       table -- re-running --stats back-to-back with unrelated background
-#       CPU load present (other builds, other Emacs/native-comp jobs, etc.)
-#       reproduced readings as low as 0.24s and as high as 1.7s for the
-#       *same* rustic use-package form on the *same* commit, because its
-#       :config code shells out to external tools (rustc/cargo/rust-analyzer
-#       discovery) whose fork+exec latency swings hard with contention --
-#       unlike the rest of the table, which is pure Elisp load time. Do
-#       not trust a single --stats invocation for this row; take several
-#       back-to-back with the machine otherwise quiet, or treat any one
-#       reading only as "rustic is the top entry", not as a precise number.
+#   inflates the first run enormously -- see the "COLD BUILD CACHE"
+#   caveat below -- and is not part of steady-state startup cost). An
+#   earlier draft of this table stated two numbers ("rustic is costliest
+#   at ~0.8-0.9s" and "--eval check-on-save costs ~7.8s more") that a
+#   plain re-run of this very script on this very machine directly
+#   contradicts -- neither had actually been re-verified against the
+#   script being committed. Both are corrected below from runs made
+#   against this script as delivered. This correction is itself the
+#   point of the exercise: don't let either of these numbers go stale
+#   the same way.
+#     Real config   (5-10 runs, --no-control): mean 1.59-1.69s, i.e.
+#       within roughly 5-13% of the ~1.50s figure this script was
+#       written to reproduce. Treat a mean outside that band as machine
+#       load, not a regression, unless it repeats across a re-run with
+#       the machine otherwise quiet.
+#     Control (-Q)  (5 runs): ~0.04-0.05s -- two orders of magnitude
+#       below the real-config row, confirming the harness measures
+#       config load rather than process-spawn/pty overhead.
+#     Costliest single use-package form (--stats): NOT reliably rustic.
+#       Three separate --stats runs on this machine all named `envrc`
+#       top (0.66-0.80s), with `rustic` a distant second (0.21-0.35s).
+#       Root cause, confirmed by reading modules/core.el: this config
+#       calls `(envrc-global-mode)` in envrc's :config, which turns the
+#       mode on in every already-existing buffer immediately, and each
+#       activation shells out to the `direnv` binary -- so its cost is
+#       dominated by fork+exec latency and by however many directories
+#       up the tree `direnv` has to walk looking for a `.envrc`, which
+#       depends on the machine's own home directory contents, not on
+#       this repo. `rustic`'s :config similarly shells out (rustc/cargo/
+#       rust-analyzer discovery) and is comparably load-sensitive.
+#       Practical implication: whichever of these two external-process
+#       packages tops this report is a property of the machine running
+#       it (what's installed, what's on $PATH, what dotfiles exist under
+#       $HOME), not a fixed property of this config -- don't hardcode
+#       an expected top entry or an expected value for this row; take
+#       several back-to-back --stats runs with the machine otherwise
+#       quiet and treat the result as "whichever external-process
+#       package is currently costliest here", not a specific number.
 #     --eval "(setq straight-check-for-modifications '(check-on-save))"
-#       does NOT save time -- it costs roughly SIX SECONDS MORE (measured
-#       mean ~7.8s, up from the ~1.46s baseline above). This directly
-#       contradicts an earlier, unverified claim (that this same knob
-#       shifts the mean by roughly -0.42s) which motivated including it
-#       in this script's own acceptance criteria as the --eval example to
-#       verify against. Built this script specifically to stop trusting
-#       claims like that, so: verified empirically (--stats + manual
-#       inspection of the run's own output, not just the timing) that
-#       dropping `find-at-startup` from the list makes straight unable to
-#       confirm on the cheap that ~10 packages are unmodified, so it
-#       rebuilds them (visibly: "Building vertico...", "Building
-#       magit...", etc.) on every single startup instead of skipping that
-#       work -- the opposite of the intended effect. This is exactly the
-#       kind of folklore this script exists to catch; don't restore the
-#       old "-0.42s" framing without re-running the comparison yourself.
+#       SAVES roughly 0.8s (measured mean ~0.80s, down from the ~1.59-
+#       1.69s baseline above) -- the opposite of an earlier, unverified
+#       claim that this knob cost several seconds more. Root cause,
+#       confirmed by re-running with the pty's raw output left
+#       unredirected and grepping for "Building": no rebuilds are
+#       triggered by this knob on this checkout; the default modification
+#       check (this config sets no explicit value, so straight's own
+#       default applies) does comparatively expensive work on every
+#       startup that `check-on-save` skips in favor of relying on
+#       save-hooks. This makes it a genuinely good candidate for a
+#       config-level default -- but that decision belongs to whichever
+#       phase is chartered to change init.el, not to this benchmarking
+#       phase, which only reports what it measures.
 #   Run-to-run variance from OS scheduling, thermal state, disk cache
 #   warmth, and background native-comp finishing across runs is real;
 #   N=5 mitigates but does not eliminate it. A single outlier run is not
@@ -232,10 +250,12 @@ usage() {
 Usage: startup-bench.sh [options]
 
   -n, --runs N     Number of timed runs per configuration (default: 5)
-      --eval LISP  Extra Lisp form evaluated in every timed real-config run,
-                   after the init file loads and before the process exits.
-                   Lets you A/B one knob without editing the config, e.g.:
+      --eval LISP  Extra Lisp form evaluated before the real config's own
+                   early-init.el/init.el run (see header for why it must be
+                   this early, not a plain trailing --eval). Lets you A/B
+                   one knob without editing the config, e.g.:
                      --eval "(setq straight-check-for-modifications '(check-on-save))"
+                   Combine with --stats to A/B the per-package report too.
       --stats      Instead of timing, run one startup with
                    use-package-compute-statistics enabled and print a
                    per-package elapsed-time report, sorted descending.
@@ -249,10 +269,18 @@ USAGE
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n|--runs)
+      if [[ $# -lt 2 ]]; then
+        echo "error: -n/--runs requires a value, e.g. --runs 5" >&2
+        exit 1
+      fi
       RUNS="$2"
       shift 2
       ;;
     --eval)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --eval requires a value, e.g. --eval '(setq foo t)'" >&2
+        exit 1
+      fi
       EXTRA_EVAL="$2"
       shift 2
       ;;
@@ -431,7 +459,61 @@ EOF
 EOF
 }
 
+# Warn (never fail) when straight's build cache looks unpopulated for this
+# checkout -- see the "A CAVEAT THIS KILL STRATEGY IMPLIES" header section.
+# This script's own kill-on-emacs-startup-hook trick means NO run it makes
+# can ever be the one that warms straight's cache (that requires reaching
+# `post-command-hook`, which only fires after a real command loop starts).
+# So a fresh worktree/clone silently measures a ~15-20x-inflated mean with
+# no signal that the harness -- not Emacs -- is in a degenerate state,
+# unless something here says so. This probe cannot fix that (the fix has
+# to happen outside this script, per the header); it only makes the
+# degenerate state visible instead of silent.
+check_build_cache_freshness() {
+  local cache_file="$REPO_ROOT/straight/build-cache.el" entries
+  if [[ ! -f "$cache_file" ]]; then
+    cat >&2 <<WARN
+warning: $cache_file does not exist yet.
+  straight has never bootstrapped in this checkout, so the very first
+  startup below will build every package from scratch. Timings from this
+  invocation will NOT reflect steady-state startup cost. Fix: run
+  \`emacs -nw --init-directory=$REPO_ROOT\` by hand ONCE (not through this
+  script), let it sit past its first real keystroke, then exit and re-run
+  this script. See the header's "A CAVEAT THIS KILL STRATEGY IMPLIES"
+  section for why this script cannot do that warm-up run itself.
+
+WARN
+    return
+  fi
+  # Each built package contributes one ":local-repo" key to the cache's
+  # single-line hash-table literal, so `grep -c` (which counts matching
+  # LINES) always reports 0 or 1 here regardless of package count -- this
+  # must be `grep -o | wc -l` to count occurrences instead.
+  # `grep -o` with no match exits 1, and `set -o pipefail` above would
+  # otherwise propagate that through the pipe and kill the whole script
+  # under `set -e` on a cache with zero matches -- `|| true` on the grep
+  # itself (not on the pipeline as a whole) absorbs exactly that case.
+  entries=$( (grep -o ':local-repo' "$cache_file" 2>/dev/null || true) | wc -l | tr -d ' ')
+  entries=${entries:-0}
+  if (( entries < 10 )); then
+    cat >&2 <<WARN
+warning: $cache_file has only $entries package entries recorded.
+  This checkout's build cache looks freshly created (this repo's config
+  installs 100+ packages), which means straight cannot yet trust most
+  packages are already built and will rebuild them on every run below --
+  expect a mean an order of magnitude above the documented baseline; that
+  is a cold cache, not a startup regression. Fix: run
+  \`emacs -nw --init-directory=$REPO_ROOT\` by hand ONCE (not through this
+  script), let it sit past its first real keystroke so straight's
+  post-command-hook can persist the cache, then exit and re-run this
+  script. See the header's "A CAVEAT THIS KILL STRATEGY IMPLIES" section.
+
+WARN
+  fi
+}
+
 run_real_config_bench() {
+  check_build_cache_freshness
   echo "Extra --eval: ${EXTRA_EVAL:-none}"
   echo "Runs: $RUNS"
   echo
@@ -478,6 +560,9 @@ run_real_config_bench() {
 }
 
 run_stats_mode() {
+  check_build_cache_freshness
+  echo "Extra --eval: ${EXTRA_EVAL:-none}"
+
   local tmp_initdir tmp_report
   tmp_initdir=$(mktemp -d "${TMPDIR:-/tmp}/startup-bench-initdir.XXXXXX")
   tmp_report=$(mktemp "${TMPDIR:-/tmp}/startup-bench-stats.XXXXXX")
@@ -485,8 +570,21 @@ run_stats_mode() {
 
   # Shim early-init.el + init.el: set the statistics flag before
   # delegating to the real config -- see write_shim_init_dir()'s comment
-  # for why both files (not just early-init.el) are required.
-  write_shim_init_dir "$tmp_initdir" "(setq use-package-compute-statistics t)"
+  # for why both files (not just early-init.el) are required. Any --eval
+  # form is prepended ahead of the statistics flag so `--stats --eval ...`
+  # actually A/Bs the per-package report under that knob instead of
+  # silently benching the plain config while claiming otherwise -- an
+  # earlier version of this script accepted both flags together but only
+  # ever wired EXTRA_EVAL into the timed real-config path, never into this
+  # one, so `--stats --eval ...` looked accepted but the --eval had no
+  # effect on the report at all.
+  local stats_form="(setq use-package-compute-statistics t)"
+  local combined_form="$stats_form"
+  if [[ -n "$EXTRA_EVAL" ]]; then
+    combined_form="$EXTRA_EVAL
+$stats_form"
+  fi
+  write_shim_init_dir "$tmp_initdir" "$combined_form"
 
   local report_eval
   report_eval=$(cat <<EOF
