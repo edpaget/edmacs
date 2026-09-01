@@ -66,6 +66,7 @@
 (defvar evil-ghostel-escape)
 (defvar evil-ghostel-mode-map)
 (declare-function ghostel-send-string "ghostel")
+(declare-function ghostel-send-C-g "ghostel")
 (declare-function evil-define-key* "evil-core")
 
 ;; ============================================================================
@@ -305,15 +306,33 @@ With `evil-ghostel-escape' routed to evil (see
 `claude-term--configure-evil-escape'), insert-state ESC no longer
 reaches the terminal, so Claude Code's own interrupt key needs a
 separate binding -- this one line mirrors claude-code.el's C-g handler
-\(claude-code.el:1087\)."
+\(claude-code.el:1087\).
+
+Scoped to claude-term buffers only, by the same
+`claude-term--parse-buffer-name' check `claude-term--configure-evil-escape'
+uses: this is bound on the shared, package-global `evil-ghostel-mode-map',
+which every `evil-ghostel-mode' buffer uses regardless of what program is
+running in it, not just claude-term sessions. In any other ghostel
+buffer, fall through to ghostel's own documented C-g behavior
+\(`ghostel-send-C-g', which sends a raw C-g/BEL byte and clears Emacs's
+`quit-flag'\) rather than silently substituting ESC for programs that
+distinguish the two."
   (interactive)
-  (ghostel-send-string "\e"))
+  (if (claude-term--parse-buffer-name (buffer-name))
+      (ghostel-send-string "\e")
+    (ghostel-send-C-g)))
 
 ;; Bound to C-g in insert state, once evil-ghostel is loaded. This
 ;; deliberately shadows ghostel's default passthrough of a raw C-g to
-;; the terminal, where Claude Code's own default binding is "edit
-;; prompt in external editor" -- an accepted trade-off per the phase
-;; body, remediable via ~/.claude/keybindings.json if it proves painful.
+;; the terminal IN CLAUDE-TERM BUFFERS ONLY (see
+;; `claude-term-send-escape's own buffer-name guard) -- Claude Code's
+;; own default C-g binding is "edit prompt in external editor", an
+;; accepted trade-off per the phase body, remediable via
+;; ~/.claude/keybindings.json if it proves painful. The keymap itself is
+;; package-global (every `evil-ghostel-mode' buffer shares
+;; `evil-ghostel-mode-map'), so the buffer-name guard inside
+;; `claude-term-send-escape' -- not this binding -- is what keeps the
+;; override from leaking into unrelated `M-x ghostel' terminals.
 (with-eval-after-load 'evil-ghostel
   (evil-define-key* 'insert evil-ghostel-mode-map
     (kbd "C-g") #'claude-term-send-escape))

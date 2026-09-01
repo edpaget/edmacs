@@ -55,13 +55,32 @@
     (claude-term--configure-evil-escape)
     (should-not (local-variable-p 'evil-ghostel-escape))))
 
-(ert-deftest claude-term-test-send-escape-sends-raw-escape ()
+(ert-deftest claude-term-test-send-escape-sends-raw-escape-in-claude-term-buffer ()
   (let ((calls nil))
     (cl-letf (((symbol-function 'ghostel-send-string)
                (lambda (s) (push s calls))))
       (with-temp-buffer
+        (rename-buffer "*claude-term:demo*")
         (claude-term-send-escape)))
     (should (equal calls '("\e")))))
+
+(ert-deftest claude-term-test-send-escape-falls-through-to-C-g-elsewhere ()
+  "In a non-claude-term ghostel buffer, C-g must not become a raw ESC.
+Guards against `claude-term-send-escape' leaking beyond claude-term
+sessions when bound on the shared, package-global
+`evil-ghostel-mode-map' (every `evil-ghostel-mode' buffer, not only
+claude-term ones, uses that one keymap object)."
+  (let ((escape-calls nil)
+        (c-g-calls 0))
+    (cl-letf (((symbol-function 'ghostel-send-string)
+               (lambda (s) (push s escape-calls)))
+              ((symbol-function 'ghostel-send-C-g)
+               (lambda () (cl-incf c-g-calls))))
+      (with-temp-buffer
+        (rename-buffer "*ghostel:some-other-terminal*")
+        (claude-term-send-escape)))
+    (should (equal escape-calls nil))
+    (should (= c-g-calls 1))))
 
 (ert-deftest claude-term-test-spawn-args-appends-call-args ()
   (let ((claude-term-extra-args '("--foo")))
