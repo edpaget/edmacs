@@ -114,6 +114,7 @@ LANGUAGE should be the name without the .el extension."
 ;; via :mode, :hook, and :after directives in each language config file
 (load-language-config "elisp")
 (load-language-config "clojure")
+(load-language-config "go")
 (load-language-config "java")
 (load-language-config "javascript")
 (load-language-config "rust")

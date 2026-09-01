@@ -46,6 +46,31 @@
   (exec-path-from-shell-initialize))
 
 ;; ============================================================================
+;; Direnv Integration
+;; ============================================================================
+
+;; Automatically load environment variables from .envrc files using direnv
+;; This allows per-project environment configuration
+(use-package envrc
+  :config
+  ;; Enable envrc-mode globally to auto-load .envrc in all buffers
+  (envrc-global-mode)
+
+  ;; Optional: Show direnv status in mode line
+  (setq envrc-mode-line-lighter " envrc"))
+
+;; Keybindings for manual control (using SPC-e prefix for environment)
+(with-eval-after-load 'general
+  (general-define-key
+   :states '(normal visual)
+   :prefix "SPC e"
+   "e" '(:ignore t :which-key "environment")
+   "ea" '(envrc-allow :which-key "direnv allow")
+   "ed" '(envrc-deny :which-key "direnv deny")
+   "er" '(envrc-reload :which-key "direnv reload")
+   "ep" '(envrc-reload-all :which-key "direnv reload all")))
+
+;; ============================================================================
 ;; Basic Settings
 ;; ============================================================================
 
