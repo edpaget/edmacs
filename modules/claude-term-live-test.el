@@ -380,22 +380,40 @@ the REAL `evil-ghostel--escape' (loaded from the vendored source, not
 reimplemented) must call the evil insert-state escape path and must
 never reach the terminal path.  `evil-ghostel--escape' short-circuits
 `ghostel-alt-screen-p' entirely when the mode is not `'auto', so no
-alt-screen stub is needed for this branch."
+alt-screen stub is needed for this branch.
+
+`evil-insert-state-map' is stubbed here with the SAME binding core
+evil itself installs (`(define-key evil-insert-state-map [escape]
+\\='evil-normal-state)', evil-maps.el:483) rather than an empty keymap,
+so `evil-ghostel--escape's `(commandp cmd)' check finds a real command
+and takes the `(call-interactively cmd)' branch -- the branch
+production actually takes once evil is loaded (this module's
+`use-package evil-ghostel' declares `:after (ghostel evil)').  An
+empty keymap would leave `cmd' nil and silently exercise the
+`evil-force-normal-state' fallback instead, which is not the path
+production runs and would give false assurance if that fallback ever
+broke.  This test asserts both that `evil-normal-state' fired and that
+the fallback did not."
   (if (not (claude-term-live-test--load-real-escape-defun))
       (ert-skip "No local straight checkout of ghostel/evil-ghostel found (see claude-term-live-test--evil-ghostel-source); run again after eldev/init.el has bootstrapped it once locally to exercise this.")
     (defvar evil-ghostel--escape-mode)
     (defvar evil-insert-state-map)
-    (let ((evil-ghostel--escape-mode 'evil)
-          (evil-insert-state-map (make-sparse-keymap))
-          (normal-state-calls 0))
-      (cl-letf (((symbol-function 'evil-force-normal-state)
+    (let* ((evil-ghostel--escape-mode 'evil)
+           (evil-insert-state-map (make-sparse-keymap))
+           (normal-state-calls 0)
+           (force-normal-state-calls 0))
+      (define-key evil-insert-state-map [escape] 'evil-normal-state)
+      (cl-letf (((symbol-function 'evil-normal-state)
                  (lambda () (interactive) (cl-incf normal-state-calls)))
+                ((symbol-function 'evil-force-normal-state)
+                 (lambda () (interactive) (cl-incf force-normal-state-calls)))
                 ((symbol-function 'ghostel--on-user-input)
                  (lambda () (error "evil-ghostel--escape reached the terminal path with mode 'evil")))
                 ((symbol-function 'ghostel--send-encoded)
                  (lambda (&rest _) (error "evil-ghostel--escape reached the terminal path with mode 'evil"))))
         (evil-ghostel--escape)
-        (should (= normal-state-calls 1))))))
+        (should (= normal-state-calls 1))
+        (should (= force-normal-state-calls 0))))))
 
 ;; ============================================================================
 ;; Full transcript remains searchable (AC4 support)
