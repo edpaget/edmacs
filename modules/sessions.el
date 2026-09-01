@@ -14,7 +14,13 @@
 ;;     across restarts with no extra packages; tab-bar.el registers its
 ;;     own frameset filter for the non-printable parts unconditionally at
 ;;     load time (see the `(push '(tabs . frameset-filter-tabs) ...)' call
-;;     in tab-bar.el), so nothing extra needs wiring here.
+;;     in tab-bar.el).  The phase's chosen topology is one persistent
+;;     daemon, though, and desktop.el's own frameset restore is a no-op
+;;     against a daemon's placeholder initial frame (there's no real frame
+;;     yet to size windows into) -- this module bridges that gap itself;
+;;     see the "Bridge desktop-read's daemon-mode frameset skip" section
+;;     below for the mechanism and why it can't just call
+;;     `desktop-restore-frameset' again later.
 ;;   - `bufferlo' layers the per-tab buffer lists that desktop.el
 ;;     deliberately does not persist.
 ;;
@@ -120,6 +126,64 @@ selected window)."
   (add-to-list 'desktop-modes-not-to-save 'claude-repl-buffer-mode))
 
 (desktop-save-mode 1)
+
+;; ----------------------------------------------------------------------------
+;; Bridge desktop-read's daemon-mode frameset skip to the first real client
+;; frame. This phase's topology is explicitly "one Emacs daemon" (see the
+;; commentary above), and desktop.el has a documented no-op for exactly that
+;; case: `desktop-restoring-frameset-p' (desktop.el) refuses to restore
+;; frames/tabs when the selected frame is the daemon's placeholder
+;; `terminal-frame' --
+;;
+;;   (not (and (daemonp) (eq (selected-frame) terminal-frame)))
+;;
+;; -- because there is no real frame yet to size/place windows into. Nothing
+;; in desktop.el or server.el re-attempts the restore once an actual
+;; `emacsclient' frame attaches, and worse, `desktop-read' unconditionally
+;; sets `desktop-saved-frameset' back to nil right after running
+;; `desktop-after-read-hook' -- so by the time a client connects, the saved
+;; frameset is already gone even if something tried to restore it later.
+;; The only place the frameset can still be read is inside
+;; `desktop-after-read-hook' itself, before that reset runs.
+;;
+;; So: stash it there when running under the daemon guard, then replay it
+;; with `frameset-restore' (what `desktop-restore-frameset' itself calls)
+;; once `server-after-make-frame-hook' reports a real client frame is
+;; selected. `desktop-restore-reuses-frames' defaults to t, so
+;; `frameset-restore' reuses that just-connected frame instead of popping up
+;; an unwanted extra one.
+(require 'server)
+
+(defvar edmacs-sessions--pending-frameset nil
+  "Desktop frameset stashed at daemon boot, awaiting the first client frame.
+Non-nil only between a daemon's `desktop-read' (which cannot restore
+frames onto its placeholder initial frame) and the first `emacsclient'
+frame attaching.")
+
+(defun edmacs-sessions--stash-frameset-for-daemon ()
+  "Stash `desktop-saved-frameset' when daemon boot skipped restoring it.
+Runs on `desktop-after-read-hook', which fires after the frameset is
+loaded but before `desktop-read' unconditionally nils it back out."
+  (when (and (daemonp)
+             desktop-saved-frameset
+             (not (desktop-restoring-frameset-p)))
+    (setq edmacs-sessions--pending-frameset desktop-saved-frameset)))
+
+(add-hook 'desktop-after-read-hook #'edmacs-sessions--stash-frameset-for-daemon)
+
+(defun edmacs-sessions--restore-pending-frameset-on-client-frame ()
+  "Restore a daemon-boot-stashed frameset onto the first client frame.
+`server-after-make-frame-hook' selects the client frame before running
+this, so `frameset-restore' (with `desktop-restore-reuses-frames'
+defaulting to t) reuses it instead of creating a new one. Runs once:
+later client frames just get the normal, empty daemon frame."
+  (when edmacs-sessions--pending-frameset
+    (let ((desktop-saved-frameset edmacs-sessions--pending-frameset))
+      (desktop-restore-frameset))
+    (setq edmacs-sessions--pending-frameset nil)))
+
+(add-hook 'server-after-make-frame-hook
+          #'edmacs-sessions--restore-pending-frameset-on-client-frame)
 
 ;; ============================================================================
 ;; Bufferlo - per-tab buffer lists (desktop.el deliberately omits these)
