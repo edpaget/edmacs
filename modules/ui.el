@@ -268,10 +268,14 @@ whole function."
 ;; reproduction, two windows each carrying a distinct `quit-restore'
 ;; value, after an advised `rotate-window' swap, each ends up carrying
 ;; the OTHER window's `quit-restore' instead of its own, so `q' would
-;; restore the wrong thing or delete the wrong window. Exclude these
-;; window-identity keys from the buffer-following transfer entirely.
+;; restore the wrong thing or delete the wrong window. `quit-restore-prev'
+;; is set by that same window.el code path for that same purpose -- it
+;; picks between the two keys depending on whether `quit-restore' is
+;; already set -- so it is window identity on identical grounds and
+;; belongs here beside it. Exclude these window-identity keys from the
+;; buffer-following transfer entirely.
 (defconst edmacs--rotate-window-identity-parameters
-  '(quit-restore window-side window-slot no-other-window clone-of)
+  '(quit-restore quit-restore-prev window-side window-slot no-other-window clone-of)
   "Window parameters describing the window slot, not buffer styling.
 Left untouched by `edmacs--rotate-preserve-window-parameters' rather
 than migrated along with whatever buffer happens to occupy the window
