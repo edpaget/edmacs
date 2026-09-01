@@ -23,6 +23,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'project)
 
 (use-package ghostel
@@ -68,6 +69,32 @@ only future fresh spawns.  Use this to inject e.g. a `--mcp-config'
 argument scoping an MCP server to Emacs-launched sessions."
   :type '(repeat string)
   :group 'claude-term)
+
+(defcustom claude-term-window-width 0.35
+  "Fractional width of a claude-term side window, relative to the frame.
+`window-sides-vertical' is nil by default, so left and right side
+windows form ONE column stacked vertically and share a single width --
+several agent panes are stacked top-to-bottom in that column, not laid
+out side by side.  This value is therefore a per-column width shared by
+every stacked pane, not a per-pane budget: size it for a single narrow
+column (claude-code-ide.el's 100-column default is sized for a
+side-by-side layout and is far too wide here)."
+  :type 'number
+  :group 'claude-term)
+
+;; ============================================================================
+;; Side-window layout
+;; ============================================================================
+;; `window-sides-slots' element order is LEFT TOP RIGHT BOTTOM.  nil for a
+;; side means unbounded (a fresh slot always creates a new window); a
+;; numeric cap means a request for a slot beyond the cap causes the most
+;; suitable EXISTING side window on that edge to be reused with its slot
+;; parameter changed, rather than a new window being created; 0 forbids
+;; creation entirely and `display-buffer-in-side-window' returns nil
+;; rather than erroring.  Right is capped at 3 (this phase's Done
+;; criterion); the other three edges are left unbounded since nothing
+;; else in this module uses them yet.
+(setq window-sides-slots '(nil nil 3 nil))
 
 ;; ============================================================================
 ;; Lazy ghostel loading
@@ -115,6 +142,27 @@ this buffer, including restarts.")
 
 (defvar-local claude-term--restarting nil
   "Non-nil while an async kill -> sentinel -> re-exec restart is in flight.")
+
+(defvar-local claude-term--slot nil
+  "Side-window slot assigned to this buffer, or nil until first displayed.
+Sticking to one slot for the life of a buffer (via
+`claude-term--allocate-slot') is what keeps a re-display of an already
+live session (toggling back to it, restarting it) from grabbing a fresh
+slot and, once `window-sides-slots' right cap of 3 is reached, silently
+evicting an unrelated pane via Emacs's own slot-reuse behavior.")
+
+(defvar claude-term--next-slot 0
+  "Counter for the next unassigned side-window slot.
+Monotonically increasing and never recycled -- a killed session's old
+slot is not reclaimed by the next fresh buffer.  Intentional for this
+phase: start with the simplest thing that works and revisit only if
+instances from different projects start interleaving confusingly (see
+the phase body's own guidance).  Also means a 4th distinct claude-term
+buffer requests slot 3, beyond the right side's cap of 3 (slots 0-2) --
+`display-buffer-in-side-window' then reuses the most suitable existing
+side window rather than creating a new one, per stock Emacs behavior;
+out of scope for this phase, which only requires three simultaneous
+agents, but worth remembering once phase 4's session registry lands.")
 
 ;; ============================================================================
 ;; Buffer naming
@@ -269,6 +317,75 @@ everything else from the dead session."
         (kill-buffer buf)))))
 
 ;; ============================================================================
+;; Side-window display
+;; ============================================================================
+;; This looks like it should be a two-line `display-buffer-in-side-window'
+;; call and is not.  `display-buffer-in-side-window' only installs the
+;; `window-side' and `window-slot' parameters -- dedication follows from
+;; that automatically, but exclusion from `other-window' and
+;; `windmove'/evil-window-* does NOT: it depends solely on the
+;; `no-other-window' window parameter, which neither
+;; `display-buffer-in-side-window' nor any of its callers sets on its
+;; own (verified live via `emacs -Q --batch': without it,
+;; `window-no-other-p' returns nil, `(other-window 1)' selects the side
+;; window, and so does `window-in-direction').  `no-other-window' below
+;; is therefore the actual new code this phase is about; everything else
+;; in the window-parameters/action alist is stock `display-buffer'
+;; plumbing.
+;;
+;; DECIDED: `windmove-allow-repeated-command-override' is left at its
+;; Emacs 31 default (t), so a REPEATED `SPC w l' (or any windmove
+;; direction key) deliberately does enter an agent pane -- an
+;; intentional escape hatch, not an oversight this module should close.
+;; A single invocation still respects `no-other-window' via
+;; `window-no-other-p'.
+
+(defun claude-term--allocate-slot (buffer)
+  "Return the side-window slot assigned to BUFFER, assigning one if needed.
+Reuses BUFFER's existing `claude-term--slot' when already set, so
+repeated display calls for the same live session -- a toggle, a
+restart -- keep the same slot rather than drawing a fresh one from
+`claude-term--next-slot' and potentially triggering the right side's
+slot-reuse eviction once its cap of 3 is reached."
+  (with-current-buffer buffer
+    (or claude-term--slot
+        (setq claude-term--slot
+              (prog1 claude-term--next-slot
+                (cl-incf claude-term--next-slot))))))
+
+(defun claude-term--display-buffer (buffer)
+  "Display BUFFER in a stacked right-side window and return that window.
+Builds this phase's verified target shape: a right side window sized by
+`claude-term-window-width', sized-preserving across a
+`window-toggle-side-windows' hide/show cycle, excluded from
+`delete-other-windows' and from `other-window'/single-invocation
+`windmove' via `no-other-window' (see the section comment above).
+Returns nil exactly when `display-buffer-in-side-window' does -- e.g.
+when `window-sides-slots' forbids side-window creation on this edge --
+never signals in that case."
+  (display-buffer
+   buffer
+   `((display-buffer-in-side-window)
+     (side . right)
+     (slot . ,(claude-term--allocate-slot buffer))
+     (window-width . ,claude-term-window-width)
+     (preserve-size . (t . nil))
+     (window-parameters . ((no-delete-other-windows . t)
+                            (no-other-window . t))))))
+
+(defun claude-term--pop-to-side-window (buffer)
+  "Display BUFFER in a side window via `claude-term--display-buffer' and select it.
+Preserves `pop-to-buffer''s \"display and select\" semantics at this
+module's two call sites.  Guards against a nil return (side-window
+creation can be forbidden by `window-sides-slots', which then makes
+`display-buffer-in-side-window' return nil rather than error) by simply
+not selecting anything in that case."
+  (let ((window (claude-term--display-buffer buffer)))
+    (when window
+      (select-window window))
+    window))
+
+;; ============================================================================
 ;; Buffer selection for kill/restart
 ;; ============================================================================
 
@@ -307,9 +424,9 @@ this module."
          (name (claude-term-buffer-name root instance))
          (buffer (get-buffer-create name)))
     (if (with-current-buffer buffer (process-live-p ghostel--process))
-        (pop-to-buffer buffer)
+        (claude-term--pop-to-side-window buffer)
       (claude-term--exec buffer root instance args)
-      (pop-to-buffer buffer))))
+      (claude-term--pop-to-side-window buffer))))
 
 ;;;###autoload
 (defun claude-term-kill (&optional buffer)
