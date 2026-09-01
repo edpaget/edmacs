@@ -163,6 +163,23 @@
 #   deletes the temp file/dir afterward.
 #
 # BASELINE TABLE (dated -- diff future runs against this)
+#
+#   !! STALE ROWS -- READ THIS FIRST (annotated 2026-09-01, later same day).
+#   The rows below were recorded BEFORE two config changes that landed
+#   afterwards, and two of them no longer describe this config:
+#     * `59d0c1a' removed envrc entirely (replaced by mise, activated on
+#       after-init). The "Real config mean 1.59-1.69s" row includes envrc's
+#       0.66-0.80s, and the "costliest = envrc" row names a package that no
+#       longer appears in --stats output at all.
+#     * `f4d7c65' set straight-check-for-modifications to (check-on-save).
+#       The pre-change default was costing roughly 0.93-1.0s of every boot.
+#   Post-change measurement, from f4d7c65 (-n 10, warm cache, quiet machine,
+#   two runs each side): mean 0.617-0.635s, down from 1.564-1.624s.
+#   The "check-on-save saves ~0.8s" row below is unaffected in direction and
+#   was independently reconfirmed by that commit.
+#   These rows are kept rather than overwritten because the corrections they
+#   document are the point of the exercise -- but do not read them as current.
+#
 #   Recorded 2026-09-01, on the installed Emacs 31.1, this repo's config,
 #   with straight's packages already built (a cold straight bootstrap
 #   inflates the first run enormously -- see the "COLD BUILD CACHE"
