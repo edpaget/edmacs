@@ -6,6 +6,7 @@
 
 ;;; Code:
 
+(require 'ring)
 (require 'markdown-mode)
 (require 'claude-repl-process)
 (require 'claude-repl-tool-output)
