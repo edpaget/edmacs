@@ -284,21 +284,36 @@ that wipe on a first spawn), whereas the buffer-local
 ;; of file/require load order.
 (add-hook 'ghostel-mode-hook #'claude-term--configure-evil-escape -90)
 
-;; MANUAL PREREQUISITE, not enforceable from this file: the Claude CLI's
-;; own vi-mode must be off, or its ESC handling fights evil-ghostel's
-;; (the "triple-ESC" symptom in manzaltu/claude-code-ide.el#52). Run
-;; `/config' inside a `claude-term' session and set "Editor mode" to
-;; "normal". This has no on-disk artifact to check or diff: as of
-;; 2026-09-01 it appears in neither `~/.claude/settings.json' nor
-;; `~/.claude.json' nor the dotfiles-repo `claude/settings.json' (all
-;; grepped for an `editorMode'-style key and found none) -- `/config'
-;; is the only interface to it, so there is nothing here for a test or
-;; a future reviewer's `git diff' to confirm against. If ESC ever needs
-;; more than one press from insert state to reach a stable evil normal
-;; state in a `claude-term' buffer, that is the symptom of this setting
-;; having reverted (a Claude CLI update, a fresh machine, etc.) --
-;; re-run `/config' and re-set it. See rdm task
-;; claude-cli-editor-mode-durability for tracking a more durable fix.
+;; PREREQUISITE: the Claude CLI's own vi-mode must be off, or its ESC
+;; handling fights evil-ghostel's (the "triple-ESC" symptom in
+;; manzaltu/claude-code-ide.el#52). `/config' inside a `claude-term'
+;; session, setting "Editor mode" to "normal", is the interactive path
+;; -- but this is NOT purely unverifiable the way an earlier pass of
+;; this phase believed. Reading the installed CLI binary's own bundled
+;; source directly (`strings -a "$(which claude)"' against the Bun
+;; build under `~/.local/share/claude/versions/', 2.1.257, 2026-09-01)
+;; shows `/config''s "Editor mode" IS backed by a real settings key,
+;; `editorMode', with schema enum `["normal" "vim"]' and a DEFAULT of
+;; `"normal"' baked into the binary itself; the CLI's own settings
+;; resolver falls back to that default whenever no settings tier sets
+;; the key. So the prerequisite holds by construction as long as no
+;; tier introduces an explicit `"editorMode": "vim"' override, which is
+;; exactly what `claude-term-live-test-claude-cli-editor-mode-not-vim'
+;; (modules/claude-term-live-test.el) checks, across every tier the CLI
+;; reads: `~/.claude.json' (legacy global), `~/.claude/settings.json'
+;; and `~/.claude/settings.local.json' (user), and this project's own
+;; `.claude/settings.json' / `.claude/settings.local.json'. As of
+;; 2026-09-01 every one of those files was grepped by hand and confirmed
+;; free of an `editorMode' key -- so the default governs, and vi-mode is
+;; off. If ESC ever needs more than one press from insert state to
+;; reach a stable evil normal state in a `claude-term' buffer, that is
+;; the symptom of this having reverted (a settings-file edit, or a CLI
+;; update changing the baked-in default) -- the live test above is a
+;; regression guard against the former; re-running `/config' remains
+;; the fix either way. See rdm task claude-cli-editor-mode-durability,
+;; which still tracks the residual gap this test does not close: the
+;; CLI's default could change in a future version with nothing here to
+;; catch it before it ships.
 
 (defun claude-term-send-escape ()
   "Send a raw ESC to the terminal, interrupting a running Claude response.
@@ -336,6 +351,34 @@ distinguish the two."
 (with-eval-after-load 'evil-ghostel
   (evil-define-key* 'insert evil-ghostel-mode-map
     (kbd "C-g") #'claude-term-send-escape))
+
+;; "No binding requires conscious thought" (the phase's Done-when
+;; clause) is inherently a subjective UX judgment -- not settleable from
+;; repo state, and a prior review correctly said so. What IS checkable
+;; from here is the actual conflict surface this module adds on top of
+;; evil-ghostel's own (separately tested) defaults, since surprise is
+;; overwhelmingly a symptom of two things fighting over the same key.
+;; Audit, as of this phase: this module customizes exactly two bindings,
+;; both scoped to INSERT state only --
+;;   1. `evil-ghostel-escape' -> `'evil (`claude-term--configure-evil-escape',
+;;      above) -- not a keybinding at all, a mode switch read once on
+;;      `ghostel-mode' enable; nothing to collide with.
+;;   2. `C-g' -> `claude-term-send-escape' (immediately above) -- shadows
+;;      Claude Code's own default C-g ("edit prompt in external
+;;      editor"), a documented, accepted trade-off, not an accident.
+;; Neither touches evil's NORMAL-state vocabulary (hjkl/w/b/e/d/c/r/p,
+;; all evil-ghostel's own, already covered by its test suite) -- this
+;; module adds no normal-state bindings of its own, so there is no
+;; conflict surface there to audit. That leaves exactly the two
+;; insert-state customizations above as the only places "conscious
+;; thought" could plausibly be required, and both are one press, one
+;; mnemonic (ESC for escape, C-g for the CLI's own historical interrupt
+;; key), already exercised by AC1/AC2's automated coverage
+;; (`claude-term-test-send-escape-sends-raw-escape-in-claude-term-buffer',
+;; `claude-term-live-test-real-evil-ghostel-escape-dispatches-to-evil').
+;; What this audit cannot do is the final subjective call -- whether
+;; those two, correctly-firing bindings SUBJECTIVELY feel automatic in a
+;; real session. That is a human-dogfooding step, not a batch one.
 
 ;; ============================================================================
 ;; Spawn argument resolution
