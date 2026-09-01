@@ -22,10 +22,11 @@
 ;; `vc-switch-working-tree' (C-x v w w) and `vc-working-tree-switch-project'
 ;; (C-x v w s), and project.el already treats each linked worktree as its
 ;; own project (`project--submodule-p' deliberately excludes linked
-;; worktrees from folding into the parent).  Those raw `C-x v w ...' chords
-;; are shadowed in evil normal state, though -- see the note below -- so
-;; this module also exposes `SPC p w' as the primary, normal-state-safe
-;; entry point, and `SPC T' likewise for tab lifecycle management.
+;; worktrees from folding into the parent).  Those raw `C-x v w ...'
+;; chords are shadowed in evil normal state by a pre-existing binding
+;; unrelated to this phase -- see the note below for how this module
+;; makes them reachable there anyway -- and `SPC p w'/`SPC T' expose the
+;; same commands as a fast, no-delay alternative.
 ;;
 ;; perspective.el is deliberately avoided: its own README states it
 ;; cannot save shell/REPL/compilation buffers, it is incompatible with
@@ -34,19 +35,24 @@
 ;; other tmux-replacement package are likewise out of scope for this
 ;; phase.
 ;;
-;; KNOWN SHADOW: `modules/evil-config.el' binds bare `C-x' in
-;; `evil-normal-state-map' to `evil-numbers/dec-at-pt' (a deliberate,
-;; pre-existing vim-native mapping mirroring vim's own C-a/C-x
+;; FORMER SHADOW, NOW DISPATCHED: `modules/evil-config.el' binds bare
+;; `C-x' in `evil-normal-state-map' to `evil-numbers/dec-at-pt' (a
+;; deliberate, pre-existing vim-native mapping mirroring vim's own C-a/C-x
 ;; increment/decrement-at-point).  Normal state is the default editing
-;; state in this config, and because that binding is a leaf command (not
-;; a nested prefix keymap), pressing `C-x' there terminates the key
-;; sequence immediately -- so `C-x t p' (`project-other-tab-command') and
-;; every `C-x v w ...' chord below are unreachable from evil normal state.
-;; They remain reachable from Insert/Emacs/Motion state and always via
-;; `M-x'.  This is out of this phase's scope to fix (rebinding
-;; evil-numbers would be a separate, higher-risk change nobody asked
-;; for), so the bindings below are the tested, normal-state-safe path,
-;; and the raw C-x chords are a documented secondary path.
+;; state in this config, and because that binding used to be a leaf
+;; command (not a nested prefix keymap), pressing `C-x' there terminated
+;; the key sequence immediately -- so `C-x t p' (`project-other-tab-command')
+;; and every `C-x v w ...' chord this phase names were unreachable from
+;; evil normal state without leaving it.  Rather than touch evil-numbers'
+;; own binding (pre-existing, unrelated to this phase, and rebinding it
+;; would cost real muscle memory), the "C-x dispatch" section below
+;; redirects C-x through `general-key-dispatch' so both behaviors coexist:
+;; the worktree/tab chords this phase's ACs literally name now work from
+;; normal state, and bare C-x with nothing typed after it still decrements
+;; the number at point exactly as before (after a short grace period, to
+;; give the dispatch a chance to see whether a chord follows).  `SPC T'
+;; and `SPC p w' below remain the fast, no-delay path to the same
+;; commands.
 
 ;;; Code:
 
@@ -124,6 +130,34 @@ selected window)."
   (bufferlo-mode 1))
 
 ;; ============================================================================
+;; C-x dispatch - un-shadow the worktree/tab chords this phase's ACs name
+;; ============================================================================
+;; See the "FORMER SHADOW, NOW DISPATCHED" note above the top of this file.
+;; `general-key-dispatch' (general.el is already a dependency of this repo
+;; via modules/keybindings.el) creates a command that waits, bounded by
+;; TIMEOUT, for the next key(s): a match below runs that command; no
+;; match (including a timeout with nothing typed) falls back to
+;; `evil-numbers/dec-at-pt', simulating any unmatched keys afterward --
+;; i.e. exactly today's behavior for every C-x chord this list doesn't
+;; know about. This is scoped deliberately narrow (the specific chords
+;; this phase's body and ACs name), not a blanket un-shadow of the whole
+;; `ctl-x-map' -- broadening that is a separate, unrelated change.
+(with-eval-after-load 'evil-numbers
+  (define-key evil-normal-state-map (kbd "C-x")
+    (general-key-dispatch 'evil-numbers/dec-at-pt
+      :timeout 0.4
+      :name edmacs-sessions--c-x-dispatch
+      :docstring "Decrement number at point (vim's `C-x'), or run one of
+this phase's tab/worktree commands when C-x is followed by
+`t p'/`v w w'/`v w s'/`v w k'/`v w a'/`v w A'."
+      "t p" 'project-other-tab-command
+      "v w w" 'vc-switch-working-tree
+      "v w s" 'vc-working-tree-switch-project
+      "v w k" 'vc-kill-other-working-tree-buffers
+      "v w a" 'vc-apply-to-other-working-tree
+      "v w A" 'vc-apply-root-to-other-working-tree)))
+
+;; ============================================================================
 ;; Leader-key bindings
 ;; ============================================================================
 ;; Self-registered here (outside the central leader-def in
@@ -133,8 +167,9 @@ selected window)."
 ;; bindings use. Either is an established pattern in this repo; this
 ;; module picks the self-registering one so it stays fully self-contained.
 
-;; SPC T - tab lifecycle (primary entry point for AC1; see the shadow
-;; note above for why this replaces the raw C-x t ... chords).
+;; SPC T - tab lifecycle: the fast, no-delay path (the C-x dispatch
+;; above also makes `C-x t p' work from normal state, but incurs its
+;; grace-period timeout).
 (general-define-key
  :states 'normal
  :prefix "SPC T"
@@ -147,9 +182,10 @@ selected window)."
  "[" '(tab-bar-switch-to-prev-tab :which-key "previous tab")
  "l" '(tab-bar-switch-to-tab :which-key "switch tab by name"))
 
-;; SPC p w - worktree switching (primary entry point for AC3; wraps the
-;; stock vc.el worktree commands, which are already globally bound under
-;; C-x v w but shadowed in evil normal state -- see the note above).
+;; SPC p w - worktree switching: the fast, no-delay path to the stock
+;; vc.el worktree commands (the C-x dispatch above also makes the literal
+;; `C-x v w s' etc. chords work from normal state, per the phase's
+;; "Done when" wording, but incurs its grace-period timeout).
 (general-define-key
  :states 'normal
  :prefix "SPC p w"
