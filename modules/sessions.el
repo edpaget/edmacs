@@ -81,15 +81,24 @@
 (setq tab-bar-define-keys nil)
 
 (defun edmacs-sessions--git-common-dir (root)
-  "Return the git common directory for the worktree at ROOT, or nil.
+  "Return the absolute git common directory for the worktree at ROOT, or nil.
 Every worktree of one repository shares this path (it is the main
 checkout's `.git', per git-worktree(1)), so its parent directory names
 the repository independent of any individual worktree's own directory
-name."
+name.
+
+For a linked worktree, git prints an already-absolute path here; for
+the *main* worktree, though, it prints a path relative to the
+directory git was invoked from (typically \".git\"). That expansion to
+an absolute path has to happen right here, while `default-directory'
+is still bound to ROOT -- a caller expanding the returned string later
+against its own, unrelated `default-directory' (e.g. whatever buffer
+happens to be selected when tab-bar recomputes the tab name) would
+silently resolve it against the wrong base and misname the tab."
   (let ((default-directory root))
     (with-temp-buffer
       (when (zerop (call-process "git" nil t nil "rev-parse" "--git-common-dir"))
-        (string-trim (buffer-string))))))
+        (expand-file-name (string-trim (buffer-string)))))))
 
 (defun edmacs-sessions--tab-name ()
   "Name the current tab after its project/worktree, falling back sanely.
@@ -112,7 +121,7 @@ the repo rather than the worktree)."
              (repo (and common
                         (file-name-nondirectory
                          (directory-file-name
-                          (file-name-directory (directory-file-name (expand-file-name common))))))))
+                          (file-name-directory (directory-file-name common)))))))
         (if (and repo (not (string= repo base)))
             (format "%s/%s" repo base)
           base))
