@@ -528,5 +528,91 @@ manzaltu/claude-code-ide.el#52)."
                       claude-term-live-test--editor-mode-setting-files)))
     (should (null offenders))))
 
+;; ---------------------------------------------------------------------------
+;; Real `ghostel-mode' lifecycle: the first-spawn `kill-all-local-variables' wipe
+;; ---------------------------------------------------------------------------
+
+(defvar claude-term-live-test--ghostel-source
+  (expand-file-name
+   "../straight/repos/ghostel/lisp/ghostel.el"
+   (file-name-directory (or load-file-name buffer-file-name)))
+  "Path to the real ghostel.el, when this checkout has fetched it.
+Resolved the same way as `claude-term-live-test--evil-ghostel-source'.")
+
+(defconst claude-term-live-test--ghostel-native-fns
+  '(ghostel--new ghostel--set-size ghostel--set-palette
+    ghostel--set-default-colors ghostel--set-bold-config
+    ghostel--redraw ghostel--write-vt ghostel--write-pty
+    ghostel--mode-enabled ghostel--alt-screen-p
+    ghostel--module-version ghostel--encode-key)
+  "Native-module leaf functions stubbed by the real-`ghostel-mode' test.
+Only leaves: every one is implemented in ghostel-module.dylib, which a
+batch harness cannot load.  All Lisp control flow between
+`ghostel-exec' and `ghostel-mode' runs for real, which is the entire
+point of the test below.")
+
+(ert-deftest claude-term-live-test-exec-locals-survive-real-ghostel-mode ()
+  "`claude-term--exec's buffer-locals must survive a FIRST spawn.
+
+This is the one test that drives the REAL `ghostel-exec' and the REAL
+`ghostel-mode', rather than `claude-term-live-test--fake-exec'.  That
+distinction is the whole test: `ghostel-exec' -> `ghostel--init-buffer'
+runs `(unless (derived-mode-p \\='ghostel-mode) (ghostel-mode))', and
+`ghostel-mode' derives from `fundamental-mode', so a buffer's first
+spawn runs `kill-all-local-variables' and discards every buffer-local
+set before the call.  Every stub in this file bypasses that path and so
+cannot see the failure.
+
+Regression guard for the defect tracked by rdm task
+`claude-term-exec-buffer-local-wipe': with the setup ordered before
+`ghostel-exec', all five assertions below fail --
+`claude-term--root'/`--instance'/`--args' come back nil,
+`ghostel-kill-buffer-on-exit' reverts to its global default of t, and
+`claude-term--on-exit' is never registered -- which left
+`claude-term-restart' unable to re-exec and `claude-term--on-exit'
+never running in production, while every stubbed test still passed."
+  (unless (file-exists-p claude-term-live-test--ghostel-source)
+    (ert-skip "real ghostel.el not present in this checkout"))
+  (add-to-list 'load-path
+               (file-name-directory claude-term-live-test--ghostel-source))
+  (require 'ghostel)
+  (let ((stubbed nil)
+        (buf (get-buffer-create "*claude-term-live-test-real-mode*")))
+    (unwind-protect
+        (progn
+          ;; Stub only the native leaves, and only those not already
+          ;; bound, so a machine with a compiled module still exercises
+          ;; the real ones.
+          (dolist (fn claude-term-live-test--ghostel-native-fns)
+            (unless (fboundp fn)
+              (push fn stubbed)
+              (fset fn (lambda (&rest _) nil))))
+          (cl-letf (((symbol-function 'claude-term--ensure-ghostel)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'ghostel--load-module)
+                     (lambda (&rest _) t))
+                    ((symbol-function 'ghostel--spawn-pty)
+                     (lambda (&rest _)
+                       (let ((proc (start-process
+                                    "claude-term-live-test-real" (current-buffer)
+                                    "sleep" "3600")))
+                         (set-process-query-on-exit-flag proc nil)
+                         (setq-local ghostel--process proc)
+                         proc))))
+            (claude-term--exec buf (temporary-file-directory) "2" '("--x")))
+          (with-current-buffer buf
+            ;; Guard the guard: if this ever stops being the real mode,
+            ;; the assertions below would pass vacuously.
+            (should (derived-mode-p 'ghostel-mode))
+            (should (equal claude-term--root (temporary-file-directory)))
+            (should (equal claude-term--instance "2"))
+            (should (equal claude-term--args '("--x")))
+            (should-not ghostel-kill-buffer-on-exit)
+            (should (local-variable-p 'ghostel-exit-functions))
+            (should (memq #'claude-term--on-exit ghostel-exit-functions))))
+      (dolist (fn stubbed) (fmakunbound fn))
+      (when-let* ((proc (get-buffer-process buf))) (delete-process proc))
+      (kill-buffer buf))))
+
 (provide 'claude-term-live-test)
 ;;; claude-term-live-test.el ends here
