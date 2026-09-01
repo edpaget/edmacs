@@ -91,6 +91,15 @@
   ;; (lsp-ui-sideline-enable stays nil; see the lsp-ui block above)
   (global-flycheck-annotate-mode 1)
 
+  ;; evil-collection-flycheck-setup rebinds S and x for the error list but
+  ;; never touches "P" -- so under evil, emulation-mode-map-alist resolves
+  ;; "P" to the global evil-normal-state-map binding (evil-paste-before)
+  ;; before it ever reaches flycheck-error-list-mode-map's own native
+  ;; binding for flycheck-error-list-toggle-scope. Restore it explicitly.
+  (with-eval-after-load 'evil-collection
+    (evil-collection-define-key 'normal 'flycheck-error-list-mode-map
+      "P" 'flycheck-error-list-toggle-scope))
+
   ;; Flycheck keybindings
   (general-define-key
    :states 'normal
