@@ -30,9 +30,9 @@
 ;; own project (`project--submodule-p' deliberately excludes linked
 ;; worktrees from folding into the parent).  Those raw `C-x v w ...'
 ;; chords are shadowed in evil normal state by a pre-existing binding
-;; unrelated to this phase -- see the note below for how this module
-;; makes them reachable there anyway -- and `SPC p w'/`SPC T' expose the
-;; same commands as a fast, no-delay alternative.
+;; unrelated to this phase -- see the "C-x chords" section below for how
+;; this module reaches past it -- and `SPC p w'/`SPC T' expose the same
+;; commands as a fast, no-delay alternative.
 ;;
 ;; perspective.el is deliberately avoided: its own README states it
 ;; cannot save shell/REPL/compilation buffers, it is incompatible with
@@ -41,7 +41,7 @@
 ;; other tmux-replacement package are likewise out of scope for this
 ;; phase.
 ;;
-;; FORMER SHADOW, NOW DISPATCHED: `modules/evil-config.el' binds bare
+;; FORMER SHADOW, NOW EXTENDED: `modules/evil-config.el' binds bare
 ;; `C-x' in `evil-normal-state-map' to `evil-numbers/dec-at-pt' (a
 ;; deliberate, pre-existing vim-native mapping mirroring vim's own C-a/C-x
 ;; increment/decrement-at-point).  Normal state is the default editing
@@ -49,16 +49,18 @@
 ;; command (not a nested prefix keymap), pressing `C-x' there terminated
 ;; the key sequence immediately -- so `C-x t p' (`project-other-tab-command')
 ;; and every `C-x v w ...' chord this phase names were unreachable from
-;; evil normal state without leaving it.  Rather than touch evil-numbers'
-;; own binding (pre-existing, unrelated to this phase, and rebinding it
-;; would cost real muscle memory), the "C-x dispatch" section below
-;; redirects C-x through `general-key-dispatch' so both behaviors coexist:
-;; the worktree/tab chords this phase's ACs literally name now work from
+;; evil normal state without leaving it.  Rather than shadow evil-config's
+;; binding with a second, competing `define-key' on that same keymap entry
+;; (which would win or lose purely by whether this module happens to load
+;; *after* evil-config.el -- a load-order-dependent landmine), this module
+;; registers its chords through `edmacs-evil-config-add-c-x-chord', the
+;; extension point evil-config.el exposes for exactly this: the
+;; worktree/tab chords this phase's ACs literally name now work from
 ;; normal state, and bare C-x with nothing typed after it still decrements
 ;; the number at point exactly as before (after a short grace period, to
-;; give the dispatch a chance to see whether a chord follows).  `SPC T'
-;; and `SPC p w' below remain the fast, no-delay path to the same
-;; commands.
+;; give the dispatch a chance to see whether a chord follows), regardless
+;; of module load order.  `SPC T' and `SPC p w' below remain the fast,
+;; no-delay path to the same commands.
 
 ;;; Code:
 
@@ -80,12 +82,33 @@
 ;; `SPC T' bindings below.
 (setq tab-bar-define-keys nil)
 
-(defun edmacs-sessions--git-common-dir (root)
-  "Return the absolute git common directory for the worktree at ROOT, or nil.
+(defvar edmacs-sessions--git-common-dir-cache (make-hash-table :test #'equal)
+  "Memoized ROOT -> git-common-dir results from `edmacs-sessions--git-common-dir'.
+`tab-bar-tabs' recomputes the *current* tab's name via
+`tab-bar-tab-name-function' on essentially every redisplay of the tab
+line, not merely on tab creation, so without this cache each worktree
+tab would pay a synchronous git subprocess spawn on that same cadence.
+A worktree's git-common-dir cannot change during the life of a running
+Emacs, so entries are never invalidated. A miss is cached too (as the
+symbol `none', since a plain nil can't be told apart from \"not yet
+looked up\" in `gethash''s single optional-default arg) so a
+worktree git can't identify doesn't get re-shelled-out-to forever.")
+
+(defun edmacs-sessions--git-common-dir-1 (root)
+  "Uncached implementation of `edmacs-sessions--git-common-dir' for ROOT.
 Every worktree of one repository shares this path (it is the main
 checkout's `.git', per git-worktree(1)), so its parent directory names
 the repository independent of any individual worktree's own directory
 name.
+
+Uses `process-file', not `call-process': ROOT may be a TRAMP remote
+directory (project.el and vc.el both support those), and
+`call-process' is documented to run in `default-directory' only when
+that is local, silently falling back to running the command in `~'
+otherwise -- exactly the directory-confusion bug this function exists
+to avoid, just relocated to a remote-vs-local split instead of a
+stale-`default-directory' one. `process-file' dispatches through
+TRAMP for a remote `default-directory' and runs locally otherwise.
 
 For a linked worktree, git prints an already-absolute path here; for
 the *main* worktree, though, it prints a path relative to the
@@ -94,11 +117,34 @@ an absolute path has to happen right here, while `default-directory'
 is still bound to ROOT -- a caller expanding the returned string later
 against its own, unrelated `default-directory' (e.g. whatever buffer
 happens to be selected when tab-bar recomputes the tab name) would
-silently resolve it against the wrong base and misname the tab."
+silently resolve it against the wrong base and misname the tab.
+
+When ROOT is remote, git itself only ever prints a bare on-host path
+(git has no notion of TRAMP), so an already-\"absolute\" answer like
+\"/home/user/repo/.git\" still needs ROOT's own TRAMP method/host
+prefix grafted back on by hand -- `expand-file-name' leaves an
+already-absolute NAME untouched and would otherwise silently drop the
+remote host, resolving to a same-named but purely local path."
   (let ((default-directory root))
     (with-temp-buffer
-      (when (zerop (call-process "git" nil t nil "rev-parse" "--git-common-dir"))
-        (expand-file-name (string-trim (buffer-string)))))))
+      (when (zerop (process-file "git" nil t nil "rev-parse" "--git-common-dir"))
+        (let ((raw (string-trim (buffer-string)))
+              (remote (file-remote-p root)))
+          (cond
+           ((not (file-name-absolute-p raw)) (expand-file-name raw root))
+           ((and remote (not (file-remote-p raw))) (concat remote raw))
+           (t raw)))))))
+
+(defun edmacs-sessions--git-common-dir (root)
+  "Return the absolute git common directory for the worktree at ROOT, or nil.
+Memoized per ROOT; see `edmacs-sessions--git-common-dir-cache' and
+`edmacs-sessions--git-common-dir-1' for why and how."
+  (let ((cached (gethash root edmacs-sessions--git-common-dir-cache 'edmacs-sessions--miss)))
+    (if (not (eq cached 'edmacs-sessions--miss))
+        (and (not (eq cached 'none)) cached)
+      (let ((result (edmacs-sessions--git-common-dir-1 root)))
+        (puthash root (or result 'none) edmacs-sessions--git-common-dir-cache)
+        result))))
 
 (defun edmacs-sessions--tab-name ()
   "Name the current tab after its project/worktree, falling back sanely.
@@ -242,32 +288,57 @@ later client frames just get the normal, empty daemon frame."
   (bufferlo-mode 1))
 
 ;; ============================================================================
-;; C-x dispatch - un-shadow the worktree/tab chords this phase's ACs name
+;; C-x chords - reach the worktree/tab chords this phase's ACs name
 ;; ============================================================================
-;; See the "FORMER SHADOW, NOW DISPATCHED" note above the top of this file.
-;; `general-key-dispatch' (general.el is already a dependency of this repo
-;; via modules/keybindings.el) creates a command that waits, bounded by
-;; TIMEOUT, for the next key(s): a match below runs that command; no
-;; match (including a timeout with nothing typed) falls back to
-;; `evil-numbers/dec-at-pt', simulating any unmatched keys afterward --
-;; i.e. exactly today's behavior for every C-x chord this list doesn't
-;; know about. This is scoped deliberately narrow (the specific chords
+;; See the "FORMER SHADOW, NOW EXTENDED" note above the top of this file.
+;; `edmacs-evil-config-add-c-x-chord' (modules/evil-config.el) is the sole
+;; owner of the `C-x' entry in `evil-normal-state-map'; registering here
+;; instead of a competing `define-key' means these chords work from
+;; normal state regardless of whether evil-config.el or this module
+;; loads first. This is scoped deliberately narrow (the specific chords
 ;; this phase's body and ACs name), not a blanket un-shadow of the whole
 ;; `ctl-x-map' -- broadening that is a separate, unrelated change.
-(with-eval-after-load 'evil-numbers
-  (define-key evil-normal-state-map (kbd "C-x")
-    (general-key-dispatch 'evil-numbers/dec-at-pt
-      :timeout 0.4
-      :name edmacs-sessions--c-x-dispatch
-      :docstring "Decrement number at point (vim's `C-x'), or run one of
-this phase's tab/worktree commands when C-x is followed by
-`t p'/`v w w'/`v w s'/`v w k'/`v w a'/`v w A'."
-      "t p" 'project-other-tab-command
-      "v w w" 'vc-switch-working-tree
-      "v w s" 'vc-working-tree-switch-project
-      "v w k" 'vc-kill-other-working-tree-buffers
-      "v w a" 'vc-apply-to-other-working-tree
-      "v w A" 'vc-apply-root-to-other-working-tree)))
+(dolist (chord '(("t p" . project-other-tab-command)
+                  ("v w w" . vc-switch-working-tree)
+                  ("v w s" . vc-working-tree-switch-project)
+                  ("v w k" . vc-kill-other-working-tree-buffers)
+                  ("v w a" . vc-apply-to-other-working-tree)
+                  ("v w A" . vc-apply-root-to-other-working-tree)))
+  (edmacs-evil-config-add-c-x-chord (car chord) (cdr chord)))
+
+;; ============================================================================
+;; One tab per worktree - collapse duplicates from re-opening the same one
+;; ============================================================================
+;; `project-other-tab-command' (bound above at `C-x t p'/`SPC T p') always
+;; creates and selects a brand-new tab -- it has no notion of "a tab for
+;; this worktree already exists" -- so re-running it against a worktree
+;; that already has a tab would otherwise leave two tabs for one
+;; worktree, which the phase's "one tab per active worktree" acceptance
+;; criterion rules out. `project-other-tab-command' resolves its target
+;; project several layers down inside `project--other-place-prefix' and
+;; whichever project sub-command the user picks, so pre-empting it with
+;; a duplicate-directory check before it runs would mean reimplementing
+;; that resolution; advising *around* it and reconciling afterward is
+;; simpler and applies uniformly no matter which project sub-command was
+;; invoked.
+(defun edmacs-sessions--dedupe-tab-after-open (orig-fn &rest args)
+  "Collapse a just-opened tab into its pre-existing worktree counterpart.
+Runs ORIG-FN (`project-other-tab-command') with ARGS, then -- if the
+freshly created and now-current tab's name collides with a tab that
+already existed beforehand -- closes the new tab and switches to the
+existing one instead, so a worktree that already has a tab never ends
+up with a second one."
+  (let ((before-tabs (tab-bar-tabs)))
+    (apply orig-fn args)
+    (let* ((new-name (funcall tab-bar-tab-name-function))
+           (dup (seq-find (lambda (tab) (equal (alist-get 'name tab) new-name))
+                           before-tabs))
+           (dup-index (and dup (tab-bar--tab-index dup))))
+      (when dup-index
+        (tab-bar-close-tab nil (1+ dup-index))))))
+
+(advice-add 'project-other-tab-command :around
+            #'edmacs-sessions--dedupe-tab-after-open)
 
 ;; ============================================================================
 ;; Leader-key bindings
@@ -279,8 +350,8 @@ this phase's tab/worktree commands when C-x is followed by
 ;; bindings use. Either is an established pattern in this repo; this
 ;; module picks the self-registering one so it stays fully self-contained.
 
-;; SPC T - tab lifecycle: the fast, no-delay path (the C-x dispatch
-;; above also makes `C-x t p' work from normal state, but incurs its
+;; SPC T - tab lifecycle: the fast, no-delay path (the C-x chords
+;; above also make `C-x t p' work from normal state, but incur their
 ;; grace-period timeout).
 (general-define-key
  :states 'normal
@@ -295,9 +366,9 @@ this phase's tab/worktree commands when C-x is followed by
  "l" '(tab-bar-switch-to-tab :which-key "switch tab by name"))
 
 ;; SPC p w - worktree switching: the fast, no-delay path to the stock
-;; vc.el worktree commands (the C-x dispatch above also makes the literal
+;; vc.el worktree commands (the C-x chords above also make the literal
 ;; `C-x v w s' etc. chords work from normal state, per the phase's
-;; "Done when" wording, but incurs its grace-period timeout).
+;; "Done when" wording, but incur their grace-period timeout).
 (general-define-key
  :states 'normal
  :prefix "SPC p w"

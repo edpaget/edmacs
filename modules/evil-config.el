@@ -92,13 +92,79 @@
 ;; ============================================================================
 ;; Evil Numbers - Increment/decrement numbers
 ;; ============================================================================
+;;
+;; `C-x' in normal state is a leaf binding to `evil-numbers/dec-at-pt'
+;; (a deliberate, pre-existing vim-native mapping mirroring vim's own
+;; C-a/C-x increment/decrement-at-point). Other modules that want a
+;; multi-key `C-x <chord>' sequence to reach past that leaf (e.g.
+;; built-ins like `project-other-tab-command' on `C-x t p', or the
+;; worktree commands on `C-x v w ...') register through
+;; `edmacs-evil-config-add-c-x-chord' below instead of re-defining
+;; `C-x' themselves. That keeps this file the sole owner of the
+;; `evil-normal-state-map' `C-x' entry no matter what order modules
+;; load in or get re-evaluated in -- a later module that shadowed it
+;; directly via its own `define-key'/`with-eval-after-load' would win
+;; or lose purely by load order, silently reverting the extension the
+;; moment load order changed.
+
+(defvar edmacs-evil-config--c-x-chords nil
+  "Alist of (KEY-STRING . COMMAND) reachable after evil's normal-state `C-x'.
+Populated only via `edmacs-evil-config-add-c-x-chord'; consulted every
+time the `C-x' binding is rebuilt, so registration order never
+matters. KEY-STRING is a `general-key-dispatch'-style continuation
+typed after `C-x', e.g. \"t p\" or \"v w s\".")
+
+(defun edmacs-evil-config--rebuild-c-x-binding ()
+  "(Re)install normal-state `C-x' from `edmacs-evil-config--c-x-chords'.
+With no chords registered, `C-x' is the plain `evil-numbers/dec-at-pt'
+leaf command, exactly as before this extension point existed. Once at
+least one chord is registered, `C-x' instead waits (bounded by a
+short grace period) to see whether one of those chords follows;
+anything else -- including a timeout with nothing typed -- falls back
+to `evil-numbers/dec-at-pt', simulating any unmatched keys afterward,
+i.e. today's behavior for every `C-x' use the alist doesn't know
+about. The dispatcher is built via `general-key-dispatch', but that's
+a macro (`cl-defmacro'), and the whole point of this alist is that
+its contents aren't known until some *later*-loading module (e.g.
+sessions.el) registers a chord -- so the call is assembled as data and
+run through `eval' rather than written as a literal macro form here,
+which also means this file never needs `general' loaded yet when it
+(module #2) itself loads."
+  (define-key evil-normal-state-map (kbd "C-x")
+    (if edmacs-evil-config--c-x-chords
+        (eval
+         `(general-key-dispatch 'evil-numbers/dec-at-pt
+            :timeout 0.4
+            :name edmacs-evil-config--c-x-dispatch
+            :docstring ,(format "Decrement number at point (vim's `C-x'), \
+or run a registered command when `C-x' is followed by one of: %s."
+                                 (mapconcat #'car edmacs-evil-config--c-x-chords ", "))
+            ,@(mapcan (lambda (entry) (list (car entry) `(quote ,(cdr entry))))
+                      edmacs-evil-config--c-x-chords))
+         t)
+      'evil-numbers/dec-at-pt)))
+
+(defun edmacs-evil-config-add-c-x-chord (key command)
+  "Register COMMAND to run when normal-state `C-x' is followed by KEY.
+KEY is a string typed after `C-x' (e.g. \"t p\" or \"v w s\"). This is
+the extension point other modules use to reach past the leaf `C-x'
+binding this file installs for `evil-numbers/dec-at-pt' -- see the
+commentary above `edmacs-evil-config--c-x-chords' for why no other
+module should call `define-key' on that keymap entry directly. Safe
+to call regardless of load order relative to this file or to
+`evil-numbers': the alist entry is recorded immediately, and the
+actual keymap rebuild is deferred to once `evil-numbers' has installed
+its own initial binding."
+  (setf (alist-get key edmacs-evil-config--c-x-chords nil nil #'equal) command)
+  (with-eval-after-load 'evil-numbers
+    (edmacs-evil-config--rebuild-c-x-binding)))
 
 (use-package evil-numbers
   :after evil
   :config
   ;; Bind in normal state
   (define-key evil-normal-state-map (kbd "C-a") 'evil-numbers/inc-at-pt)
-  (define-key evil-normal-state-map (kbd "C-x") 'evil-numbers/dec-at-pt))
+  (edmacs-evil-config--rebuild-c-x-binding))
 
 ;; ============================================================================
 ;; Evil Matchit - Match tags with %
