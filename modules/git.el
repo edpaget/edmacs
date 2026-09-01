@@ -8,7 +8,9 @@
 ;; ============================================================================
 ;; Magit - The best Git interface
 ;; ============================================================================
-;; Note: transient and its dependencies are loaded early in core.el
+;; Note: transient is NOT force-loaded eagerly (see modules/core.el) --
+;; magit requires it internally the first time a magit command actually
+;; loads it, which is fine since magit itself is :commands-deferred below.
 
 (use-package magit
   :commands (magit-status magit-diff-unstaged magit-diff-staged magit-commit

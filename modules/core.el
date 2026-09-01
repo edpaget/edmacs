@@ -13,7 +13,7 @@
 ;;
 ;; The eager `(require 'transient)' that used to sit here (with a comment
 ;; claiming it avoided an unspecified load-order issue) was removed on
-;; 2026-09-01 as part of edmacs-performance/phase-2-defer-eager-use-package-forms,
+;; 2026-09-01 as part of edmacs-performance/phase-2-defer-eager-packages,
 ;; after re-testing found no reproduction of any such issue: magit is
 ;; :commands-deferred (modules/git.el) and `require's transient internally
 ;; the first time any magit command actually loads it, confirmed via a full
