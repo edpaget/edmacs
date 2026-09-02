@@ -87,6 +87,9 @@ LANGUAGE should be the name without the .el extension."
 (load-module "programming")
 (load-module "vterm")
 (load-module "ai")
+;; Before its consumers below: they only `declare-function' it, so
+;; nothing loads it on demand.
+(load-module "git-common-dir")
 (load-module "claude-term")
 (load-module "claude-term-registry")
 ;; (load-module "org-config")

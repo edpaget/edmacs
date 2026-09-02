@@ -22,7 +22,8 @@
 ;; loads and runs standalone per its own header recipe.
 ;;
 ;; Run:
-;;   emacs -Q --batch -l ert -l modules/claude-term.el \
+;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/claude-term.el \
 ;;         -l modules/claude-term-registry.el \
 ;;         -l modules/claude-term-registry-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
@@ -170,6 +171,52 @@ live process still attached) afterward regardless of how BODY exits."
         (ignore-errors (delete-directory root1 t))
         (ignore-errors (delete-directory root2 t))
         (ignore-errors (delete-directory root3 t))))))
+
+;; ============================================================================
+;; F1 -- claude-term-kill-all, the actual command SPC a X invokes, kills
+;; every live session including one caught mid-restart
+;; ============================================================================
+
+(ert-deftest claude-term-registry-live-test-kill-all-clears-in-flight-restart-and-kills-all ()
+  "`claude-term-kill-all' kills every live session against real
+subprocesses, including one that is mid-restart when the global kill
+fires -- exercising its `claude-term--restarting'-clearing guard, which
+no test previously called this command to exercise. Without that
+guard, `claude-term--on-exit's restart branch would silently resurrect
+the mid-restart session moments after being asked to die instead of
+tearing it down like its sibling."
+  (let ((claude-term-registry-live-test--spawn-log nil)
+        (claude-term-registry--table (make-hash-table :test #'equal))
+        (root1 (file-name-as-directory (make-temp-file "claude-term-registry-live-killall-1-" t)))
+        (root2 (file-name-as-directory (make-temp-file "claude-term-registry-live-killall-2-" t))))
+    (cl-letf (((symbol-function 'claude-term--ensure-ghostel) #'ignore)
+              ((symbol-function 'ghostel-exec) #'claude-term-registry-live-test--fake-exec))
+      (unwind-protect
+          (claude-term-registry-live-test--with-buffer
+              buf1 "*claude-term-registry-live-test:killall1*"
+            (claude-term-registry-live-test--with-buffer
+                buf2 "*claude-term-registry-live-test:killall2*"
+              (claude-term--exec buf1 root1 nil nil)
+              (claude-term--exec buf2 root2 nil nil)
+              (should (= (length (claude-term-registry-sessions)) 2))
+              ;; Simulate buf2 being mid-restart at the exact moment the
+              ;; global kill fires.
+              (with-current-buffer buf2 (setq-local claude-term--restarting t))
+              (let ((spawn-count-before (length claude-term-registry-live-test--spawn-log)))
+                (claude-term-kill-all)
+                (should (claude-term-registry-live-test--wait-until
+                         (lambda () (and (not (buffer-live-p buf1))
+                                         (not (buffer-live-p buf2))))
+                         3))
+                ;; Neither session was resurrected: no new `ghostel-exec'
+                ;; call happened after the kill (buf2's restart branch
+                ;; never fired), and both registry entries are gone.
+                (should (= (length claude-term-registry-live-test--spawn-log) spawn-count-before))
+                (should-not (claude-term-registry-get root1 nil))
+                (should-not (claude-term-registry-get root2 nil))
+                (should (= (length (claude-term-registry-sessions)) 0)))))
+        (ignore-errors (delete-directory root1 t))
+        (ignore-errors (delete-directory root2 t))))))
 
 ;; ============================================================================
 ;; AC5 -- rename migrates one instance's key without disturbing a sibling

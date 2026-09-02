@@ -27,52 +27,27 @@
 ;; under `SPC T'.
 (setq tab-bar-define-keys nil)
 
-(defvar edmacs-sessions--git-common-dir-cache (make-hash-table :test #'equal)
-  "Memoized ROOT -> git-common-dir results.
-`tab-bar-tab-name-function' runs on nearly every redisplay, so each lookup
-would otherwise spawn git. Misses are cached as `none'; a worktree's
-common dir never changes while Emacs runs, so nothing is invalidated.")
-
-(defun edmacs-sessions--git-common-dir-1 (root)
-  "Uncached implementation of `edmacs-sessions--git-common-dir' for ROOT.
-Uses `process-file' so a TRAMP ROOT runs git remotely. Relative output
-\(the main worktree prints \".git\") is expanded against ROOT here, while
-`default-directory' is still bound to it; on a remote ROOT the TRAMP
-prefix is grafted back on, since git prints bare on-host paths. Signals
-from a missing git or a pruned ROOT fold into nil so the miss is cached."
-  (let ((default-directory root))
-    (condition-case nil
-        (with-temp-buffer
-          (when (zerop (process-file "git" nil t nil "rev-parse" "--git-common-dir"))
-            (let ((raw (string-trim (buffer-string)))
-                  (remote (file-remote-p root)))
-              (cond
-               ((not (file-name-absolute-p raw)) (expand-file-name raw root))
-               ((and remote (not (file-remote-p raw))) (concat remote raw))
-               (t raw)))))
-      (file-error nil))))
-
-(defun edmacs-sessions--git-common-dir (root)
-  "Return the absolute git common directory for the worktree at ROOT, or nil.
-Memoized per ROOT; see `edmacs-sessions--git-common-dir-cache' and
-`edmacs-sessions--git-common-dir-1' for why and how."
-  (let ((cached (gethash root edmacs-sessions--git-common-dir-cache 'edmacs-sessions--miss)))
-    (if (not (eq cached 'edmacs-sessions--miss))
-        (and (not (eq cached 'none)) cached)
-      (let ((result (edmacs-sessions--git-common-dir-1 root)))
-        (puthash root (or result 'none) edmacs-sessions--git-common-dir-cache)
-        result))))
+;; Available via init.el's `load-module' order, not a `require'.
+(declare-function edmacs-git-common-dir "git-common-dir")
 
 (defun edmacs-sessions--tab-name ()
-  "Name the current tab after its project/worktree.
-Prefixed with the owning repository's directory name (from
-`--git-common-dir') so two same-named worktrees from different repos get
-distinct tabs. Falls back to `tab-bar-tab-name-current' when there is no
-project."
+  "Name the current tab after its project/worktree, falling back sanely.
+Uses `project-current' so each tab's label reflects the worktree it
+holds; when no project is found (e.g. a scratch tab), falls back to
+`tab-bar-tab-name-current' default behavior (buffer name of the
+selected window).
+
+Two worktrees of *different* repositories can share a directory
+basename (e.g. both named `feature-x', or two rdm worktrees named
+`roadmap-foundation' from two different rdm projects), which a bare
+basename would render as identical, ambiguous tab names. Disambiguate
+by prefixing the owning repository's own directory name, derived from
+`edmacs-git-common-dir' (shared by every worktree of one repo, so it
+names the repo rather than the worktree)."
   (if-let* ((proj (project-current))
             (root (project-root proj)))
       (let* ((base (file-name-nondirectory (directory-file-name root)))
-             (common (edmacs-sessions--git-common-dir root))
+             (common (edmacs-git-common-dir root))
              (repo (and common
                         (file-name-nondirectory
                          (directory-file-name

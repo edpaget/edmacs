@@ -223,16 +223,6 @@ does not match `claude-term--buffer-name-regexp'."
   (when (string-match claude-term--buffer-name-regexp name)
     (cons (match-string 1 name) (match-string 2 name))))
 
-(defun claude-term--buffer-list ()
-  "Return the list of live buffers whose name is a claude-term name.
-There is no separate session registry in this phase (that is phase 4's
-job); this scan of `buffer-list' filtered through
-`claude-term--parse-buffer-name' IS the registry for this phase's
-purposes -- both for enumerating sessions (`claude-term-kill',
-`claude-term-restart') and for the leaf-collision check below."
-  (seq-filter (lambda (buf) (claude-term--parse-buffer-name (buffer-name buf)))
-              (buffer-list)))
-
 (defun claude-term--resolve-instance (root instance)
   "Return the effective instance label to use for ROOT given requested INSTANCE.
 When the candidate buffer name for ROOT/INSTANCE is unused, or already
@@ -529,9 +519,9 @@ therefore corrupt the just-restarted terminal with that stray banner.
 
 On a plain exit or an explicit kill (`claude-term--restarting' nil),
 tears the buffer down -- `ghostel-kill-buffer-on-exit' is nil precisely
-so this is the single point of truth for that, and a killed buffer is
-definitionally absent from `claude-term--buffer-list', satisfying \"no
-phantom\" without a separate registry this phase.  On a restart in
+so this is the single point of truth for that, and
+`claude-term-registry-remove' below keeps a killed buffer from
+lingering as a phantom registry entry.  On a restart in
 flight, defers the re-exec via `run-at-time' (0-second delay) so it
 runs on a later event-loop iteration, after `ghostel--sentinel's tail
 code for THIS exit has already finished touching the (still-dead-at-
@@ -623,22 +613,6 @@ not selecting anything in that case."
     window))
 
 ;; ============================================================================
-;; Buffer selection for kill/restart
-;; ============================================================================
-
-(defun claude-term--read-buffer (prompt)
-  "Return a claude-term buffer, using PROMPT if a choice is needed.
-Returns the current buffer when called from inside a claude-term
-buffer; otherwise PROMPTs via `completing-read' over existing
-claude-term buffers."
-  (if (claude-term--parse-buffer-name (buffer-name))
-      (current-buffer)
-    (let ((candidates (mapcar #'buffer-name (claude-term--buffer-list))))
-      (when (null candidates)
-        (user-error "Claude-term: no claude-term buffers"))
-      (get-buffer (completing-read prompt candidates nil t)))))
-
-;; ============================================================================
 ;; Entry points
 ;; ============================================================================
 
@@ -667,24 +641,30 @@ this module."
       (claude-term--exec buffer root instance args)
       (claude-term--pop-to-side-window buffer))))
 
+(defun claude-term--read-buffer (prompt)
+  "Return a claude-term buffer to act on, prompting via PROMPT if needed.
+Returns the current buffer when called from inside a claude-term
+buffer; otherwise resolves via the registry-based
+`claude-term--read-session' picker (state icon, worktree slug, repo,
+elapsed time, MRU-sorted) -- the single session-selection
+implementation `claude-term-kill' and `claude-term-restart' both share,
+so a cross-project kill and a cross-project restart present the exact
+same picker as `claude-term-jump', rather than each command carrying
+its own competing session-selection implementation."
+  (if (claude-term--parse-buffer-name (buffer-name))
+      (current-buffer)
+    (claude-term-session-buffer (claude-term--read-session prompt))))
+
 ;;;###autoload
 (defun claude-term-kill (&optional buffer)
   "Kill the `claude' process in BUFFER.
 BUFFER defaults to the current buffer when called from inside a
-claude-term buffer, else it is chosen via the phase 4 registry-based
-`claude-term--read-session' picker (richer than a bare buffer-name
-`completing-read': state icon, worktree slug, repo, elapsed time) --
-repointed there from the flat `claude-term--buffer-list' scan, so
-cross-project kill targets the same picker as `claude-term-jump'.
+claude-term buffer, else it is chosen via `claude-term--read-buffer'.
 Buffer teardown happens asynchronously once the process sentinel fires
 -- see `claude-term--on-exit' -- so this never also calls `kill-buffer'
 itself, which would race the sentinel."
   (interactive)
-  (let ((buffer (or buffer
-                     (if (claude-term--parse-buffer-name (buffer-name))
-                         (current-buffer)
-                       (claude-term-session-buffer
-                        (claude-term--read-session "Kill claude-term session: "))))))
+  (let ((buffer (or buffer (claude-term--read-buffer "Kill claude-term session: "))))
     (with-current-buffer buffer
       (if (process-live-p ghostel--process)
           (kill-process ghostel--process)
@@ -694,7 +674,7 @@ itself, which would race the sentinel."
 (defun claude-term-restart (&optional buffer)
   "Restart the `claude' session in BUFFER.
 BUFFER defaults to the current buffer when called from inside a
-claude-term buffer, else it is prompted for.
+claude-term buffer, else it is chosen via `claude-term--read-buffer'.
 When the process is live, performs the required async
 kill -> sentinel -> re-exec dance (`claude-term--on-exit' does the
 re-exec once the sentinel fires) -- `ghostel-exec' signals a
