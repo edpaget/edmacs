@@ -82,6 +82,7 @@ LANGUAGE should be the name without the .el extension."
 (load-module "core")
 (load-module "evil-config")
 (load-module "ui")
+(load-module "windows")
 (load-module "completion")
 (load-module "keybindings")
 (load-module "programming")

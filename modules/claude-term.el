@@ -104,31 +104,17 @@ argument scoping an MCP server to Emacs-launched sessions."
   :type '(repeat string)
   :group 'claude-term)
 
-(defcustom claude-term-window-width 0.4
-  "Fractional width of a claude-term side window, relative to the frame.
-`window-sides-vertical' is nil by default, so left and right side
-windows form ONE column stacked vertically and share a single width --
-several agent panes are stacked top-to-bottom in that column, not laid
-out side by side.  This value is therefore a per-column width shared by
-every stacked pane, not a per-pane budget: size it for a single narrow
-column (claude-code-ide.el's 100-column default is sized for a
-side-by-side layout and is far too wide here)."
-  :type 'number
-  :group 'claude-term)
+;; `edmacs-stack-width' (modules/windows.el) is the real, customizable
+;; variable; this `defvar' only supplies a working default when
+;; claude-term.el is loaded standalone (e.g. claude-term-test.el's own -Q
+;; invocation, which never loads windows.el) and is a no-op once windows.el's
+;; own `defcustom edmacs-stack-width' has already run, as it does in the
+;; real init.el load order (windows.el loads before claude-term.el).
+(defvar edmacs-stack-width 0.4
+  "Fractional width of the right-hand stack column, relative to the frame.")
 
-;; ============================================================================
-;; Side-window layout
-;; ============================================================================
-;; `window-sides-slots' element order is LEFT TOP RIGHT BOTTOM.  nil for a
-;; side means unbounded (a fresh slot always creates a new window); a
-;; numeric cap means a request for a slot beyond the cap causes the most
-;; suitable EXISTING side window on that edge to be reused with its slot
-;; parameter changed, rather than a new window being created; 0 forbids
-;; creation entirely and `display-buffer-in-side-window' returns nil
-;; rather than erroring.  Right is capped at 3 (this phase's Done
-;; criterion); the other three edges are left unbounded since nothing
-;; else in this module uses them yet.
-(setq window-sides-slots '(nil nil 3 nil))
+(defvaralias 'claude-term-window-width 'edmacs-stack-width
+  "Obsolete alias for `edmacs-stack-width'.")
 
 ;; ============================================================================
 ;; Terminal appearance
@@ -236,21 +222,15 @@ this buffer, including restarts.")
 Sticking to one slot for the life of a buffer (via
 `claude-term--allocate-slot') is what keeps a re-display of an already
 live session (toggling back to it, restarting it) from grabbing a fresh
-slot and, once `window-sides-slots' right cap of 3 is reached, silently
-evicting an unrelated pane via Emacs's own slot-reuse behavior.")
+slot instead of its own.")
 
 (defvar claude-term--next-slot 0
   "Counter for the next unassigned side-window slot.
 Monotonically increasing and never recycled -- a killed session's old
-slot is not reclaimed by the next fresh buffer.  Intentional for this
-phase: start with the simplest thing that works and revisit only if
-instances from different projects start interleaving confusingly (see
-the phase body's own guidance).  Also means a 4th distinct claude-term
-buffer requests slot 3, beyond the right side's cap of 3 (slots 0-2) --
-`display-buffer-in-side-window' then reuses the most suitable existing
-side window rather than creating a new one, per stock Emacs behavior;
-out of scope for this phase, which only requires three simultaneous
-agents, but worth remembering once phase 4's session registry lands.")
+slot is not reclaimed by the next fresh buffer.  `window-sides-slots'
+right element is nil (edmacs-window-management/phase-1-layout-model), so
+a fresh slot always creates a new window rather than ever reusing/evicting
+an existing pane; nothing bounds the column but screen height.")
 
 ;; ============================================================================
 ;; Buffer naming
@@ -625,7 +605,7 @@ everything else from the dead session."
 ;; enter an agent pane despite `no-other-window' -- that parameter only
 ;; ever blocks `other-window'/`SPC w w'/`C-x 1' cycling here.  The
 ;; `edmacs-windmove-reachable' parameter below is what opts a pane back
-;; into single-invocation windmove reachability; see ui.el's advice on
+;; into single-invocation windmove reachability; see windows.el's advice on
 ;; `windmove-find-other-window' for the mechanism and why the blunter
 ;; `windmove-allow-all-windows' can't express this per-window.
 
@@ -634,8 +614,7 @@ everything else from the dead session."
 Reuses BUFFER's existing `claude-term--slot' when already set, so
 repeated display calls for the same live session -- a toggle, a
 restart -- keep the same slot rather than drawing a fresh one from
-`claude-term--next-slot' and potentially triggering the right side's
-slot-reuse eviction once its cap of 3 is reached."
+`claude-term--next-slot'."
   (with-current-buffer buffer
     (or claude-term--slot
         (setq claude-term--slot
@@ -645,7 +624,7 @@ slot-reuse eviction once its cap of 3 is reached."
 (defun claude-term--display-buffer (buffer)
   "Display BUFFER in a stacked right-side window and return that window.
 Builds this phase's verified target shape: a right side window sized by
-`claude-term-window-width', sized-preserving across a
+`edmacs-stack-width', sized-preserving across a
 `window-toggle-side-windows' hide/show cycle, excluded from
 `delete-other-windows'/`other-window' via `no-other-window' but kept
 reachable by a single windmove direction key via
@@ -658,7 +637,7 @@ never signals in that case."
    `((display-buffer-in-side-window)
      (side . right)
      (slot . ,(claude-term--allocate-slot buffer))
-     (window-width . ,claude-term-window-width)
+     (window-width . ,edmacs-stack-width)
      (preserve-size . (t . nil))
      (window-parameters . ((no-delete-other-windows . t)
                             (no-other-window . t)
