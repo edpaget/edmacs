@@ -197,6 +197,47 @@ whole function."
 ;; Window Rotation (tmux layout replacement)
 ;; ============================================================================
 
+;; Master-and-stack moves on top of rotate.el's main layouts. The main window
+;; is the top-left non-side window, which is where `rotate-main-vertical' and
+;; `rotate-main-horizontal' both put it.
+(defun edmacs--main-window ()
+  "Return the frame's main window: the top-left window that is not a side window."
+  (seq-find (lambda (w) (not (window-parameter w 'window-side)))
+            (window-list nil 'no-minibuf (frame-first-window))))
+
+(defun edmacs-window-promote (&optional window)
+  "Move WINDOW's buffer into the main window and select it.
+Like dwm's zoom or tmux's promote: swaps with the main window's buffer.
+From the main window itself, swap with the next stack window. From a
+side window (e.g. a claude-term pane), show the buffer in the main
+window and close the side window."
+  (interactive)
+  (let* ((window (or window (selected-window)))
+         (main (edmacs--main-window))
+         (stack (lambda (w) (not (or (eq w main) (window-parameter w 'window-side))))))
+    (cond
+     ((window-parameter window 'window-side)
+      (let ((buffer (window-buffer window)))
+        (delete-window window)
+        (set-window-buffer main buffer)))
+     ((eq window main)
+      (let ((next (seq-find stack (window-list nil 'no-minibuf main))))
+        (when next (window-swap-states main next))))
+     (t (window-swap-states window main)))
+    (select-window main)))
+
+(defun edmacs-window-pop-buffer-to-main (buffer)
+  "Show BUFFER in the main window and select it.
+If BUFFER is already visible in a stack window, swap it into main; if
+it is in a side window, close that side window."
+  (interactive (list (read-buffer "Pop to main: " (other-buffer) t)))
+  (let ((window (get-buffer-window buffer)))
+    (if (and window (not (eq window (edmacs--main-window))))
+        (edmacs-window-promote window)
+      (let ((main (edmacs--main-window)))
+        (set-window-buffer main buffer)
+        (select-window main)))))
+
 ;; Nothing marks a window dedicated today, but this heads off a `user-error'
 ;; from `window-layout-transpose' the moment something does.
 (setq transpose-dedicated-windows t)

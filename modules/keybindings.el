@@ -79,8 +79,11 @@
   "wtv" '(rotate-main-vertical :which-key "main vertical")
   "wth" '(rotate-main-horizontal :which-key "main horizontal")
   "wtj" '(rotate-window :which-key "swap window")
-  ;; Same command as wtj; mirrors tmux's promote and swap-pane bindings.
-  "wte" '(rotate-window :which-key "promote window")
+  "wte" '(edmacs-window-promote :which-key "promote window")
+
+  ;; Master-and-stack moves
+  "w RET" '(edmacs-window-promote :which-key "promote to main")
+  "wm" '(edmacs-window-pop-buffer-to-main :which-key "pop buffer to main")
 
   ;; Search
   "s" '(:ignore t :which-key "search")
