@@ -347,20 +347,39 @@ which re-fires this hook against the (by then renamed) buffer name."
 ;; Rename
 ;; ============================================================================
 
+(defun claude-term-registry--live-get (root instance)
+  "Return the registered session for ROOT/INSTANCE, reaping it first if dead.
+Like `claude-term-registry-sessions', this is self-healing against a
+user directly `kill-buffer'-ing a claude-term buffer, bypassing
+`claude-term--on-exit' and its `claude-term-registry-remove' call: a
+stale entry whose buffer is no longer live is removed from the table
+and treated as absent (nil), rather than surfacing as a collision
+against a session that is actually dead. Plain `claude-term-registry-get'
+does not do this reaping -- callers that need the raw, possibly-stale
+entry (e.g. `claude-term-registry-touch', which is itself a documented
+no-op against a stale key) keep using that instead."
+  (let ((session (claude-term-registry-get root instance)))
+    (cond
+     ((null session) nil)
+     ((buffer-live-p (claude-term-session-buffer session)) session)
+     (t (claude-term-registry-remove root instance) nil))))
+
 (defun claude-term-registry-rename (root old-instance new-instance)
   "Move the ROOT/OLD-INSTANCE session to key ROOT/NEW-INSTANCE.
-Signals a `user-error' when a DIFFERENT session is already registered
-under ROOT/NEW-INSTANCE, rather than silently clobbering its registry
-entry -- renaming into a same-root collision is a user mistake to
-reject, not a merge request to honor. Renaming to an instance label
-already used under a DIFFERENT root is unaffected, since the key
-includes root."
+Signals a `user-error' when a DIFFERENT, still-LIVE session is already
+registered under ROOT/NEW-INSTANCE, rather than silently clobbering its
+registry entry -- renaming into a same-root collision is a user mistake
+to reject, not a merge request to honor. A ROOT/NEW-INSTANCE entry whose
+buffer was killed directly (bypassing `claude-term--on-exit') is reaped
+via `claude-term-registry--live-get' and does not block the rename --
+see that function's docstring. Renaming to an instance label already
+used under a DIFFERENT root is unaffected, since the key includes root."
   (let ((session (claude-term-registry-get root old-instance)))
     (unless session
       (user-error "Claude-term: no session registered for instance %s"
                   (or old-instance claude-term-registry--default-instance-label)))
     (when (and (not (equal old-instance new-instance))
-               (claude-term-registry-get root new-instance))
+               (claude-term-registry--live-get root new-instance))
       (user-error "Claude-term: instance %s already exists for this root"
                   (or new-instance claude-term-registry--default-instance-label)))
     (remhash (claude-term-registry--key root old-instance) claude-term-registry--table)
@@ -393,7 +412,16 @@ a-claude-term-session test against it, with no error at all. Mirrors
 `claude-term--resolve-instance's own numeric-fallback rationale for the
 same underlying hazard on fresh spawns, but rejects here rather than
 silently substituting a different label, since the user explicitly
-chose NEW-INSTANCE by name."
+chose NEW-INSTANCE by name.
+
+This buffer-name check is scoped to exclude a SAME-root collision (a
+sibling instance of THIS worktree already using NEW-INSTANCE): that
+case is left to fall through to `claude-term-registry-rename's own
+collision check below, which raises the correct, root-scoped \"instance
+already exists for this root\" message -- checking the raw buffer name
+first, unconditionally, would otherwise intercept every same-root
+collision too and misreport it as an unrelated project's session,
+since a buffer name alone cannot tell the two cases apart."
   (interactive)
   (let* ((buffer (or buffer
                       (if (claude-term--parse-buffer-name (buffer-name))
@@ -405,8 +433,13 @@ chose NEW-INSTANCE by name."
          (input (read-string "New instance label: "))
          (new-instance (if (string-empty-p input) nil input))
          (target-name (claude-term-buffer-name root new-instance))
-         (colliding (get-buffer target-name)))
-    (when (and colliding (not (eq colliding buffer)))
+         (colliding (get-buffer target-name))
+         (colliding-root (and colliding
+                               (local-variable-p 'claude-term--root colliding)
+                               (buffer-local-value 'claude-term--root colliding))))
+    (when (and colliding (not (eq colliding buffer))
+               (not (and colliding-root
+                         (equal (file-truename colliding-root) (file-truename root)))))
       (user-error "Claude-term: buffer %s already exists (an unrelated project's session sharing this leaf name) -- pick a different instance label"
                   target-name))
     (claude-term-registry-rename root old-instance new-instance)
