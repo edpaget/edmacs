@@ -157,7 +157,14 @@
 
 ;; Detect very long lines (minified bundles, lockfiles, wide CSVs) and
 ;; neutralize expensive per-line features (font-lock, visual-line-mode,
-;; evil) for that buffer instead of freezing on them.
+;; rainbow-delimiters, etc.) for that buffer instead of freezing on them.
+;; so-long's own so-long-minor-modes list does not include evil, and
+;; evil-mode is a globalized minor mode that reasserts evil-local-mode via
+;; after-change-major-mode-hook on every major-mode switch (including into
+;; so-long-mode), so it has to be added explicitly or it stays fully active
+;; in the so-long'd buffer.
+(with-eval-after-load 'evil
+  (add-to-list 'so-long-minor-modes 'evil-local-mode))
 (global-so-long-mode 1)
 
 ;; This config is exclusively left-to-right code; skip per-paragraph
