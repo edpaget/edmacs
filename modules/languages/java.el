@@ -107,9 +107,15 @@
    "=e" '(lsp-java-generate-equals-and-hash-code :which-key "equals/hashCode")
    "=o" '(lsp-java-generate-overrides :which-key "overrides")
 
-   ;; Type hierarchy
-   "h" '(:ignore t :which-key "hierarchy")
-   "ht" '(lsp-java-type-hierarchy :which-key "type hierarchy")))
+   ;; Type hierarchy. Deliberately NOT on "h" -- lsp-ui's generic "SPC c h"
+   ;; hover binding (modules/programming.el) lives on lsp-mode-map, a
+   ;; minor-mode keymap, which wins over this major-mode keymap once
+   ;; lsp-mode is genuinely active in the buffer (confirmed empirically:
+   ;; forcing lsp-mode on and calling evil-normalize-keymaps makes
+   ;; "SPC c h" resolve to lsp-ui-doc-show, making "SPC c h t" unreachable).
+   ;; Capital "H" avoids the collision.
+   "H" '(:ignore t :which-key "hierarchy")
+   "Ht" '(lsp-java-type-hierarchy :which-key "type hierarchy")))
 
 ;; ============================================================================
 ;; DAP Mode - Debug Adapter Protocol for Java
@@ -157,14 +163,18 @@
 ;; ============================================================================
 
 (use-package mvn
-  ;; :commands alone is not a real load trigger here: nothing calls
-  ;; mvn-clean/mvn-compile/mvn-test until *after* this file's :config has
-  ;; already run and bound the ", m" prefix, so on a fresh session mvn.el
-  ;; never loads and its :config-defined keybindings never get installed
-  ;; (confirmed empirically with a live use-package repro). :after
-  ;; java-ts-mode loads it as soon as a .java buffer is visited, mirroring
-  ;; how dap-mode/lsp-java above load via :after lsp-mode.
+  ;; :after alone (without :demand) still defers to autoload-on-command
+  ;; semantics -- use-package only wraps the :commands autoloads in
+  ;; `eval-after-load', it does not itself `require' the package once
+  ;; java-ts-mode loads. Confirmed empirically: after visiting a real
+  ;; .java file, (featurep 'mvn) was nil and (key-binding (kbd ", m c"))
+  ;; was nil, because nothing ever calls mvn-clean/mvn-compile/mvn-test to
+  ;; trigger the autoload, so mvn.el's :config (which defines the ", m"
+  ;; keybindings) never ran. `:demand t' forces an actual `(require 'mvn)'
+  ;; as soon as java-ts-mode loads, mirroring how dap-mode/lsp-java above
+  ;; load unconditionally via `:after lsp-mode'.
   :after java-ts-mode
+  :demand t
   :commands (mvn-clean mvn-compile mvn-test)
   :config
   (general-define-key

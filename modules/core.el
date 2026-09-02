@@ -37,7 +37,7 @@
 
 ;; Ensure Emacs uses the same PATH and environment as your shell
 ;; This is especially important on macOS where GUI apps don't inherit shell env
-;; LSP_USE_PLISTS decision (edmacs-performance/phase-4-lsp-and-idle-tuning):
+;; LSP_USE_PLISTS decision (edmacs-performance/phase-5-lsp-and-completion-io):
 ;; DECLINED. The variable is absent from this repo and from the
 ;; `exec-path-from-shell-variables' list immediately below. Even if it were
 ;; added there, `exec-path-from-shell-initialize' (a few lines down) runs
