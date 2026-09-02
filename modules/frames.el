@@ -43,6 +43,8 @@
 ;; git-common-dir.el's own commentary on this codebase's shared-obarray
 ;; plain-`load' module system.
 (declare-function edmacs-git-common-dir "git-common-dir")
+(declare-function edmacs-git-common-dir-main-worktree "git-common-dir")
+(declare-function edmacs-git-common-dir-repo-name "git-common-dir")
 (declare-function edmacs-sidebar-show "sidebar")
 (defvar edmacs-git-common-dir-cache)
 
@@ -66,18 +68,6 @@ fresh entry for whatever arbitrary subdirectory DIR happens to be."
   (let* ((proj (project-current nil dir))
          (root (if proj (project-root proj) dir)))
     (edmacs-git-common-dir root)))
-
-(defun edmacs-frames--main-worktree (common)
-  "Return the main worktree root owning git-common-dir COMMON.
-Every worktree's git-common-dir is the main checkout's own `.git', so
-its parent directory is the main worktree root -- one level up from the
-repo-name derivation `edmacs-sessions--tab-name' and
-`claude-term-registry--repo-name' already perform."
-  (file-name-as-directory (file-name-directory (directory-file-name common))))
-
-(defun edmacs-frames--repo-name (common)
-  "Return the bare directory name of the repo owning git-common-dir COMMON."
-  (file-name-nondirectory (directory-file-name (edmacs-frames--main-worktree common))))
 
 (defun edmacs-frames-tab-in-own-repo-p (common)
   "Return non-nil when git-common-dir COMMON is the selected frame's own repo.
@@ -118,6 +108,27 @@ single answer once that command is itself a multi-key prefix over
 `project-prefix-map'."
   (dired root))
 
+(defmacro edmacs-frames--without-display-override (&rest body)
+  "Run BODY with any ambient `display-buffer' override neutralized.
+`other-tab-prefix' (`M-x project-other-tab-command', `SPC T n', any
+`other-*-prefix') arms `display-buffer-overriding-action' and
+`switch-to-buffer-obey-display-actions' for whatever command runs next,
+meaning to redirect THAT command's one next displayed buffer into a new
+tab/frame/window. When the next command is one of this module's own
+frame/tab builders, though, every buffer display inside BODY is this
+module's own explicit placement (a `dired' buffer in a brand-new
+frame's sole window, then the sidebar in its side window) and must
+never be redirected into `display-buffer-in-tab' instead: doing so
+re-fires `tab-bar-tab-post-open-functions' (sidebar.el's own hook
+included) for each redirected buffer before the ORIGINAL override call
+has returned far enough to clear itself, recursing without bound
+\(`excessive-lisp-nesting') the first time this module's own sidebar
+display gets caught by its own still-armed enclosing override."
+  (declare (indent 0))
+  `(let ((display-buffer-overriding-action '(nil . nil))
+         (switch-to-buffer-obey-display-actions nil))
+     ,@body))
+
 (defun edmacs-frames--stamp-current-tab-root (root)
   "Stamp ROOT onto the selected frame's current tab as `edmacs-root'.
 Mutates the tab alist's cdr in place via `push', never rebinding the
@@ -136,19 +147,20 @@ Returns the frame."
     (if existing
         (progn (select-frame-set-input-focus existing) existing)
       (let* ((main (if common
-                       (edmacs-frames--main-worktree common)
+                       (edmacs-git-common-dir-main-worktree common)
                      (file-name-as-directory (expand-file-name dir))))
-             (label (if common (edmacs-frames--repo-name common)
+             (label (if common (edmacs-git-common-dir-repo-name common)
                       (file-name-nondirectory (directory-file-name main))))
              (frame (or (edmacs-frames--spare-frame) (make-frame))))
         (set-frame-parameter frame 'edmacs-repo common)
         (set-frame-parameter frame 'name label)
-        (with-selected-frame frame
-          (delete-other-windows)
-          (edmacs-frames--visit-root main)
-          (edmacs-frames--stamp-current-tab-root (file-truename main))
-          (tab-bar-rename-tab label)
-          (edmacs-sidebar-show frame))
+        (edmacs-frames--without-display-override
+          (with-selected-frame frame
+            (delete-other-windows)
+            (edmacs-frames--visit-root main)
+            (edmacs-frames--stamp-current-tab-root (file-truename main))
+            (tab-bar-rename-tab label)
+            (edmacs-sidebar-show frame)))
         (select-frame-set-input-focus frame)
         frame))))
 
@@ -238,7 +250,7 @@ to the MAIN worktree throughout -- that function excludes only the
 truename of `default-directory' from its results, so calling it from a
 non-main worktree of the same repo would wrongly include the main
 worktree among the \"other\" ones."
-  (let* ((main (edmacs-frames--main-worktree common))
+  (let* ((main (edmacs-git-common-dir-main-worktree common))
          (default-directory main))
     (cons main (vc-git-known-other-working-trees))))
 
@@ -276,15 +288,16 @@ the safety net covering tabs opened through any other route."
   (interactive (list (edmacs-frames--read-worktree current-prefix-arg)))
   (let* ((root (file-truename dir))
          (frame (edmacs-frames-open dir)))
-    (with-selected-frame frame
-      (let ((tab (edmacs-frames--find-tab-by-root root frame)))
-        (if tab
-            (tab-bar-select-tab (1+ (tab-bar--tab-index tab (tab-bar-tabs frame) frame)))
-          (let ((edmacs-frames--suppress-reconcile t))
-            (tab-bar-new-tab))
-          (edmacs-frames--stamp-current-tab-root root)
-          (edmacs-frames--visit-root dir)
-          (tab-bar-rename-tab (file-name-nondirectory (directory-file-name dir))))))
+    (edmacs-frames--without-display-override
+      (with-selected-frame frame
+        (let ((tab (edmacs-frames--find-tab-by-root root frame)))
+          (if tab
+              (tab-bar-select-tab (1+ (tab-bar--tab-index tab (tab-bar-tabs frame) frame)))
+            (let ((edmacs-frames--suppress-reconcile t))
+              (tab-bar-new-tab))
+            (edmacs-frames--stamp-current-tab-root root)
+            (edmacs-frames--visit-root dir)
+            (tab-bar-rename-tab (file-name-nondirectory (directory-file-name dir)))))))
     frame))
 
 (defun edmacs-frames--reconcile-tab-after-open (tab)

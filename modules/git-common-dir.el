@@ -15,6 +15,15 @@
 ;; whose --git-common-dir output needs different handling) only has to
 ;; be applied in one place.
 ;;
+;; `edmacs-git-common-dir-main-worktree' and
+;; `edmacs-git-common-dir-repo-name' below factor out the string
+;; derivation that sits on top of that lookup -- "the main worktree
+;; root" and "the repo's bare directory name" -- for the same reason:
+;; `modules/sessions.el', `modules/claude-term-registry.el', and
+;; `modules/frames.el' all need it, and previously each carried its own
+;; copy of the same `file-name-nondirectory'/`directory-file-name'
+;; expression.
+;;
 ;; Loaded early by init.el's `load-module', before both consumers --
 ;; this codebase's modules share one obarray via plain sequential
 ;; `load' (see init.el's `load-module'), so no `require' is needed on
@@ -94,6 +103,17 @@ Memoized per ROOT; see `edmacs-git-common-dir-cache' and
       (let ((result (edmacs-git-common-dir-1 root)))
         (puthash root (or result 'none) edmacs-git-common-dir-cache)
         result))))
+
+(defun edmacs-git-common-dir-main-worktree (common)
+  "Return the main worktree root owning git-common-dir COMMON.
+Every worktree's git-common-dir is the main checkout's own `.git' (per
+git-worktree(1)), so its parent directory is the main worktree root."
+  (file-name-as-directory (file-name-directory (directory-file-name common))))
+
+(defun edmacs-git-common-dir-repo-name (common)
+  "Return the bare directory name of the repo owning git-common-dir COMMON."
+  (file-name-nondirectory
+   (directory-file-name (edmacs-git-common-dir-main-worktree common))))
 
 (provide 'git-common-dir)
 ;;; git-common-dir.el ends here

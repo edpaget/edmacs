@@ -40,6 +40,7 @@
 ;; Available via init.el's `load-module' order, not a `require'.
 (declare-function edmacs-git-common-dir "git-common-dir")
 (declare-function edmacs-stack-sweep-stale-panes "windows")
+(declare-function edmacs-git-common-dir-repo-name "git-common-dir")
 (declare-function edmacs-frames-tab-in-own-repo-p "frames")
 
 (defun edmacs-sessions--tab-name ()
@@ -67,10 +68,7 @@ stray-visit relocator should make rare -- still gets the prefix."
              (common (edmacs-git-common-dir root)))
         (if (edmacs-frames-tab-in-own-repo-p common)
             base
-          (let ((repo (and common
-                            (file-name-nondirectory
-                             (directory-file-name
-                              (file-name-directory (directory-file-name common)))))))
+          (let ((repo (and common (edmacs-git-common-dir-repo-name common))))
             (if (and repo (not (string= repo base)))
                 (format "%s/%s" repo base)
               base))))

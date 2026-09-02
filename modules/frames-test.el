@@ -18,8 +18,12 @@
 (require 'cl-lib)
 
 ;; ============================================================================
-;; edmacs-frames--repo-of / --main-worktree / --repo-name
+;; edmacs-frames--repo-of
 ;; ============================================================================
+;; The main-worktree/repo-name string derivation on top of a resolved
+;; git-common-dir lives in `modules/git-common-dir.el' (shared with
+;; sessions.el and claude-term-registry.el) and is covered by
+;; `modules/git-common-dir-test.el', not here.
 
 (ert-deftest edmacs-frames-test-repo-of-uses-cache-no-shellout ()
   "A cache hit for the resolved root never calls the uncached resolver.
@@ -57,14 +61,6 @@ inside the same worktree share one cache entry."
                (lambda (_) "/repo/")))
       (should (equal (edmacs-frames--repo-of "/repo/deeply/nested/file-dir/")
                      "/repo/.git")))))
-
-(ert-deftest edmacs-frames-test-main-worktree-one-level-up-from-common-dir ()
-  (should (equal (edmacs-frames--main-worktree "/Users/ed/Projects/edmacs/.git")
-                 "/Users/ed/Projects/edmacs/")))
-
-(ert-deftest edmacs-frames-test-repo-name-from-common-dir ()
-  (should (equal (edmacs-frames--repo-name "/Users/ed/Projects/edmacs/.git")
-                 "edmacs")))
 
 ;; ============================================================================
 ;; edmacs-frames-for-repo / --spare-frame / --repo-frames / --only-frame-p

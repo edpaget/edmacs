@@ -150,6 +150,20 @@ nil -- this finds the actual leaf window content lives in instead."
       (let ((default-directory (file-name-as-directory repo)))
         (call-process "git" nil nil nil "worktree" "add" wt-dir)))
 
+    (defun edmacs-frames-live-test--current-tab-display-name ()
+      "Return the selected frame's current tab's actually-displayed name.
+`tab-bar-tab-name-current' (despite its name) is only one possible VALUE
+of `tab-bar-tab-name-function' -- calling it directly ignores an
+explicitly-renamed tab's own stored name and instead derives one fresh
+from the selected window's buffer, exactly the wrong thing to assert
+against here. This mirrors tab-bar.el's own rendering rule instead:
+an explicitly-named tab's stored `name' wins; otherwise the configured
+`tab-bar-tab-name-function' is consulted live."
+      (let ((tab (tab-bar--current-tab)))
+        (if (alist-get 'explicit-name tab)
+            (alist-get 'name tab)
+          (funcall tab-bar-tab-name-function))))
+
     (defmacro edmacs-frames-live-test--with-frames (frames &rest body)
       "Bind FRAMES (a list of symbols) to fresh real frames, run BODY, clean up.
 Each frame is deleted afterward if still live; `edmacs-frames-open''s own
@@ -196,6 +210,9 @@ call raises that exact same one rather than creating another."
                     (should (frame-parameter frame 'edmacs-repo))
                     (should (equal (frame-parameter frame 'name) "repoA"))
                     (should (= 1 (length (tab-bar-tabs frame))))
+                    (should (equal (with-selected-frame frame
+                                     (edmacs-frames-live-test--current-tab-display-name))
+                                   "repoA"))
                     (should (with-selected-frame frame (edmacs-sidebar--window frame)))
                     ;; Opening again raises the SAME frame -- no new one.
                     (let ((frame2 (edmacs-frames-open repo)))
@@ -275,13 +292,186 @@ call raises that exact same one rather than creating another."
                   (tab-bar-new-tab))
                 (should (= tab-count (length (tab-bar-tabs frame))))
                 (should (= (1+ closed-before) (length tab-bar-closed-tabs)))
-                ;; A brand-new tab for an UNRELATED directory is kept.
+                ;; A brand-new tab for an UNRELATED directory is kept, and
+                ;; carries `edmacs-root' -- the reconciliation hook stamps
+                ;; every tab it inspects, whether or not it ends up folding it.
                 (let* ((other (expand-file-name "unrelated" sandbox)))
                   (make-directory other t)
                   (let ((default-directory (file-name-as-directory other)))
                     (dired other)
                     (tab-bar-new-tab))
-                  (should (= (1+ tab-count) (length (tab-bar-tabs frame)))))))))))
+                  (should (= (1+ tab-count) (length (tab-bar-tabs frame))))
+                  (should (equal (edmacs-frames--tab-root (tab-bar--current-tab))
+                                 (file-truename (file-name-as-directory other)))))))))))
+
+    (ert-deftest edmacs-frames-live-test-ac4-other-tab-command-then-switch-project ()
+      "Literally drives `M-x project-other-tab-command' followed by `p'
+\(`project-switch-project', really bound to it in `project-prefix-map')
+through this config's actual `project-switch-commands' value,
+`edmacs-frames-open-project'. Because a frame is a repo, \"switching into
+the current worktree\" here means switching into the CURRENT FRAME's own
+repo -- the only kind of root `project-switch-project' can ever offer once
+`__worktrees/' roots are excluded from `project-known-project-roots' (see
+AC1/AC5 in core.el) -- which `edmacs-frames-open' resolves to the frame
+already selected: a no-op that must touch no tab. Switching into a
+brand-new repo instead raises/creates THAT repo's own frame with one tab,
+never adding a tab to the frame the command was invoked from."
+      (edmacs-frames-live-test--with-sandbox sandbox
+        (let* ((repo-a (expand-file-name "repoA" sandbox))
+               (repo-z (expand-file-name "repoZ" sandbox))
+               (edmacs-git-common-dir-cache (make-hash-table :test #'equal))
+               ;; Never touch the real user's own project list.
+               (project-list-file (expand-file-name "projects.eld" sandbox))
+               (project--list 'unset)
+               ;; This file loads `frames.el' alone, not `core.el' -- the
+               ;; module that actually wires this in a real session. Left
+               ;; at `project.el's own stock alist default, dispatch would
+               ;; prompt for a further keystroke and hang batch Emacs.
+               (project-switch-commands #'edmacs-frames-open-project))
+          (edmacs-frames-live-test--make-git-repo repo-a)
+          (edmacs-frames-live-test--make-git-repo repo-z)
+          (cl-macrolet
+              ((other-tab-command-then-switch-project (target-dir)
+                 ;; `other-tab-prefix' (armed by `project-other-tab-command')
+                 ;; installs its transient keymap and its one-shot
+                 ;; `display-buffer' override as raw global state, both meant
+                 ;; to self-clear via `pre-command-hook'/`post-command-hook'
+                 ;; in the real command loop once "the next command" runs --
+                 ;; here, that next command is exactly the `call-interactively'
+                 ;; below, so a `let' scoped to just this one arm-then-dispatch
+                 ;; pair reproduces that same one-command boundary: unwound
+                 ;; before the NEXT pair's own `project-other-tab-command' can
+                 ;; stack a second live override on top of a first one nothing
+                 ;; ever consumed (which is what a real command loop's
+                 ;; intervening `post-command-hook' run prevents, and what a
+                 ;; single shared `let' around both pairs previously failed to
+                 ;; -- two stacked overrides both firing on the second pair's
+                 ;; `dired' + `edmacs-sidebar-show' calls, each re-entering the
+                 ;; other before either could clear itself: `excessive-lisp-nesting').
+                 `(let ((overriding-terminal-local-map nil)
+                        (display-buffer-overriding-action (cons nil nil))
+                        (switch-to-buffer-obey-display-actions nil))
+                    (call-interactively #'project-other-tab-command)
+                    (let ((project-prompter (lambda () ,target-dir)))
+                      (call-interactively #'project-switch-project)))))
+            ;; DECOY is never used for anything -- it exists purely so the
+            ;; batch process always has a third live frame in reserve.
+            ;; `edmacs-frames-open''s spare-frame adoption (see
+            ;; `edmacs-frames--spare-frame') may claim ANY repo-less frame,
+            ;; including the batch process's own pre-existing ambient one --
+            ;; with only FRAME-A on hand, both `edmacs-frames-open' calls
+            ;; below (repo-a, then repo-z) between them can exhaust every
+            ;; repo-less frame there is, and this test's own cleanup then
+            ;; deleting the resulting repo-z frame would try to delete the
+            ;; LAST live frame in the whole process -- an error, not a
+            ;; tab/frame-routing bug -- when nothing else survives to hold
+            ;; the line.
+            (edmacs-frames-live-test--with-frames (frame-a decoy)
+              (with-selected-frame frame-a
+                (edmacs-frames-open repo-a))
+              ;; Never assume the ORIGINAL `frame-a' object is the one
+              ;; `edmacs-frames-open' actually claimed for repo-a -- spare-frame
+              ;; adoption may have picked a different repo-less frame instead
+              ;; (the ambient one, or DECOY); re-resolve by repo, matching
+              ;; `edmacs-frames-live-test-worktree-tab-routes-and-dedupes's own
+              ;; idiom just above.
+              (setq frame-a (edmacs-frames-for-repo (edmacs-frames--repo-of repo-a)))
+              (with-selected-frame frame-a
+                ;; A second, unrelated tab, so the frame really has two open.
+                (let ((default-directory (file-name-as-directory repo-a)))
+                  (tab-bar-new-tab))
+                (let ((tab-count (length (tab-bar-tabs frame-a)))
+                      (closed-before (length tab-bar-closed-tabs))
+                      frame-z)
+                  (unwind-protect
+                      (progn
+                        (other-tab-command-then-switch-project repo-a)
+                        (should (= tab-count (length (tab-bar-tabs frame-a))))
+                        (should (= closed-before (length tab-bar-closed-tabs)))
+                        (should (eq (selected-frame) frame-a))
+                        (other-tab-command-then-switch-project repo-z)
+                        (setq frame-z (edmacs-frames-for-repo (edmacs-frames--repo-of repo-z)))
+                        (should (frame-live-p frame-z))
+                        (should (not (eq frame-z frame-a)))
+                        (should (= 1 (length (tab-bar-tabs frame-z))))
+                        (should (edmacs-frames--tab-root (car (tab-bar-tabs frame-z))))
+                        (should (= tab-count (length (tab-bar-tabs frame-a))))
+                        (should (= closed-before (length tab-bar-closed-tabs))))
+                    (when (and frame-z (frame-live-p frame-z)
+                               (not (eq frame-z frame-a)) (not (eq frame-z decoy)))
+                      (let ((buf (edmacs-sidebar--buffer frame-z)))
+                        (when (buffer-live-p buf) (kill-buffer buf)))
+                      (delete-frame frame-z))))))))))
+
+    ;; ==========================================================================
+    ;; AC9 -- tab names inside a repo frame show only the worktree name
+    ;; ==========================================================================
+    ;; `edmacs-frames-open-project's AC2 test above already asserts the
+    ;; EXPLICIT-rename path (this module's own `tab-bar-rename-tab' calls).
+    ;; This covers the other one: `edmacs-sessions--tab-name' itself, the
+    ;; DYNAMIC namer a tab with no explicit name (a plain `SPC T n', or one
+    ;; restored by desktop) falls back to.
+
+    (defvar edmacs-frames-live-test--sessions-available
+      (and edmacs-frames-live-test--build-root
+           (dolist (dep '("general" "bufferlo") t)
+             (edmacs-frames-live-test--add-dep dep)))
+      "Non-nil once sessions.el's own straight deps are on `load-path'.")
+
+    (defmacro edmacs-frames-live-test--with-sessions-tab-namer (&rest body)
+      "Load sessions.el's real `edmacs-sessions--tab-name' standalone, run BODY.
+Stubs the top-level forms sessions.el uses that this suite has no
+business actually running: `use-package' (bufferlo is a real per-tab
+buffer-list minor mode with no bearing on tab NAMING) is faked as a
+macro that expands to nil, and the two leader/chord registrars
+\(`general-define-key', `edmacs-evil-config-add-c-x-chord') -- which
+would otherwise need evil-config.el's own much larger dependency tree
+-- as plain no-op functions (safe here because every call site passes
+already-quoted literals, never something requiring real evaluation).
+`user-emacs-directory' is rebound to a fresh sandbox first, exactly as
+the AC1/AC5 registrar sandbox below does for core.el, so
+`desktop-dirname's directory-creation side effect never touches the
+real user's `~/.config/emacs'."
+      (declare (indent 0))
+      `(if (not edmacs-frames-live-test--sessions-available)
+           (ert-skip "general/bufferlo's straight build was not found; \
+bootstrap straight once (open this worktree in a real Emacs session) to \
+enable this test")
+         (let ((user-emacs-directory
+                (file-name-as-directory (make-temp-file "edmacs-sessions-test-" t))))
+           (cl-letf (((symbol-function 'use-package) (cons 'macro (lambda (&rest _) nil)))
+                     ((symbol-function 'general-define-key) (lambda (&rest _) nil))
+                     ((symbol-function 'edmacs-evil-config-add-c-x-chord) (lambda (&rest _) nil)))
+             (load (expand-file-name "modules/sessions.el" default-directory) nil t)))
+         ,@body))
+
+    (ert-deftest edmacs-frames-live-test-tab-name-drops-repo-prefix-in-own-frame ()
+      (edmacs-frames-live-test--with-sessions-tab-namer
+        (edmacs-frames-live-test--with-sandbox sandbox
+          (let* ((repo-a (expand-file-name "repoA" sandbox))
+                 (repo-b (expand-file-name "repoB" sandbox))
+                 (wt-b (expand-file-name "repoB-wt" sandbox))
+                 (edmacs-git-common-dir-cache (make-hash-table :test #'equal)))
+            (edmacs-frames-live-test--make-git-repo repo-a)
+            (edmacs-frames-live-test--make-git-repo repo-b)
+            (edmacs-frames-live-test--add-worktree repo-b wt-b)
+            (edmacs-frames-live-test--with-frames (frame)
+              (with-selected-frame frame
+                (edmacs-frames-open repo-a)
+                ;; A plain new tab (no explicit rename, unlike this module's
+                ;; own tab-creation routes) visiting the SAME repo the frame
+                ;; itself carries drops the repo/ prefix.
+                (let ((default-directory (file-name-as-directory repo-a)))
+                  (tab-bar-new-tab)
+                  (dired repo-a))
+                (should (equal (edmacs-frames-live-test--current-tab-display-name) "repoA"))
+                ;; A plain new tab visiting a worktree of a DIFFERENT repo
+                ;; keeps the disambiguating repo/ prefix.
+                (let ((default-directory (file-name-as-directory wt-b)))
+                  (tab-bar-new-tab)
+                  (dired wt-b))
+                (should (equal (edmacs-frames-live-test--current-tab-display-name)
+                               "repoB/repoB-wt"))))))))
 
     ;; ==========================================================================
     ;; AC1/AC5 -- picker seeding registrar (core.el), sandboxed

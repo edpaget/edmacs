@@ -234,30 +234,30 @@ touching `claude-term--read-session's body.")
 ;; Repo name / elapsed time / label
 ;; ============================================================================
 ;; The git-common-dir resolution itself (TRAMP-safe `process-file' call,
-;; relative/remote path normalization, cached-miss memoization) lives in
-;; `modules/git-common-dir.el', shared with `modules/sessions.el's own
-;; repo-name-for-tab-naming need, rather than reimplemented here -- both
-;; consumers previously carried independent copies of the same
-;; algorithm, which this factoring removes. That module loads before
-;; this one (init.el's `load-module' order), so no `require' is needed
-;; under this codebase's shared-obarray plain-`load' module system; the
-;; `declare-function' below exists only for standalone byte-compilation
-;; clarity.
+;; relative/remote path normalization, cached-miss memoization) AND the
+;; repo-name-from-common-dir string derivation both live in
+;; `modules/git-common-dir.el', shared with `modules/sessions.el's and
+;; `modules/frames.el's own repo-name needs, rather than reimplemented
+;; here -- these consumers previously carried independent copies of the
+;; same algorithm, which this factoring removes. That module loads
+;; before this one (init.el's `load-module' order), so no `require' is
+;; needed under this codebase's shared-obarray plain-`load' module
+;; system; the `declare-function' calls below exist only for standalone
+;; byte-compilation clarity.
 (declare-function edmacs-git-common-dir "git-common-dir")
+(declare-function edmacs-git-common-dir-repo-name "git-common-dir")
 
 (defun claude-term-registry--repo-name (root)
   "Return the repo name owning ROOT, falling back to ROOT's bare leaf name.
-Derives the name from `edmacs-git-common-dir's parent directory -- that
-call is itself memoized per ROOT, so no separate cache is needed here
-for the cheap string manipulation on top of it. Falls back rather than
-erroring when the git lookup fails -- a pruned worktree still lingering
-in the registry, or a non-git root reachable only in tests -- so a
-single bad entry never takes down the whole picker/list render."
+Derives the name via `edmacs-git-common-dir-repo-name' -- the
+`edmacs-git-common-dir' lookup inside it is itself memoized per ROOT,
+so no separate cache is needed here. Falls back rather than erroring
+when the git lookup fails -- a pruned worktree still lingering in the
+registry, or a non-git root reachable only in tests -- so a single bad
+entry never takes down the whole picker/list render."
   (let ((common (edmacs-git-common-dir root)))
     (if common
-        (file-name-nondirectory
-         (directory-file-name
-          (file-name-directory (directory-file-name common))))
+        (edmacs-git-common-dir-repo-name common)
       (claude-term--leaf root))))
 
 (defun claude-term-registry--elapsed-string (session)
