@@ -107,6 +107,12 @@ names the repo rather than the worktree)."
 ;; fatal (Emacs exits 255). `global-mise-mode' re-enables it anyway.
 (add-to-list 'desktop-minor-mode-table '(mise-mode nil))
 
+;; Frame colours come from the theme, never from a saved frameset: a desktop
+;; written by a frame that had the wrong colours would otherwise stamp them
+;; back over the theme on every restore.
+(dolist (param '(background-color foreground-color cursor-color mouse-color))
+  (push (cons param :never) frameset-filter-alist))
+
 (desktop-save-mode 1)
 
 ;; ----------------------------------------------------------------------------

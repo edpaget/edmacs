@@ -98,6 +98,20 @@ whole function."
   ;; `solarized-light' is the light one.
   (load-theme 'solarized-dark :no-confirm))
 
+;; solarized resolves its palette against the display it is loaded on; a
+;; daemon loads it on a tty and GUI frames then come up black-on-white.
+;; Reload it on the first GUI frame, at a depth that runs before
+;; nano-modeline's face refresh reads the theme.
+(defun edmacs--reload-theme-on-first-frame (frame)
+  "Reload the theme when FRAME is the first graphical frame."
+  (when (display-graphic-p frame)
+    (remove-hook 'after-make-frame-functions #'edmacs--reload-theme-on-first-frame)
+    (with-selected-frame frame
+      (load-theme 'solarized-dark :no-confirm))))
+
+(when (daemonp)
+  (add-hook 'after-make-frame-functions #'edmacs--reload-theme-on-first-frame -10))
+
 ;; ============================================================================
 ;; Nano Modeline
 ;; ============================================================================
