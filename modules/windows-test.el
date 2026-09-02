@@ -447,6 +447,23 @@ first popup instead of deleting the pane and returning to main."
         (kill-buffer buf1)
         (kill-buffer buf2)))))
 
+(ert-deftest edmacs-windows-test-quit-window-with-kill-arg-kills-popup-buffer ()
+  "Regression: `C-u q' (quit-window with KILL) on a routed popup must
+kill the buffer, not just delete the window -- stock `quit-window'
+calls `(quit-restore-window window 'kill)' and documents that the
+buffer gets killed."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
+      (let ((win (display-buffer buf)))
+        (select-window win)
+        (quit-window t win)
+        (should-not (window-live-p win))
+        (should (eq (selected-window) main))
+        (should-not (buffer-live-p buf))))))
+
 ;; ---------------------------------------------------------------------------
 ;; AC5 -- every right-edge window's width tracks `edmacs-stack-width' live
 ;; ---------------------------------------------------------------------------

@@ -288,13 +288,18 @@ Two different popups sharing slot -1 in succession leave a stale
 `quit-restore-window' (ORIG-FN) would then take its switch-to-prev-buffer
 fallback and resurrect the first popup instead of deleting the pane.
 Popup windows -- tagged `edmacs-stack-popup' by `edmacs-stack--popup-alist'
--- never want that: `q' always deletes the window and returns to main."
+-- never want that: `q' always deletes the window and returns to main.
+BURY-OR-KILL is still honored: `kill'/`killing' (e.g. `C-u q') kills the
+buffer after the window is gone, matching stock `quit-restore-window'."
   (let ((window (window-normalize-window window)))
     (if (and (eq (window-parameter window 'window-side) 'right)
              (window-parameter window 'edmacs-stack-popup))
-        (let ((main (edmacs-main-window)))
+        (let ((main (edmacs-main-window))
+              (buf (window-buffer window)))
           (delete-window window)
-          (when main (select-window main)))
+          (when main (select-window main))
+          (when (memq bury-or-kill '(kill killing))
+            (kill-buffer buf)))
       (funcall orig-fn window bury-or-kill))))
 
 (advice-add 'quit-restore-window :around #'edmacs-stack--quit-restore-window)
