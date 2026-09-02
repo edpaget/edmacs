@@ -61,6 +61,7 @@
 ;; API surface here so the byte-compiler doesn't warn about references to
 ;; symbols that aren't bound until then.
 (defvar ghostel--process)
+(defvar ghostel--pid)
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-buffer-name-function)
 (defvar ghostel-exit-functions)
@@ -715,6 +716,22 @@ its own competing session-selection implementation."
       (current-buffer)
     (claude-term-session-buffer (claude-term--read-session prompt))))
 
+(defun claude-term--terminate ()
+  "Kill the `claude' child behind the current buffer, asynchronously.
+Not `kill-process' on `ghostel--process': on the native PTY path --
+ghostel's default for every local spawn -- that handle is a pipe process
+standing in for the real child, and `kill-process' rejects it with \"is
+not a subprocess\" without touching the child.  Signaling the child by
+`ghostel--pid' works on both handle kinds and, unlike
+`delete-process' on the pipe, leaves the teardown asynchronous: the
+native reaper reports the exit through ghostel's event pipe, so the
+sentinel still runs from the event loop.  `claude-term-restart' and
+`claude-term--on-exit' are built around that ordering."
+  (if (and (not (eq (process-type ghostel--process) 'real))
+           ghostel--pid)
+      (signal-process ghostel--pid 'KILL)
+    (kill-process ghostel--process)))
+
 ;;;###autoload
 (defun claude-term-kill (&optional buffer)
   "Kill the `claude' process in BUFFER.
@@ -727,7 +744,7 @@ itself, which would race the sentinel."
   (let ((buffer (or buffer (claude-term--read-buffer "Kill claude-term session: "))))
     (with-current-buffer buffer
       (if (process-live-p ghostel--process)
-          (kill-process ghostel--process)
+          (claude-term--terminate)
         (message "Claude-term: %s has no live process" (buffer-name buffer))))))
 
 ;;;###autoload
@@ -739,8 +756,8 @@ When the process is live, performs the required async
 kill -> sentinel -> re-exec dance (`claude-term--on-exit' does the
 re-exec once the sentinel fires) -- `ghostel-exec' signals a
 `user-error' if called against a buffer whose process is still even
-nominally live, and `kill-process' does not synchronously flip the
-process to a dead state a second `ghostel-exec' call could observe.
+nominally live, and `claude-term--terminate' does not synchronously flip
+the process to a dead state a second `ghostel-exec' call could observe.
 When the process is already dead, respawns synchronously.  A restart
 already in flight for BUFFER is a no-op."
   (interactive)
@@ -751,7 +768,7 @@ already in flight for BUFFER is a no-op."
         (message "Claude-term: restart already in progress for %s" (buffer-name buffer)))
        ((process-live-p ghostel--process)
         (setq claude-term--restarting t)
-        (kill-process ghostel--process))
+        (claude-term--terminate))
        (t
         (claude-term--exec buffer claude-term--root claude-term--instance claude-term--args))))))
 

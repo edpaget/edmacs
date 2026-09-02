@@ -71,6 +71,7 @@
 (declare-function claude-term--pop-to-side-window "claude-term")
 (declare-function claude-term-buffer-name "claude-term")
 (declare-function claude-term "claude-term")
+(declare-function claude-term--terminate "claude-term")
 
 ;; `general' is loaded lazily (see modules/keybindings.el's `use-package
 ;; general'); declared here for the same byte-compiler reason as the
@@ -544,15 +545,15 @@ a pre-existing, accepted limitation this phase does not change."
 (defun claude-term-kill-all ()
   "Kill every registered claude-term session's live process.
 Explicitly clears an in-flight `claude-term--restarting' flag before
-`kill-process' on any session mid-restart -- guards against a restart
-racing this global kill and silently resurrecting a session moments
-after it was asked to die (see the phase body's own edge case)."
+terminating any session mid-restart -- guards against a restart racing
+this global kill and silently resurrecting a session moments after it
+was asked to die (see the phase body's own edge case)."
   (interactive)
   (dolist (session (claude-term-registry-sessions))
     (with-current-buffer (claude-term-session-buffer session)
       (when (process-live-p ghostel--process)
         (setq-local claude-term--restarting nil)
-        (kill-process ghostel--process)))))
+        (claude-term--terminate)))))
 
 ;; ============================================================================
 ;; SPC a keybindings

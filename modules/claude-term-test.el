@@ -383,4 +383,58 @@ against a literal list rather than `ghostel-color-palette'."
                              claude-term-default-background)))
     (should (string-match-p "\\`#[0-9a-f]\\{6\\}\\'" hex))))
 
+(ert-deftest claude-term-test-terminate-signals-child-behind-a-pipe-handle ()
+  "A native-PTY session is terminated by signaling its child, not the handle.
+On that path -- ghostel's default for every local spawn --
+`ghostel--process' is a pipe process standing in for the real child, and
+`kill-process' rejects it outright.  The live-test harness stubs
+`ghostel-exec' with a real subprocess, so only a pipe handle exercises
+this."
+  (let ((pipe (make-pipe-process :name "claude-term-test-pipe" :noquery t))
+        (signalled nil))
+    (unwind-protect
+        (with-temp-buffer
+          (should (eq (process-type pipe) 'pipe))
+          (should-error (kill-process pipe))
+          (setq-local ghostel--process pipe)
+          (setq-local ghostel--pid 4242)
+          (cl-letf (((symbol-function 'signal-process)
+                     (lambda (pid sig) (setq signalled (cons pid sig)))))
+            (claude-term--terminate))
+          (should (equal signalled '(4242 . KILL))))
+      (delete-process pipe))))
+
+(ert-deftest claude-term-test-terminate-uses-kill-process-for-a-real-handle ()
+  "The Emacs PTY path (remote spawns, and the live-test harness) still
+goes through `kill-process' -- `ghostel--process' is a real subprocess
+there, and its pid is the one Emacs already owns."
+  (let ((killed nil))
+    (with-temp-buffer
+      (setq-local ghostel--process (start-process "claude-term-test-real" nil "sleep" "60"))
+      (set-process-query-on-exit-flag ghostel--process nil)
+      (setq-local ghostel--pid (process-id ghostel--process))
+      (unwind-protect
+          (cl-letf (((symbol-function 'kill-process)
+                     (lambda (proc) (setq killed proc))))
+            (claude-term--terminate)
+            (should (eq killed ghostel--process)))
+        (delete-process ghostel--process)))))
+
+(ert-deftest claude-term-test-kill-terminates-a-pipe-backed-session ()
+  "`claude-term-kill' reaches a native-PTY session's child without erroring."
+  (let* ((buf (generate-new-buffer "claude-term-test-kill"))
+         (pipe (make-pipe-process :name "claude-term-test-kill-pipe"
+                                  :buffer buf :noquery t))
+         (signalled nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq-local ghostel--process pipe)
+          (setq-local ghostel--pid 4243)
+          (cl-letf (((symbol-function 'signal-process)
+                     (lambda (pid sig) (setq signalled (cons pid sig)))))
+            (claude-term-kill buf))
+          (should (equal signalled '(4243 . KILL))))
+      (delete-process pipe)
+      (kill-buffer buf))))
+
 ;;; claude-term-test.el ends here
