@@ -67,6 +67,8 @@
   :after vterm
   :config
   (setq vterm-toggle-fullscreen-p nil)
+  ;; Stays at the bottom, not the right stack: a transient scratch terminal
+  ;; toggled in and out, not a dismiss-to-main popup pane.
   (add-to-list 'display-buffer-alist
                '((lambda (buffer-or-name _)
                    (let ((buffer (get-buffer buffer-or-name)))

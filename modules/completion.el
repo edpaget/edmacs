@@ -128,20 +128,16 @@
 ;; Embark - Contextual actions
 ;; ============================================================================
 
+;; Embark Collect's display-buffer-alist routing (right stack, slot -1,
+;; mode-line hidden) lives in modules/windows.el, consolidated with every
+;; other popup buffer.
 (use-package embark
   :bind
   (("C-." . embark-act)
    ("C-;" . embark-dwim)
    ("C-h B" . embark-bindings)
    ;; Alternative vim-friendly binding
-   ("C-o" . embark-act))
-
-  :config
-  ;; Hide the mode line of the Embark live/completions buffers
-  (add-to-list 'display-buffer-alist
-               '("\\`\\*Embark Collect \\(Live\\|Completions\\)\\*"
-                 nil
-                 (window-parameters (mode-line-format . none)))))
+   ("C-o" . embark-act)))
 
 ;; Embark-Consult integration
 (use-package embark-consult

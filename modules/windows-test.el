@@ -16,6 +16,10 @@
 ;; every other test in this file exercises it directly), so that test only
 ;; has sidebar.el left to load internally. See that test's own comments for
 ;; the straight-bootstrap skip condition.
+;;
+;; The width test near the popup-routing section (AC5) skips unless
+;; `modules/claude-term.el' is also passed on the command line -- see that
+;; test's own Commentary note for the exact invocation.
 
 ;;; Code:
 
@@ -255,5 +259,229 @@ a real Emacs session) to enable this test"))
 
     (ert-deftest edmacs-windows-test-window-sides-slots-load-order ()
       (should (equal window-sides-slots '(1 nil nil nil))))))
+
+;; ============================================================================
+;; Popup routing, pinning, and quit-restore (this phase)
+;; ============================================================================
+
+(defun edmacs-windows-test--nonside-count ()
+  "Count the selected frame's non-side windows."
+  (length (seq-filter (lambda (w) (not (window-parameter w 'window-side)))
+                       (window-list nil 'no-minibuf))))
+
+(defun edmacs-windows-test--right-windows ()
+  "Return the selected frame's right-side windows, unsorted."
+  (seq-filter (lambda (w) (eq (window-parameter w 'window-side) 'right))
+              (window-list nil 'no-minibuf)))
+
+(defun edmacs-windows-test--fresh-named-buffer (name)
+  "Return a live buffer named exactly NAME, killing any stray one first.
+Loading modules/claude-term.el under `-Q' (AC5's own test) logs
+\"Unrecognized keyword\" warnings, which creates a real \"*Warnings*\"
+buffer; without this, `generate-new-buffer' on that exact name would
+silently get \"*Warnings*<2>\" instead, missing the routed pattern's
+`\\'' anchor. \"*Messages*\" is handled separately in the AC1 test below,
+since Emacs always has one and it must never be killed."
+  (when (get-buffer name)
+    (kill-buffer name))
+  (generate-new-buffer name))
+
+(defconst edmacs-windows-test--popup-names
+  '("*Warnings*" "*Messages*" "*Help*" "*helpful variable: foo*"
+    "*compilation*" "*quickrun*" "*Flycheck errors*" "*Backtrace*"
+    "*Occur*" "*grep*" "*xref*" "*magit-diff: edmacs*" "*magit-log: edmacs*"
+    "*lsp-help*" "*Embark Collect Live*")
+  "One representative buffer name per routed `display-buffer-alist' pattern.")
+
+;; ---------------------------------------------------------------------------
+;; AC1 -- every routed name lands on right/-1; the center is untouched
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-popup-routes-to-right-slot-minus-1 ()
+  (dolist (name edmacs-windows-test--popup-names)
+    (save-window-excursion
+      (delete-other-windows)
+      (let* ((before (edmacs-windows-test--nonside-count))
+             ;; "*Messages*" always already exists (Emacs creates it at
+             ;; startup); `generate-new-buffer' on that exact name would
+             ;; silently get "*Messages*<2>" instead, which the routed
+             ;; pattern's `\\'' anchor does not match. Use the real buffer
+             ;; for that one case rather than creating (and killing) a
+             ;; second one.
+             (real-messages (equal name "*Messages*"))
+             (buf (if real-messages (get-buffer name) (edmacs-windows-test--fresh-named-buffer name))))
+        (unwind-protect
+            (let ((win (display-buffer buf)))
+              (should win)
+              (should (eq (window-parameter win 'window-side) 'right))
+              (should (equal (window-parameter win 'window-slot) -1))
+              (should (= before (edmacs-windows-test--nonside-count))))
+          (unless real-messages (kill-buffer buf)))))))
+
+;; ---------------------------------------------------------------------------
+;; AC2 -- two different routed buffers in a row share the same slot -1 window
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-popup-second-routed-buffer-reuses-window ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf-a (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
+          (buf-b (edmacs-windows-test--fresh-named-buffer "*Help*")))
+      (unwind-protect
+          (let* ((win-a (display-buffer buf-a))
+                 (count-after-a (length (window-list nil 'no-minibuf)))
+                 (win-b (display-buffer buf-b)))
+            (should (eq win-a win-b))
+            (should (eq (window-buffer win-a) buf-b))
+            (should (= count-after-a (length (window-list nil 'no-minibuf)))))
+        (kill-buffer buf-a)
+        (kill-buffer buf-b)))))
+
+(ert-deftest edmacs-windows-test-embark-collect-keeps-mode-line-format-none ()
+  "Consolidating Embark's entry into windows.el must not drop the
+`(mode-line-format . none)' window-parameter completion.el's own
+now-removed entry used to set -- that parameter is Embark's own
+rendering concern, not something any routing AC re-tests on its own."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (edmacs-windows-test--fresh-named-buffer "*Embark Collect Live*")))
+      (unwind-protect
+          (let ((win (display-buffer buf)))
+            (should (eq (window-parameter win 'mode-line-format) 'none)))
+        (kill-buffer buf)))))
+
+;; ---------------------------------------------------------------------------
+;; AC3 -- agents (0,1,2) + popup (-1) + pin (-2) + a fresh popup (-1 again)
+;; ---------------------------------------------------------------------------
+
+(defun edmacs-windows-test--display-agent-pane (buffer slot)
+  "Display BUFFER as a right-column stack pane at SLOT, claude-term.el's shape."
+  (display-buffer
+   buffer
+   `((display-buffer-in-side-window)
+     (side . right)
+     (slot . ,slot)
+     (window-parameters . ((no-other-window . t))))))
+
+(ert-deftest edmacs-windows-test-pin-then-fresh-popup-yields-five-windows ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let (bufs)
+      (unwind-protect
+          (progn
+            (dotimes (i 3)
+              (let ((b (generate-new-buffer (format "*ewt-agent-%d*" i))))
+                (push b bufs)
+                (edmacs-windows-test--display-agent-pane b i)))
+            (let* ((popup-buf (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
+                   (popup-win (display-buffer popup-buf)))
+              (push popup-buf bufs)
+              (should (equal (window-parameter popup-win 'window-slot) -1))
+              (edmacs-stack-pin popup-win)
+              ;; Pin deletes the old slot -1 window and creates a new one at
+              ;; -2, so right after the pin call slot -1 is vacant again and
+              ;; only 4 right-edge windows are live.
+              (let ((right (edmacs-windows-test--right-windows)))
+                (should (= (length right) 4))
+                (should (equal (sort (mapcar (lambda (w) (window-parameter w 'window-slot)) right) #'<)
+                                '(-2 0 1 2)))
+                (should-not (memq popup-win right))
+                (should (window-live-p (get-buffer-window popup-buf t))))
+              ;; A second, DIFFERENT popup recreates slot -1 fresh, since
+              ;; the right column is uncapped -- five distinct live windows,
+              ;; each still reporting the slot it was created with.
+              (let* ((help-buf (edmacs-windows-test--fresh-named-buffer "*Help*"))
+                     (help-win (display-buffer help-buf)))
+                (push help-buf bufs)
+                (should (equal (window-parameter help-win 'window-slot) -1))
+                (let ((right (edmacs-windows-test--right-windows)))
+                  (should (= (length right) 5))
+                  (should (equal (sort (mapcar (lambda (w) (window-parameter w 'window-slot)) right) #'<)
+                                  '(-2 -1 0 1 2)))
+                  (should (window-live-p help-win))
+                  (should (window-live-p (get-buffer-window popup-buf t)))))))
+        (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
+
+;; ---------------------------------------------------------------------------
+;; AC4 -- `q' in a popup pane force-deletes it and returns to main
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-quit-window-deletes-popup-and-selects-main ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
+      (unwind-protect
+          (let ((win (display-buffer buf)))
+            (select-window win)
+            (quit-window nil win)
+            (should-not (window-live-p win))
+            (should (eq (selected-window) main))
+            (should (buffer-live-p buf)))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-quit-window-after-two-popups-does-not-resurrect-first ()
+  "Regression: a second popup reusing slot -1 leaves a stale
+`window-prev-buffers' entry for the first one; without the
+`quit-restore-window' advice, stock `quit-window' would restore the
+first popup instead of deleting the pane and returning to main."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (buf1 (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
+           (buf2 (edmacs-windows-test--fresh-named-buffer "*Help*")))
+      (unwind-protect
+          (progn
+            (display-buffer buf1)
+            (let ((win2 (display-buffer buf2)))
+              (select-window win2)
+              (quit-window nil win2)
+              (should-not (window-live-p win2))
+              (should (eq (selected-window) main))
+              (should (buffer-live-p buf1))
+              (should (buffer-live-p buf2))
+              ;; Buf1 must not have been resurrected into any window.
+              (should-not (get-buffer-window buf1 t))))
+        (kill-buffer buf1)
+        (kill-buffer buf2)))))
+
+;; ---------------------------------------------------------------------------
+;; AC5 -- every right-edge window's width tracks `edmacs-stack-width' live
+;; ---------------------------------------------------------------------------
+;; The agent-pane half of this test needs `modules/claude-term.el' loaded
+;; (its own `display-buffer' path is what proves the agent-pane side of
+;; this AC already worked before this phase). Loading it under `-Q' prints
+;; a benign "Unrecognized keyword: :straight" notice from the
+;; `use-package ghostel'/`use-package evil-ghostel' forms -- see
+;; claude-term-test.el's own Commentary for why that is harmless here.
+;; Run this one test (or the whole file) with:
+;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/claude-term.el \
+;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
+
+(ert-deftest edmacs-windows-test-width-tracks-live-variable-for-agent-and-popup ()
+  (if (not (fboundp 'claude-term--display-buffer))
+      (ert-skip "modules/claude-term.el not loaded -- see this test's Commentary")
+    (save-window-excursion
+      (delete-other-windows)
+      (let ((agent-buf (generate-new-buffer "*ewt-width-agent*"))
+            (popup-buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
+        (unwind-protect
+            (let (agent-w1 popup-w1 agent-w2 popup-w2)
+              (let ((edmacs-stack-width 0.4))
+                (delete-other-windows)
+                (setq agent-w1 (window-total-width (claude-term--display-buffer agent-buf)))
+                (setq popup-w1 (window-total-width (display-buffer popup-buf))))
+              (delete-other-windows)
+              (let ((edmacs-stack-width 0.6))
+                (setq agent-w2 (window-total-width (claude-term--display-buffer agent-buf)))
+                (setq popup-w2 (window-total-width (display-buffer popup-buf))))
+              (should (/= agent-w1 agent-w2))
+              (should (/= popup-w1 popup-w2))
+              (should (> agent-w2 agent-w1))
+              (should (> popup-w2 popup-w1)))
+          (kill-buffer agent-buf)
+          (kill-buffer popup-buf))))))
 
 ;;; windows-test.el ends here

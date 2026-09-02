@@ -13,6 +13,14 @@
 ;; read-modify-write so neither can stomp the other regardless of load
 ;; order.
 ;;
+;; Every popup buffer (Warnings, Messages, Help/helpful, compilation,
+;; Flycheck, Backtrace, Occur, grep/xref, Embark Collect, magit diff/log,
+;; lsp-help) routes through one `display-buffer-alist' block onto the
+;; shared right-column slot -1. `edmacs-stack-pin' moves the current popup
+;; to its own slot when it should outlive the next one; a `quit-restore-
+;; window' advice makes `q' in any popup delete the pane and return to
+;; `edmacs-main-window' rather than risk restoring a stale prior popup.
+;;
 ;; Run the ERT suite with:
 ;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/windows-test.el \
 ;;         -f ert-run-tests-batch-and-exit
@@ -153,15 +161,69 @@ every stacked pane, not a per-pane budget."
   :type 'number
   :group 'windows)
 
-;; Stack *Warnings* in the right-hand column beside claude-term panes (slot -1
-;; puts it above them). Width matches `edmacs-stack-width'.
+(defun edmacs-stack--resize-width (window)
+  "Resize WINDOW's total width to the live value of `edmacs-stack-width'.
+A function-valued `window-width' action-alist entry: `window--display-buffer'
+calls this for a freshly created side window instead of the numberp branch.
+Unlike a plain number spliced into a `display-buffer-alist' entry at
+`defcustom'/`add-to-list' time, this re-reads the variable on every call, so
+rebinding `edmacs-stack-width' takes effect on the next popup or agent pane
+without re-registering any alist entry."
+  (let ((new-width (round (* edmacs-stack-width
+                              (window-total-width (frame-root-window window))))))
+    (ignore-errors
+      (window-resize window (- new-width (window-total-width window)) t 'safe))))
+
+(defun edmacs-stack--popup-alist (&optional slot extra-params)
+  "Return a `display-buffer-alist' action list for a stack popup.
+Every routed popup buffer shares this one shape: a right side window at
+SLOT (default the shared popup slot -1), sized live by
+`edmacs-stack--resize-width', tagged `edmacs-stack-popup' so
+`edmacs-stack-pin' and the `quit-restore-window' advice below can
+recognize it. EXTRA-PARAMS, when given, are additional window-parameters
+conses, e.g. Embark's `(mode-line-format . none)'.
+SLOT must be a real argument here, not filled in afterward by mutating
+the returned alist: a backquote form with no unquote in a given branch
+compiles to one shared literal list reused across every call, so
+mutating a slot-less template's `slot' entry in place (as `edmacs-stack-pin'
+once tried to) would silently corrupt every other alist built from the
+same template, registered display-buffer-alist entries included."
+  `((display-buffer-in-side-window)
+    (side . right)
+    (slot . ,(or slot -1))
+    (window-width . edmacs-stack--resize-width)
+    (preserve-size . (t . nil))
+    (window-parameters . ((edmacs-stack-popup . t) ,@extra-params))))
+
+;; Every popup buffer below shares slot -1: `display-buffer-in-side-window'
+;; reuses an existing side window whose `window-slot' matches the requested
+;; slot, so a second popup replaces the first instead of stacking beside it
+;; (see `edmacs-stack-pin' below for pulling one out of that shared slot).
+;; Prefixes, not exact names, are used where the real buffer name carries a
+;; variable suffix -- helpful's "*helpful variable: foo*", magit's
+;; "*magit-diff: reponame*" and "*magit-log: reponame*". Revision-mode and
+;; process-mode magit buffers are intentionally not routed here.
+(dolist (pattern '("\\`\\*Warnings\\*\\'"
+                    "\\`\\*Messages\\*\\'"
+                    "\\`\\*Help\\*\\'"
+                    "\\`\\*helpful "
+                    "\\`\\*compilation\\*\\'"
+                    "\\`\\*quickrun\\*\\'"
+                    "\\`\\*Flycheck errors\\*\\'"
+                    "\\`\\*Backtrace\\*\\'"
+                    "\\`\\*Occur\\*\\'"
+                    "\\`\\*grep\\*\\'"
+                    "\\`\\*xref\\*\\'"
+                    "\\`\\*magit-diff: "
+                    "\\`\\*magit-log: "
+                    "\\`\\*lsp-help\\*\\'"))
+  (add-to-list 'display-buffer-alist (cons pattern (edmacs-stack--popup-alist))))
+
+;; Embark's live/completions buffers keep the `(mode-line-format . none)'
+;; window-parameter completion.el's own now-removed entry used to set.
 (add-to-list 'display-buffer-alist
-             `("\\`\\*Warnings\\*\\'"
-               (display-buffer-in-side-window)
-               (side . right)
-               (slot . -1)
-               (window-width . ,edmacs-stack-width)
-               (preserve-size . (t . nil))))
+             (cons "\\`\\*Embark Collect \\(Live\\|Completions\\)\\*"
+                   (edmacs-stack--popup-alist nil '((mode-line-format . none)))))
 
 (defun edmacs-stack-windows ()
   "Return the selected frame's stack windows: right side windows, by slot."
@@ -176,10 +238,66 @@ every stacked pane, not a per-pane budget."
 ;; roadmap's phase-1 body. RIGHT is nil: no cap, so a fresh slot always
 ;; creates a new window and `display-buffer-in-side-window' never silently
 ;; steals an existing pane (see this roadmap's DECISIONS for why a numeric
-;; cap is actively dangerous here).
+;; cap is actively dangerous here). `edmacs-stack-pin' below depends on this
+;; staying uncapped.
 (setq window-sides-slots
       (list (nth 0 window-sides-slots) (nth 1 window-sides-slots)
             nil (nth 3 window-sides-slots)))
+
+(defvar edmacs-stack--next-pin-slot -2
+  "Next negative right-column slot `edmacs-stack-pin' will allocate.
+Decrements on every call so repeated pins never collide with each other
+or with the shared popup slot -1.")
+
+(defun edmacs-stack--allocate-pin-slot ()
+  "Return the next unused pin slot and advance the counter."
+  (prog1 edmacs-stack--next-pin-slot
+    (setq edmacs-stack--next-pin-slot (1- edmacs-stack--next-pin-slot))))
+
+(defun edmacs-stack-pin (&optional window)
+  "Relocate WINDOW's buffer out of the shared popup slot to its own slot.
+WINDOW (default the selected window) must be a right-column stack
+window. Its buffer is redisplayed in a freshly allocated negative slot
+-- -2, -3, ... -- and WINDOW itself is deleted. Because the right
+column is uncapped (see `window-sides-slots' above), the redisplay
+always creates a genuinely new window rather than reusing an existing
+one, so a later popup landing back in slot -1 can never steal this
+pane. The new window keeps the `edmacs-stack-popup' parameter, so `q'
+still deletes it via the advice below."
+  (interactive)
+  (let ((window (or window (selected-window))))
+    (unless (eq (window-parameter window 'window-side) 'right)
+      (user-error "edmacs-stack-pin: %s is not a right-column stack window" window))
+    (let* ((buffer (window-buffer window))
+           (slot (edmacs-stack--allocate-pin-slot))
+           (alist (edmacs-stack--popup-alist slot)))
+      ;; Calling the action function directly, not `display-buffer', is
+      ;; required here: BUFFER's own name (e.g. "*Warnings*") still matches
+      ;; one of the slot -1 `display-buffer-alist' entries above, and
+      ;; `display-buffer' always merges that alist in ahead of an explicit
+      ;; ACTION argument -- its `slot' entry would silently win over ours
+      ;; and land the "pinned" window right back in the shared slot.
+      (let ((new (display-buffer-in-side-window buffer alist)))
+        (delete-window window)
+        (when new (select-window new))))))
+
+(defun edmacs-stack--quit-restore-window (orig-fn &optional window bury-or-kill)
+  "Force-delete a stack popup window; delegate to ORIG-FN for everything else.
+Two different popups sharing slot -1 in succession leave a stale
+`window-prev-buffers' entry for the first one on that window; stock
+`quit-restore-window' (ORIG-FN) would then take its switch-to-prev-buffer
+fallback and resurrect the first popup instead of deleting the pane.
+Popup windows -- tagged `edmacs-stack-popup' by `edmacs-stack--popup-alist'
+-- never want that: `q' always deletes the window and returns to main."
+  (let ((window (window-normalize-window window)))
+    (if (and (eq (window-parameter window 'window-side) 'right)
+             (window-parameter window 'edmacs-stack-popup))
+        (let ((main (edmacs-main-window)))
+          (delete-window window)
+          (when main (select-window main)))
+      (funcall orig-fn window bury-or-kill))))
+
+(advice-add 'quit-restore-window :around #'edmacs-stack--quit-restore-window)
 
 ;; ============================================================================
 ;; Window Rotation (tmux layout replacement)
