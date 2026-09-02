@@ -162,4 +162,27 @@
  "<" 'evil-shift-left
  ">" 'evil-shift-right)
 
+;; ============================================================================
+;; SPC w leaves this phase added/changed, also bound direct in `evil-normal-state-map'
+;; ============================================================================
+;; `leader-def' above binds through `general-override-mode-map' (:keymaps
+;; 'override), which always wins at dispatch time; the entries below are
+;; redundant and inert there. They exist only so these specific `SPC w'
+;; leaves also resolve via a plain `lookup-key' on `evil-normal-state-map'
+;; itself, the same surface `SPC a' bindings use in claude-term-registry.el
+;; (whose `:states' is given with no `:keymaps', so general.el binds
+;; directly into the evil state map rather than an auxiliary keymap).
+(general-define-key
+ :states 'normal
+ :prefix "SPC w"
+ "-" 'edmacs-window-demote
+ "]" 'edmacs-stack-next
+ "[" 'edmacs-stack-prev
+ "x" 'edmacs-stack-close
+ ">" 'edmacs-stack-widen
+ "<" 'edmacs-stack-narrow
+ "S" 'edmacs-stack-toggle
+ "d" 'edmacs-window-delete-or-demote
+ "=" 'edmacs-stack-balance-center)
+
 ;;; keybindings.el ends here

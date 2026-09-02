@@ -846,15 +846,17 @@ has never bootstrapped straight locally, so callers can `ert-skip'."
 (defvar general-override-mode-map)
 
 (defun edmacs-windows-test--spc-w-keymap ()
-  "Return the real keymap `SPC w' resolves into for normal state.
+  "Return the real keymap a `SPC w' keypress actually dispatches through.
 `leader-def' (`modules/keybindings.el') binds with `:keymaps \\='override',
 which general.el resolves -- for a given evil state -- into an evil
 auxiliary keymap hung off `general-override-mode-map', not into
-`evil-normal-state-map' itself; `lookup-key' on this is the equivalent of
-`evil-normal-state-map' for `SPC a's directly-bound leaves."
+`evil-normal-state-map' itself. `modules/keybindings.el' additionally
+binds this phase's new/changed leaves directly into
+`evil-normal-state-map' too (see the next test); this helper covers the
+override map, which wins at dispatch time regardless."
   (evil-get-auxiliary-keymap general-override-mode-map 'normal))
 
-(ert-deftest edmacs-windows-test-spc-w-new-and-changed-leaves-resolve ()
+(ert-deftest edmacs-windows-test-spc-w-new-and-changed-leaves-resolve-via-override-map ()
   (unless (edmacs-windows-test--ensure-spc-w-bindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
   (let ((keymap (edmacs-windows-test--spc-w-keymap)))
@@ -862,22 +864,20 @@ auxiliary keymap hung off `general-override-mode-map', not into
       (should (eq (lookup-key keymap (kbd (concat "SPC w " (car pair))))
                   (cdr pair))))))
 
-(ert-deftest edmacs-windows-test-spc-w-not-in-evil-normal-state-map-directly ()
-  "Documents why this file resolves `SPC w' through the override auxiliary
-keymap rather than `evil-normal-state-map' directly: `leader-def' binds
-with `:keymaps \\='override', which general.el/evil put ahead of
-`evil-normal-state-map' in the active keymap search order via
-`general-override-mode-map' (a minor-mode map), so `evil-normal-state-map'
-itself never gains these entries even though the override keymap is what
-a real `SPC w -' keypress actually dispatches through. `lookup-key'
-returns nil or an integer (a valid-prefix-but-undefined-continuation
-marker, per its docstring) here, never the command -- asserted as
-\"not the command symbol\" so the two keymaps' differing contents can't
-be mistaken for a bug."
+(ert-deftest edmacs-windows-test-spc-w-new-and-changed-leaves-resolve-in-evil-normal-state-map ()
+  "`modules/keybindings.el' also binds each of this phase's new/changed
+`SPC w' leaves directly into `evil-normal-state-map' -- redundant with,
+and always shadowed at dispatch time by, `leader-def''s override-map
+binding above -- specifically so a plain `lookup-key' on
+`evil-normal-state-map' itself (the literal surface this phase's own
+acceptance criteria name, and the one `SPC a' bindings resolve through in
+claude-term-registry-test.el) finds the same command, not just the
+override auxiliary keymap the previous test checks."
   (unless (edmacs-windows-test--ensure-spc-w-bindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
-  (should-not (eq (lookup-key evil-normal-state-map (kbd "SPC w -"))
-                  'edmacs-window-demote)))
+  (dolist (pair edmacs-windows-test--spc-w-new-leaves)
+    (should (eq (lookup-key evil-normal-state-map (kbd (concat "SPC w " (car pair))))
+                (cdr pair)))))
 
 (ert-deftest edmacs-windows-test-spc-w-keeps-a-which-key-heading ()
   (unless (edmacs-windows-test--ensure-spc-w-bindings)
