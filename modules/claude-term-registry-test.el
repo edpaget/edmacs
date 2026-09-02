@@ -209,6 +209,91 @@ not merely the label string `completing-read' returned."
     (should-error (claude-term--read-session "prompt: ") :type 'user-error)))
 
 ;; ============================================================================
+;; claude-term-kill / claude-term-restart's shared registry-based picker
+;; ============================================================================
+;; `claude-term--read-buffer' (claude-term.el) is the one place
+;; `claude-term-kill' and `claude-term-restart' resolve a target buffer
+;; when called with no BUFFER argument from OUTSIDE a claude-term
+;; buffer -- it delegates to this file's `claude-term--read-session' for
+;; that prompting branch. The tests below drive `claude-term-kill' and
+;; `claude-term-restart' themselves (not `claude-term--read-buffer' or
+;; `claude-term--read-session' directly) from a non-claude-term current
+;; buffer, so the actual bufferless/cross-project prompting path each
+;; command takes in real use is exercised end to end, distinguishing the
+;; target session the user picked from an unrelated sibling that must be
+;; left untouched.
+
+(ert-deftest claude-term-registry-test-kill-bufferless-uses-shared-picker ()
+  "`(claude-term-kill)' called with no BUFFER argument from a plain,
+non-claude-term current buffer resolves its target via the shared
+`claude-term--read-buffer' -> `claude-term--read-session' picker, and
+kills only the picked session's process -- an unrelated registered
+sibling is left completely untouched."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (target-buf (generate-new-buffer "claude-term-registry-test-kill-target"))
+        (other-buf (generate-new-buffer "claude-term-registry-test-kill-other"))
+        (caller-buf (generate-new-buffer "claude-term-registry-test-kill-caller"))
+        (killed nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer target-buf (setq-local ghostel--process 'target-process))
+          (with-current-buffer other-buf (setq-local ghostel--process 'other-process))
+          (claude-term-registry-put "/tmp/ctr-kill-picker-target/" nil target-buf)
+          (claude-term-registry-put "/tmp/ctr-kill-picker-other/" nil other-buf)
+          (with-current-buffer caller-buf
+            (should-not (claude-term--parse-buffer-name (buffer-name)))
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _)
+                         (claude-term--session-label
+                          (claude-term-registry-get "/tmp/ctr-kill-picker-target/" nil))))
+                      ((symbol-function 'process-live-p)
+                       (lambda (proc) (eq proc 'target-process)))
+                      ((symbol-function 'kill-process)
+                       (lambda (proc) (push proc killed))))
+              (claude-term-kill)))
+          (should (equal killed '(target-process))))
+      (mapc #'kill-buffer (list target-buf other-buf caller-buf)))))
+
+(ert-deftest claude-term-registry-test-restart-bufferless-uses-shared-picker ()
+  "`(claude-term-restart)' called with no BUFFER argument from a plain,
+non-claude-term current buffer resolves its target via the same shared
+picker, and re-execs only the picked (dead-process) session -- an
+unrelated registered sibling's buffer-locals are never even read."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (target-buf (generate-new-buffer "claude-term-registry-test-restart-target"))
+        (other-buf (generate-new-buffer "claude-term-registry-test-restart-other"))
+        (caller-buf (generate-new-buffer "claude-term-registry-test-restart-caller"))
+        (reexeced nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer target-buf
+            (setq-local claude-term--root "/tmp/ctr-restart-picker-target/")
+            (setq-local claude-term--instance nil)
+            (setq-local claude-term--args nil)
+            (setq-local claude-term--restarting nil)
+            (setq-local ghostel--process 'target-process))
+          (with-current-buffer other-buf
+            (setq-local claude-term--root "/tmp/ctr-restart-picker-other/")
+            (setq-local claude-term--instance nil)
+            (setq-local claude-term--args nil)
+            (setq-local claude-term--restarting nil)
+            (setq-local ghostel--process 'other-process))
+          (claude-term-registry-put "/tmp/ctr-restart-picker-target/" nil target-buf)
+          (claude-term-registry-put "/tmp/ctr-restart-picker-other/" nil other-buf)
+          (with-current-buffer caller-buf
+            (should-not (claude-term--parse-buffer-name (buffer-name)))
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _)
+                         (claude-term--session-label
+                          (claude-term-registry-get "/tmp/ctr-restart-picker-target/" nil))))
+                      ((symbol-function 'process-live-p) (lambda (_proc) nil))
+                      ((symbol-function 'claude-term--exec)
+                       (lambda (buf &rest _) (push buf reexeced))))
+              (claude-term-restart)))
+          (should (equal reexeced (list target-buf))))
+      (mapc #'kill-buffer (list target-buf other-buf caller-buf)))))
+
+;; ============================================================================
 ;; Repo name / elapsed time / label
 ;; ============================================================================
 
@@ -330,6 +415,66 @@ buffer-local instance."
           (should (equal (buffer-name buf) "*claude-term:shared-leaf*")))
       (kill-buffer buf)
       (kill-buffer other-buf))))
+
+(ert-deftest claude-term-registry-test-rename-same-root-collision-via-command-gets-correct-message ()
+  "Driving the same-root collision through `claude-term-rename' itself
+(not just `claude-term-registry-rename' directly) must surface the
+registry-level, root-scoped \"instance already exists for this root\"
+message -- NOT the buffer-name check's cross-root \"an unrelated
+project's session sharing this leaf name\" wording, which is factually
+wrong when the collision is against a SIBLING instance of the very
+same worktree. Before the fix, `claude-term-rename's own buffer-name
+collision guard ran unconditionally and intercepted this case first,
+making the correctly-worded registry error unreachable through the
+only public entry point a user actually invokes (SPC a r)."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (buf-a (generate-new-buffer "*claude-term:shared-worktree:a*"))
+        (buf-b (generate-new-buffer "*claude-term:shared-worktree:b*"))
+        (root "/tmp/ctr-rename-cmd-same-root/shared-worktree/"))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf-a
+            (setq-local claude-term--root root)
+            (setq-local claude-term--instance "a"))
+          (with-current-buffer buf-b
+            (setq-local claude-term--root root)
+            (setq-local claude-term--instance "b"))
+          (claude-term-registry-put root "a" buf-a)
+          (claude-term-registry-put root "b" buf-b)
+          (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "b")))
+            (let ((err (should-error (claude-term-rename buf-a) :type 'user-error)))
+              (should (string-match-p "instance b already exists for this root" (cadr err)))
+              (should-not (string-match-p "unrelated project" (cadr err)))))
+          ;; Sibling instance "b" -- and "a" itself -- are left untouched.
+          (should (eq (claude-term-session-buffer (claude-term-registry-get root "b")) buf-b))
+          (should (equal (buffer-local-value 'claude-term--instance buf-a) "a")))
+      (kill-buffer buf-a)
+      (kill-buffer buf-b))))
+
+(ert-deftest claude-term-registry-test-rename-into-stale-dead-instance-slot-succeeds ()
+  "A ROOT/NEW-INSTANCE registry entry left behind by a buffer that was
+killed directly (bypassing `claude-term--on-exit' /
+`claude-term-registry-remove') must not block a legitimate rename into
+that now-vacated instance slot -- `claude-term-registry-sessions' already
+documents this direct-kill-buffer scenario as expected and self-heals
+against it; the rename path must reap the same way, not falsely report
+the dead instance as still occupied."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (buf-a (generate-new-buffer "claude-term-registry-test-rename-stale-a"))
+        (dead-buf (generate-new-buffer "claude-term-registry-test-rename-stale-dead"))
+        (root "/tmp/ctr-rename-stale-slot/"))
+    (unwind-protect
+        (progn
+          (claude-term-registry-put root "a" buf-a)
+          (claude-term-registry-put root "b" dead-buf)
+          (kill-buffer dead-buf)
+          (setq dead-buf nil)
+          (claude-term-registry-rename root "a" "b")
+          (should-not (claude-term-registry-get root "a"))
+          (let ((renamed (claude-term-registry-get root "b")))
+            (should renamed)
+            (should (eq (claude-term-session-buffer renamed) buf-a))))
+      (kill-buffer buf-a))))
 
 ;; ============================================================================
 ;; EDMACS_AGENT_INSTANCE pre-spawn env hook
