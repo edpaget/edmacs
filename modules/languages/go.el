@@ -12,18 +12,14 @@
 ;; Go Mode (Tree-sitter)
 ;; ============================================================================
 
-;; go-ts-mode is automatically enabled by treesit-auto for .go files
-;; No need to explicitly configure mode associations
+;; treesit-auto maps .go to go-ts-mode.
 
 (with-eval-after-load 'go-ts-mode
-  ;; Enable LSP for Go
   ;; Requires gopls: go install golang.org/x/tools/gopls@latest
   (add-hook 'go-ts-mode-hook #'lsp-deferred)
 
-  ;; Enable smartparens for structural editing
   (add-hook 'go-ts-mode-hook #'smartparens-mode)
 
-  ;; Go-specific settings
   (setq go-ts-mode-indent-offset 4))
 
 ;; ============================================================================
@@ -34,10 +30,9 @@
 (use-package go-mode
   :defer t
   :config
-  ;; Use goimports for formatting (also handles imports)
+  ;; goimports also manages imports
   (setq gofmt-command "goimports")
 
-  ;; Common Go keybindings with local leader
   (general-define-key
    :states 'normal
    :keymaps 'go-ts-mode-map
@@ -85,7 +80,6 @@
 ;; ============================================================================
 
 (with-eval-after-load 'lsp-mode
-  ;; gopls settings
   (setq lsp-go-analyses '((fieldalignment . t)
                           (nilness . t)
                           (shadow . t)
@@ -94,11 +88,9 @@
                           (useany . t)
                           (unusedvariable . t)))
 
-  ;; Enable inlay hints
   (setq lsp-go-use-placeholders t
         lsp-go-hover-kind "FullDocumentation")
 
-  ;; gopls build flags (customize as needed)
   (setq lsp-go-build-flags []))
 
 ;; ============================================================================
@@ -168,7 +160,6 @@
 ;; ============================================================================
 
 (with-eval-after-load 'apheleia
-  ;; Ensure goimports is used for Go files (handles formatting + imports)
   (add-to-list 'apheleia-mode-alist '(go-ts-mode . goimports))
   (add-to-list 'apheleia-mode-alist '(go-mode . goimports)))
 
@@ -180,7 +171,6 @@
   :straight (go-mod-mode :type git :host github :repo "zkry/go-mod-mode")
   :mode "go\\.mod\\'"
   :config
-  ;; Enable LSP for go.mod files
   (add-hook 'go-mod-mode-hook #'lsp-deferred))
 
 (provide 'go)

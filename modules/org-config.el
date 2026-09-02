@@ -12,7 +12,6 @@
 (use-package org
   :straight (:type built-in)
   :config
-  ;; Basic org settings
   (setq org-directory "~/org"
         org-default-notes-file (concat org-directory "/notes.org")
         org-return-follows-link t
@@ -25,17 +24,14 @@
         org-startup-folded 'content
         org-cycle-separator-lines 2)
 
-  ;; Agenda settings
   (setq org-agenda-files (list org-directory)
         org-agenda-start-with-log-mode t
         org-log-done 'time
         org-log-into-drawer t)
 
-  ;; TODO keywords
   (setq org-todo-keywords
         '((sequence "TODO(t)" "IN-PROGRESS(i)" "WAITING(w)" "|" "DONE(d)" "CANCELLED(c)")))
 
-  ;; Org keybindings with general.el
   (general-define-key
    :states 'normal
    :prefix "SPC o"
@@ -49,7 +45,6 @@
    "e" '(org-export-dispatch :which-key "export")
    "i" '(org-insert-link :which-key "insert link"))
 
-  ;; Local leader for org-mode buffers
   (general-define-key
    :states 'normal
    :keymaps 'org-mode-map
@@ -95,13 +90,11 @@
         org-roam-v2-ack t)
 
   :config
-  ;; Create org-roam directory if it doesn't exist
   (unless (file-exists-p org-roam-directory)
     (make-directory org-roam-directory t))
 
   (org-roam-db-autosync-mode)
 
-  ;; Org-roam keybindings
   (general-define-key
    :states 'normal
    :prefix "SPC o"
@@ -112,7 +105,6 @@
    "rb" '(org-roam-buffer-toggle :which-key "buffer toggle")
    "rg" '(org-roam-graph :which-key "graph"))
 
-  ;; Local leader for org-roam in org-mode
   (general-define-key
    :states 'normal
    :keymaps 'org-mode-map
@@ -153,7 +145,6 @@
      (shell . t)
      (js . t)))
 
-  ;; Don't ask for confirmation before evaluating code blocks
   (setq org-confirm-babel-evaluate nil))
 
 ;; ============================================================================

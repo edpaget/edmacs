@@ -29,7 +29,7 @@ This creates a consistent set of structural editing keybindings for all Lisp mod
      "n" '(sp-next-sexp :which-key "next sexp")
      "p" '(sp-previous-sexp :which-key "previous sexp")
 
-     ;; Slurping and barfing (essential for Lisp!)
+     ;; Slurping and barfing
      ">" '(sp-forward-slurp-sexp :which-key "slurp forward")
      "<" '(sp-forward-barf-sexp :which-key "barf forward")
      "S" '(sp-backward-slurp-sexp :which-key "slurp backward")

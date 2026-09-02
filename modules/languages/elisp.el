@@ -20,16 +20,12 @@
          ("Cask\\'" . emacs-lisp-mode))
   :interpreter ("emacs" . emacs-lisp-mode)
   :config
-  ;; Enable smartparens strict mode for structural editing
   (add-hook 'emacs-lisp-mode-hook #'smartparens-strict-mode)
 
-  ;; Enable eldoc for inline documentation
   (add-hook 'emacs-lisp-mode-hook #'eldoc-mode)
 
-  ;; Enable aggressive indent for auto-indentation
   (add-hook 'emacs-lisp-mode-hook #'aggressive-indent-mode)
 
-  ;; Indentation settings
   (setq lisp-indent-offset 2))
 
 ;; ============================================================================
@@ -92,28 +88,23 @@
 ;; Smartparens - Additional Elisp-specific bindings
 ;; ============================================================================
 
-;; Set up smartparens keybindings using shared Lisp configuration
 (lisp-common-setup-smartparens-keys 'emacs-lisp-mode-map ", s")
 
 ;; ============================================================================
 ;; Helpful Packages
 ;; ============================================================================
 
-;; Macrostep - Interactive macro expansion
 (use-package macrostep
   :commands (macrostep-expand))
 
-;; Elisp-refs - Find references to Elisp symbols
 (use-package elisp-refs
   :commands (elisp-refs-function elisp-refs-variable elisp-refs-symbol))
 
-;; Aggressive Indent - Auto-indent code as you type
 (use-package aggressive-indent
   :hook (emacs-lisp-mode . aggressive-indent-mode)
   :config
   (setq aggressive-indent-comments-too t))
 
-;; Suggest - Discover Elisp functions by example
 (use-package suggest
   :commands suggest)
 

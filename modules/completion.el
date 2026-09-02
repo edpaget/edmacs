@@ -24,8 +24,7 @@
               ;; Vim-style word deletion
               ("C-w" . backward-kill-word))
   :config
-  (setq vertico-cycle t)  ; Cycle from last to first candidate
-  )
+  (setq vertico-cycle t))
 
 ;; Vertico extensions
 (use-package vertico-directory
@@ -113,22 +112,16 @@
          ("M-r" . consult-history))
 
   :config
-  ;; Optionally configure preview
-  ;; Was 'any: every momentary hover while arrowing through a
-  ;; consult-ripgrep/consult-buffer result list opened and fontified the
-  ;; hovered candidate with no debounce. Only a cursor rest past 0.3s now
-  ;; triggers a preview.
+  ;; Debounced: with `any', arrowing through results previewed and
+  ;; fontified every candidate.
   (setq consult-preview-key '(:debounce 0.3 any))
 
-  ;; Use Consult to select xref locations with preview
   (setq xref-show-xrefs-function #'consult-xref
         xref-show-definitions-function #'consult-xref)
 
-  ;; Configure register preview
   (setq register-preview-delay 0.5
         register-preview-function #'consult-register-format)
 
-  ;; Use consult for register actions
   (advice-add #'register-preview :override #'consult-register-window))
 
 ;; ============================================================================
@@ -182,28 +175,24 @@
               ([return] . corfu-insert))
 
   :config
-  (setq corfu-cycle t                ; Cycle through candidates
-        corfu-auto t                 ; Enable auto completion
-        corfu-auto-delay 0.2         ; Delay before showing completions
-        corfu-auto-prefix 3          ; Minimum prefix length for auto completion (corfu's own default)
-        corfu-quit-no-match 'separator ; Quit if no match
-        corfu-preview-current nil    ; Don't preview current candidate
-        corfu-preselect 'prompt      ; Preselect the prompt
-        corfu-on-exact-match nil)    ; Don't auto-select single match
+  (setq corfu-cycle t
+        corfu-auto t
+        corfu-auto-delay 0.2
+        corfu-auto-prefix 3
+        corfu-quit-no-match 'separator
+        corfu-preview-current nil
+        corfu-preselect 'prompt
+        corfu-on-exact-match nil)
 
-  ;; Enable Corfu in minibuffer
   (defun corfu-enable-in-minibuffer ()
     "Enable Corfu in the minibuffer if `completion-at-point' is bound."
     (when (where-is-internal #'completion-at-point (list (current-local-map)))
       (corfu-mode 1)))
   (add-hook 'minibuffer-setup-hook #'corfu-enable-in-minibuffer))
 
-;; Corfu extensions
-;; straight flattens corfu's extensions/ into straight/build/corfu/ and
-;; byte-compiles them, and that directory is already on `load-path'.  Do NOT
-;; add a :load-path pointing at straight/repos/corfu/extensions/ -- it shadows
-;; the built .elc with raw source, which gets recompiled on every boot and
-;; spams corfu's upstream `when-let'/`if-let' obsolescence warnings.
+;; straight builds corfu's extensions/ into straight/build/corfu/, already on
+;; `load-path'. A :load-path to straight/repos shadows the .elc with source
+;; and recompiles it every boot.
 (use-package corfu-popupinfo
   :straight nil
   :after corfu
@@ -223,7 +212,6 @@
 
 (use-package cape
   :init
-  ;; Add useful completion-at-point functions
   (add-to-list 'completion-at-point-functions #'cape-dabbrev)
   (add-to-list 'completion-at-point-functions #'cape-file)
   (add-to-list 'completion-at-point-functions #'cape-keyword))

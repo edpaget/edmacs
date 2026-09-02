@@ -12,18 +12,14 @@
 ;; Rust Mode (Tree-sitter)
 ;; ============================================================================
 
-;; rust-ts-mode is automatically enabled by treesit-auto for .rs files
-;; No need to explicitly configure mode associations
+;; treesit-auto maps .rs to rust-ts-mode.
 
 (with-eval-after-load 'rust-ts-mode
-  ;; Enable LSP for Rust
   ;; Requires rust-analyzer: rustup component add rust-analyzer
   (add-hook 'rust-ts-mode-hook #'lsp-deferred)
 
-  ;; Enable smartparens for structural editing
   (add-hook 'rust-ts-mode-hook #'smartparens-mode)
 
-  ;; Rust-specific indentation
   (setq rust-indent-offset 4))
 
 ;; ============================================================================
@@ -31,34 +27,18 @@
 ;; ============================================================================
 
 (use-package rustic
-  ;; Empirically, this config's `.rs' -> major-mode resolution is decided by
-  ;; auto-mode-alist ordering, and rustic's own top-level code is what wins
-  ;; that race (it prepends its own `.rs' entry and deletes the
-  ;; rust-mode/rust-ts-mode ones -- see rustic.el's "remove rust-mode and
-  ;; rust-ts-mode from auto-mode-alist" section). A bare `:defer t' here
-  ;; would mean nothing ever triggers rustic to load, so that mutation never
-  ;; runs and `.rs' files silently fall through to whatever treesit-auto left
-  ;; behind instead (confirmed via a batch probe: with rustic deferred and no
-  ;; autoload trigger, `.rs' resolves to treesit-auto's `rust-ts-mode-maybe'
-  ;; wrapper, which on this machine has no rust tree-sitter grammar available
-  ;; and falls back to plain `rust-mode' -- losing rustic-mode, its cargo
-  ;; keybindings, and its LSP wiring entirely). `:mode' keeps the autoload
-  ;; cookie + auto-mode-alist registration cheap and at startup (as today)
-  ;; while deferring rustic.el's actual `:config' body to the first `.rs'
-  ;; file open, which is the real win.
+  ;; `:mode', not `:defer t': rustic's top-level code is what claims `.rs' in
+  ;; auto-mode-alist, so without an autoload trigger `.rs' would fall through
+  ;; to treesit-auto/rust-mode and rustic would never load.
   :mode ("\\.rs\\'" . rustic-mode)
   :config
-  ;; Use rust-ts-mode for syntax highlighting instead of rustic's built-in mode
   (setq rustic-lsp-client 'lsp-mode)
 
-  ;; Disable rustic's flycheck in favor of LSP diagnostics
   (setq rustic-flycheck-setup-mode-line-p nil)
 
-  ;; Format on save using rustfmt
   (setq rustic-format-on-save t
         rustic-format-trigger 'on-save)
 
-  ;; Cargo settings
   (setq rustic-cargo-use-last-stored-arguments t)
 
   ;; Rustic keybindings with local leader
@@ -100,7 +80,6 @@
 ;; ============================================================================
 
 (with-eval-after-load 'lsp-mode
-  ;; rust-analyzer settings
   (setq lsp-rust-analyzer-cargo-watch-command "clippy"
         lsp-rust-analyzer-server-display-inlay-hints t
         lsp-rust-analyzer-display-lifetime-elision-hints-enable "skip_trivial"
@@ -124,7 +103,6 @@
 ;; ============================================================================
 
 (with-eval-after-load 'apheleia
-  ;; Ensure rustfmt is used for Rust files
   (add-to-list 'apheleia-mode-alist '(rust-ts-mode . rustfmt))
   (add-to-list 'apheleia-mode-alist '(rustic-mode . rustfmt)))
 

@@ -6,23 +6,10 @@
 ;;; Code:
 
 ;; ============================================================================
-;; Transient - built and its dependencies force-loaded (not required eagerly)
+;; Transient dependencies
 ;; ============================================================================
-;; Transient is used by magit and combobulate. `compat'/`cond-let' are its
-;; own dependencies and must still be built here regardless of load timing.
-;;
-;; The eager `(require 'transient)' that used to sit here (with a comment
-;; claiming it avoided an unspecified load-order issue) was removed on
-;; 2026-09-01 as part of edmacs-performance/phase-2-defer-eager-packages,
-;; after re-testing found no reproduction of any such issue: magit is
-;; :commands-deferred (modules/git.el) and `require's transient internally
-;; the first time any magit command actually loads it, confirmed via a full
-;; interactive-equivalent boot of this config followed by `(require 'magit)'
-;; and `(call-interactively 'magit-status)' with an empty `*Warnings*'
-;; buffer and no error. If a load-order bug against transient ever
-;; resurfaces, reproduce it concretely (which package, which function, what
-;; error) before re-adding an eager require here -- don't restore this line
-;; on suspicion alone.
+;; compat/cond-let are transient's dependencies; build them here. transient
+;; itself is required lazily by magit and combobulate.
 
 (straight-use-package 'compat)
 (straight-use-package 'cond-let)
@@ -35,25 +22,10 @@
 ;; Environment Variables from Shell
 ;; ============================================================================
 
-;; Ensure Emacs uses the same PATH and environment as your shell
-;; This is especially important on macOS where GUI apps don't inherit shell env
-;; LSP_USE_PLISTS decision (edmacs-performance/phase-5-lsp-and-completion-io):
-;; DECLINED. The variable is absent from this repo and from the
-;; `exec-path-from-shell-variables' list immediately below. Even if it were
-;; added there, `exec-path-from-shell-initialize' (a few lines down) runs
-;; during init -- long after straight.el has already byte-compiled lsp-mode,
-;; and lsp-mode's plist-vs-hash-table representation is gated at
-;; byte-compile time, not read at runtime from the environment. Making
-;; LSP_USE_PLISTS take effect would require (a) exporting it in the real
-;; shell environment *before* Emacs starts, so it's present at Emacs launch
-;; regardless of exec-path-from-shell, and (b) a forced rebuild of lsp-mode
-;; (straight-use-package with a fresh build) so the byte-compiled gate picks
-;; it up. Judged not worth the operational complexity for the expected gain;
-;; not re-adding it here is deliberate, not an oversight.
+;; macOS GUI apps don't inherit the shell environment.
 (use-package exec-path-from-shell
   :if (memq window-system '(mac ns x))
   :config
-  ;; Copy these environment variables from shell
   (setq exec-path-from-shell-variables
         '("PATH"
           "MANPATH"
@@ -74,21 +46,9 @@
 ;; Environment Integration (mise)
 ;; ============================================================================
 
-;; Per-project environment and tool versions come from the mise configuration
-;; chain: the closest `mise.toml' / `.mise.toml' / `.tool-versions', layered
-;; under `~/.config/mise/config.toml'.  mise.el discovers that whole chain via
-;; `mise config ls --json' and sets the resulting variables buffer-locally, the
-;; same per-buffer model envrc used for direnv, so a process launched from a
-;; project buffer sees that project's toolchain.
-;;
-;; Activated on `after-init' rather than at load time: mise.el shells out to the
-;; mise binary (`config ls', `trust --show', `env') and doing that during init
-;; costs real startup time for no benefit.  This is the same eager-activation
-;; trap envrc had here.
-;;
-;; Note: on first activation mise.el sets `experimental' to true in the *global*
-;; mise config if it is not already, because it relies on experimental CLI
-;; surface.  That is a write to ~/.config/mise/config.toml, not to this repo.
+;; mise.el sets per-project env buffer-locally from the mise config chain.
+;; Activated on `after-init' because it shells out to mise several times.
+;; Note: first activation writes `experimental = true' to the global mise config.
 (use-package mise
   :hook (after-init . global-mise-mode)
   :config
@@ -143,108 +103,72 @@
 
 ;; Better defaults
 (setq-default
- ;; Indentation
- indent-tabs-mode nil           ; Use spaces instead of tabs
- tab-width 4                    ; Set tab width to 4 spaces
- fill-column 80                 ; Set fill column to 80 characters
-
- ;; Line wrapping
- truncate-lines nil             ; Enable line wrapping
- word-wrap t                    ; Wrap at word boundaries
-
- ;; Scrolling
- scroll-margin 0                ; Scroll margin
+ indent-tabs-mode nil
+ tab-width 4
+ fill-column 80
+ truncate-lines nil
+ word-wrap t
+ scroll-margin 0
  scroll-preserve-screen-position t
-
- ;; Misc
- require-final-newline t        ; Always end files with newline
- )
+ require-final-newline t)
 
 ;; ============================================================================
 ;; Performance
 ;; ============================================================================
-;; Cheap redisplay/perf settings that cost nothing at startup but prevent
-;; per-redisplay overhead from compounding with this config's other features
-;; (rainbow-delimiters, flycheck, tree-sitter, hl-todo, global-auto-revert,
-;; diff-hl, etc.).
+;; Cheap redisplay settings that keep per-redisplay overhead from compounding
+;; with rainbow-delimiters, flycheck, tree-sitter, diff-hl, etc.
 
-;; Undo limits, raised from Emacs's stock 160000/240000 bytes (~156KB/234KB).
-;; This config pairs evil's undo with apheleia format-on-save and
-;; `lsp-rename' -- both routinely produce a single undo change bigger than
-;; the stock limits, which silently truncates history ("Undo history was
-;; truncated" in *Messages*) and discards whatever undo branches it can no
-;; longer reach. `undo-outer-limit' (the hard per-command cap, default
-;; ~24MB) is left at its default -- these two are the soft limits that
-;; decide when Emacs starts discarding old undo entries to make room, not
-;; the point at which it refuses to record a change at all. These are core
-;; Emacs undo variables (not evil- or undo-tree-specific), so they belong
-;; here rather than in evil-config.el even though evil's undo system is
-;; what mainly benefits.
+;; Stock limits (160KB/240KB) silently truncate history on a single big
+;; change, which apheleia format-on-save and `lsp-rename' produce routinely.
 (setq undo-limit (* 3 1024 1024)          ; ~3MB
       undo-strong-limit (* 16 1024 1024)) ; ~16MB
 
-;; Detect very long lines (minified bundles, lockfiles, wide CSVs) and
-;; neutralize expensive per-line features (font-lock, visual-line-mode,
-;; rainbow-delimiters, etc.) for that buffer instead of freezing on them.
-;; so-long's own so-long-minor-modes list does not include evil, and
-;; evil-mode is a globalized minor mode that reasserts evil-local-mode via
-;; after-change-major-mode-hook on every major-mode switch (including into
-;; so-long-mode), so it has to be added explicitly or it stays fully active
-;; in the so-long'd buffer.
+;; so-long neutralizes expensive per-line features in very-long-line buffers.
+;; evil isn't in its default minor-mode list and re-enables itself on every
+;; major-mode switch, so add it explicitly.
 (with-eval-after-load 'evil
   (add-to-list 'so-long-minor-modes 'evil-local-mode))
 (global-so-long-mode 1)
 
-;; This config is exclusively left-to-right code; skip per-paragraph
-;; direction auto-detection and the bracket-pair-algorithm redisplay cost,
-;; which lands hardest on bracket-dense buffers where rainbow-delimiters
-;; is unconditionally enabled.
+;; All code here is left-to-right; skip bidi detection and the bracket-pair
+;; algorithm, which is costly in bracket-dense buffers.
 (setq-default bidi-paragraph-direction 'left-to-right)
 (setq bidi-inhibit-bpa t)
 
-;; This is an all-Git setup; skip the extra vc-registered probes against
-;; RCS/CVS/SVN/SCCS/SRC/Bzr/Hg on every file visit.
+;; Git only; skips per-visit probes for RCS/CVS/SVN/etc.
 (setq vc-handled-backends '(Git))
 
 ;; Keep fontification off the typing path.
 (setq redisplay-skip-fontification-on-input t)
 
-;; toggle-font-size switches faces across default/fixed-pitch/variable-pitch
-;; at runtime, and nerd-icons brings in large glyph-count fonts; don't
-;; compact font caches on GC.
-(setq inhibit-compacting-font-caches t)
+;; Font caches are large here (nerd-icons, runtime face switching); don't
+;; compact them on every GC.
 
-;; Disable startup screen
 (setq inhibit-startup-screen t
       inhibit-startup-message t
       inhibit-startup-echo-area-message t)
 
-;; Disable some GUI elements (redundant with early-init, but kept for clarity)
+;; Redundant with early-init.el's frame parameters
 (when (fboundp 'menu-bar-mode) (menu-bar-mode -1))
 (when (fboundp 'tool-bar-mode) (tool-bar-mode -1))
 (when (fboundp 'scroll-bar-mode) (scroll-bar-mode -1))
 
-;; Frame title
 (setq frame-title-format '("%b - Emacs"))
 
-;; Yes/No prompts become y/n
 (defalias 'yes-or-no-p 'y-or-n-p)
 
-;; Disable bell
 (setq ring-bell-function 'ignore)
 
 ;; ============================================================================
 ;; File Handling
 ;; ============================================================================
 
-;; Backup and autosave configuration
 (setq backup-directory-alist
       `(("." . ,(expand-file-name "backups" user-emacs-directory))))
 
 (setq auto-save-file-name-transforms
       `((".*" ,(expand-file-name "auto-save/" user-emacs-directory) t)))
 
-;; Create backup and auto-save directories if they don't exist
 (let ((backup-dir (expand-file-name "backups" user-emacs-directory))
       (auto-save-dir (expand-file-name "auto-save" user-emacs-directory)))
   (unless (file-exists-p backup-dir)
@@ -252,14 +176,12 @@
   (unless (file-exists-p auto-save-dir)
     (make-directory auto-save-dir t)))
 
-;; Backup settings
 (setq backup-by-copying t
       delete-old-versions t
       kept-new-versions 6
       kept-old-versions 2
       version-control t)
 
-;; Auto-save settings
 (setq auto-save-default t
       auto-save-timeout 20
       auto-save-interval 200)
@@ -346,31 +268,16 @@
           (project-dired "Dired")
           (project-shell "Shell")))
 
-  ;; Every rdm worktree vendors its own straight.el package checkouts
-  ;; and per-project caches; never let those be remembered as projects
-  ;; in their own right, whether via the walk below, straight.el
-  ;; visiting a checkout, or anything else that calls
-  ;; `project-remember-project'.
+  ;; rdm worktrees vendor their own straight checkouts and caches; never
+  ;; remember those as projects.
   (setq project-list-exclude '("/straight/repos/" "/\\.eldev/" "/node_modules/"))
-
-  ;; rdm reaps worktrees on disk out from under project.el's memory of
-  ;; them; prune entries that no longer exist so stale paths don't
-  ;; linger in `project-list-file'. project.el's real symbol for this
-  ;; is `project-forget-zombie-projects' (not the
-  ;; `project-prune-zombie-projects' name sometimes used informally).
+  ;; rdm reaps worktrees on disk; drop entries that no longer exist.
   (when (fboundp 'project-forget-zombie-projects)
     (add-hook 'emacs-startup-hook #'project-forget-zombie-projects))
 
-  ;; One-time walk to register every live rdm worktree with project.el
-  ;; so it appears in `project-switch-project' history and
-  ;; `project-known-project-roots' without needing to be visited
-  ;; interactively first. (This is unrelated to `C-x v w s' /
-  ;; `vc-switch-working-tree', which lists worktrees straight from
-  ;; `git worktree list' via vc-git.el and never consults
-  ;; project-list-file.) Non-recursive: each worktree directory itself
-  ;; is the project root one level below `*__worktrees/', so recursing
-  ;; further would also walk into and register every vendored package
-  ;; checkout under each worktree's straight/repos/.
+  ;; Register every rdm worktree with project.el so it appears in
+  ;; `project-switch-project' without being visited first. Non-recursive:
+  ;; recursing would also register each worktree's vendored straight/repos.
   (defun edmacs--register-project-worktrees ()
     "Register every rdm worktree under ~/Projects/*__worktrees/ with project.el."
     (ignore-errors

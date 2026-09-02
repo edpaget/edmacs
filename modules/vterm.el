@@ -12,12 +12,11 @@
 (use-package vterm
   :commands vterm
   :config
-  ;; VTerm settings
   (setq vterm-max-scrollback 10000
         vterm-buffer-name-string "vterm %s"
         vterm-kill-buffer-on-exit t)
 
-  ;; Evil integration - start in insert state (like vim terminal)
+  ;; Start in insert state, like vim's terminal
   (evil-set-initial-state 'vterm-mode 'insert)
 
   ;; In vterm-copy-mode, use normal state for navigation
@@ -28,7 +27,6 @@
   ;; buffer-locally in vterm buffers rather than touching the global mode.
   (add-hook 'vterm-mode-hook (lambda () (setq-local global-hl-line-mode nil)))
 
-  ;; VTerm keybindings
   (general-define-key
    :states 'normal
    :prefix "SPC v"
@@ -36,25 +34,18 @@
    "v" '(vterm :which-key "open vterm")
    "o" '(vterm-other-window :which-key "vterm other window"))
 
-  ;; Key bindings in insert state for vterm
   (evil-define-key 'insert vterm-mode-map
-    (kbd "C-c C-t") #'vterm-copy-mode)  ; Enter copy mode
+    (kbd "C-c C-t") #'vterm-copy-mode)
 
-  ;; Key bindings in normal state for vterm-copy-mode
   (evil-define-key 'normal vterm-copy-mode-map
-    (kbd "i") #'vterm-copy-mode         ; Exit copy mode back to insert
-    (kbd "RET") #'vterm-copy-mode       ; Exit copy mode
-    (kbd "q") #'vterm-copy-mode         ; Exit copy mode
-    (kbd "p") #'vterm-yank              ; Paste from kill ring
-    (kbd "P") #'vterm-yank-pop)         ; Paste previous from kill ring
+    (kbd "i") #'vterm-copy-mode
+    (kbd "RET") #'vterm-copy-mode
+    (kbd "q") #'vterm-copy-mode
+    (kbd "p") #'vterm-yank
+    (kbd "P") #'vterm-yank-pop)
 
-  ;; Allow Emacs-style keybindings in vterm
   (define-key vterm-mode-map (kbd "C-c C-t") #'vterm-copy-mode)
-
-  ;; Make C-u work in vterm
   (define-key vterm-mode-map (kbd "C-u") #'vterm-send-C-u)
-
-  ;; Paste from kill ring with C-y
   (define-key vterm-mode-map (kbd "C-y") #'vterm-yank))
 
 ;; ============================================================================
@@ -86,7 +77,6 @@
                  (reusable-frames . visible)
                  (window-height . 0.3)))
 
-  ;; VTerm toggle keybindings
   (general-define-key
    :states 'normal
    :prefix "SPC v"

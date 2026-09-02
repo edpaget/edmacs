@@ -9,32 +9,6 @@
 ;; ============================================================================
 ;; LSP Mode - Language Server Protocol
 ;; ============================================================================
-;;
-;; `.cache/lsp' footprint (edmacs-performance/phase-6-gc-and-unbounded-state
-;; audit): `lsp-server-install-dir' defaults to
-;; `<user-emacs-directory>/.cache/lsp'. At audit time this was 118M across
-;; ~7,977 files, entirely the `npm/' subtree holding two npm-installed
-;; servers (`vscode-langservers-extracted' ~93M, `yaml-language-server'
-;; ~25M) -- node_modules dependency trees, not per-workspace/session state
-;; (that lives separately, in the tiny `.lsp-session-v1' file). This scales
-;; with the *number of npm-based servers lsp-mode has installed*, not with
-;; runtime/editing activity, so it will not silently balloon further absent
-;; a new server install -- no periodic pruning is warranted.
-;;
-;; lsp-mode installs npm servers via `npm -g --prefix <dir> install
-;; <package>', per `lsp--npm-dependency-install' (lsp-mode.el) -- a global-
-;; style install, which never fetches a target package's `devDependencies'
-;; regardless of whether its package.json declares any. Verified against
-;; both servers here: `npm prune --omit=dev' run in place removed 0 bytes
-;; (93M and 25M unchanged) -- there is no dev-dependency bloat to prune,
-;; only real runtime `dependencies' (the largest single item,
-;; `vscode-langservers-extracted''s ~64M `typescript' dependency, is one of
-;; those). The 118M figure is close to the true minimum footprint for
-;; these two servers as lsp-mode installs them; it is justified, not
-;; reducible, short of dropping a server (`rm -rf
-;; .cache/lsp/npm/<server>', then `lsp-install-server' to reinstall fresh
-;; over the network if the language is still needed).
-
 (use-package lsp-mode
   :commands (lsp lsp-deferred)
   :init
@@ -47,23 +21,14 @@
         lsp-enable-file-watchers nil
         lsp-enable-folding nil
         lsp-enable-snippet t
-        ;; documentHighlight fires on the same idle-delay tick as
-        ;; lsp-ui-doc's hover request below; decided to keep it, since
-        ;; "other occurrences of the symbol at point" is a low-cost,
-        ;; frequently-used affordance and this config's real idle-request
-        ;; savings come from taming the hover popup and modeline code
-        ;; actions instead (see lsp-ui-doc-show-with-cursor and
-        ;; lsp-modeline-code-actions-enable below).
+        ;; Kept: cheap and useful; the real idle-request savings are hover and
+        ;; modeline code actions below.
         lsp-enable-symbol-highlighting t
         lsp-enable-links t
         lsp-signature-auto-activate t
         lsp-signature-render-documentation t
-        ;; Was t: this polled textDocument/codeAction purely to populate the
-        ;; modeline indicator on every idle tick. The on-demand "SPC c a"
-        ;; binding below still executes code actions; only the passive
-        ;; modeline polling is removed. Visible behavior change: the
-        ;; modeline no longer shows a lightbulb/indicator when actions are
-        ;; available.
+        ;; Polls codeAction on every idle tick just for the modeline lightbulb;
+        ;; `SPC c a' still runs actions on demand.
         lsp-modeline-code-actions-enable nil
         lsp-modeline-diagnostics-enable t
         lsp-completion-provider :none  ; Use corfu instead
@@ -97,9 +62,8 @@
   :commands lsp-ui-mode
   :config
   (setq lsp-ui-doc-enable t
-        ;; Was t: this fired a hover request every time the cursor merely
-        ;; rested anywhere, not just on a symbol. Hover is not lost as a
-        ;; feature -- it is now on-demand via the "SPC c h" binding below.
+        ;; Otherwise a hover request fires whenever the cursor rests; `SPC c h'
+        ;; below is the on-demand path.
         lsp-ui-doc-show-with-cursor nil
         lsp-ui-doc-position 'at-point
         lsp-ui-doc-delay 0.5
@@ -139,11 +103,8 @@
   ;; (lsp-ui-sideline-enable stays nil; see the lsp-ui block above)
   (global-flycheck-annotate-mode 1)
 
-  ;; evil-collection-flycheck-setup rebinds S and x for the error list but
-  ;; never touches "P" -- so under evil, emulation-mode-map-alist resolves
-  ;; "P" to the global evil-normal-state-map binding (evil-paste-before)
-  ;; before it ever reaches flycheck-error-list-mode-map's own native
-  ;; binding for flycheck-error-list-toggle-scope. Restore it explicitly.
+  ;; evil-collection rebinds S and x here but not P, so evil's global
+  ;; `evil-paste-before' shadows flycheck's toggle-scope binding.
   (with-eval-after-load 'evil-collection
     (evil-collection-define-key 'normal 'flycheck-error-list-mode-map
       "P" 'flycheck-error-list-toggle-scope))
@@ -177,14 +138,11 @@
 ;; Tree-sitter - Built-in support for Emacs 29+
 ;; ============================================================================
 
-;; Emacs 29+ has built-in tree-sitter support via treesit
-;; treesit-auto automatically uses tree-sitter modes when available
 (use-package treesit-auto
   :config
   (setq treesit-auto-install 'prompt)  ; Prompt to install missing grammars
 
-  ;; Disable tree-sitter for markdown - it requires a complex split parser setup
-  ;; and markdown-mode already provides excellent syntax highlighting
+  ;; markdown needs a split parser setup and markdown-mode highlights well already.
   (setq treesit-auto-langs
         (delete 'markdown (copy-sequence treesit-auto-langs)))
 
@@ -206,49 +164,35 @@
 (use-package evil-textobj-tree-sitter
   :after evil
   :config
-  ;; Define text objects for various code structures
-  ;; Inner/outer function
   (define-key evil-outer-text-objects-map "f"
               (evil-textobj-tree-sitter-get-textobj "function.outer"))
   (define-key evil-inner-text-objects-map "f"
               (evil-textobj-tree-sitter-get-textobj "function.inner"))
-
-  ;; Inner/outer class
   (define-key evil-outer-text-objects-map "c"
               (evil-textobj-tree-sitter-get-textobj "class.outer"))
   (define-key evil-inner-text-objects-map "c"
               (evil-textobj-tree-sitter-get-textobj "class.inner"))
-
-  ;; Inner/outer loop
   (define-key evil-outer-text-objects-map "l"
               (evil-textobj-tree-sitter-get-textobj "loop.outer"))
   (define-key evil-inner-text-objects-map "l"
               (evil-textobj-tree-sitter-get-textobj "loop.inner"))
-
-  ;; Inner/outer conditional
   (define-key evil-outer-text-objects-map "o"
               (evil-textobj-tree-sitter-get-textobj "conditional.outer"))
   (define-key evil-inner-text-objects-map "o"
               (evil-textobj-tree-sitter-get-textobj "conditional.inner"))
-
-  ;; Inner/outer call (function call)
   (define-key evil-outer-text-objects-map "a"
               (evil-textobj-tree-sitter-get-textobj "call.outer"))
   (define-key evil-inner-text-objects-map "a"
               (evil-textobj-tree-sitter-get-textobj "call.inner"))
-
-  ;; Inner/outer comment
   (define-key evil-outer-text-objects-map "/"
               (evil-textobj-tree-sitter-get-textobj "comment.outer"))
   (define-key evil-inner-text-objects-map "/"
               (evil-textobj-tree-sitter-get-textobj "comment.inner"))
-
-  ;; Parameter/argument text object (special - inner only makes sense)
+  ;; Parameter: inner only
   (define-key evil-inner-text-objects-map "a"
               (evil-textobj-tree-sitter-get-textobj "parameter.inner"))
 
-  ;; Navigation with goto-textobj
-  ;; Jump to next/previous function
+  ;; ]f/[f etc. jump to the next/previous node
   (general-define-key
    :states '(normal visual)
    "]f" (lambda ()
@@ -258,7 +202,6 @@
           (interactive)
           (evil-textobj-tree-sitter-goto-textobj "function.outer" t))
 
-   ;; Jump to next/previous class
    "]c" (lambda ()
           (interactive)
           (evil-textobj-tree-sitter-goto-textobj "class.outer"))
@@ -266,7 +209,6 @@
           (interactive)
           (evil-textobj-tree-sitter-goto-textobj "class.outer" t))
 
-   ;; Jump to next/previous conditional
    "]o" (lambda ()
           (interactive)
           (evil-textobj-tree-sitter-goto-textobj "conditional.outer"))
@@ -277,10 +219,6 @@
 ;; ============================================================================
 ;; Combobulate - Structural Editing with Tree-Sitter
 ;; ============================================================================
-;; Note: transient is NOT force-loaded eagerly (see modules/core.el) --
-;; combobulate's own top-level code requires it directly when this package
-;; loads, so load order does not depend on core.el having required it first.
-
 (use-package combobulate
   :straight (combobulate :type git
                          :host github
@@ -300,7 +238,6 @@
          (html-ts-mode . combobulate-mode))
 
   :config
-  ;; Evil-friendly keybindings for combobulate
   (general-define-key
    :states '(normal visual)
    :keymaps 'combobulate-key-map
@@ -328,7 +265,6 @@
    ;; Transient menu
    "o" '(combobulate :which-key "combobulate menu"))
 
-  ;; Also bind some common operations to more accessible keys
   (general-define-key
    :states 'normal
    :keymaps 'combobulate-key-map
@@ -360,9 +296,7 @@
 (use-package quickrun
   :commands quickrun)
 
-;; Keybinding defined outside use-package so it exists immediately, even
-;; though quickrun itself loads lazily on first invocation (same convention
-;; as the magit keybindings in modules/git.el).
+;; Outside use-package so the binding exists before quickrun autoloads.
 (general-define-key
  :states 'normal
  :prefix "SPC c"
@@ -372,7 +306,6 @@
 ;; Comments
 ;; ============================================================================
 
-;; Better comment/uncomment (works with evil-commentary)
 (general-define-key
  :states '(normal visual)
  :prefix "SPC c"
@@ -391,9 +324,8 @@
 ;; Project.el enhancements (built-in alternative to projectile)
 ;; ============================================================================
 
-;; project.el is configured in modules/core.el; keybindings.el owns SPC p.
-;; Add extra project keybindings under SPC P for actions project.el has
-;; that projectile's SPC p prefix used to cover.
+;; core.el configures project.el and keybindings.el owns SPC p; extras go
+;; under SPC P.
 (general-define-key
  :states 'normal
  :prefix "SPC P"
@@ -409,14 +341,11 @@
 (use-package yaml-mode
   :mode ("\\.ya?ml\\'" . yaml-mode)
   :config
-  ;; Indentation settings for YAML
   (setq yaml-indent-offset 2)
 
-  ;; Enable flycheck for YAML
   (add-hook 'yaml-mode-hook #'flycheck-mode)
 
-  ;; Enable LSP for YAML (if yaml-language-server is installed)
-  ;; Install: npm install -g yaml-language-server
+  ;; Needs yaml-language-server: npm install -g yaml-language-server
   (add-hook 'yaml-mode-hook #'lsp-deferred))
 
 ;;; programming.el ends here

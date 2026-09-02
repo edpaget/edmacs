@@ -19,14 +19,11 @@
          ("\\.cjs\\'" . js-ts-mode)
          ("\\.jsx\\'" . js-ts-mode))
   :config
-  ;; JavaScript settings
   (setq js-indent-level 2
         js-switch-indent-offset 2)
 
-  ;; Enable LSP for JavaScript
   (add-hook 'js-ts-mode-hook #'lsp-deferred)
 
-  ;; Enable smartparens for structural editing
   (add-hook 'js-ts-mode-hook #'smartparens-mode))
 
 ;; ============================================================================
@@ -38,14 +35,11 @@
   :mode (("\\.ts\\'" . typescript-ts-mode)
          ("\\.tsx\\'" . tsx-ts-mode))
   :config
-  ;; TypeScript settings
   (setq typescript-ts-mode-indent-offset 2)
 
-  ;; Enable LSP for TypeScript
   (add-hook 'typescript-ts-mode-hook #'lsp-deferred)
   (add-hook 'tsx-ts-mode-hook #'lsp-deferred)
 
-  ;; Enable smartparens for structural editing
   (add-hook 'typescript-ts-mode-hook #'smartparens-mode)
   (add-hook 'tsx-ts-mode-hook #'smartparens-mode))
 
@@ -57,7 +51,6 @@
   :straight nil
   :mode ("\\.json\\'" . json-ts-mode)
   :config
-  ;; Enable LSP for JSON
   (add-hook 'json-ts-mode-hook #'lsp-deferred))
 
 ;; ============================================================================
@@ -79,7 +72,6 @@
 ;; Language-Specific Keybindings
 ;; ============================================================================
 
-;; JavaScript keybindings with local leader
 (general-define-key
  :states 'normal
  :keymaps 'js-ts-mode-map
@@ -96,10 +88,7 @@
  "t" '(:ignore t :which-key "test")
  "tt" '((lambda () (interactive) (edmacs-js--run-in-project-root "npm test"))
         :which-key "test project")
- ;; NOTE: projectile-find-test-file has no project.el equivalent
- ;; (project.el has no filename-heuristic test/source pairing); the
- ;; binding is dropped rather than left pointing at an undefined
- ;; function. Use `project-find-file' (SPC p f) directly.
+ ;; No project.el equivalent of projectile-find-test-file; use SPC p f.
 
  ;; Refactoring
  "=" '(:ignore t :which-key "refactor")
@@ -110,7 +99,6 @@
  "d" '(:ignore t :which-key "doc")
  "dd" '(lsp-describe-thing-at-point :which-key "describe"))
 
-;; TypeScript keybindings with local leader
 (general-define-key
  :states 'normal
  :keymaps '(typescript-ts-mode-map tsx-ts-mode-map)
@@ -128,8 +116,6 @@
  "t" '(:ignore t :which-key "test")
  "tt" '((lambda () (interactive) (edmacs-js--run-in-project-root "npm test"))
         :which-key "test project")
- ;; NOTE: projectile-find-test-file has no project.el equivalent; see
- ;; the js-ts-mode-map binding above for the same rationale.
 
  ;; Refactoring
  "=" '(:ignore t :which-key "refactor")
@@ -146,13 +132,11 @@
 ;; ============================================================================
 
 (with-eval-after-load 'lsp-mode
-  ;; TypeScript/JavaScript LSP settings
   (setq lsp-typescript-suggest-auto-imports t
         lsp-typescript-preferences-import-module-specifier "relative"
         lsp-typescript-preferences-quote-style "single"
         lsp-javascript-suggest-auto-imports t)
 
-  ;; ESLint auto-fix on save
   (setq lsp-eslint-auto-fix-on-save t
         lsp-eslint-enable t))
 
@@ -173,7 +157,6 @@
 ;; ============================================================================
 
 (with-eval-after-load 'apheleia
-  ;; Use Prettier for JS/TS files
   (dolist (mode '(js-ts-mode typescript-ts-mode tsx-ts-mode json-ts-mode))
     (add-to-list 'apheleia-mode-alist (cons mode 'prettier))))
 
@@ -190,7 +173,6 @@
 ;; NPM Integration
 ;; ============================================================================
 
-;; Add npm script runner keybindings
 (general-define-key
  :states 'normal
  :keymaps '(js-ts-mode-map typescript-ts-mode-map tsx-ts-mode-map)

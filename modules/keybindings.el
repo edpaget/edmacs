@@ -11,7 +11,6 @@
 
 (use-package general
   :config
-  ;; Set up SPC as the global leader key
   (general-create-definer leader-def
     :states '(normal visual insert emacs)
     :keymaps 'override
@@ -80,9 +79,7 @@
   "wtv" '(rotate-main-vertical :which-key "main vertical")
   "wth" '(rotate-main-horizontal :which-key "main horizontal")
   "wtj" '(rotate-window :which-key "swap window")
-  ;; Same primitive as wtj: tmux's `bind Enter' (promote) and `bind -r
-  ;; C-j'/`C-k' (swap-pane) both map to rotate-window, per the phase's own
-  ;; framing of "rotate-window or C-x w o <right>" as interchangeable.
+  ;; Same command as wtj; mirrors tmux's promote and swap-pane bindings.
   "wte" '(rotate-window :which-key "promote window")
 
   ;; Search
@@ -133,12 +130,6 @@
   "qq" '(save-buffers-kill-terminal :which-key "quit emacs")
   "qQ" '(kill-emacs :which-key "quit without saving")
   "qr" '(restart-emacs :which-key "restart emacs"))
-
-;; ============================================================================
-;; Mode-specific bindings (using local leader)
-;; ============================================================================
-
-;; These will be extended by individual modules as needed
 
 ;; ============================================================================
 ;; Evil-specific keybindings

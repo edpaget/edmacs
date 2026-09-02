@@ -2,65 +2,17 @@
 
 ;;; Commentary:
 ;; Replaces the tmux session layer with built-in Emacs 31 primitives:
+;;   - `tab-bar-mode': one tab per active rdm worktree.
+;;   - `desktop-save-mode': persists each tab's window layout across restarts.
+;;     Under a daemon, desktop.el skips frameset restore; see the bridge below.
+;;   - `bufferlo': per-tab buffer lists, which desktop.el does not persist.
 ;;
-;;   - `tab-bar-mode' gives one tab per active rdm worktree.  A tab is a
-;;     window configuration, not a process/state boundary (frames, tabs,
-;;     and a single frame are all the same Emacs process), but tabs have
-;;     the fewest sharp edges of the three: claude-code-ide.el is
-;;     explicitly tab-aware, and per-frame is where manzaltu#197 (second+
-;;     terminal in another frame stops tracking resizes) and ghostel#504
-;;     (a terminal PTY clamps to the smallest window showing it) live.
-;;   - `desktop-save-mode' persists each tab's `window-state-get' layout
-;;     across restarts with no extra packages; tab-bar.el registers its
-;;     own frameset filter for the non-printable parts unconditionally at
-;;     load time (see the `(push '(tabs . frameset-filter-tabs) ...)' call
-;;     in tab-bar.el).  The phase's chosen topology is one persistent
-;;     daemon, though, and desktop.el's own frameset restore is a no-op
-;;     against a daemon's placeholder initial frame (there's no real frame
-;;     yet to size windows into) -- this module bridges that gap itself;
-;;     see the "Bridge desktop-read's daemon-mode frameset skip" section
-;;     below for the mechanism and why it can't just call
-;;     `desktop-restore-frameset' again later.
-;;   - `bufferlo' layers the per-tab buffer lists that desktop.el
-;;     deliberately does not persist.
-;;
-;; Worktree switching needs no new code: Emacs 31's vc.el already ships
-;; `vc-switch-working-tree' (C-x v w w) and `vc-working-tree-switch-project'
-;; (C-x v w s), and project.el already treats each linked worktree as its
-;; own project (`project--submodule-p' deliberately excludes linked
-;; worktrees from folding into the parent).  Those raw `C-x v w ...'
-;; chords are shadowed in evil normal state by a pre-existing binding
-;; unrelated to this phase -- see the "C-x chords" section below for how
-;; this module reaches past it -- and `SPC p w'/`SPC T' expose the same
-;; commands as a fast, no-delay alternative.
-;;
-;; perspective.el is deliberately avoided: its own README states it
-;; cannot save shell/REPL/compilation buffers, it is incompatible with
-;; desktop.el by design, and it has open bugs that lose perspectives when
-;; the last emacsclient frame closes.  activities.el, beframe, and any
-;; other tmux-replacement package are likewise out of scope for this
-;; phase.
-;;
-;; FORMER SHADOW, NOW EXTENDED: `modules/evil-config.el' binds bare
-;; `C-x' in `evil-normal-state-map' to `evil-numbers/dec-at-pt' (a
-;; deliberate, pre-existing vim-native mapping mirroring vim's own C-a/C-x
-;; increment/decrement-at-point).  Normal state is the default editing
-;; state in this config, and because that binding used to be a leaf
-;; command (not a nested prefix keymap), pressing `C-x' there terminated
-;; the key sequence immediately -- so `C-x t p' (`project-other-tab-command')
-;; and every `C-x v w ...' chord this phase names were unreachable from
-;; evil normal state without leaving it.  Rather than shadow evil-config's
-;; binding with a second, competing `define-key' on that same keymap entry
-;; (which would win or lose purely by whether this module happens to load
-;; *after* evil-config.el -- a load-order-dependent landmine), this module
-;; registers its chords through `edmacs-evil-config-add-c-x-chord', the
-;; extension point evil-config.el exposes for exactly this: the
-;; worktree/tab chords this phase's ACs literally name now work from
-;; normal state, and bare C-x with nothing typed after it still decrements
-;; the number at point exactly as before (after a short grace period, to
-;; give the dispatch a chance to see whether a chord follows), regardless
-;; of module load order.  `SPC T' and `SPC p w' below remain the fast,
-;; no-delay path to the same commands.
+;; Worktree switching uses vc.el's own `vc-switch-working-tree' and
+;; `vc-working-tree-switch-project'. Their `C-x v w ...' chords are shadowed
+;; in evil normal state by `evil-numbers/dec-at-pt'; this module registers
+;; them through `edmacs-evil-config-add-c-x-chord' rather than redefining
+;; `C-x' (which would depend on module load order). `SPC T' and `SPC p w'
+;; are the no-delay path to the same commands.
 
 ;;; Code:
 
@@ -70,70 +22,24 @@
 
 (require 'tab-bar)
 
-;; `tab-bar-define-keys' is a defcustom (not a function, despite how the
-;; phase that motivated this module phrased it), and it must be set
-;; *before* `tab-bar-mode' is turned on since its :set function installs
-;; bindings into `tab-bar-mode-map' immediately.  The keys it gates under
-;; the default `t' are C-<tab>/C-S-<tab>/C-S-iso-lefttab (confirmed by
-;; reading tab-bar.el's `tab-bar--define-keys') -- there is no bare-TAB
-;; tab-bar binding in this Emacs 31.1 build to steal from evil.  Setting
-;; it to nil means tab-bar never touches those chords at all, leaving
-;; them free for evil/general.el; tab switching instead goes through the
-;; `SPC T' bindings below.
+;; Must be nil before `tab-bar-mode' turns on (its :set installs bindings
+;; immediately). Keeps C-<tab>/C-S-<tab> free for evil; tab switching is
+;; under `SPC T'.
 (setq tab-bar-define-keys nil)
 
 (defvar edmacs-sessions--git-common-dir-cache (make-hash-table :test #'equal)
-  "Memoized ROOT -> git-common-dir results from `edmacs-sessions--git-common-dir'.
-`tab-bar-tabs' recomputes the *current* tab's name via
-`tab-bar-tab-name-function' on essentially every redisplay of the tab
-line, not merely on tab creation, so without this cache each worktree
-tab would pay a synchronous git subprocess spawn on that same cadence.
-A worktree's git-common-dir cannot change during the life of a running
-Emacs, so entries are never invalidated. A miss is cached too (as the
-symbol `none', since a plain nil can't be told apart from \"not yet
-looked up\" in `gethash''s single optional-default arg) so a
-worktree git can't identify doesn't get re-shelled-out-to forever.")
+  "Memoized ROOT -> git-common-dir results.
+`tab-bar-tab-name-function' runs on nearly every redisplay, so each lookup
+would otherwise spawn git. Misses are cached as `none'; a worktree's
+common dir never changes while Emacs runs, so nothing is invalidated.")
 
 (defun edmacs-sessions--git-common-dir-1 (root)
   "Uncached implementation of `edmacs-sessions--git-common-dir' for ROOT.
-Every worktree of one repository shares this path (it is the main
-checkout's `.git', per git-worktree(1)), so its parent directory names
-the repository independent of any individual worktree's own directory
-name.
-
-Uses `process-file', not `call-process': ROOT may be a TRAMP remote
-directory (project.el and vc.el both support those), and
-`call-process' is documented to run in `default-directory' only when
-that is local, silently falling back to running the command in `~'
-otherwise -- exactly the directory-confusion bug this function exists
-to avoid, just relocated to a remote-vs-local split instead of a
-stale-`default-directory' one. `process-file' dispatches through
-TRAMP for a remote `default-directory' and runs locally otherwise.
-
-For a linked worktree, git prints an already-absolute path here; for
-the *main* worktree, though, it prints a path relative to the
-directory git was invoked from (typically \".git\"). That expansion to
-an absolute path has to happen right here, while `default-directory'
-is still bound to ROOT -- a caller expanding the returned string later
-against its own, unrelated `default-directory' (e.g. whatever buffer
-happens to be selected when tab-bar recomputes the tab name) would
-silently resolve it against the wrong base and misname the tab.
-
-When ROOT is remote, git itself only ever prints a bare on-host path
-(git has no notion of TRAMP), so an already-\"absolute\" answer like
-\"/home/user/repo/.git\" still needs ROOT's own TRAMP method/host
-prefix grafted back on by hand -- `expand-file-name' leaves an
-already-absolute NAME untouched and would otherwise silently drop the
-remote host, resolving to a same-named but purely local path.
-
-`process-file' can *signal* rather than merely exit non-zero -- e.g.
-`file-missing' when git itself isn't found, or when ROOT no longer
-exists on disk (a pruned worktree) or a TRAMP connection to it has
-dropped. The `condition-case' below folds that into the same nil
-result as an ordinary non-zero exit, so the caller's memoization-of-nil
-in `edmacs-sessions--git-common-dir' covers this case too instead of
-re-shelling-out (and re-signaling) on every subsequent tab-bar
-redisplay."
+Uses `process-file' so a TRAMP ROOT runs git remotely. Relative output
+\(the main worktree prints \".git\") is expanded against ROOT here, while
+`default-directory' is still bound to it; on a remote ROOT the TRAMP
+prefix is grafted back on, since git prints bare on-host paths. Signals
+from a missing git or a pruned ROOT fold into nil so the miss is cached."
   (let ((default-directory root))
     (condition-case nil
         (with-temp-buffer
@@ -158,19 +64,11 @@ Memoized per ROOT; see `edmacs-sessions--git-common-dir-cache' and
         result))))
 
 (defun edmacs-sessions--tab-name ()
-  "Name the current tab after its project/worktree, falling back sanely.
-Uses `project-current' so each tab's label reflects the worktree it
-holds; when no project is found (e.g. a scratch tab), falls back to
-`tab-bar-tab-name-current' default behavior (buffer name of the
-selected window).
-
-Two worktrees of *different* repositories can share a directory
-basename (e.g. both named `feature-x', or two rdm worktrees named
-`roadmap-foundation' from two different rdm projects), which a bare
-basename would render as identical, ambiguous tab names. Disambiguate
-by prefixing the owning repository's own directory name, derived from
-`--git-common-dir' (shared by every worktree of one repo, so it names
-the repo rather than the worktree)."
+  "Name the current tab after its project/worktree.
+Prefixed with the owning repository's directory name (from
+`--git-common-dir') so two same-named worktrees from different repos get
+distinct tabs. Falls back to `tab-bar-tab-name-current' when there is no
+project."
   (if-let* ((proj (project-current))
             (root (project-root proj)))
       (let* ((base (file-name-nondirectory (directory-file-name root)))
@@ -199,31 +97,16 @@ the repo rather than the worktree)."
       desktop-save t
       desktop-restore-frames t
       desktop-load-locked-desktop t
-      ;; Restore the first 10 buffers of each tab's list eagerly; the
-      ;; rest load lazily on idle. With bufferlo persisting every tab's
-      ;; *full* buffer list (not just what's visible), a worktree tab
-      ;; left with dozens of buried buffers would otherwise block
-      ;; daemon startup reopening all of them up front.
+      ;; bufferlo persists every tab's full buffer list; restoring dozens of
+      ;; buried buffers eagerly would block daemon startup.
       desktop-restore-eager 10)
 
 (unless (file-directory-p desktop-dirname)
   (make-directory desktop-dirname t))
 
-;; vterm buffers wrap a live PTY that desktop.el cannot resume -- without
-;; excluding them, restore would leave a dead, unusable buffer behind.
-;; claude-repl-buffer-mode buffers are in the same boat: they front a
-;; live claude CLI subprocess (see modules/claude-repl/claude-repl-process.el)
-;; that desktop.el has no way to reattach either, so restoring one would
-;; produce a read-only-looking transcript that silently can no longer talk
-;; to Claude. Default to excluding both; a follow-up task tracks giving
-;; claude-repl a proper "resume this project's session" path instead of
-;; restoring a transcript with no process behind it (see the task filed
-;; alongside this commit).
-;; `comint-mode' covers every other PTY/subprocess-backed buffer this
-;; config can open (M-x shell, inferior REPLs, etc.): none of them have
-;; a live process to reattach to after a restart either, and unlike
-;; vterm/claude-repl-buffer it is already loaded (part of Emacs) so no
-;; `with-eval-after-load' gate is needed.
+;; These buffers front live subprocesses desktop.el cannot reattach; a
+;; restored one would be a dead transcript. comint-mode is built in, so it
+;; needs no `with-eval-after-load' gate.
 (add-to-list 'desktop-modes-not-to-save 'comint-mode)
 (with-eval-after-load 'vterm
   (add-to-list 'desktop-modes-not-to-save 'vterm-mode))
@@ -233,30 +116,13 @@ the repo rather than the worktree)."
 (desktop-save-mode 1)
 
 ;; ----------------------------------------------------------------------------
-;; Bridge desktop-read's daemon-mode frameset skip to the first real client
-;; frame. This phase's topology is explicitly "one Emacs daemon" (see the
-;; commentary above), and desktop.el has a documented no-op for exactly that
-;; case: `desktop-restoring-frameset-p' (desktop.el) refuses to restore
-;; frames/tabs when the selected frame is the daemon's placeholder
-;; `terminal-frame' --
-;;
-;;   (not (and (daemonp) (eq (selected-frame) terminal-frame)))
-;;
-;; -- because there is no real frame yet to size/place windows into. Nothing
-;; in desktop.el or server.el re-attempts the restore once an actual
-;; `emacsclient' frame attaches, and worse, `desktop-read' unconditionally
-;; sets `desktop-saved-frameset' back to nil right after running
-;; `desktop-after-read-hook' -- so by the time a client connects, the saved
-;; frameset is already gone even if something tried to restore it later.
-;; The only place the frameset can still be read is inside
-;; `desktop-after-read-hook' itself, before that reset runs.
-;;
-;; So: stash it there when running under the daemon guard, then replay it
-;; with `frameset-restore' (what `desktop-restore-frameset' itself calls)
-;; once `server-after-make-frame-hook' reports a real client frame is
-;; selected. `desktop-restore-reuses-frames' defaults to t, so
-;; `frameset-restore' reuses that just-connected frame instead of popping up
-;; an unwanted extra one.
+;; Bridge desktop-read's daemon-mode frameset skip to the first client frame.
+;; `desktop-restoring-frameset-p' refuses to restore onto the daemon's
+;; placeholder frame, nothing retries once a client attaches, and
+;; `desktop-read' nils `desktop-saved-frameset' right after
+;; `desktop-after-read-hook'. So stash it from that hook and replay it on
+;; `server-after-make-frame-hook'; `desktop-restore-reuses-frames' (default t)
+;; makes it reuse the client frame rather than pop a new one.
 (require 'server)
 
 (defvar edmacs-sessions--pending-frameset nil
@@ -301,14 +167,8 @@ later client frames just get the normal, empty daemon frame."
 ;; ============================================================================
 ;; C-x chords - reach the worktree/tab chords this phase's ACs name
 ;; ============================================================================
-;; See the "FORMER SHADOW, NOW EXTENDED" note above the top of this file.
-;; `edmacs-evil-config-add-c-x-chord' (modules/evil-config.el) is the sole
-;; owner of the `C-x' entry in `evil-normal-state-map'; registering here
-;; instead of a competing `define-key' means these chords work from
-;; normal state regardless of whether evil-config.el or this module
-;; loads first. This is scoped deliberately narrow (the specific chords
-;; this phase's body and ACs name), not a blanket un-shadow of the whole
-;; `ctl-x-map' -- broadening that is a separate, unrelated change.
+;; Registered via evil-config.el's extension point rather than a competing
+;; `define-key' on `C-x', so this works regardless of module load order.
 (dolist (chord '(("t p" . project-other-tab-command)
                   ("v w w" . vc-switch-working-tree)
                   ("v w s" . vc-working-tree-switch-project)
@@ -320,25 +180,13 @@ later client frames just get the normal, empty daemon frame."
 ;; ============================================================================
 ;; One tab per worktree - collapse duplicates from re-opening the same one
 ;; ============================================================================
-;; `project-other-tab-command' (bound above at `C-x t p'/`SPC T p') always
-;; creates and selects a brand-new tab -- it has no notion of "a tab for
-;; this worktree already exists" -- so re-running it against a worktree
-;; that already has a tab would otherwise leave two tabs for one
-;; worktree, which the phase's "one tab per active worktree" acceptance
-;; criterion rules out. `project-other-tab-command' resolves its target
-;; project several layers down inside `project--other-place-prefix' and
-;; whichever project sub-command the user picks, so pre-empting it with
-;; a duplicate-directory check before it runs would mean reimplementing
-;; that resolution; advising *around* it and reconciling afterward is
-;; simpler and applies uniformly no matter which project sub-command was
-;; invoked.
+;; `project-other-tab-command' always creates a new tab; it has no notion of
+;; an existing tab for the same worktree. Advising around it and reconciling
+;; afterward is simpler than pre-empting its project resolution.
 (defun edmacs-sessions--dedupe-tab-after-open (orig-fn &rest args)
-  "Collapse a just-opened tab into its pre-existing worktree counterpart.
-Runs ORIG-FN (`project-other-tab-command') with ARGS, then -- if the
-freshly created and now-current tab's name collides with a tab that
-already existed beforehand -- closes the new tab and switches to the
-existing one instead, so a worktree that already has a tab never ends
-up with a second one."
+  "Run ORIG-FN (`project-other-tab-command') with ARGS, then dedupe.
+If a tab with the new tab's name already existed, close the new one and
+switch to the existing one."
   (let ((before-tabs (tab-bar-tabs)))
     (apply orig-fn args)
     (let* ((new-name (funcall tab-bar-tab-name-function))
@@ -354,16 +202,7 @@ up with a second one."
 ;; ============================================================================
 ;; Leader-key bindings
 ;; ============================================================================
-;; Self-registered here (outside the central leader-def in
-;; modules/keybindings.el) following the git.el/vterm.el/ai.el convention
-;; of modules owning their own SPC-prefixed bindings, rather than the
-;; keybindings.el-centralized convention core.el's window-rotation
-;; bindings use. Either is an established pattern in this repo; this
-;; module picks the self-registering one so it stays fully self-contained.
-
-;; SPC T - tab lifecycle: the fast, no-delay path (the C-x chords
-;; above also make `C-x t p' work from normal state, but incur their
-;; grace-period timeout).
+;; SPC T - tab lifecycle, with no dispatch grace period (unlike the C-x chords).
 (general-define-key
  :states 'normal
  :prefix "SPC T"
@@ -376,10 +215,7 @@ up with a second one."
  "[" '(tab-bar-switch-to-prev-tab :which-key "previous tab")
  "l" '(tab-bar-switch-to-tab :which-key "switch tab by name"))
 
-;; SPC p w - worktree switching: the fast, no-delay path to the stock
-;; vc.el worktree commands (the C-x chords above also make the literal
-;; `C-x v w s' etc. chords work from normal state, per the phase's
-;; "Done when" wording, but incur their grace-period timeout).
+;; SPC p w - worktree switching, same no-delay path.
 (general-define-key
  :states 'normal
  :prefix "SPC p w"

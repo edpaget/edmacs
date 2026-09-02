@@ -8,26 +8,19 @@
 ;; ============================================================================
 ;; Magit - The best Git interface
 ;; ============================================================================
-;; Note: transient is NOT force-loaded eagerly (see modules/core.el) --
-;; magit requires it internally the first time a magit command actually
-;; loads it, which is fine since magit itself is :commands-deferred below.
-
 (use-package magit
   :commands (magit-status magit-diff-unstaged magit-diff-staged magit-commit
              magit-push magit-pull magit-fetch magit-fetch-all magit-log
              magit-log-current magit-branch magit-blame magit-stage-file
              magit-unstage-file)
   :config
-  ;; Magit settings
   (setq magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1
-        ;; Was t: forces word-level refinement on every hunk, which combines
-        ;; badly with `global-auto-revert-non-file-buffers' (modules/core.el)
-        ;; re-refreshing a visible magit-status every 5 seconds. nil is
-        ;; magit's own default; refinement is still available per-hunk on
-        ;; demand (magit-diff-toggle-refine-hunk).
+        ;; Word-level refinement on every hunk is expensive when auto-revert
+        ;; refreshes a visible magit-status every 5s. Still available per hunk
+        ;; via `magit-diff-toggle-refine-hunk'.
         magit-diff-refine-hunk nil))
 
-;; Git keybindings - defined outside use-package so they're available immediately
+;; Outside use-package so bindings exist before magit autoloads.
 (general-define-key
  :states 'normal
  :prefix "SPC g"
@@ -48,44 +41,25 @@
  "u" '(magit-unstage-file :which-key "unstage file"))
 
 ;; ============================================================================
-;; Magit Evil Integration
-;; ============================================================================
-
-;; Evil bindings for magit are provided by evil-collection
-;; See modules/evil-config.el where evil-collection is configured with magit
-
-;; ============================================================================
 ;; Diff-hl - Show git diff in the fringe
 ;; ============================================================================
 
 (use-package diff-hl
-  ;; No :commands/:hook/:mode of our own -- diff-hl's global modes are
-  ;; activated below via an `after-init-hook' call to the package's own
-  ;; autoloaded entry points, which is what actually triggers the load.
-  ;; :defer t just keeps use-package itself from requiring it eagerly here.
+  ;; Loaded by the after-init call below; :defer t just stops use-package
+  ;; requiring it here.
   :defer t
   :config
-  ;; Integration with Magit -- only matters once diff-hl has actually loaded,
-  ;; which by the time this :config body runs, it has.
   (add-hook 'magit-pre-refresh-hook 'diff-hl-magit-pre-refresh)
   (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh))
 
-;; Activate diff-hl's global modes at after-init instead of eagerly at
-;; use-package-expansion time. Note: `after-init-hook' fires during the
-;; measured startup window (mise's own after-init hook shows up in
-;; --stats too), so this relocates diff-hl's activation cost within startup
-;; rather than removing it -- it only removes diff-hl from use-package's own
-;; eager :config timing. Calling these (real, autoloaded) commands is what
-;; triggers diff-hl(-flydiff/-margin) to actually load.
+;; Calling these autoloaded commands is what loads diff-hl.
 (add-hook 'after-init-hook
           (lambda ()
             (global-diff-hl-mode)
             (diff-hl-flydiff-mode)
             (diff-hl-margin-mode)))
 
-;; Keybindings for diff-hl -- defined outside use-package so they exist
-;; immediately, even though diff-hl itself now loads at after-init (same
-;; convention as the magit/quickrun keybindings in this file).
+;; Outside use-package so bindings exist before diff-hl loads.
 (general-define-key
  :states 'normal
  :prefix "SPC g"
@@ -107,7 +81,6 @@
    :prefix "SPC g"
    "t" '(git-timemachine :which-key "timemachine"))
 
-  ;; Keybindings in timemachine mode
   (with-eval-after-load 'git-timemachine
     (evil-define-key 'normal git-timemachine-mode-map
       (kbd "C-k") 'git-timemachine-show-previous-revision

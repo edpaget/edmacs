@@ -19,13 +19,10 @@
          ("\\.cljc\\'" . clojure-ts-mode)
          ("\\.edn\\'" . clojure-ts-mode))
   :config
-  ;; Indentation rules
   (setq clojure-ts-indent-style 'fixed)
 
-  ;; Enable LSP
   (add-hook 'clojure-ts-mode-hook #'lsp-deferred)
 
-  ;; Enable smartparens for structural editing
   (add-hook 'clojure-ts-mode-hook #'smartparens-strict-mode))
 
 ;; ============================================================================
@@ -35,7 +32,6 @@
 (use-package cider
   :commands (cider-jack-in cider-connect)
   :config
-  ;; REPL settings
   (setq cider-repl-display-help-banner nil
         cider-repl-pop-to-buffer-on-connect 'display-only
         cider-show-error-buffer t
@@ -46,7 +42,6 @@
         cider-show-eval-spinner t
         cider-overlays-use-font-lock t)
 
-  ;; Evaluation settings
   (setq cider-font-lock-dynamically '(macro core function var)
         cider-prompt-for-symbol nil)
 
@@ -102,19 +97,14 @@
    "ra" '(cljr-add-require-to-ns :which-key "add require")
    "ri" '(cljr-add-import-to-ns :which-key "add import"))
 
-  ;; Set up smartparens keybindings using shared Lisp configuration
   (lisp-common-setup-smartparens-keys 'clojure-ts-mode-map ", k"))
 
 ;; ============================================================================
 ;; clj-refactor - Refactoring support
 ;; ============================================================================
 
-;; clj-refactor depends on paredit, whose MELPA recipe fetches from
-;; https://paredit.org/paredit.git. That host is currently unresolvable
-;; (NXDOMAIN; unrelated to the Emacs 31 upgrade this module was written for)
-;; and blocks straight.el bootstrap entirely, so pin the fetch to the
-;; emacsmirror instead. Revisit if paredit.org comes back and this override
-;; is no longer needed.
+;; paredit.org (paredit's MELPA source) is currently unresolvable and blocks
+;; bootstrap; fetch from emacsmirror instead.
 (straight-use-package '(paredit :type git :host github :repo "emacsmirror/paredit"))
 
 (use-package clj-refactor

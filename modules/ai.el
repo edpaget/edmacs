@@ -19,13 +19,8 @@
   (markdown-hide-markup t)
   (markdown-fontify-code-blocks-natively t)
   (markdown-header-scaling t)
-  ;; Hooked on `markdown-mode' specifically (never `text-mode') so this
-  ;; reaches markdown-mode/gfm-mode buffers only: gfm-mode is a
-  ;; `define-derived-mode' child of markdown-mode, so it runs
-  ;; markdown-mode-hook too, but claude-repl-buffer-mode derives from
-  ;; `text-mode' (it only borrows markdown's font-lock keywords for
-  ;; highlighting, not the mode itself), so the Claude transcript
-  ;; buffer is structurally unreachable by this hook.
+  ;; Hooked on `markdown-mode' (gfm-mode derives from it) rather than
+  ;; `text-mode', so the claude-repl transcript buffer is not affected.
   :hook ((markdown-mode . variable-pitch-mode)
          (markdown-mode . olivetti-mode)
          (markdown-mode . (lambda () (setq-local line-spacing 0.15)))))
@@ -38,7 +33,6 @@
 ;; Claude REPL Integration
 ;; ============================================================================
 
-;; Add claude-repl directory to load path
 (add-to-list 'load-path
              (expand-file-name "claude-repl"
                                (file-name-directory
@@ -46,27 +40,14 @@
                                     buffer-file-name
                                     (expand-file-name "ai.el" default-directory)))))
 
-;; Load the core module
 (require 'claude-repl-core)
 
-;; Configure fancy UI options for claude-repl-buffer
 (with-eval-after-load 'claude-repl-buffer
-  ;; Use unicode-fancy style for headers with icons
   (setq claude-repl-buffer-header-style 'unicode-fancy)
-
-  ;; Use labeled separators that show interaction numbers
   (setq claude-repl-separator-style 'labeled)
-
-  ;; Enable icons (uses nerd-icons if available, falls back to emoji)
   (setq claude-repl-use-icons t)
-
-  ;; Customize the input prompt string
   (setq claude-repl-input-prompt-string "claude> ")
-
-  ;; Add a bit more spacing between sections for readability
   (setq claude-repl-section-spacing 1)
-
-  ;; Optional: Set a max width for better readability on wide screens
   ;; (setq claude-repl-buffer-max-width 120)
   )
 
@@ -74,7 +55,6 @@
 ;; Claude REPL Keybindings
 ;; ============================================================================
 
-;; Main keybindings at SPC a prefix
 (with-eval-after-load 'general
   (general-define-key
    :states 'normal
