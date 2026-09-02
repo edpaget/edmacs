@@ -97,8 +97,16 @@ fail() { echo "FAIL: $1"; FAILED=1; }
 #    every structural check below.
 # ---------------------------------------------------------------------------
 
-TMP_SINGLE_LINE="$(mktemp -t edmacs-so-long-test.XXXXXX)"
-trap 'rm -f "$TMP_SINGLE_LINE"' EXIT
+# The .txt extension is load-bearing, not cosmetic: without a recognized
+# extension the buffer lands in fundamental-mode, where visual-line-mode is
+# never enabled (it comes from text-mode-hook, modules/ui.el) -- which made
+# the "so-long neutralizes visual-line-mode" assertion below vacuously true,
+# passing even if so-long did nothing at all. Verified: with no extension,
+# visual-line-mode reads nil BEFORE so-long runs.
+TMP_SINGLE_LINE_BASE="$(mktemp -t edmacs-so-long-test.XXXXXX)"
+TMP_SINGLE_LINE="${TMP_SINGLE_LINE_BASE}.txt"
+mv "$TMP_SINGLE_LINE_BASE" "$TMP_SINGLE_LINE"
+trap 'rm -f "$TMP_SINGLE_LINE" "$TMP_SINGLE_LINE_BASE"' EXIT
 # 3,000,000 chars: comfortably over so-long-max-lines'-companion threshold
 # (so-long triggers on line length, default so-long-threshold is 250 chars).
 perl -e 'print "x" x 3000000' > "$TMP_SINGLE_LINE"
@@ -116,6 +124,14 @@ PROBE_ELISP='
   (message "PROBE:inhibit-compacting-font-caches=%S" inhibit-compacting-font-caches)
   (message "PROBE:global-so-long-mode=%S" (bound-and-true-p global-so-long-mode))
   (message "PROBE:so-long-minor-modes-has-evil=%S" (and (memq (quote evil-local-mode) so-long-minor-modes) t))
+  ;; font-lock-mode cannot be exercised dynamically here: font-lock-mode is
+  ;; inert when noninteractive is non-nil, so it reads nil under --batch even
+  ;; after an explicit (font-lock-mode 1). Assert its membership in
+  ;; so-long-minor-modes instead -- that is the structural fact that makes
+  ;; so-long disable it in a real session, and it is the same pattern the
+  ;; evil-local-mode check above uses.
+  (message "PROBE:so-long-minor-modes-has-font-lock=%S" (and (memq (quote font-lock-mode) so-long-minor-modes) t))
+  (message "PROBE:so-long-minor-modes-has-visual-line=%S" (and (memq (quote visual-line-mode) so-long-minor-modes) t))
   (message "PROBE:redisplay-dont-pause-bound=%S" (boundp (quote redisplay-dont-pause)))
 
   ;; Force so-long on the synthetic huge-line file: so-long defers its own
@@ -123,11 +139,15 @@ PROBE_ELISP='
   ;; here), so an explicit call exercises the same teardown the
   ;; window-triggered path uses (see so-long-invisible-buffer-function).
   (find-file (getenv "EDMACS_VERIFY_SINGLE_LINE_FILE"))
+  ;; Record the pre-so-long state. An "is nil afterwards" assertion only means
+  ;; something if the mode was actually on beforehand.
+  (message "PROBE:pre-so-long-major-mode=%S" major-mode)
+  (message "PROBE:pre-so-long-evil-local-mode=%S" (bound-and-true-p evil-local-mode))
+  (message "PROBE:pre-so-long-visual-line-mode=%S" (bound-and-true-p visual-line-mode))
   (so-long)
   (message "PROBE:so-long-major-mode=%S" major-mode)
   (message "PROBE:so-long-evil-local-mode=%S" (bound-and-true-p evil-local-mode))
   (message "PROBE:so-long-visual-line-mode=%S" (bound-and-true-p visual-line-mode))
-  (message "PROBE:so-long-font-lock-mode=%S" (bound-and-true-p font-lock-mode))
   (kill-buffer)
 
   ;; vc / magit / diff-hl interop against a real tracked file.
@@ -278,15 +298,31 @@ SC_HITS="$(grep_el 'scroll-conservatively' 2>/dev/null | wc -l | tr -d ' ')"
 [[ "$(get so-long-major-mode)" == "so-long-mode" ]] \
   && pass "forcing so-long on a huge single-line buffer engages so-long-mode" \
   || fail "forcing so-long on a huge single-line buffer engages so-long-mode -- got $(get so-long-major-mode)"
+# Guard the guards: if the mode was already off before so-long ran, the
+# "is nil afterwards" checks below prove nothing. Assert the transition.
+[[ "$(get pre-so-long-major-mode)" == "text-mode" ]] \
+  && pass "huge-line probe buffer starts in text-mode (so the checks below are not vacuous)" \
+  || fail "huge-line probe buffer starts in text-mode -- got $(get pre-so-long-major-mode)"
+[[ "$(get pre-so-long-evil-local-mode)" == "t" ]] \
+  && pass "evil-local-mode is ON before so-long runs" \
+  || fail "evil-local-mode is ON before so-long runs -- got $(get pre-so-long-evil-local-mode)"
+[[ "$(get pre-so-long-visual-line-mode)" == "t" ]] \
+  && pass "visual-line-mode is ON before so-long runs" \
+  || fail "visual-line-mode is ON before so-long runs -- got $(get pre-so-long-visual-line-mode)"
+
 [[ "$(get so-long-evil-local-mode)" == "nil" ]] \
   && pass "so-long neutralizes evil-local-mode" \
   || fail "so-long neutralizes evil-local-mode -- got $(get so-long-evil-local-mode)"
 [[ "$(get so-long-visual-line-mode)" == "nil" ]] \
   && pass "so-long neutralizes visual-line-mode" \
   || fail "so-long neutralizes visual-line-mode -- got $(get so-long-visual-line-mode)"
-[[ "$(get so-long-font-lock-mode)" == "nil" ]] \
-  && pass "so-long neutralizes font-lock-mode" \
-  || fail "so-long neutralizes font-lock-mode -- got $(get so-long-font-lock-mode)"
+# Structural, not dynamic -- font-lock-mode is inert under --batch (see probe).
+[[ "$(get so-long-minor-modes-has-font-lock)" == "t" ]] \
+  && pass "font-lock-mode is in so-long-minor-modes" \
+  || fail "font-lock-mode is in so-long-minor-modes -- got $(get so-long-minor-modes-has-font-lock)"
+[[ "$(get so-long-minor-modes-has-visual-line)" == "t" ]] \
+  && pass "visual-line-mode is in so-long-minor-modes" \
+  || fail "visual-line-mode is in so-long-minor-modes -- got $(get so-long-minor-modes-has-visual-line)"
 
 # AC: booting produces an empty *Warnings* buffer.
 [[ "$(get warnings-buffer)" == "nil" ]] \
