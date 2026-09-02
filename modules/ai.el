@@ -1,7 +1,9 @@
 ;;; ai.el --- AI assistant integration -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; Claude REPL integration with REPL-style interface
+;; Markdown editing polish and the AI-adjacent editor packages.
+;; The Claude CLI integration itself lives in modules/claude-term.el
+;; and modules/claude-term-registry.el, which own the SPC a prefix.
 
 ;;; Code:
 
@@ -19,13 +21,11 @@
   (markdown-hide-markup t)
   (markdown-fontify-code-blocks-natively t)
   (markdown-header-scaling t)
-  ;; Hooked on `markdown-mode' specifically (never `text-mode') so this
-  ;; reaches markdown-mode/gfm-mode buffers only: gfm-mode is a
-  ;; `define-derived-mode' child of markdown-mode, so it runs
-  ;; markdown-mode-hook too, but claude-repl-buffer-mode derives from
-  ;; `text-mode' (it only borrows markdown's font-lock keywords for
-  ;; highlighting, not the mode itself), so the Claude transcript
-  ;; buffer is structurally unreachable by this hook.
+  ;; Hooked on `markdown-mode' specifically (never `text-mode') so the
+  ;; variable-pitch/olivetti treatment reaches markdown-mode and
+  ;; gfm-mode buffers only -- gfm-mode is a `define-derived-mode' child
+  ;; of markdown-mode, so it runs markdown-mode-hook too, but no plain
+  ;; `text-mode' buffer is caught by accident.
   :hook ((markdown-mode . variable-pitch-mode)
          (markdown-mode . olivetti-mode)
          (markdown-mode . (lambda () (setq-local line-spacing 0.15)))))
@@ -33,89 +33,6 @@
 (use-package olivetti
   :straight t
   :custom (olivetti-body-width 84))
-
-;; ============================================================================
-;; Claude REPL Integration
-;; ============================================================================
-
-;; Add claude-repl directory to load path
-(add-to-list 'load-path
-             (expand-file-name "claude-repl"
-                               (file-name-directory
-                                (or load-file-name
-                                    buffer-file-name
-                                    (expand-file-name "ai.el" default-directory)))))
-
-;; Load the core module
-(require 'claude-repl-core)
-
-;; Configure fancy UI options for claude-repl-buffer
-(with-eval-after-load 'claude-repl-buffer
-  ;; Use unicode-fancy style for headers with icons
-  (setq claude-repl-buffer-header-style 'unicode-fancy)
-
-  ;; Use labeled separators that show interaction numbers
-  (setq claude-repl-separator-style 'labeled)
-
-  ;; Enable icons (uses nerd-icons if available, falls back to emoji)
-  (setq claude-repl-use-icons t)
-
-  ;; Customize the input prompt string
-  (setq claude-repl-input-prompt-string "claude> ")
-
-  ;; Add a bit more spacing between sections for readability
-  (setq claude-repl-section-spacing 1)
-
-  ;; Optional: Set a max width for better readability on wide screens
-  ;; (setq claude-repl-buffer-max-width 120)
-  )
-
-;; ============================================================================
-;; Claude REPL Keybindings
-;; ============================================================================
-
-;; Main keybindings at SPC a prefix
-(with-eval-after-load 'general
-  (general-define-key
-   :states 'normal
-   :prefix "SPC a"
-   "" '(:ignore t :which-key "ai/claude")
-   "a" '(claude-repl-ask :which-key "ask claude")
-   "I" '(claude-repl-interrupt-and-ask :which-key "interrupt and ask")
-   "b" '(claude-repl-open-buffer :which-key "open buffer")
-   "c" '(claude-repl-clear-buffer :which-key "clear buffer")
-   "s" '(claude-repl-process-start-current-project :which-key "start process")
-   "k" '(claude-repl-process-kill-current-project :which-key "kill process")
-   "K" '(claude-repl-process-kill-all :which-key "kill all processes")
-   "l" '(claude-repl-show-processes :which-key "list processes")
-   "i" '(claude-repl-process-status-current-project :which-key "status")
-   "t" '(claude-repl-test-prompt :which-key "test prompt (debug)"))
-
-  ;; Approval management keybindings
-  (general-define-key
-   :states 'normal
-   :prefix "SPC a p"
-   "" '(:ignore t :which-key "approval policy")
-   "m" '(claude-repl-approval-set-mode :which-key "set mode")
-   "s" '(claude-repl-approval-show-policy :which-key "show policy")
-   "a" '(claude-repl-approval-add-allow-rule :which-key "add allow rule")
-   "d" '(claude-repl-approval-add-deny-rule :which-key "add deny rule")
-   "r" '(claude-repl-approval-reset-rules :which-key "reset rules")
-   "c" '(claude-repl-approval-clear-session-rules :which-key "clear session rules")
-   "l" '(claude-repl-approval-show-session-rules :which-key "show session rules"))
-
-  ;; Local leader bindings for AI in programming buffers
-  (general-define-key
-   :states 'normal
-   :keymaps 'prog-mode-map
-   :prefix ","
-   "a" '(:ignore t :which-key "ai")
-   "aa" '(claude-repl-ask :which-key "ask claude")
-   "aI" '(claude-repl-interrupt-and-ask :which-key "interrupt and ask")
-   "ab" '(claude-repl-open-buffer :which-key "open buffer")
-   "ac" '(claude-repl-clear-buffer :which-key "clear buffer")
-   "as" '(claude-repl-process-start-current-project :which-key "start process")
-   "ak" '(claude-repl-process-kill-current-project :which-key "kill process")))
 
 ;; ============================================================================
 ;; Optional: gptel (alternative/additional AI interface)

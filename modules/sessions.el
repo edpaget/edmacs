@@ -145,24 +145,30 @@ names the repo rather than the worktree)."
 
 ;; vterm buffers wrap a live PTY that desktop.el cannot resume -- without
 ;; excluding them, restore would leave a dead, unusable buffer behind.
-;; claude-repl-buffer-mode buffers are in the same boat: they front a
-;; live claude CLI subprocess (see modules/claude-repl/claude-repl-process.el)
-;; that desktop.el has no way to reattach either, so restoring one would
-;; produce a read-only-looking transcript that silently can no longer talk
-;; to Claude. Default to excluding both; a follow-up task tracks giving
-;; claude-repl a proper "resume this project's session" path instead of
-;; restoring a transcript with no process behind it (see the task filed
-;; alongside this commit).
 ;; `comint-mode' covers every other PTY/subprocess-backed buffer this
 ;; config can open (M-x shell, inferior REPLs, etc.): none of them have
 ;; a live process to reattach to after a restart either, and unlike
-;; vterm/claude-repl-buffer it is already loaded (part of Emacs) so no
+;; vterm it is already loaded (part of Emacs) so no
 ;; `with-eval-after-load' gate is needed.
 (add-to-list 'desktop-modes-not-to-save 'comint-mode)
 (with-eval-after-load 'vterm
   (add-to-list 'desktop-modes-not-to-save 'vterm-mode))
-(with-eval-after-load 'claude-repl-buffer
-  (add-to-list 'desktop-modes-not-to-save 'claude-repl-buffer-mode))
+
+;; claude-term sessions front a live `claude' CLI process under ghostel and
+;; must not be restored either -- but they cannot be excluded via
+;; `desktop-modes-not-to-save', which matches the MAJOR mode. Their major
+;; mode is `ghostel-mode', shared with ordinary ghostel shell terminals that
+;; ghostel CAN respawn (ghostel sets `desktop-save-buffer' buffer-locally and
+;; registers its own `ghostel-desktop-restore-buffer'), so blacklisting
+;; `ghostel-mode' would break working restore for those; and the marker minor
+;; mode `claude-term-mode' would simply never match. Opt out buffer-locally
+;; instead, which scopes the exclusion to exactly the claude-term buffers:
+;; `ghostel-mode's body sets `desktop-save-buffer', then run-mode-hooks
+;; enables `claude-term-mode', whose hook clears it again.
+(add-hook 'claude-term-mode-hook
+          (lambda ()
+            (when (bound-and-true-p claude-term-mode)
+              (setq-local desktop-save-buffer nil))))
 
 (desktop-save-mode 1)
 

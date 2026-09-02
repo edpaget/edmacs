@@ -557,20 +557,20 @@ after it was asked to die (see the phase body's own edge case)."
 ;; ============================================================================
 ;; SPC a keybindings
 ;; ============================================================================
-;; Letters chosen to avoid every one of modules/ai.el's existing
-;; claude-repl bindings at SPC a: a, I, b, c, s, k, K, l, i, t, plus the
-;; "p" submenu prefix -- verified live against modules/ai.el, 2026-09-01
-;; (claude-repl is retired only in phase 6, so this module must coexist
-;; with it until then). Deliberately does NOT bind TAB anywhere under
-;; SPC a -- see `claude-term-registry-sort-function's own docstring;
-;; phase 5 owns that binding together with the attention-ordered
-;; comparator it needs, and binding it here against this phase's stub
-;; would ship a key that cannot do what its name says.
+;; This module is the sole owner of the SPC a prefix. The letters were
+;; originally chosen to dodge modules/ai.el's claude-repl bindings (a, I,
+;; b, c, s, k, K, l, i, t and the "p" submenu); claude-repl has since been
+;; retired and ai.el's whole keybinding block deleted, so the ":ignore"
+;; entry that supplies the which-key heading for the prefix -- which ai.el
+;; used to own -- now lives here too. Deliberately does NOT bind TAB
+;; anywhere under SPC a -- see `claude-term-registry-sort-function's own
+;; docstring.
 
 (with-eval-after-load 'general
   (general-define-key
    :states 'normal
    :prefix "SPC a"
+   "" '(:ignore t :which-key "claude")
    "n" '(claude-term-new-session :which-key "new session")
    "j" '(claude-term-jump :which-key "jump to session")
    "L" '(claude-term-list-sessions :which-key "list sessions")
