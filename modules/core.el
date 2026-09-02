@@ -168,6 +168,21 @@
 ;; (rainbow-delimiters, flycheck, tree-sitter, hl-todo, global-auto-revert,
 ;; diff-hl, etc.).
 
+;; Undo limits, raised from Emacs's stock 160000/240000 bytes (~156KB/234KB).
+;; This config pairs evil's undo with apheleia format-on-save and
+;; `lsp-rename' -- both routinely produce a single undo change bigger than
+;; the stock limits, which silently truncates history ("Undo history was
+;; truncated" in *Messages*) and discards whatever undo branches it can no
+;; longer reach. `undo-outer-limit' (the hard per-command cap, default
+;; ~24MB) is left at its default -- these two are the soft limits that
+;; decide when Emacs starts discarding old undo entries to make room, not
+;; the point at which it refuses to record a change at all. These are core
+;; Emacs undo variables (not evil- or undo-tree-specific), so they belong
+;; here rather than in evil-config.el even though evil's undo system is
+;; what mainly benefits.
+(setq undo-limit (* 3 1024 1024)          ; ~3MB
+      undo-strong-limit (* 16 1024 1024)) ; ~16MB
+
 ;; Detect very long lines (minified bundles, lockfiles, wide CSVs) and
 ;; neutralize expensive per-line features (font-lock, visual-line-mode,
 ;; rainbow-delimiters, etc.) for that buffer instead of freezing on them.

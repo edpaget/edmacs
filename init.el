@@ -53,20 +53,44 @@
 (setq straight-use-package-by-default t)
 
 ;; ============================================================================
-;; Performance - Reset GC threshold after startup
+;; Performance - GC management after startup
 ;; ============================================================================
-
-(add-hook 'emacs-startup-hook
-          (lambda ()
-            (setq gc-cons-threshold (* 16 1024 1024)  ; 16MB
-                  gc-cons-percentage 0.1)))
-
-;; Run GC when every frame has lost focus.  `focus-out-hook' was obsoleted in
-;; 27.1 in favour of `after-focus-change-function' + `frame-focus-state'.
-(add-function :after after-focus-change-function
-              (lambda ()
-                (unless (seq-some #'frame-focus-state (frame-list))
-                  (garbage-collect))))
+;;
+;; edmacs-performance/phase-6-gc-and-unbounded-state: this replaces a
+;; hardcoded `emacs-startup-hook' that reset `gc-cons-threshold' to a flat
+;; 16MB, plus an `after-focus-change-function' hook that ran a blocking
+;; `(garbage-collect)' every time every frame lost focus. On a daemon that
+;; has been up for days holding LSP workspaces for five languages plus
+;; magit/vterm/claude-repl buffers, that blocking call was a stop-the-world
+;; pause of potentially hundreds of milliseconds to seconds taken on every
+;; tab-away -- and it silently did nothing for `emacsclient -t' frames,
+;; which don't reliably fire focus-change events, or for a daemon with no
+;; frames attached at all. 16MB was also undersized for this workload:
+;; JSON-RPC deserialisation from five lsp-mode backends is allocation-heavy
+;; and was provoking frequent minor GCs at that threshold.
+;;
+;; gcmh replaces both mechanisms with `pre-command-hook'/`post-command-hook'
+;; and Emacs's own idle timer -- no dependency on `frame-focus-state' or
+;; `after-focus-change-function' at all, so it behaves identically for GUI
+;; and TTY (`emacsclient -t') frames and for a daemon with zero frames
+;; attached. `gc-cons-threshold' is kept at `gcmh-high-cons-threshold' during
+;; normal use (set immediately on `gcmh-mode' enable, not idle-gated) and
+;; dropped to `gcmh-low-cons-threshold' only right after an idle-triggered
+;; GC actually runs, so allocation-heavy bursts (LSP parsing, apheleia
+;; rewrites) never fight a small threshold mid-operation.
+(use-package gcmh
+  :config
+  (setq gcmh-high-cons-threshold (* 100 1024 1024) ; 100MB: sized generously
+                                                    ; for lsp-mode across
+                                                    ; go/java/javascript/
+                                                    ; rust/clojure -- too low
+                                                    ; here just trades one
+                                                    ; perceptible pause for
+                                                    ; periodic idle-GC pauses
+                                                    ; of similar size
+        gcmh-idle-delay 10)                        ; seconds idle before the
+                                                    ; deferred GC runs
+  (gcmh-mode 1))
 
 ;; ============================================================================
 ;; Module Loading System

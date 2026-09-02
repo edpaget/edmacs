@@ -9,6 +9,31 @@
 ;; ============================================================================
 ;; LSP Mode - Language Server Protocol
 ;; ============================================================================
+;;
+;; `.cache/lsp' footprint (edmacs-performance/phase-6-gc-and-unbounded-state
+;; audit): `lsp-server-install-dir' defaults to
+;; `<user-emacs-directory>/.cache/lsp'. At audit time this was 118M across
+;; ~7,977 files, entirely the `npm/' subtree holding two npm-installed
+;; servers (`vscode-langservers-extracted' ~93M, `yaml-language-server'
+;; ~25M) -- node_modules dependency trees, not per-workspace/session state
+;; (that lives separately, in the tiny `.lsp-session-v1' file). This scales
+;; with the *number of npm-based servers lsp-mode has installed*, not with
+;; runtime/editing activity, so it will not silently balloon further absent
+;; a new server install -- no periodic pruning is warranted.
+;;
+;; lsp-mode installs npm servers via `npm -g --prefix <dir> install
+;; <package>', per `lsp--npm-dependency-install' (lsp-mode.el) -- a global-
+;; style install, which never fetches a target package's `devDependencies'
+;; regardless of whether its package.json declares any. Verified against
+;; both servers here: `npm prune --omit=dev' run in place removed 0 bytes
+;; (93M and 25M unchanged) -- there is no dev-dependency bloat to prune,
+;; only real runtime `dependencies' (the largest single item,
+;; `vscode-langservers-extracted''s ~64M `typescript' dependency, is one of
+;; those). The 118M figure is close to the true minimum footprint for
+;; these two servers as lsp-mode installs them; it is justified, not
+;; reducible, short of dropping a server (`rm -rf
+;; .cache/lsp/npm/<server>', then `lsp-install-server' to reinstall fresh
+;; over the network if the language is still needed).
 
 (use-package lsp-mode
   :commands (lsp lsp-deferred)
