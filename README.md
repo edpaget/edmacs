@@ -9,7 +9,7 @@ A modern, modular Emacs configuration with evil-mode, version-locked packages, a
 - **Modular Design**: Clean separation of concerns across modules
 - **Modern Completion**: Vertico + Corfu + Consult ecosystem
 - **LSP Support**: Full IDE features with LSP-mode
-- **AI Integration**: Claude AI assistant via claude-repl
+- **AI Integration**: the Claude CLI hosted in Emacs via claude-term (ghostel)
 - **Beautiful UI**: Catppuccin theme with Nano Modeline
 - **Org Mode**: Enhanced with org-roam, org-modern, and org-appear
 - **Git Integration**: Magit, diff-hl, and git-timemachine
@@ -77,11 +77,10 @@ Then restart Emacs for icons to display properly.
 
 ### 5. Configure AI Assistant (Optional)
 
-To use the Claude AI assistant, set your API key:
-
-```bash
-export ANTHROPIC_API_KEY="your-api-key-here"
-```
+Claude sessions launch the `claude` CLI, so install and authenticate it
+once (see the Claude Code docs); Emacs inherits that login and needs no
+API key of its own. Permission prompts are raised by the CLI itself, so an
+Emacs-hosted session asks for exactly what a terminal session asks for.
 
 Add this to your `~/.bashrc`, `~/.zshrc`, or equivalent.
 
@@ -160,7 +159,7 @@ This configuration uses **SPC** (spacebar) as the leader key in normal/visual mo
 | `SPC ss` | Search buffer |
 | `SPC sp` | Search project (ripgrep) |
 | `SPC pf` | Find file in project |
-| `SPC aa` | AI chat |
+| `SPC an` | New Claude session |
 | `SPC oa` | Org agenda |
 | `SPC hf` | Describe function |
 
@@ -218,13 +217,21 @@ When in an LSP-enabled buffer:
 
 ### AI Assistant
 
+Claude runs as the real interactive CLI inside a ghostel terminal buffer
+(`modules/claude-term.el`), tracked by a session registry
+(`modules/claude-term-registry.el`).
+
 | Key | Action |
 |-----|--------|
-| `SPC a` | AI menu |
-| `SPC aa` | Chat with Claude |
-| `SPC ae` | Explain code |
-| `SPC ar` | Refactor |
-| `SPC ad` | Document |
+| `SPC a` | Claude menu |
+| `SPC an` | New session |
+| `SPC aj` | Jump to session |
+| `SPC aL` | List sessions |
+| `SPC aw` | Toggle session pane |
+| `SPC aA` | Show all sessions |
+| `SPC ax` | Kill session |
+| `SPC aX` | Kill all sessions |
+| `SPC ar` | Rename session |
 
 ## Package Management
 

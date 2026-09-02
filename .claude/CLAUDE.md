@@ -8,71 +8,61 @@ This is **edmacs**, a modern, modular Emacs configuration with evil-mode, versio
 
 - Top-level Emacs configuration files (`init.el`, `early-init.el`, etc.)
 - Multiple configuration modules in `modules/` directory
-- A standalone `claude-repl` module in `modules/claude-repl/` (formerly called claude-code)
+- A `claude-term` integration (`modules/claude-term.el`, `modules/claude-term-registry.el`) that hosts the interactive Claude CLI in a ghostel terminal buffer
 
-## Working on the claude-repl Module
+## Working on the Emacs Modules
 
-The `claude-repl` module (located at `modules/claude-repl/`) is a standalone Emacs package that provides AI assistant integration. When working specifically on the claude-repl module:
+Everything under `modules/` is a plain Emacs Lisp file loaded by `init.el`.
+There is no package manifest, no Eldev, and no CI -- `straight.el` handles
+third-party packages and the modules themselves are loaded by path.
 
 ### Testing
 
-**IMPORTANT**: The claude-repl module uses [Eldev](https://github.com/doublep/eldev) as its build and test tool.
+Tests are plain [ERT](https://www.gnu.org/software/emacs/manual/html_node/ert/)
+suites living beside the code they cover, as `modules/<module>-test.el`:
 
-**You must run eldev commands from within the `modules/claude-repl/` directory.**
+- `modules/claude-term-test.el` -- pure-function coverage of `claude-term.el`
+- `modules/claude-term-live-test.el` -- kill/restart/exit lifecycle against real subprocesses
+- `modules/claude-term-registry-test.el` -- pure-function coverage of the session registry
+- `modules/claude-term-registry-live-test.el` -- registry wiring that needs a real spawn
 
-#### Running Tests
+Run a suite in batch from the repository root, loading the modules it
+depends on first:
 
-- **Always use `eldev test` to run tests** - DO NOT create standalone test scripts
-- Run all tests: `cd modules/claude-repl && eldev test`
-- Run specific test pattern: `cd modules/claude-repl && eldev test <pattern>` (e.g., `eldev test approval`)
-- The test framework is [Buttercup](https://github.com/jorgenschaefer/emacs-buttercup)
-
-#### Writing Tests
-
-- All tests belong in the `modules/claude-repl/test/` directory
-- Test files must end with `-test.el` (e.g., `claude-repl-approval-test.el`)
-- Use the existing test structure and helpers from `test/test-helper.el`
-- **NEVER** create temporary test files like `/tmp/test-*.el` - add tests to the appropriate test file in `test/`
-
-Example test structure:
-```elisp
-(describe "Feature name"
-  (it "does something specific"
-    (expect (some-function) :to-equal expected-value)))
+```bash
+emacs -Q --batch -l ert -l modules/git-common-dir.el \
+      -l modules/claude-term.el \
+      -l modules/claude-term-registry.el \
+      -l modules/claude-term-registry-test.el \
+      -f ert-run-tests-batch-and-exit
 ```
+
+Each test file's own `;;; Commentary:` header carries its exact
+invocation, including the `*-live-test.el` variants and whatever they
+need in the environment. Add new tests to the existing `-test.el` file
+for the module -- **never** create throwaway files like `/tmp/test-*.el`.
 
 ### Compilation
 
-**IMPORTANT**: Use eldev for byte compilation (from within `modules/claude-repl/`).
+Modules are loaded from source, not byte-compiled as a build step. To check
+a module compiles clean:
 
-- Compile the project: `cd modules/claude-repl && eldev compile`
-- Clean compiled files: `cd modules/claude-repl && eldev clean`
-- **DO NOT** use `emacs --batch` for compilation - use `eldev compile` instead
-
-### Linting
-
-- Lint the code: `cd modules/claude-repl && eldev lint`
-- This runs byte-compilation warnings, checkdoc, and other linters
-
-### claude-repl Module Structure
-
+```bash
+emacs -Q --batch -f batch-byte-compile modules/claude-term.el
 ```
-modules/claude-repl/
-├── claude-repl-core.el      # Core commands
-├── claude-repl-process.el   # Process management
-├── claude-repl-buffer.el    # Buffer management and UI
-├── claude-repl-approval.el  # Tool approval system
-├── approval-hook.py         # Approval hook script (handles large responses)
-├── test/
-│   ├── test-helper.el                    # Test utilities
-│   ├── claude-repl-approval-test.el
-│   ├── claude-repl-buffer-test.el
-│   ├── claude-repl-buffer-autoscroll-test.el
-│   ├── claude-repl-core-test.el
-│   └── claude-repl-process-test.el
-├── Eldev                    # Eldev configuration
-└── README.md                # Module documentation
+
+Delete the resulting `.elc` afterwards -- compiled output is not committed.
+
+### Startup check
+
+The cheapest regression test for any module change is a clean batch start:
+
+```bash
+emacs --init-directory=$PWD --batch -f kill-emacs 2>&1 \
+  | grep -Ei 'error|void-function|Cannot open load file'
 ```
+
+No output means `init.el` loaded every module without error.
 
 ## Overall Repository Structure
 
@@ -87,79 +77,47 @@ edmacs/
 │   ├── ui.el              # Theme and appearance
 │   ├── completion.el      # Vertico, Corfu, Consult
 │   ├── programming.el     # LSP, Flycheck, Apheleia
-│   ├── ai.el              # AI assistant integration
+│   ├── ai.el              # Markdown/olivetti editor polish
+│   ├── claude-term.el     # Claude CLI hosted in a ghostel terminal
+│   ├── claude-term-registry.el # Session registry + SPC a keymap
+│   ├── git-common-dir.el  # Worktree-aware git dir resolution
+│   ├── sessions.el        # desktop.el session persistence
 │   ├── org-config.el      # Org mode configuration
 │   ├── git.el             # Magit and git tools
 │   ├── vterm.el           # Terminal configuration
-│   ├── claude-repl/       # Standalone claude-repl package
+│   ├── *-test.el          # ERT suites, run in batch (see above)
 │   └── languages/         # Language-specific configs
 ├── straight/
 │   └── versions/          # Package version lockfiles (committed)
 └── README.md              # Main repository documentation
 ```
 
-### Development Workflow for claude-repl
+### Development Workflow
 
-When working on the claude-repl module:
+1. Edit the module under `modules/`
+2. Add or update the matching `modules/<module>-test.el`
+3. Run that suite in batch (see Testing above)
+4. Run the startup check
+5. Reload interactively (`M-x eval-buffer`) or restart Emacs to confirm behaviour
 
-1. Navigate to the module directory: `cd modules/claude-repl`
-2. Make changes to source files
-3. Add or update tests in the corresponding test file
-4. Run tests: `eldev test`
-5. Compile to check for warnings: `eldev compile`
-6. Lint the code: `eldev lint`
+## Tool Approval
 
-### Evil Mode Integration
+Claude sessions in Emacs run the **real interactive CLI** under ghostel, so
+the CLI raises its own permission prompts exactly as it does in a terminal.
+Emacs adds no approval layer of its own: there is no `PreToolUse` hook, and
+no code path spawns `claude` with a generated `--settings` file.
 
-The approval buffer (`claude-repl-approval-mode`) is configured to work with evil-mode:
-- Sets initial state to `motion` when evil-mode is available
-- Forces motion state when approval buffer is displayed
-- This allows vim motions (h/j/k/l, etc.) while keeping approval keybindings (a/d/A/D) active
-- Provides the best of both worlds: vim navigation + approval shortcuts
-- After making a decision, automatically returns to the buffer you were in before approval
+Permission behaviour is therefore governed entirely by
+`permissions.defaultMode` in the user's `claude/settings.json` (which lives
+in the separate `dotfiles` repository, not here), and is identical for a
+terminal session and an Emacs-hosted one. Do not reintroduce an Emacs-side
+gate: a `PreToolUse` hook can only *tighten* the decision -- staying silent
+never approves -- so one would either double-prompt or silently loosen the
+policy.
 
-### Message Control
-
-The approval system has a `claude-repl-approval-silent` customization variable:
-- Default is `t` (silent mode enabled)
-- When enabled, suppresses informational messages to prevent minibuffer growth
-- Errors and important notifications are still shown
-- Can be set to `nil` for verbose debugging output
-
-## Tool Approval - Safe Tools
-
-The following tools are considered safe and should be auto-approved in hybrid or auto-approve modes:
-
-### Read-Only Tools (Always Safe)
-- `Read` - Reading files
-- `Grep` - Searching file contents
-- `Glob` - Finding files by pattern
-- `WebFetch` - Fetching web pages
-- `WebSearch` - Web searches
-
-### Todo Management (Safe)
-- `TodoWrite` - Managing the todo list for tracking progress
-
-These tools don't modify the filesystem or execute arbitrary code, so they can be safely auto-approved.
-
-### Tools Requiring Approval
-- `Write` - Creating/overwriting files
-- `Edit` - Modifying existing files
-- `Bash` - Executing shell commands
-- `Task` - Launching subagents
-
-To configure auto-approval in your Emacs configuration:
-
-```elisp
-;; Set hybrid mode (safe tools auto, risky ask)
-(setq claude-repl-approval-mode 'hybrid)
-
-;; Or add specific approval rules
-(setq claude-repl-approval-rules
-      '((tool "TodoWrite" action allow)
-        (tool "Read" action allow)
-        (tool "Grep" action allow)))
-```
+The hooks that *are* wired into `settings.json` (Notification, PostToolUse,
+Stop, UserPromptSubmit, SessionEnd) are observational: they report session
+status back into Emacs and make no permission decision.
 
 ## Comments
 
@@ -185,5 +143,5 @@ Bad: the same setting preceded by a paragraph of benchmark timings, phase refere
 - **Use existing test infrastructure**: Don't create ad-hoc test files
 - **Follow the module pattern**: Keep related functionality in the appropriate module
 - **Byte-compile clean**: Code should compile without warnings
-- **Use eldev for all operations**: Consistent build environment across development
+- **Check startup**: A batch start with no errors is the minimum bar for any module change
 - **Use TodoWrite actively**: Track progress on multi-step tasks to help users understand what's being done

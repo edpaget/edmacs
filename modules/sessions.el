@@ -85,8 +85,22 @@ names the repo rather than the worktree)."
 (add-to-list 'desktop-modes-not-to-save 'comint-mode)
 (with-eval-after-load 'vterm
   (add-to-list 'desktop-modes-not-to-save 'vterm-mode))
-(with-eval-after-load 'claude-repl-buffer
-  (add-to-list 'desktop-modes-not-to-save 'claude-repl-buffer-mode))
+
+;; claude-term sessions front a live `claude' CLI process under ghostel and
+;; must not be restored either -- but they cannot be excluded via
+;; `desktop-modes-not-to-save', which matches the MAJOR mode. Their major
+;; mode is `ghostel-mode', shared with ordinary ghostel shell terminals that
+;; ghostel CAN respawn (ghostel sets `desktop-save-buffer' buffer-locally and
+;; registers its own `ghostel-desktop-restore-buffer'), so blacklisting
+;; `ghostel-mode' would break working restore for those; and the marker minor
+;; mode `claude-term-mode' would simply never match. Opt out buffer-locally
+;; instead, which scopes the exclusion to exactly the claude-term buffers:
+;; `ghostel-mode's body sets `desktop-save-buffer', then run-mode-hooks
+;; enables `claude-term-mode', whose hook clears it again.
+(add-hook 'claude-term-mode-hook
+          (lambda ()
+            (when (bound-and-true-p claude-term-mode)
+              (setq-local desktop-save-buffer nil))))
 
 ;; desktop restores each buffer's minor modes by calling them. mise-mode
 ;; shells out to mise, and an error during restore in a frameless daemon is
