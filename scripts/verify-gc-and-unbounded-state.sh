@@ -15,6 +15,23 @@
 #   established for phases 4 and 5 in this roadmap, this script closes that
 #   gap for AC1, AC2 (steady state), AC3, AC4, and AC5.
 #
+#   AC3's check measures actual `buffer-undo-list' retention after a
+#   delete-based edit workload and a GC, comparing this config's real
+#   limits against the OLD stock 160000/240000 values in the same probe --
+#   not a "truncat*" message/warning: code review found Emacs's
+#   undo-limit/undo-strong-limit truncation is a silent C-level GC step
+#   that never calls `message' or `display-warning' (only a *different*,
+#   much larger `undo-outer-limit' overflow does that, via `yes-or-no-p'),
+#   and that a pure-insertion workload never accumulates truncatable
+#   "size" at all (insertion undo entries are cheap (BEG . END) pairs;
+#   only deletion entries store the removed text, which is what actually
+#   counts toward the byte limits) -- so the original message-advice
+#   version of this check passed unconditionally regardless of whether the
+#   limits were raised, reverted, or removed. The fix is verified
+#   non-vacuous in both directions: it fails if the configured limits are
+#   reverted to stock (reproduced manually), and its OLD-stock control arm
+#   asserts truncation actually happens there in the same run.
+#
 #   NOT (re-)checked here: AC2's deliberate-error fallback path (a
 #   mid-init error before emacs-startup-hook registers) requires waiting
 #   out the real 20s idle timer in a throwaway process and is exercised
@@ -105,10 +122,21 @@ fi
 #    and AC4 (undo-tree gone, evil-undo-system correct).
 # ---------------------------------------------------------------------------
 
-# A payload comfortably larger than the OLD 160000-byte undo-limit, so a
-# single edit's undo entry would have been discarded/truncated under the
-# stock pre-phase-6 settings but must not be under the new ones.
-LARGE_PAYLOAD_BYTES=250000
+# Total bytes of delete-based edits for the AC3 retention probe, and the
+# chunk size each round deletes. Deletion undo entries (unlike insertion
+# entries, which are cheap (BEG . END) position pairs) store the deleted
+# text itself, so they are what actually accumulates counted "size" toward
+# undo-limit/undo-strong-limit truncation -- a pure-insertion workload
+# (the prior version of this check) never triggers truncation at any
+# threshold and so cannot tell a raised limit from a stock one. 1,000,000
+# total bytes sits comfortably under the new undo-limit (3,145,728) so it
+# must survive intact, and comfortably over the OLD stock undo-limit
+# (160,000)/undo-strong-limit (240,000) so it must NOT survive intact
+# there -- giving the probe a real pass/fail distinction in both
+# directions (empirically confirmed: new limits retain all 1,000,000
+# bytes, old stock limits retain only ~200,000).
+UNDO_TOTAL_BYTES=1000000
+UNDO_CHUNK_BYTES=100000
 
 PROBE_ELISP="
 (progn
@@ -120,22 +148,36 @@ PROBE_ELISP="
   (message \"PROBE:undo-limit=%S\" undo-limit)
   (message \"PROBE:undo-strong-limit=%S\" undo-strong-limit)
 
-  ;; AC3: a single large edit, well past the OLD 160000-byte undo-limit,
-  ;; must not trigger Emacs's own truncation message under the new limits.
-  (let ((warned nil))
+  ;; AC3: how many bytes of delete-recorded undo history survive a GC,
+  ;; under (a) this config's actual configured limits and (b) the OLD
+  ;; stock 160000/240000 limits, for the identical workload. Emacs's
+  ;; undo-limit/undo-strong-limit truncation is a silent C-level step
+  ;; taken during GC (compact/truncate the undo list) -- it never calls
+  ;; \`message' or \`display-warning', so the only way to observe it is to
+  ;; measure what is actually left in \`buffer-undo-list' afterward, not
+  ;; to listen for a warning that this mechanism never emits.
+  (defun edmacs--undo-retention-probe (limit strong outer total-bytes chunk-bytes)
     (with-temp-buffer
       (buffer-enable-undo)
-      (advice-add 'message :before
-                  (lambda (fmt &rest args)
-                    (when (and (stringp fmt) (string-match-p \"[Tt]runcat\" fmt))
-                      (setq warned t))))
-      (insert (make-string $LARGE_PAYLOAD_BYTES ?x))
+      (setq-local undo-limit limit)
+      (setq-local undo-strong-limit strong)
+      (setq-local undo-outer-limit outer)
+      (insert (make-string total-bytes ?x))
       (undo-boundary)
-      (goto-char (point-min))
-      (insert (make-string $LARGE_PAYLOAD_BYTES ?y))
-      (undo-boundary)
-      (garbage-collect))
-    (message \"PROBE:undo-truncation-warned=%S\" warned)))
+      (let ((n (/ total-bytes chunk-bytes)))
+        (dotimes (i n)
+          (goto-char (point-min))
+          (delete-region (point-min) (min (point-max) (+ (point-min) chunk-bytes)))
+          (undo-boundary)))
+      (garbage-collect)
+      (apply #'+ (mapcar (lambda (e) (if (and (consp e) (stringp (car e))) (length (car e)) 0))
+                          buffer-undo-list))))
+  (message \"PROBE:undo-retained-configured=%d\"
+           (edmacs--undo-retention-probe undo-limit undo-strong-limit undo-outer-limit
+                                          $UNDO_TOTAL_BYTES $UNDO_CHUNK_BYTES))
+  (message \"PROBE:undo-retained-old-stock=%d\"
+           (edmacs--undo-retention-probe 160000 240000 nil
+                                          $UNDO_TOTAL_BYTES $UNDO_CHUNK_BYTES)))
 "
 
 BOOT_OUTPUT="$(cd "$REPO_ROOT" && emacs -Q --batch \
@@ -169,10 +211,21 @@ else
     fail "gc-cons-threshold post-startup is not a sane gcmh-managed value -- gc-cons-threshold=$GCT gcmh-high-cons-threshold=$GHC"
   fi
 
-  # AC3: no "truncat*" message fired during a >160000-byte undo-recorded edit.
-  [[ "$(get undo-truncation-warned)" == "nil" ]] \
-    && pass "a $LARGE_PAYLOAD_BYTES-byte undo-recorded edit produced no truncation warning" \
-    || fail "a $LARGE_PAYLOAD_BYTES-byte undo-recorded edit produced a truncation warning"
+  # AC3: under this config's actual configured limits, the full
+  # $UNDO_TOTAL_BYTES-byte delete-based edit history must survive a GC
+  # intact (no truncation) -- and, to prove this probe actually
+  # discriminates rather than passing unconditionally, the identical
+  # workload run under the OLD stock 160000/240000 limits must retain
+  # measurably less than the total, confirming truncation really is
+  # occurring there and the configured limits are what prevent it here.
+  RETAINED_CONFIGURED="$(get undo-retained-configured)"
+  RETAINED_OLD_STOCK="$(get undo-retained-old-stock)"
+  [[ "$RETAINED_CONFIGURED" == "$UNDO_TOTAL_BYTES" ]] \
+    && pass "a $UNDO_TOTAL_BYTES-byte delete-based undo history survives GC intact under the configured limits ($RETAINED_CONFIGURED bytes retained)" \
+    || fail "a $UNDO_TOTAL_BYTES-byte delete-based undo history was truncated under the configured limits -- retained $RETAINED_CONFIGURED of $UNDO_TOTAL_BYTES bytes"
+  [[ "$RETAINED_OLD_STOCK" =~ ^[0-9]+$ && "$RETAINED_OLD_STOCK" -lt $((UNDO_TOTAL_BYTES / 2)) ]] \
+    && pass "the identical workload IS truncated under the OLD stock 160000/240000 limits ($RETAINED_OLD_STOCK of $UNDO_TOTAL_BYTES bytes retained) -- confirming this probe discriminates raised limits from stock ones" \
+    || fail "the OLD stock 160000/240000 limits did not truncate the probe workload as expected (retained $RETAINED_OLD_STOCK of $UNDO_TOTAL_BYTES bytes) -- this probe would not have caught a regression back to stock limits"
 
   [[ "$(get undo-limit)" =~ ^[0-9]+$ && "$(get undo-limit)" -gt 160000 ]] \
     && pass "undo-limit is raised above the old 160000-byte stock value ($(get undo-limit))" \
