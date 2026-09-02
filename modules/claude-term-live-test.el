@@ -57,6 +57,37 @@
 ;;   above, this needs no stub: it reads real files on disk (skipping
 ;;   ones that don't exist) rather than driving a subprocess or the
 ;;   vendored package source.
+;; - `claude-term-live-test-exec-locals-survive-real-ghostel-mode' drives
+;;   the REAL `ghostel-exec' and `ghostel-mode' (not a stub) through a
+;;   first spawn, proving `claude-term--exec's own buffer-locals survive
+;;   `ghostel-mode's `kill-all-local-variables' wipe. It never loads
+;;   `evil-ghostel', so it says nothing about the ESC-routing hook
+;;   below -- and the escape-dispatch test above never drives a real
+;;   `ghostel-mode-hook' chain at all, so neither proves the two hooks'
+;;   depth ordering actually holds together in one live buffer.
+;; - `claude-term-live-test-real-ghostel-mode-hook-ordering-sets-evil-escape'
+;;   closes exactly that join: it drives the REAL `ghostel-mode-hook'
+;;   chain -- this module's `claude-term--configure-evil-escape',
+;;   already permanently on the hook at depth -90 once `claude-term.el'
+;;   loads, PLUS a real `evil-ghostel-mode' added at the default depth
+;;   for the test's duration (mirroring `use-package evil-ghostel's
+;;   `:hook (ghostel-mode . evil-ghostel-mode)' form, which never fires
+;;   under this bare batch harness) -- through one real first spawn, and
+;;   asserts the buffer-local `evil-ghostel--escape-mode' comes out
+;;   `'evil, not the global default `'auto. That is only possible if the
+;;   depth -90 hook actually finishes before `evil-ghostel-mode' reads
+;;   `evil-ghostel-escape' on enable.
+;; - `claude-term-live-test-real-evil-ghostel-c-g-dispatches-to-send-escape'
+;;   closes the matching gap on the C-g/interrupt side: with the real
+;;   `evil-ghostel-mode-map' active in a real `ghostel-mode' buffer and
+;;   evil actually in insert state, `(key-binding (kbd "C-g"))' --
+;;   exactly what a real keypress resolves through, via evil's
+;;   auxiliary/emulation keymaps, not a plain `lookup-key' against the
+;;   base map -- must return `claude-term-send-escape', and invoking it
+;;   must call `ghostel-send-string' with a literal ESC. Previously only
+;;   `claude-term-send-escape's own dispatch logic was unit-tested in
+;;   isolation; the `evil-define-key*' installation call itself, and the
+;;   real keymap it installs into, had no exercise.
 ;;
 ;; Run:
 ;;   emacs -Q --batch -l ert -l modules/claude-term.el \
@@ -551,6 +582,33 @@ batch harness cannot load.  All Lisp control flow between
 `ghostel-exec' and `ghostel-mode' runs for real, which is the entire
 point of the test below.")
 
+(defconst claude-term-live-test--evil-source
+  (expand-file-name "../straight/repos/evil/evil.el"
+                     (file-name-directory (or load-file-name buffer-file-name)))
+  "Path to the real evil.el, when this checkout has fetched it.
+Resolved the same way as `claude-term-live-test--evil-ghostel-source';
+`evil-ghostel.el' itself `require's `evil', so both need to be on
+`load-path' to load the real `evil-ghostel-mode' minor mode (as opposed
+to just `read'-and-`eval'-ing one `defun' form out of its source, which
+is all `claude-term-live-test--load-real-escape-defun' above needs).")
+
+(defun claude-term-live-test--real-evil-ghostel-stack-available-p ()
+  "Non-nil when this checkout has real ghostel, evil, and evil-ghostel sources."
+  (and (file-exists-p claude-term-live-test--ghostel-source)
+       (file-exists-p claude-term-live-test--evil-ghostel-source)
+       (file-exists-p claude-term-live-test--evil-source)))
+
+(defun claude-term-live-test--load-real-evil-ghostel-stack ()
+  "Add load-path entries for, and `require', the real ghostel/evil/evil-ghostel.
+Callers must first confirm
+`claude-term-live-test--real-evil-ghostel-stack-available-p'."
+  (add-to-list 'load-path (file-name-directory claude-term-live-test--ghostel-source))
+  (add-to-list 'load-path (file-name-directory claude-term-live-test--evil-ghostel-source))
+  (add-to-list 'load-path (file-name-directory claude-term-live-test--evil-source))
+  (require 'ghostel)
+  (require 'evil)
+  (require 'evil-ghostel))
+
 (ert-deftest claude-term-live-test-exec-locals-survive-real-ghostel-mode ()
   "`claude-term--exec's buffer-locals must survive a FIRST spawn.
 
@@ -610,6 +668,148 @@ never running in production, while every stubbed test still passed."
             (should-not ghostel-kill-buffer-on-exit)
             (should (local-variable-p 'ghostel-exit-functions))
             (should (memq #'claude-term--on-exit ghostel-exit-functions))))
+      (dolist (fn stubbed) (fmakunbound fn))
+      (when-let* ((proc (get-buffer-process buf))) (delete-process proc))
+      (kill-buffer buf))))
+
+;; ---------------------------------------------------------------------------
+;; Real ghostel-mode-hook chain: depth -90 ordering vs. C-g reachability
+;; ---------------------------------------------------------------------------
+;; The two tests above each drive one real half of AC1/AC2 in isolation:
+;; `claude-term-live-test-real-evil-ghostel-escape-dispatches-to-evil'
+;; proves the real `evil-ghostel--escape' defun, given
+;; `evil-ghostel--escape-mode' already `'evil, but never drives a real
+;; `ghostel-mode-hook' chain to get there; `claude-term-live-test-exec-locals-survive-real-ghostel-mode'
+;; drives a real `ghostel-mode-hook' chain, but never loads `evil-ghostel'
+;; at all. Neither proves that this module's `claude-term--configure-evil-escape'
+;; (permanently on `ghostel-mode-hook' at depth -90) and a real, hooked-on
+;; `evil-ghostel-mode' interact correctly in the same live buffer, nor
+;; that the `evil-define-key*' call installing `claude-term-send-escape'
+;; on `evil-ghostel-mode-map' actually produces a reachable C-g binding.
+;; The two tests below close those joins.
+
+(ert-deftest claude-term-live-test-real-ghostel-mode-hook-ordering-sets-evil-escape ()
+  "The real `ghostel-mode-hook' chain must leave `evil-ghostel--escape-mode'
+`'evil after a first spawn, with this module's `claude-term--configure-evil-escape'
+\(already on the hook at depth -90 once `claude-term.el' loaded\) and a
+real `evil-ghostel-mode' \(added at the default depth here, mirroring
+`use-package evil-ghostel's `:hook' form, which does not fire under
+this bare batch harness\) both actually present on `ghostel-mode-hook'.
+
+That value is only reachable if the depth -90 hook runs to completion
+--and its `setq-local' survives-- before `evil-ghostel-mode's own
+enable body reads the global `evil-ghostel-escape' default \(`'auto\)
+into its buffer-local `evil-ghostel--escape-mode'. A regression here
+\(wrong depth, or a mode-hook reordering upstream\) would silently leave
+this buffer's ESC routed to `'auto -- which sends it to the terminal
+outside an alt-screen app, exactly the bug this phase exists to fix."
+  (unless (claude-term-live-test--real-evil-ghostel-stack-available-p)
+    (ert-skip "real evil/ghostel/evil-ghostel sources not all present in this checkout"))
+  (claude-term-live-test--load-real-evil-ghostel-stack)
+  (let ((stubbed nil)
+        (buf (get-buffer-create "*claude-term:live-test-hook-order*")))
+    (unwind-protect
+        (progn
+          (dolist (fn claude-term-live-test--ghostel-native-fns)
+            (unless (fboundp fn)
+              (push fn stubbed)
+              (fset fn (lambda (&rest _) nil))))
+          ;; Mirrors `use-package evil-ghostel's `:hook (ghostel-mode .
+          ;; evil-ghostel-mode)' form, at the default (non-negative)
+          ;; depth, exactly as `add-hook' installs it without an
+          ;; explicit DEPTH argument.
+          (add-hook 'ghostel-mode-hook #'evil-ghostel-mode)
+          (cl-letf (((symbol-function 'claude-term--ensure-ghostel)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'ghostel--load-module)
+                     (lambda (&rest _) t))
+                    ((symbol-function 'ghostel--spawn-pty)
+                     (lambda (&rest _)
+                       (let ((proc (start-process
+                                    "claude-term-live-test-hook-order" (current-buffer)
+                                    "sleep" "3600")))
+                         (set-process-query-on-exit-flag proc nil)
+                         (setq-local ghostel--process proc)
+                         proc))))
+            (claude-term--exec buf (temporary-file-directory) nil nil))
+          (with-current-buffer buf
+            ;; Guard the guard: if `evil-ghostel-mode' never actually
+            ;; turned on, or this buffer's name never matched
+            ;; `claude-term--configure-evil-escape's own guard, the
+            ;; escape-mode assertion below would pass vacuously.
+            (should (derived-mode-p 'ghostel-mode))
+            (should (bound-and-true-p evil-ghostel-mode))
+            (should (eq evil-ghostel--escape-mode 'evil))))
+      (remove-hook 'ghostel-mode-hook #'evil-ghostel-mode)
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (when (bound-and-true-p evil-ghostel-mode) (evil-ghostel-mode -1))))
+      (dolist (fn stubbed) (fmakunbound fn))
+      (when-let* ((proc (get-buffer-process buf))) (delete-process proc))
+      (kill-buffer buf))))
+
+(ert-deftest claude-term-live-test-real-evil-ghostel-c-g-dispatches-to-send-escape ()
+  "`claude-term-send-escape' must be C-g's REACHABLE insert-state binding
+in a real `evil-ghostel-mode' buffer, and invoking it must send a
+literal ESC.
+
+`(key-binding (kbd \"C-g\"))' is what a real keypress resolves through
+-- evil's auxiliary/emulation-mode-map-alist machinery layered on top
+of `evil-ghostel-mode-map', not a plain `lookup-key' against that map
+directly (which returns nil even when the binding is live, since
+`evil-define-key*' installs state bindings into a separate auxiliary
+keymap). Only `claude-term-send-escape's own dispatch logic
+\(buffer-name guard -> `ghostel-send-string' vs. `ghostel-send-C-g'\) had
+unit coverage before this; the `evil-define-key*' call installing it on
+`evil-ghostel-mode-map', and evil's own state-keymap resolution, had
+none."
+  (unless (claude-term-live-test--real-evil-ghostel-stack-available-p)
+    (ert-skip "real evil/ghostel/evil-ghostel sources not all present in this checkout"))
+  (claude-term-live-test--load-real-evil-ghostel-stack)
+  (let ((stubbed nil)
+        (buf (get-buffer-create "*claude-term:live-test-c-g*")))
+    (unwind-protect
+        (progn
+          (dolist (fn claude-term-live-test--ghostel-native-fns)
+            (unless (fboundp fn)
+              (push fn stubbed)
+              (fset fn (lambda (&rest _) nil))))
+          (add-hook 'ghostel-mode-hook #'evil-ghostel-mode)
+          (cl-letf (((symbol-function 'claude-term--ensure-ghostel)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'ghostel--load-module)
+                     (lambda (&rest _) t))
+                    ((symbol-function 'ghostel--spawn-pty)
+                     (lambda (&rest _)
+                       (let ((proc (start-process
+                                    "claude-term-live-test-c-g" (current-buffer)
+                                    "sleep" "3600")))
+                         (set-process-query-on-exit-flag proc nil)
+                         (setq-local ghostel--process proc)
+                         proc))))
+            (claude-term--exec buf (temporary-file-directory) nil nil))
+          (with-current-buffer buf
+            (evil-local-mode 1)
+            (evil-insert-state)
+            ;; Guard the guard: if evil-ghostel-mode never turned on, or
+            ;; evil never actually reached insert state, the binding
+            ;; lookup below would not be exercising the real path.
+            (should (derived-mode-p 'ghostel-mode))
+            (should (bound-and-true-p evil-ghostel-mode))
+            (should (eq evil-state 'insert))
+            (should (eq (key-binding (kbd "C-g")) #'claude-term-send-escape))
+            (let ((sent nil))
+              (cl-letf (((symbol-function 'ghostel-send-string)
+                         (lambda (s) (push s sent)))
+                        ((symbol-function 'ghostel-send-C-g)
+                         (lambda () (push :c-g sent))))
+                (call-interactively #'claude-term-send-escape))
+              (should (equal sent '("\e"))))))
+      (remove-hook 'ghostel-mode-hook #'evil-ghostel-mode)
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (when (bound-and-true-p evil-local-mode) (evil-local-mode -1))
+          (when (bound-and-true-p evil-ghostel-mode) (evil-ghostel-mode -1))))
       (dolist (fn stubbed) (fmakunbound fn))
       (when-let* ((proc (get-buffer-process buf))) (delete-process proc))
       (kill-buffer buf))))
