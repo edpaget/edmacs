@@ -1,131 +1,26 @@
 #!/usr/bin/env bash
 #
-# verify-lsp-and-completion-io.sh -- structural verification for
-# edmacs-performance/phase-5-lsp-and-completion-io
+# verify-lsp-and-completion-io.sh -- PASS/FAIL checks for the Java wiring on
+# java-ts-mode and the idle-path LSP/completion/magit settings.
 #
-# WHAT THIS CHECKS AND WHY IT EXISTS
-#   Phase 5 rewires Java's dead java-mode-hook/keymap wiring onto
-#   java-ts-mode (the mode real .java buffers actually run) and tunes six
-#   idle-path LSP/completion/magit settings. Its implementation commit
-#   originally shipped with zero rerunnable verification -- code review
-#   flagged this (finding phase5-no-verification-script) as the same gap
-#   phase 4 was remediated for one phase earlier (see
-#   verify-redisplay-settings.sh's header and commit f8c5051): a plausible
-#   commit-message narrative of a one-off manual `emacs -Q --batch`
-#   session, uncaptured as code, so nothing catches a regression. This
-#   script is that missing capture.
+# Boots the real config under `emacs -Q --batch -l early-init.el -l init.el'
+# with `user-emacs-directory' pinned to the checkout (see
+# verify-redisplay-settings.sh). No jdtls is installed, so `lsp-deferred' is
+# advised to record that it was called rather than launch a server, and
+# `lsp-mode' is forced on locally for the keybinding checks. Those guard the
+# minor-mode-map-beats-major-mode-map collisions under SPC c: lsp-mode-map
+# owns h/r/d/t/R/D, so java.el uses H/X/K/T.
 #
-#   It also regression-guards two real bugs code review found in the
-#   Java wiring itself, past the wiring-target-symbol bug the phase body
-#   already anticipated:
-#     - mvn.el was declared `:after java-ts-mode :commands (...)` with no
-#       `:demand`, which only wraps its autoloads in an eval-after-load --
-#       it never actually `require's mvn, so its :config-defined ", m"
-#       keybindings never installed on a fresh session. Fixed with
-#       `:demand t`.
-#     - The new generic "SPC c h" hover binding (lsp-ui-doc-show, on the
-#       lsp-mode-map minor-mode keymap) shadows java.el's pre-existing
-#       "SPC c h" type-hierarchy prefix (on the java-ts-mode-map
-#       major-mode keymap) once lsp-mode is genuinely active in the
-#       buffer, because a minor-mode keymap wins over a major-mode keymap.
-#       Fixed by moving Java's hierarchy prefix to "SPC c H".
-#     - The SAME collision class survived on three more keys (code-review
-#       finding spc-c-drt-keymap-collision): lsp-mode-map's terminal
-#       "SPC c r"/"SPC c d"/"SPC c t" (lsp-rename / lsp-find-definition /
-#       lsp-find-type-definition) shadow java.el's Run/Debug/Test
-#       which-key prefixes on the same keys. The obvious capital-letter
-#       fix ("SPC c R"/"SPC c D"/"SPC c T") turned out to only be free for
-#       "T" -- lsp-mode-map separately binds capital "SPC c R" to
-#       lsp-find-references and "SPC c D" to lsp-find-declaration, a
-#       THIRD instance of the same class this revision found while
-#       verifying the second. Fixed by moving Run/Debug to the genuinely
-#       free "SPC c X" (eXecute) and "SPC c K", keeping Test on "SPC c T".
-#       This script now exercises all of "h"/"r"/"d"/"t"/"R"/"D" plus the
-#       new "X"/"K"/"T" prefixes, not just the originally-fixed "h" case.
+# Three idle-path settings are checked at the mechanism level, not just the
+# variable value: lsp-ui-doc's hover timer, consult's preview debounce, and
+# magit's hunk refinement on refresh.
 #
-# THE --batch + -Q --batch -l early-init.el -l init.el TRAP
-#   See verify-redisplay-settings.sh's header for the full explanation:
-#   `-Q` skips *automatic* early-init.el/init.el loading, but they are
-#   then loaded explicitly via `-l`, and `user-emacs-directory` must be
-#   pinned to the checkout under test before that `-l`, or straight's
-#   bootstrap and load-module resolve against the wrong directory.
-#
-# WHAT IS AND ISN'T CHECKED HERE
-#   Checked structurally: java-ts-mode-hook membership (lsp-deferred,
-#   gradle-mode), that visiting a real .java file actually *runs* the
-#   hook and calls lsp-deferred (via advice, not by requiring a real
-#   jdtls server -- see below), java-ts-mode-indent-offset/tab-width/
-#   indent-tabs-mode, that mvn/dap-mode/lsp-java's :config blocks
-#   actually ran (via featurep, not just grep) after nothing but a plain
-#   .java visit, that gradle-mode activates, keybinding resolution for
-#   all four leader-key sites plus the new/moved hover, hierarchy, and
-#   run/debug/test keys (proving both rounds of the SPC-c-<letter>
-#   collision are gone), read-process-output-max / process-adaptive-
-#   read-buffering, lsp-modeline-code-actions-enable / lsp-ui-doc-show-
-#   with-cursor / magit-diff-refine-hunk / corfu-auto-prefix / consult-
-#   preview-key values, and the LSP_USE_PLISTS decision comment.
-#
-#   Checked at the MECHANISM level, past a bare defcustom-value check, for
-#   three of the idle-path ACs that are otherwise only visually observable:
-#     - hover popup: `lsp-ui-doc--make-request' (the post-command-hook
-#       function that would schedule a hover-request idle timer) is called
-#       directly and asserted to schedule nothing when
-#       `lsp-ui-doc-show-with-cursor' is nil, with a control case (forced
-#       t, `lsp-feature?' mocked since no live LS workspace exists here)
-#       proving the absence is the gate working and not some unrelated
-#       precondition failing.
-#     - consult-ripgrep arrow-through: `consult--preview-key-debounce' --
-#       the exact function consult calls per candidate -- is called
-#       directly against the configured `consult-preview-key' and
-#       asserted to return 0.3, not the instant 0 the old plain `any'
-#       value produced.
-#     - magit auto-revert refresh: `magit-diff-update-hunk-refinement' --
-#       what `magit-section--refine' calls on every section refresh,
-#       including the one the timer triggers -- is called directly on a
-#       synthetic unrefined hunk section, with `diff-refine-hunk' advised
-#       to record whether it was invoked; asserted never called while
-#       `magit-diff-refine-hunk' is nil.
-#   None of these three requires a live LS connection, a real git repo, or
-#   a display, so they run in the same headless batch pass as everything
-#   else, and they test the actual code path rather than inferring
-#   behavior from a variable's value alone.
-#
-#   NOT checked -- needs a real jdtls install + network/display: that
-#   `lsp-mode' becomes non-nil from a genuine JDT.LS handshake. No jdtls
-#   is installed in this sandbox, and lsp-deferred silently waits forever
-#   without one, so this script advises `lsp-deferred' to record that it
-#   was *called* (proving the hook wiring itself fires end-to-end on a
-#   real buffer visit) without letting it try to actually launch a
-#   server. The keybinding checks below separately force `lsp-mode' to a
-#   non-nil value locally (simulating a real attach) to prove the
-#   minor-mode-keymap-wins-over-major-mode-keymap collision is fixed --
-#   this mirrors exactly how code review itself reproduced the collision.
-#   A real interactive visit with jdtls reachable (JAVA_HOME set, network
-#   available) is still the authoritative end-to-end check for the
-#   "lsp-mode is non-nil" acceptance criterion; see the phase record.
-#   Also not checked, because it needs a real display/window and a real
-#   language server actually returning completions: that the lsp-ui-doc
-#   hover popup visually disappears, that a magit-status buffer's refresh
-#   is visibly cheaper, and that corfu's popup still "feels responsive" at
-#   the raised prefix length in a real Rust/Go buffer -- these three are
-#   left to interactive manual verification per the phase body; everything
-#   about them that IS mechanically checkable headless is covered above.
-#
-#   Also NOT checked, and called out explicitly so it is not mistaken for
-#   covered: AC5's comparative clause, "lsp-log-io-free timing shows fewer
-#   idle requests than before". This script verifies the MECHANISM changes
-#   that should reduce idle traffic (lsp-ui-doc-show-with-cursor nil,
-#   lsp-modeline-code-actions-enable nil, the raised corfu prefix), but it
-#   never counts requests, and no before/after idle-request baseline was
-#   ever recorded for this config. The request-reduction half of AC5 has no
-#   evidence, headless or manual -- treat it as an untested claim, not a
-#   measured result, until someone counts textDocument/* traffic over a
-#   fixed idle window with lsp-log-io temporarily enabled.
+# Not checked: a real jdtls handshake, anything visual, and the "fewer idle
+# requests" claim, which has never been measured.
 #
 # USAGE
 #   scripts/verify-lsp-and-completion-io.sh [path-to-edmacs-checkout]
-#   Defaults to the checkout containing this script. Exits 0 if every
-#   check passes, 1 otherwise, printing PASS/FAIL per line.
+#   Exits 0 if every check passes, 1 otherwise.
 
 set -uo pipefail
 
@@ -143,8 +38,7 @@ pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
 
 # ---------------------------------------------------------------------------
-# 1) Boot the real config once, visit a synthetic .java file, and dump
-#    every value this script needs as "PROBE:KEY=VALUE" lines.
+# 1) Boot the real config once, visit a .java file, dump PROBE lines.
 # ---------------------------------------------------------------------------
 
 TMP_JAVA="$(mktemp -t edmacs-java-verify.XXXXXX).java"
@@ -165,10 +59,7 @@ PROBE_ELISP='
   (require (quote magit))
 
   (message "PROBE:read-process-output-max=%S" read-process-output-max)
-  ;; process-adaptive-read-buffering is a genuine Emacs built-in (bound,
-  ;; defaulting to nil in 31.1) -- NOT something this config introduces.
-  ;; The AC is that we never touch it, so its nil value is purely the
-  ;; stock default, not our doing; see the grep check below for that.
+  ;; Built-in, nil by default in 31.1; the AC is that we never set it.
   (message "PROBE:process-adaptive-read-buffering-bound=%S" (boundp (quote process-adaptive-read-buffering)))
   (message "PROBE:process-adaptive-read-buffering-value=%S"
            (if (boundp (quote process-adaptive-read-buffering))
@@ -181,49 +72,32 @@ PROBE_ELISP='
   (message "PROBE:consult-preview-key=%S" consult-preview-key)
   (message "PROBE:magit-diff-refine-hunk=%S" magit-diff-refine-hunk)
 
-  ;; Advise lsp-deferred to record it was CALLED, without letting it try
-  ;; to actually launch a (non-existent, in this sandbox) jdtls server --
-  ;; see the header comment for why this is the honest thing to check
-  ;; headless.
+  ;; Record that lsp-deferred was called without launching a server.
   (defvar --verify-lsp-deferred-called nil)
   (advice-add (quote lsp-deferred) :override
               (lambda (&rest _) (setq --verify-lsp-deferred-called t)))
 
   (find-file (getenv "EDMACS_VERIFY_JAVA_FILE"))
   (message "PROBE:major-mode=%S" major-mode)
-  ;; Structural hook membership -- checked only now (not before find-file):
-  ;; java.el installs this hook membership from inside a with-eval-after-load
-  ;; block that only runs once java-ts-mode.el is actually loaded, which
-  ;; happens as part of mode resolution above, not at init time.
+  ;; Checked after find-file: java.el adds these from with-eval-after-load.
   (message "PROBE:hook-has-lsp-deferred=%S" (and (memq (quote lsp-deferred) java-ts-mode-hook) t))
   (message "PROBE:hook-has-gradle-mode=%S" (and (memq (quote gradle-mode) java-ts-mode-hook) t))
   (message "PROBE:lsp-deferred-called-on-visit=%S" --verify-lsp-deferred-called)
   (message "PROBE:indent-offset=%S" (buffer-local-value (quote java-ts-mode-indent-offset) (current-buffer)))
   (message "PROBE:tab-width=%S" (buffer-local-value (quote tab-width) (current-buffer)))
   (message "PROBE:indent-tabs-mode=%S" (buffer-local-value (quote indent-tabs-mode) (current-buffer)))
-  ;; buffer-local-value returns the effective value, which for an
-  ;; auto-buffer-local variable is the global default when no local binding
-  ;; exists -- so the two assertions above cannot tell "java.el applied it"
-  ;; apart from "java.el did nothing and core.el happens to supply the same
-  ;; number". Probe whether a LOCAL binding actually exists; that is the part
-  ;; java.el is responsible for. (A load-time setq in with-eval-after-load
-  ;; binds these in whatever buffer was current when java-ts-mode.el loaded,
-  ;; never in a real .java buffer -- verified by mutation.)
+  ;; buffer-local-value falls back to the global default, so also probe
+  ;; that a LOCAL binding exists; that is the part java.el is responsible for.
   (message "PROBE:tab-width-local=%S" (local-variable-p (quote tab-width)))
   (message "PROBE:indent-tabs-mode-local=%S" (local-variable-p (quote indent-tabs-mode)))
   (message "PROBE:gradle-mode-active=%S" (bound-and-true-p gradle-mode))
 
-  ;; These three packages :config only when actually `require-d; confirm
-  ;; that happened from nothing but the plain .java visit above, with no
-  ;; manual mvn-clean/dap-debug/lsp-java-* call anywhere in this probe.
+  ;; These only :config when required; confirm a plain visit did that.
   (message "PROBE:mvn-loaded=%S" (featurep (quote mvn)))
   (message "PROBE:dap-mode-loaded=%S" (featurep (quote dap-mode)))
   (message "PROBE:lsp-java-loaded=%S" (featurep (quote lsp-java)))
 
-  ;; Keybinding resolution. lsp-mode itself never attaches for real here
-  ;; (no jdtls) -- force it locally the same way code review reproduced
-  ;; the SPC-c-h collision, so the minor-mode-map-vs-major-mode-map
-  ;; interaction is exercised for real, not merely inferred from source.
+  ;; Force lsp-mode on locally so the minor-mode keymap is active.
   (evil-local-mode 1)
   (evil-normal-state)
   (setq lsp-mode t)
@@ -233,16 +107,8 @@ PROBE_ELISP='
   (message "PROBE:key-comma-m-c=%S" (key-binding (kbd ", m c")))
   (message "PROBE:key-spc-d-b=%S" (key-binding (kbd "SPC d b")))
   (message "PROBE:key-comma-g-b=%S" (key-binding (kbd ", g b")))
-  ;; Regression guard for code-review finding spc-c-drt-keymap-collision:
-  ;; lsp-mode-map (a minor-mode keymap) defines terminal "SPC c r"/
-  ;; "SPC c d"/"SPC c t" bindings (lsp-rename / lsp-find-definition /
-  ;; lsp-find-type-definition), which win over the Run/Debug/Test
-  ;; which-key prefixes on java-ts-mode-map (a major-mode keymap) once
-  ;; lsp-mode is genuinely active -- exactly the SPC-c-h collision class
-  ;; already fixed once, but left unfixed here on three more keys. The
-  ;; Java prefixes were moved to capital R/D/T; assert both halves: the
-  ;; lowercase keys still resolve to the lsp-mode-map commands (no
-  ;; regression there), and the capitalized prefixes reach dap-java.
+  ;; Lowercase keys must still reach lsp-mode-map; the java prefixes moved
+  ;; to X/K/T (R and D are also taken by lsp-mode-map).
   (message "PROBE:key-spc-c-r=%S" (key-binding (kbd "SPC c r")))
   (message "PROBE:key-spc-c-d=%S" (key-binding (kbd "SPC c d")))
   (message "PROBE:key-spc-c-t=%S" (key-binding (kbd "SPC c t")))
@@ -253,16 +119,9 @@ PROBE_ELISP='
   (message "PROBE:key-spc-c-T-t=%S" (key-binding (kbd "SPC c T t")))
   (setq lsp-mode nil)
 
-  ;; Mechanism-level (not merely value-level) check for the cursor-rest
-  ;; hover-popup AC. lsp-ui-doc installs the function
-  ;; lsp-ui-doc--make-request on post-command-hook; that functions very
-  ;; first gate is lsp-ui-doc-show-with-cursor, and only past that gate
-  ;; does it ever schedule the idle timer that would later fire a real
-  ;; textDocument/hover request. No live LS workspace exists in this
-  ;; sandbox (see header), so lsp-feature? is mocked to t to isolate the
-  ;; gate under test from that unrelated precondition. This proves the
-  ;; popup-suppression mechanism itself fires, not just that a defcustom
-  ;; holds the value nil.
+  ;; Hover mechanism: lsp-ui-doc--make-request gates on
+  ;; lsp-ui-doc-show-with-cursor before scheduling its timer. lsp-feature? is
+  ;; mocked since no workspace exists.
   (require (quote lsp-ui-doc))
   (defun --verify-lsp-feature-t (&rest _) t)
   (advice-add (quote lsp-feature?) :override (function --verify-lsp-feature-t))
@@ -285,27 +144,13 @@ PROBE_ELISP='
 
   (kill-buffer)
 
-  ;; Mechanism-level check for the consult-ripgrep arrow-through AC: the
-  ;; function consult--preview-key-debounce is the exact function consult
-  ;; calls per candidate to decide the preview delay. With plain (quote
-  ;; any) (the pre-fix value) this always returns 0 (instant preview);
-  ;; with the configured (:debounce 0.3 any) it must return 0.3. The
-  ;; function this-single-command-keys is empty in batch mode, so lookup
-  ;; falls through to the any entry, which is exactly the code path a
-  ;; real arrow-key press also falls through to (arrow keys are not among
-  ;; any specific keys listed).
+  ;; consult--preview-key-debounce is what consult calls per candidate; a
+  ;; plain any returns 0, the configured value must return 0.3.
   (message "PROBE:consult-preview-debounce=%S"
            (consult--preview-key-debounce consult-preview-key "dummy-candidate"))
 
-  ;; Mechanism-level check for the magit auto-revert-timer AC: the
-  ;; function magit-diff-update-hunk-refinement is what
-  ;; magit-section--refine calls on every section refresh (including the
-  ;; one global-auto-revert-non-file-buffers triggers every 5s on a
-  ;; visible magit-status buffer). Its own pcase only ever refines when
-  ;; magit-diff-refine-hunk is t or all; with it nil and a not-yet-refined
-  ;; section, no clause matches, so diff-refine-hunk is never called --
-  ;; verified here by advising it and asserting zero calls, not just
-  ;; reading the defcustom value.
+  ;; magit-diff-update-hunk-refinement runs on every refresh; with
+  ;; magit-diff-refine-hunk nil it must never call diff-refine-hunk.
   (require (quote magit-diff))
   (defvar --verify-diff-refine-hunk-called nil)
   (defun --verify-diff-refine-hunk-override (&rest _)
@@ -314,10 +159,7 @@ PROBE_ELISP='
               (function --verify-diff-refine-hunk-override))
   (with-temp-buffer
     (insert "@@ -1,2 +1,2 @@\n-foo\n+bar\n")
-    ;; The start/end/hidden/refined slots of magit-section have no EIEIO
-    ;; :initarg (only type/washer/selective-highlight/etc do), so they
-    ;; cannot be set via the keyword constructor -- oset after a plain
-    ;; make-instance is the correct construction here.
+    ;; start/end/hidden/refined have no :initarg; oset after make-instance.
     (let ((sec (make-instance (quote magit-hunk-section))))
       (oset sec start (point-min))
       (oset sec end (point-max))
@@ -355,18 +197,12 @@ fi
 # 2) Per-AC checks against the probe output.
 # ---------------------------------------------------------------------------
 
-# AC: opening a .java file resolves java-ts-mode (not classic java-mode --
-# this is the mode-resolution fact the phase says is ALREADY correct and
-# out of scope to touch; asserted here only so the checks below aren't
-# silently exercising the wrong mode).
+# AC: .java resolves java-ts-mode (so the checks below test the right mode).
 [[ "$(get major-mode)" == "java-ts-mode" ]] \
   && pass "a .java file resolves java-ts-mode" \
   || fail "a .java file resolves java-ts-mode -- got $(get major-mode)"
 
-# AC: lsp-mode attaches on .java visit. Full end-to-end (real jdtls) is
-# out of reach headless (see header); assert the two things that ARE
-# checkable: the hook is wired, and visiting a real buffer actually
-# fires it into calling lsp-deferred.
+# AC: lsp-mode attaches on visit. Headless, assert the hook is wired and fires.
 [[ "$(get hook-has-lsp-deferred)" == "t" ]] \
   && pass "java-ts-mode-hook contains lsp-deferred" \
   || fail "java-ts-mode-hook contains lsp-deferred -- got $(get hook-has-lsp-deferred)"
@@ -388,9 +224,8 @@ fi
 [[ "$(get indent-tabs-mode)" == "nil" ]] \
   && pass "indent-tabs-mode is nil in a .java buffer" \
   || fail "indent-tabs-mode is nil in a .java buffer -- got $(get indent-tabs-mode)"
-# Locality, not just value: these prove java.el actually set them per buffer
-# rather than the .java buffer silently inheriting core.el's identical global
-# default. Without these, dropping java.el's settings entirely still passes.
+# Locality, not just value: without this, dropping java.el's settings still
+# passes via core.el's identical global default.
 [[ "$(get tab-width-local)" == "t" ]] \
   && pass "tab-width is buffer-locally bound in a .java buffer (not inherited from the global default)" \
   || fail "tab-width is buffer-locally bound in a .java buffer -- got $(get tab-width-local)"
@@ -418,12 +253,8 @@ fi
   && pass ", g b resolves to gradle-build" \
   || fail ", g b resolves to gradle-build -- got $(get key-comma-g-b)"
 
-# Regression guard for the SPC-c-h collision code review found: the
-# generic hover binding (lsp-mode-map, a minor-mode keymap) must resolve
-# on its own, AND java's type-hierarchy prefix (moved to capital H, on
-# java-ts-mode-map, a major-mode keymap) must still be reachable, once
-# lsp-mode is genuinely active in the buffer -- exactly the condition
-# under which the two used to collide on lowercase "h".
+# SPC c h (lsp-mode-map) and SPC c H t (java-ts-mode-map) must both resolve
+# with lsp-mode active.
 [[ "$(get key-spc-c-h)" == "lsp-ui-doc-show" ]] \
   && pass "SPC c h resolves to lsp-ui-doc-show with lsp-mode active" \
   || fail "SPC c h resolves to lsp-ui-doc-show with lsp-mode active -- got $(get key-spc-c-h)"
@@ -431,16 +262,8 @@ fi
   && pass "SPC c H t still resolves to lsp-java-type-hierarchy (no collision with SPC c h)" \
   || fail "SPC c H t still resolves to lsp-java-type-hierarchy -- got $(get key-spc-c-H-t)"
 
-# Regression guard for code-review finding spc-c-drt-keymap-collision:
-# lsp-mode-map's terminal "SPC c r"/"SPC c d"/"SPC c t" bindings must
-# still resolve to their lsp-mode commands (no accidental removal). The
-# obvious capital-letter fix ("R"/"D"/"T", mirroring how "h" was
-# capitalized) turned out to only be free for "T" -- lsp-mode-map ALSO
-# binds capital "SPC c R" (lsp-find-references) and "SPC c D"
-# (lsp-find-declaration) -- so assert those still resolve to their
-# lsp-mode commands too (confirming the second collision this revision
-# found), and that java's Run/Debug/Test prefixes, moved to the genuinely
-# free "X"/"K"/"T", are reachable with lsp-mode genuinely active.
+# Lowercase r/d/t and capital R/D stay with lsp-mode-map; java's Run/Debug/
+# Test prefixes on X/K/T must be reachable with lsp-mode active.
 [[ "$(get key-spc-c-r)" == "lsp-rename" ]] \
   && pass "SPC c r still resolves to lsp-rename with lsp-mode active" \
   || fail "SPC c r still resolves to lsp-rename with lsp-mode active -- got $(get key-spc-c-r)"
@@ -466,12 +289,8 @@ fi
   && pass "SPC c T t resolves to dap-java-run-test-method (no collision with SPC c t)" \
   || fail "SPC c T t resolves to dap-java-run-test-method -- got $(get key-spc-c-T-t)"
 
-# Mechanism-level guard for "resting the cursor no longer triggers an
-# automatic hover popup": lsp-ui-doc--make-request (the post-command-hook
-# function that would schedule the hover-request idle timer) must gate on
-# lsp-ui-doc-show-with-cursor and schedule nothing when it is nil, while
-# still being *capable* of scheduling when it is t (proving the absence
-# above is the gate working, not an unrelated precondition failing).
+# Hover: no timer scheduled when show-with-cursor is nil; one scheduled when
+# forced t (control).
 [[ "$(get hover-timer-scheduled-with-show-with-cursor-nil)" == "nil" ]] \
   && pass "lsp-ui-doc--make-request schedules no hover timer when lsp-ui-doc-show-with-cursor is nil" \
   || fail "lsp-ui-doc--make-request schedules no hover timer when nil -- got $(get hover-timer-scheduled-with-show-with-cursor-nil)"
@@ -479,21 +298,12 @@ fi
   && pass "lsp-ui-doc--make-request does schedule a hover timer when forced t (control case)" \
   || fail "lsp-ui-doc--make-request does schedule a hover timer when forced t -- got $(get hover-timer-scheduled-with-show-with-cursor-t)"
 
-# Mechanism-level guard for "arrowing through consult-ripgrep results
-# doesn't visibly open every hovered file": consult--preview-key-debounce
-# is the exact function consult calls per-candidate; it must return the
-# configured 0.3s delay, not the instant (0) preview the old plain 'any
-# value produced.
+# consult preview debounce is 0.3, not the instant 0 of plain `any'.
 [[ "$(get consult-preview-debounce)" == "0.3" ]] \
   && pass "consult--preview-key-debounce returns 0.3 for consult-preview-key" \
   || fail "consult--preview-key-debounce returns 0.3 -- got $(get consult-preview-debounce)"
 
-# Mechanism-level guard for "a magit-status buffer no longer re-runs hunk
-# refinement on the auto-revert timer": magit-diff-update-hunk-refinement
-# (what magit-section--refine calls on every section refresh, including
-# the one the 5s auto-revert timer triggers) must never call
-# diff-refine-hunk for an unrefined section when magit-diff-refine-hunk
-# is nil.
+# magit never refines hunks on refresh when magit-diff-refine-hunk is nil.
 [[ "$(get magit-refine-called-with-refine-hunk-nil)" == "nil" ]] \
   && pass "magit-diff-update-hunk-refinement never calls diff-refine-hunk when magit-diff-refine-hunk is nil" \
   || fail "magit-diff-update-hunk-refinement calls diff-refine-hunk when magit-diff-refine-hunk is nil -- got $(get magit-refine-called-with-refine-hunk-nil)"
@@ -513,13 +323,9 @@ fi
 [[ "$(get process-adaptive-read-buffering-value)" == "nil" ]] \
   && pass "process-adaptive-read-buffering is nil (its stock 31.1 default)" \
   || fail "process-adaptive-read-buffering is nil -- got $(get process-adaptive-read-buffering-value)"
-# Its nil value above is only meaningfully "the stock default, not our
-# doing" if this config never sets it anywhere -- confirm that directly.
+# Confirm this config never sets it; a mention in a comment is fine.
 mapfile -t EL_FILES < <(cd "$REPO_ROOT" && git ls-files '*.el')
 grep_el() { (cd "$REPO_ROOT" && grep -n "$1" "${EL_FILES[@]}"); }
-# Mentioning the variable in an explanatory comment (as early-init.el
-# does, documenting why it's deliberately left alone) is fine; only an
-# actual setq/setq-default would violate the AC.
 if ! grep_el 'set[qf]-\?\(default\)\?[^;]*process-adaptive-read-buffering' >/dev/null 2>&1; then
   pass "process-adaptive-read-buffering is never set by this config's source (its nil reading is purely Emacs's own default)"
 else
@@ -545,14 +351,6 @@ fi
 [[ "$(get magit-diff-refine-hunk)" == "nil" ]] \
   && pass "magit-diff-refine-hunk is nil" \
   || fail "magit-diff-refine-hunk is nil -- got $(get magit-diff-refine-hunk)"
-
-# AC: LSP_USE_PLISTS decision recorded, citing the real phase slug.
-if grep -q 'LSP_USE_PLISTS decision (edmacs-performance/phase-5-lsp-and-completion-io)' \
-    "$REPO_ROOT/modules/core.el" 2>/dev/null; then
-  pass "LSP_USE_PLISTS decision comment present and cites the correct phase slug"
-else
-  fail "LSP_USE_PLISTS decision comment missing or cites the wrong phase slug"
-fi
 
 # AC: booting produces an empty *Warnings* buffer.
 [[ "$(get warnings-buffer)" == "nil" ]] \

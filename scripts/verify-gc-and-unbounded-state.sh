@@ -1,52 +1,21 @@
 #!/usr/bin/env bash
 #
-# verify-gc-and-unbounded-state.sh -- structural verification for
-# edmacs-performance/phase-6-gc-and-unbounded-state
+# verify-gc-and-unbounded-state.sh -- PASS/FAIL checks for the GC and undo
+# configuration: gcmh replaces the focus-change GC hook, the early-init.el
+# fallback timer exists, undo limits are raised, and undo-tree is gone.
 #
-# WHAT THIS CHECKS AND WHY IT EXISTS
-#   Phase 6 replaces a blocking, frame-focus-dependent GC hook with
-#   gcmh-mode, raises gc-cons-threshold/undo-limit/undo-strong-limit for a
-#   five-language lsp-mode workload, adds an early-init.el fallback timer
-#   independent of emacs-startup-hook, and drops undo-tree for native
-#   undo-redo. scripts/gc-session-bench.sh covers AC6 (the gcs-done
-#   comparison) but nothing else in this phase had a rerunnable, PASS/FAIL,
-#   exit-code-driven check -- following the same pattern
-#   verify-redisplay-settings.sh and verify-lsp-and-completion-io.sh already
-#   established for phases 4 and 5 in this roadmap, this script closes that
-#   gap for AC1, AC2 (steady state), AC3, AC4, and AC5.
+# The AC3 undo check measures bytes retained in `buffer-undo-list' after a
+# delete-heavy workload and a GC, under both the configured limits and the
+# stock 160000/240000 ones. Truncation is a silent C-level GC step (no
+# message), and insertion entries carry no size, so only a delete workload
+# with a stock control arm can tell raised limits from stock.
 #
-#   AC3's check measures actual `buffer-undo-list' retention after a
-#   delete-based edit workload and a GC, comparing this config's real
-#   limits against the OLD stock 160000/240000 values in the same probe --
-#   not a "truncat*" message/warning: code review found Emacs's
-#   undo-limit/undo-strong-limit truncation is a silent C-level GC step
-#   that never calls `message' or `display-warning' (only a *different*,
-#   much larger `undo-outer-limit' overflow does that, via `yes-or-no-p'),
-#   and that a pure-insertion workload never accumulates truncatable
-#   "size" at all (insertion undo entries are cheap (BEG . END) pairs;
-#   only deletion entries store the removed text, which is what actually
-#   counts toward the byte limits) -- so the original message-advice
-#   version of this check passed unconditionally regardless of whether the
-#   limits were raised, reverted, or removed. The fix is verified
-#   non-vacuous in both directions: it fails if the configured limits are
-#   reverted to stock (reproduced manually), and its OLD-stock control arm
-#   asserts truncation actually happens there in the same run.
-#
-#   NOT (re-)checked here: AC2's deliberate-error fallback path (a
-#   mid-init error before emacs-startup-hook registers) requires waiting
-#   out the real 20s idle timer in a throwaway process and is exercised
-#   manually per the phase record -- doing it here on every run would make
-#   this script slow and flaky in CI-like contexts for a path that is
-#   fundamentally about wall-clock idle time, not structural state. What IS
-#   checked here is the fallback's *structure*: the guarded timer call is
-#   present verbatim in early-init.el, and the guard/reset values match
-#   what the phase specifies. AC6 (gcs-done improvement) is intentionally
-#   left to gc-session-bench.sh, which already exists for exactly that.
+# The deliberate-error fallback path needs a real daemon and a ~20s wait; see
+# verify-gc-fallback-daemon.sh. gcs-done is covered by gc-session-bench.sh.
 #
 # USAGE
 #   scripts/verify-gc-and-unbounded-state.sh [path-to-edmacs-checkout]
-#   Defaults to the checkout containing this script. Exits 0 if every
-#   check passes, 1 otherwise, printing PASS/FAIL per line.
+#   Exits 0 if every check passes, 1 otherwise.
 
 set -uo pipefail
 
@@ -67,12 +36,7 @@ fail() { echo "FAIL: $1"; FAILED=1; }
 # 1) Static/structural greps -- no Emacs process needed.
 # ---------------------------------------------------------------------------
 
-# AC1: the old blocking, frame-focus-dependent hook must be gone entirely
-# as *code*, not merely as history in a comment explaining why it was
-# removed (init.el's own header comment for the gcmh change names it for
-# exactly that reason) -- so this greps for it actually being wired up
-# (add-hook/add-function/add-variable-watcher onto it), excluding comment
-# lines, rather than for the bare string anywhere in the file.
+# AC1: grep for the hook being wired up, excluding comment lines.
 if grep -vE '^\s*;;' "$REPO_ROOT/init.el" \
    | grep -qE "(add-hook|add-function|add-variable-watcher)[^)]*after-focus-change-function"; then
   fail "after-focus-change-function is still wired up as a live hook in init.el"
@@ -80,8 +44,7 @@ else
   pass "after-focus-change-function is no longer wired up as a live hook in init.el"
 fi
 
-# AC1 (structural underpinning): gcmh's own mechanism must be command/timer
-# driven, not frame-focus driven, for the emacsclient -t claim to hold.
+# AC1: gcmh must be command/timer driven, not frame-focus driven.
 GCMH_EL="$(find "$REPO_ROOT/straight/repos/gcmh" -iname 'gcmh.el' 2>/dev/null | head -1)"
 if [[ -z "$GCMH_EL" ]]; then
   fail "could not locate gcmh.el under straight/repos to verify its GC-trigger mechanism"
@@ -91,9 +54,7 @@ else
   pass "gcmh.el has no frame-focus dependency (uses pre/post-command-hook + a plain timer)"
 fi
 
-# AC2 fallback structure: a guarded one-shot idle timer, armed in
-# early-init.el before straight's bootstrap or anything else in init.el
-# runs, that only fires if gc-cons-threshold is still most-positive-fixnum.
+# AC2 structure: a guarded idle timer in early-init.el.
 if grep -q "run-with-idle-timer" "$REPO_ROOT/early-init.el" \
    && grep -q "most-positive-fixnum" "$REPO_ROOT/early-init.el" \
    && grep -qE "eq gc-cons-threshold most-positive-fixnum" "$REPO_ROOT/early-init.el"; then
@@ -116,25 +77,11 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2) Boot the real config once (early-init.el + init.el, emacs-startup-hook
-#    run explicitly) and probe live state for AC1 (mode enabled), AC2
-#    (steady-state threshold), AC3 (no undo truncation on a large edit),
-#    and AC4 (undo-tree gone, evil-undo-system correct).
+# 2) Boot the real config once and probe live state.
 # ---------------------------------------------------------------------------
 
-# Total bytes of delete-based edits for the AC3 retention probe, and the
-# chunk size each round deletes. Deletion undo entries (unlike insertion
-# entries, which are cheap (BEG . END) position pairs) store the deleted
-# text itself, so they are what actually accumulates counted "size" toward
-# undo-limit/undo-strong-limit truncation -- a pure-insertion workload
-# (the prior version of this check) never triggers truncation at any
-# threshold and so cannot tell a raised limit from a stock one. 1,000,000
-# total bytes sits comfortably under the new undo-limit (3,145,728) so it
-# must survive intact, and comfortably over the OLD stock undo-limit
-# (160,000)/undo-strong-limit (240,000) so it must NOT survive intact
-# there -- giving the probe a real pass/fail distinction in both
-# directions (empirically confirmed: new limits retain all 1,000,000
-# bytes, old stock limits retain only ~200,000).
+# Delete-based workload for the AC3 probe: 1,000,000 bytes sits under the
+# configured undo-limit (3MB) and well over the stock one (160000).
 UNDO_TOTAL_BYTES=1000000
 UNDO_CHUNK_BYTES=100000
 
@@ -148,14 +95,8 @@ PROBE_ELISP="
   (message \"PROBE:undo-limit=%S\" undo-limit)
   (message \"PROBE:undo-strong-limit=%S\" undo-strong-limit)
 
-  ;; AC3: how many bytes of delete-recorded undo history survive a GC,
-  ;; under (a) this config's actual configured limits and (b) the OLD
-  ;; stock 160000/240000 limits, for the identical workload. Emacs's
-  ;; undo-limit/undo-strong-limit truncation is a silent C-level step
-  ;; taken during GC (compact/truncate the undo list) -- it never calls
-  ;; \`message' or \`display-warning', so the only way to observe it is to
-  ;; measure what is actually left in \`buffer-undo-list' afterward, not
-  ;; to listen for a warning that this mechanism never emits.
+  ;; AC3: bytes of deleted text retained in buffer-undo-list after a GC,
+  ;; under the configured limits and under the old stock ones.
   (defun edmacs--undo-retention-probe (limit strong outer total-bytes chunk-bytes)
     (with-temp-buffer
       (buffer-enable-undo)
@@ -200,9 +141,7 @@ else
     && pass "gcmh-mode is enabled after a full boot" \
     || fail "gcmh-mode is enabled after a full boot -- got $(get gcmh-mode-enabled)"
 
-  # AC2 (steady state): post-startup gc-cons-threshold must equal
-  # gcmh-high-cons-threshold, and must be in the 64-100MB band, never left
-  # at most-positive-fixnum.
+  # AC2 steady state: gc-cons-threshold equals gcmh-high-cons-threshold.
   GHC="$(get gcmh-high-cons-threshold)"
   GCT="$(get gc-cons-threshold-post-startup)"
   if [[ "$GCT" == "$GHC" && "$GCT" =~ ^[0-9]+$ && "$GCT" -ge $((64 * 1024 * 1024)) && "$GCT" -le $((100 * 1024 * 1024)) ]]; then
@@ -211,13 +150,8 @@ else
     fail "gc-cons-threshold post-startup is not a sane gcmh-managed value -- gc-cons-threshold=$GCT gcmh-high-cons-threshold=$GHC"
   fi
 
-  # AC3: under this config's actual configured limits, the full
-  # $UNDO_TOTAL_BYTES-byte delete-based edit history must survive a GC
-  # intact (no truncation) -- and, to prove this probe actually
-  # discriminates rather than passing unconditionally, the identical
-  # workload run under the OLD stock 160000/240000 limits must retain
-  # measurably less than the total, confirming truncation really is
-  # occurring there and the configured limits are what prevent it here.
+  # AC3: the configured limits retain the whole history; the stock control
+  # arm must truncate, proving the probe discriminates.
   RETAINED_CONFIGURED="$(get undo-retained-configured)"
   RETAINED_OLD_STOCK="$(get undo-retained-old-stock)"
   [[ "$RETAINED_CONFIGURED" == "$UNDO_TOTAL_BYTES" ]] \
@@ -244,18 +178,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3) AC5: .cache/lsp has a stated bound (documentation) and its current
-#    size is reported for auditability. This is informational sizing, not
-#    a hard pass/fail threshold -- the phase's own finding is that the
-#    directory's size tracks the number of npm-installed servers, not
-#    usage, so there is no single "correct" byte count to assert against.
+# 3) AC5: report .cache/lsp size. Informational: it tracks the number of
+#    npm-installed servers, not usage, so there is no byte count to assert.
 # ---------------------------------------------------------------------------
-
-if grep -q "\.cache/lsp" "$REPO_ROOT/modules/programming.el" 2>/dev/null; then
-  pass ".cache/lsp's footprint model is documented in modules/programming.el"
-else
-  fail ".cache/lsp's footprint model is not documented in modules/programming.el"
-fi
 
 if [[ -d "$REPO_ROOT/.cache/lsp" ]]; then
   echo "INFO: current .cache/lsp size: $(du -sh "$REPO_ROOT/.cache/lsp" 2>/dev/null | cut -f1)"

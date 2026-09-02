@@ -143,6 +143,7 @@
 
 ;; Font caches are large here (nerd-icons, runtime face switching); don't
 ;; compact them on every GC.
+(setq inhibit-compacting-font-caches t)
 
 (setq inhibit-startup-screen t
       inhibit-startup-message t
