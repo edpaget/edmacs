@@ -102,6 +102,9 @@ LANGUAGE should be the name without the .el extension."
 ;; Claude terminal launcher (ghostel-based)
 (load-module "claude-term")
 
+;; Claude terminal session registry and picker
+(load-module "claude-term-registry")
+
 ;; Org mode
 ;; (load-module "org-config")
 

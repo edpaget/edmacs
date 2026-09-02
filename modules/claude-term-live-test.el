@@ -106,10 +106,15 @@
 ;;
 ;; Run:
 ;;   emacs -Q --batch -l ert -l modules/claude-term.el \
+;;         -l modules/claude-term-registry.el \
 ;;         -l modules/claude-term-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
-
-;;; Code:
+;;
+;; `claude-term-registry.el' must load ahead of this file: phase 4 wired
+;; registry put/touch/remove calls directly into `claude-term--exec',
+;; the entry point, and `claude-term--on-exit' (see that module's own
+;; Commentary), so every one of those call sites here now needs the
+;; real registry functions defined, not merely forward-declared.
 
 (require 'ert)
 (require 'cl-lib)
