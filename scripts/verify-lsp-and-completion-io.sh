@@ -29,6 +29,19 @@
 #       major-mode keymap) once lsp-mode is genuinely active in the
 #       buffer, because a minor-mode keymap wins over a major-mode keymap.
 #       Fixed by moving Java's hierarchy prefix to "SPC c H".
+#     - The SAME collision class survived on three more keys (code-review
+#       finding spc-c-drt-keymap-collision): lsp-mode-map's terminal
+#       "SPC c r"/"SPC c d"/"SPC c t" (lsp-rename / lsp-find-definition /
+#       lsp-find-type-definition) shadow java.el's Run/Debug/Test
+#       which-key prefixes on the same keys. The obvious capital-letter
+#       fix ("SPC c R"/"SPC c D"/"SPC c T") turned out to only be free for
+#       "T" -- lsp-mode-map separately binds capital "SPC c R" to
+#       lsp-find-references and "SPC c D" to lsp-find-declaration, a
+#       THIRD instance of the same class this revision found while
+#       verifying the second. Fixed by moving Run/Debug to the genuinely
+#       free "SPC c X" (eXecute) and "SPC c K", keeping Test on "SPC c T".
+#       This script now exercises all of "h"/"r"/"d"/"t"/"R"/"D" plus the
+#       new "X"/"K"/"T" prefixes, not just the originally-fixed "h" case.
 #
 # THE --batch + -Q --batch -l early-init.el -l init.el TRAP
 #   See verify-redisplay-settings.sh's header for the full explanation:
@@ -45,11 +58,37 @@
 #   indent-tabs-mode, that mvn/dap-mode/lsp-java's :config blocks
 #   actually ran (via featurep, not just grep) after nothing but a plain
 #   .java visit, that gradle-mode activates, keybinding resolution for
-#   all four leader-key sites plus the new/moved hover and hierarchy
-#   keys (proving the SPC-c-h collision is gone), read-process-output-max
-#   / process-adaptive-read-buffering, lsp-modeline-code-actions-enable /
-#   lsp-ui-doc-show-with-cursor / magit-diff-refine-hunk / corfu-auto-prefix
-#   / consult-preview-key values, and the LSP_USE_PLISTS decision comment.
+#   all four leader-key sites plus the new/moved hover, hierarchy, and
+#   run/debug/test keys (proving both rounds of the SPC-c-<letter>
+#   collision are gone), read-process-output-max / process-adaptive-
+#   read-buffering, lsp-modeline-code-actions-enable / lsp-ui-doc-show-
+#   with-cursor / magit-diff-refine-hunk / corfu-auto-prefix / consult-
+#   preview-key values, and the LSP_USE_PLISTS decision comment.
+#
+#   Checked at the MECHANISM level, past a bare defcustom-value check, for
+#   three of the idle-path ACs that are otherwise only visually observable:
+#     - hover popup: `lsp-ui-doc--make-request' (the post-command-hook
+#       function that would schedule a hover-request idle timer) is called
+#       directly and asserted to schedule nothing when
+#       `lsp-ui-doc-show-with-cursor' is nil, with a control case (forced
+#       t, `lsp-feature?' mocked since no live LS workspace exists here)
+#       proving the absence is the gate working and not some unrelated
+#       precondition failing.
+#     - consult-ripgrep arrow-through: `consult--preview-key-debounce' --
+#       the exact function consult calls per candidate -- is called
+#       directly against the configured `consult-preview-key' and
+#       asserted to return 0.3, not the instant 0 the old plain `any'
+#       value produced.
+#     - magit auto-revert refresh: `magit-diff-update-hunk-refinement' --
+#       what `magit-section--refine' calls on every section refresh,
+#       including the one the timer triggers -- is called directly on a
+#       synthetic unrefined hunk section, with `diff-refine-hunk' advised
+#       to record whether it was invoked; asserted never called while
+#       `magit-diff-refine-hunk' is nil.
+#   None of these three requires a live LS connection, a real git repo, or
+#   a display, so they run in the same headless batch pass as everything
+#   else, and they test the actual code path rather than inferring
+#   behavior from a variable's value alone.
 #
 #   NOT checked -- needs a real jdtls install + network/display: that
 #   `lsp-mode' becomes non-nil from a genuine JDT.LS handshake. No jdtls
@@ -64,10 +103,13 @@
 #   A real interactive visit with jdtls reachable (JAVA_HOME set, network
 #   available) is still the authoritative end-to-end check for the
 #   "lsp-mode is non-nil" acceptance criterion; see the phase record.
-#   Also not checked: that the lsp-ui-doc hover popup visually disappears
-#   and that a magit-status buffer's refresh is visibly cheaper -- both
-#   need a real display/window and are left to interactive manual
-#   verification per the phase body.
+#   Also not checked, because it needs a real display/window and a real
+#   language server actually returning completions: that the lsp-ui-doc
+#   hover popup visually disappears, that a magit-status buffer's refresh
+#   is visibly cheaper, and that corfu's popup still "feels responsive" at
+#   the raised prefix length in a real Rust/Go buffer -- these three are
+#   left to interactive manual verification per the phase body; everything
+#   about them that IS mechanically checkable headless is covered above.
 #
 # USAGE
 #   scripts/verify-lsp-and-completion-io.sh [path-to-edmacs-checkout]
@@ -170,8 +212,100 @@ PROBE_ELISP='
   (message "PROBE:key-comma-m-c=%S" (key-binding (kbd ", m c")))
   (message "PROBE:key-spc-d-b=%S" (key-binding (kbd "SPC d b")))
   (message "PROBE:key-comma-g-b=%S" (key-binding (kbd ", g b")))
+  ;; Regression guard for code-review finding spc-c-drt-keymap-collision:
+  ;; lsp-mode-map (a minor-mode keymap) defines terminal "SPC c r"/
+  ;; "SPC c d"/"SPC c t" bindings (lsp-rename / lsp-find-definition /
+  ;; lsp-find-type-definition), which win over the Run/Debug/Test
+  ;; which-key prefixes on java-ts-mode-map (a major-mode keymap) once
+  ;; lsp-mode is genuinely active -- exactly the SPC-c-h collision class
+  ;; already fixed once, but left unfixed here on three more keys. The
+  ;; Java prefixes were moved to capital R/D/T; assert both halves: the
+  ;; lowercase keys still resolve to the lsp-mode-map commands (no
+  ;; regression there), and the capitalized prefixes reach dap-java.
+  (message "PROBE:key-spc-c-r=%S" (key-binding (kbd "SPC c r")))
+  (message "PROBE:key-spc-c-d=%S" (key-binding (kbd "SPC c d")))
+  (message "PROBE:key-spc-c-t=%S" (key-binding (kbd "SPC c t")))
+  (message "PROBE:key-spc-c-R=%S" (key-binding (kbd "SPC c R")))
+  (message "PROBE:key-spc-c-D=%S" (key-binding (kbd "SPC c D")))
+  (message "PROBE:key-spc-c-X-r=%S" (key-binding (kbd "SPC c X r")))
+  (message "PROBE:key-spc-c-K-d=%S" (key-binding (kbd "SPC c K d")))
+  (message "PROBE:key-spc-c-T-t=%S" (key-binding (kbd "SPC c T t")))
   (setq lsp-mode nil)
+
+  ;; Mechanism-level (not merely value-level) check for the cursor-rest
+  ;; hover-popup AC. lsp-ui-doc installs the function
+  ;; lsp-ui-doc--make-request on post-command-hook; that functions very
+  ;; first gate is lsp-ui-doc-show-with-cursor, and only past that gate
+  ;; does it ever schedule the idle timer that would later fire a real
+  ;; textDocument/hover request. No live LS workspace exists in this
+  ;; sandbox (see header), so lsp-feature? is mocked to t to isolate the
+  ;; gate under test from that unrelated precondition. This proves the
+  ;; popup-suppression mechanism itself fires, not just that a defcustom
+  ;; holds the value nil.
+  (require (quote lsp-ui-doc))
+  (defun --verify-lsp-feature-t (&rest _) t)
+  (advice-add (quote lsp-feature?) :override (function --verify-lsp-feature-t))
+  (setq this-command (quote self-insert-command)
+        lsp-ui-doc--bounds nil
+        lsp-ui-doc--hide-on-next-command nil)
+  (lsp-ui-util-safe-kill-timer lsp-ui-doc--timer)
+  (setq lsp-ui-doc--timer nil)
+  (let ((lsp-ui-doc-show-with-cursor nil))
+    (lsp-ui-doc--make-request))
+  (message "PROBE:hover-timer-scheduled-with-show-with-cursor-nil=%S" (and lsp-ui-doc--timer t))
+  (lsp-ui-util-safe-kill-timer lsp-ui-doc--timer)
+  (setq lsp-ui-doc--timer nil lsp-ui-doc--bounds nil)
+  (let ((lsp-ui-doc-show-with-cursor t))
+    (lsp-ui-doc--make-request))
+  (message "PROBE:hover-timer-scheduled-with-show-with-cursor-t=%S" (and lsp-ui-doc--timer t))
+  (lsp-ui-util-safe-kill-timer lsp-ui-doc--timer)
+  (setq lsp-ui-doc--timer nil)
+  (advice-remove (quote lsp-feature?) (function --verify-lsp-feature-t))
+
   (kill-buffer)
+
+  ;; Mechanism-level check for the consult-ripgrep arrow-through AC: the
+  ;; function consult--preview-key-debounce is the exact function consult
+  ;; calls per candidate to decide the preview delay. With plain (quote
+  ;; any) (the pre-fix value) this always returns 0 (instant preview);
+  ;; with the configured (:debounce 0.3 any) it must return 0.3. The
+  ;; function this-single-command-keys is empty in batch mode, so lookup
+  ;; falls through to the any entry, which is exactly the code path a
+  ;; real arrow-key press also falls through to (arrow keys are not among
+  ;; any specific keys listed).
+  (message "PROBE:consult-preview-debounce=%S"
+           (consult--preview-key-debounce consult-preview-key "dummy-candidate"))
+
+  ;; Mechanism-level check for the magit auto-revert-timer AC: the
+  ;; function magit-diff-update-hunk-refinement is what
+  ;; magit-section--refine calls on every section refresh (including the
+  ;; one global-auto-revert-non-file-buffers triggers every 5s on a
+  ;; visible magit-status buffer). Its own pcase only ever refines when
+  ;; magit-diff-refine-hunk is t or all; with it nil and a not-yet-refined
+  ;; section, no clause matches, so diff-refine-hunk is never called --
+  ;; verified here by advising it and asserting zero calls, not just
+  ;; reading the defcustom value.
+  (require (quote magit-diff))
+  (defvar --verify-diff-refine-hunk-called nil)
+  (defun --verify-diff-refine-hunk-override (&rest _)
+    (setq --verify-diff-refine-hunk-called t))
+  (advice-add (quote diff-refine-hunk) :override
+              (function --verify-diff-refine-hunk-override))
+  (with-temp-buffer
+    (insert "@@ -1,2 +1,2 @@\n-foo\n+bar\n")
+    ;; The start/end/hidden/refined slots of magit-section have no EIEIO
+    ;; :initarg (only type/washer/selective-highlight/etc do), so they
+    ;; cannot be set via the keyword constructor -- oset after a plain
+    ;; make-instance is the correct construction here.
+    (let ((sec (make-instance (quote magit-hunk-section))))
+      (oset sec start (point-min))
+      (oset sec end (point-max))
+      (oset sec hidden nil)
+      (oset sec refined nil)
+      (magit-diff-update-hunk-refinement sec)))
+  (message "PROBE:magit-refine-called-with-refine-hunk-nil=%S"
+           (and --verify-diff-refine-hunk-called t))
+  (advice-remove (quote diff-refine-hunk) (function --verify-diff-refine-hunk-override))
 
   (message "PROBE:warnings-buffer=%S" (and (get-buffer "*Warnings*") t))
   (message "PROBE:probe-complete=t"))
@@ -266,6 +400,73 @@ fi
 [[ "$(get key-spc-c-H-t)" == "lsp-java-type-hierarchy" ]] \
   && pass "SPC c H t still resolves to lsp-java-type-hierarchy (no collision with SPC c h)" \
   || fail "SPC c H t still resolves to lsp-java-type-hierarchy -- got $(get key-spc-c-H-t)"
+
+# Regression guard for code-review finding spc-c-drt-keymap-collision:
+# lsp-mode-map's terminal "SPC c r"/"SPC c d"/"SPC c t" bindings must
+# still resolve to their lsp-mode commands (no accidental removal). The
+# obvious capital-letter fix ("R"/"D"/"T", mirroring how "h" was
+# capitalized) turned out to only be free for "T" -- lsp-mode-map ALSO
+# binds capital "SPC c R" (lsp-find-references) and "SPC c D"
+# (lsp-find-declaration) -- so assert those still resolve to their
+# lsp-mode commands too (confirming the second collision this revision
+# found), and that java's Run/Debug/Test prefixes, moved to the genuinely
+# free "X"/"K"/"T", are reachable with lsp-mode genuinely active.
+[[ "$(get key-spc-c-r)" == "lsp-rename" ]] \
+  && pass "SPC c r still resolves to lsp-rename with lsp-mode active" \
+  || fail "SPC c r still resolves to lsp-rename with lsp-mode active -- got $(get key-spc-c-r)"
+[[ "$(get key-spc-c-d)" == "lsp-find-definition" ]] \
+  && pass "SPC c d still resolves to lsp-find-definition with lsp-mode active" \
+  || fail "SPC c d still resolves to lsp-find-definition with lsp-mode active -- got $(get key-spc-c-d)"
+[[ "$(get key-spc-c-t)" == "lsp-find-type-definition" ]] \
+  && pass "SPC c t still resolves to lsp-find-type-definition with lsp-mode active" \
+  || fail "SPC c t still resolves to lsp-find-type-definition with lsp-mode active -- got $(get key-spc-c-t)"
+[[ "$(get key-spc-c-R)" == "lsp-find-references" ]] \
+  && pass "SPC c R still resolves to lsp-find-references with lsp-mode active (confirms capital R was NOT a safe choice for java.el)" \
+  || fail "SPC c R still resolves to lsp-find-references with lsp-mode active -- got $(get key-spc-c-R)"
+[[ "$(get key-spc-c-D)" == "lsp-find-declaration" ]] \
+  && pass "SPC c D still resolves to lsp-find-declaration with lsp-mode active (confirms capital D was NOT a safe choice for java.el)" \
+  || fail "SPC c D still resolves to lsp-find-declaration with lsp-mode active -- got $(get key-spc-c-D)"
+[[ "$(get key-spc-c-X-r)" == "dap-java-run-test-class" ]] \
+  && pass "SPC c X r resolves to dap-java-run-test-class (X is genuinely unclaimed)" \
+  || fail "SPC c X r resolves to dap-java-run-test-class -- got $(get key-spc-c-X-r)"
+[[ "$(get key-spc-c-K-d)" == "dap-java-debug-test-class" ]] \
+  && pass "SPC c K d resolves to dap-java-debug-test-class (K is genuinely unclaimed)" \
+  || fail "SPC c K d resolves to dap-java-debug-test-class -- got $(get key-spc-c-K-d)"
+[[ "$(get key-spc-c-T-t)" == "dap-java-run-test-method" ]] \
+  && pass "SPC c T t resolves to dap-java-run-test-method (no collision with SPC c t)" \
+  || fail "SPC c T t resolves to dap-java-run-test-method -- got $(get key-spc-c-T-t)"
+
+# Mechanism-level guard for "resting the cursor no longer triggers an
+# automatic hover popup": lsp-ui-doc--make-request (the post-command-hook
+# function that would schedule the hover-request idle timer) must gate on
+# lsp-ui-doc-show-with-cursor and schedule nothing when it is nil, while
+# still being *capable* of scheduling when it is t (proving the absence
+# above is the gate working, not an unrelated precondition failing).
+[[ "$(get hover-timer-scheduled-with-show-with-cursor-nil)" == "nil" ]] \
+  && pass "lsp-ui-doc--make-request schedules no hover timer when lsp-ui-doc-show-with-cursor is nil" \
+  || fail "lsp-ui-doc--make-request schedules no hover timer when nil -- got $(get hover-timer-scheduled-with-show-with-cursor-nil)"
+[[ "$(get hover-timer-scheduled-with-show-with-cursor-t)" == "t" ]] \
+  && pass "lsp-ui-doc--make-request does schedule a hover timer when forced t (control case)" \
+  || fail "lsp-ui-doc--make-request does schedule a hover timer when forced t -- got $(get hover-timer-scheduled-with-show-with-cursor-t)"
+
+# Mechanism-level guard for "arrowing through consult-ripgrep results
+# doesn't visibly open every hovered file": consult--preview-key-debounce
+# is the exact function consult calls per-candidate; it must return the
+# configured 0.3s delay, not the instant (0) preview the old plain 'any
+# value produced.
+[[ "$(get consult-preview-debounce)" == "0.3" ]] \
+  && pass "consult--preview-key-debounce returns 0.3 for consult-preview-key" \
+  || fail "consult--preview-key-debounce returns 0.3 -- got $(get consult-preview-debounce)"
+
+# Mechanism-level guard for "a magit-status buffer no longer re-runs hunk
+# refinement on the auto-revert timer": magit-diff-update-hunk-refinement
+# (what magit-section--refine calls on every section refresh, including
+# the one the 5s auto-revert timer triggers) must never call
+# diff-refine-hunk for an unrefined section when magit-diff-refine-hunk
+# is nil.
+[[ "$(get magit-refine-called-with-refine-hunk-nil)" == "nil" ]] \
+  && pass "magit-diff-update-hunk-refinement never calls diff-refine-hunk when magit-diff-refine-hunk is nil" \
+  || fail "magit-diff-update-hunk-refinement calls diff-refine-hunk when magit-diff-refine-hunk is nil -- got $(get magit-refine-called-with-refine-hunk-nil)"
 
 # AC: gradle-mode is active in a .java buffer.
 [[ "$(get gradle-mode-active)" == "t" ]] \

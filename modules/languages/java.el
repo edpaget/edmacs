@@ -84,19 +84,36 @@
    "bb" '(lsp-java-build-project :which-key "build project")
    "bc" '(lsp-java-build-project :which-key "compile")
 
-   ;; Run/Debug
-   "r" '(:ignore t :which-key "run")
-   "rr" '(dap-java-run-test-class :which-key "run class")
-   "rm" '(dap-java-run-test-method :which-key "run method")
+   ;; Run/Debug/Test. Deliberately NOT on "r"/"d"/"t" -- lsp-mode-map
+   ;; (modules/programming.el) defines terminal "SPC c r"/"SPC c d"/
+   ;; "SPC c t" bindings (lsp-rename / lsp-find-definition /
+   ;; lsp-find-type-definition) on those same keys, and lsp-mode-map is a
+   ;; minor-mode keymap that wins over this major-mode keymap once
+   ;; lsp-mode is genuinely active in the buffer -- the same collision
+   ;; class already fixed for "h" below (capital "H"), confirmed
+   ;; empirically via evil-normalize-keymaps: with lsp-mode forced on,
+   ;; "SPC c d"/"SPC c r"/"SPC c t" resolved to the lsp-mode-map commands
+   ;; and "SPC c d d"/"SPC c r r"/"SPC c t t" were unreachable.
+   ;; The obvious next choice, capital "R"/"D"/"T", does NOT work either
+   ;; for two of the three: lsp-mode-map also binds capital "SPC c R" to
+   ;; lsp-find-references and capital "SPC c D" to lsp-find-declaration
+   ;; (programming.el), so only capital "T" was actually free -- confirmed
+   ;; empirically the same way ("SPC c R"/"SPC c D" resolved to the
+   ;; lsp-mode-map commands, "SPC c R r"/"SPC c D d" were unreachable).
+   ;; "X" (eXecute) and "K" are both genuinely unclaimed under "SPC c" by
+   ;; either lsp-mode-map or this file's own bindings.
+   "X" '(:ignore t :which-key "run")
+   "Xr" '(dap-java-run-test-class :which-key "run class")
+   "Xm" '(dap-java-run-test-method :which-key "run method")
 
-   "d" '(:ignore t :which-key "debug")
-   "dd" '(dap-java-debug-test-class :which-key "debug class")
-   "dm" '(dap-java-debug-test-method :which-key "debug method")
+   "K" '(:ignore t :which-key "debug")
+   "Kd" '(dap-java-debug-test-class :which-key "debug class")
+   "Km" '(dap-java-debug-test-method :which-key "debug method")
 
    ;; Tests
-   "t" '(:ignore t :which-key "test")
-   "tt" '(dap-java-run-test-method :which-key "test method")
-   "tc" '(dap-java-run-test-class :which-key "test class")
+   "T" '(:ignore t :which-key "test")
+   "Tt" '(dap-java-run-test-method :which-key "test method")
+   "Tc" '(dap-java-run-test-class :which-key "test class")
 
    ;; Refactoring
    "=" '(:ignore t :which-key "refactor")
