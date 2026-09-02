@@ -205,25 +205,36 @@ whole function."
   (seq-find (lambda (w) (not (window-parameter w 'window-side)))
             (window-list nil 'no-minibuf (frame-first-window))))
 
+(defun edmacs--swap-window-buffers (w1 w2)
+  "Exchange the buffers shown in W1 and W2.
+Uses `window-swap-states' for ordinary windows; a side window keeps its
+side and slot and only trades buffers. A non-claude buffer moved into a
+side window clears `no-other-window' so window navigation still reaches it."
+  (if (or (window-parameter w1 'window-side) (window-parameter w2 'window-side))
+      (let ((b1 (window-buffer w1)) (b2 (window-buffer w2)))
+        (set-window-buffer w1 b2)
+        (set-window-buffer w2 b1)
+        (dolist (w (list w1 w2))
+          (when (and (window-parameter w 'window-side)
+                     (not (string-prefix-p "*claude-term" (buffer-name (window-buffer w)))))
+            (set-window-parameter w 'no-other-window nil))))
+    (window-swap-states w1 w2)))
+
 (defun edmacs-window-promote (&optional window)
-  "Move WINDOW's buffer into the main window and select it.
-Like dwm's zoom or tmux's promote: swaps with the main window's buffer.
-From the main window itself, swap with the next stack window. From a
-side window (e.g. a claude-term pane), show the buffer in the main
-window and close the side window."
+  "Swap WINDOW's buffer into the main window and select the main window.
+Like dwm's zoom or tmux's promote. Side windows (the right-hand column
+claude-term and *Warnings* use) count as stack windows: promoting from
+one puts its buffer in main and the old main buffer in that pane. From
+the main window itself, swap with the first stack window."
   (interactive)
   (let* ((window (or window (selected-window)))
          (main (edmacs--main-window))
-         (stack (lambda (w) (not (or (eq w main) (window-parameter w 'window-side))))))
-    (cond
-     ((window-parameter window 'window-side)
-      (let ((buffer (window-buffer window)))
-        (delete-window window)
-        (set-window-buffer main buffer)))
-     ((eq window main)
-      (let ((next (seq-find stack (window-list nil 'no-minibuf main))))
-        (when next (window-swap-states main next))))
-     (t (window-swap-states window main)))
+         (other (if (eq window main)
+                    (seq-find (lambda (w) (not (eq w main)))
+                              (window-list nil 'no-minibuf main))
+                  window)))
+    (when other
+      (edmacs--swap-window-buffers main other))
     (select-window main)))
 
 (defun edmacs-window-pop-buffer-to-main (buffer)
@@ -241,6 +252,16 @@ it is in a side window, close that side window."
 ;; Nothing marks a window dedicated today, but this heads off a `user-error'
 ;; from `window-layout-transpose' the moment something does.
 (setq transpose-dedicated-windows t)
+
+;; Stack *Warnings* in the right-hand column beside claude-term panes (slot -1
+;; puts it above them). Width matches `claude-term-window-width'.
+(add-to-list 'display-buffer-alist
+             '("\\`\\*Warnings\\*\\'"
+               (display-buffer-in-side-window)
+               (side . right)
+               (slot . -1)
+               (window-width . 0.4)
+               (preserve-size . (t . nil))))
 
 (use-package rotate
   :commands (rotate-layout rotate-window rotate-main-vertical rotate-main-horizontal)

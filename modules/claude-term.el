@@ -97,7 +97,7 @@ argument scoping an MCP server to Emacs-launched sessions."
   :type '(repeat string)
   :group 'claude-term)
 
-(defcustom claude-term-window-width 0.35
+(defcustom claude-term-window-width 0.4
   "Fractional width of a claude-term side window, relative to the frame.
 `window-sides-vertical' is nil by default, so left and right side
 windows form ONE column stacked vertically and share a single width --
