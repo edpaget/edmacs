@@ -78,6 +78,24 @@
 ;; dropped to `gcmh-low-cons-threshold' only right after an idle-triggered
 ;; GC actually runs, so allocation-heavy bursts (LSP parsing, apheleia
 ;; rewrites) never fight a small threshold mid-operation.
+;;
+;; `gcmh-mode' is enabled from `emacs-startup-hook', not eagerly here.
+;; Enabling it sets `gc-cons-threshold' to `gcmh-high-cons-threshold'
+;; synchronously the moment it runs (verified in gcmh.el's
+;; `define-minor-mode' body: the mode's enable branch does `(setf
+;; gc-cons-threshold gcmh-high-cons-threshold)' directly, with no idle-timer
+;; or hook indirection at all) -- and every module below (evil, ui,
+;; completion, programming/lsp-mode, vterm, ai, git, sessions, and all
+;; per-language configs) still has to load after this point in the file.
+;; Calling `(gcmh-mode 1)' here, before that module-loading pass, would cut
+;; the generous `most-positive-fixnum' startup budget early-init.el sets up
+;; down to 100MB before the heaviest allocation in this config even starts
+;; -- reintroducing the startup-time GC pause that budget exists to avoid.
+;; `emacs-startup-hook' runs only once the entire init file (this one
+;; included) has finished loading, so deferring the enable call to it keeps
+;; the `most-positive-fixnum' budget in effect for the whole module-loading
+;; pass and drops to `gcmh-high-cons-threshold' only once startup is
+;; actually done -- matching early-init.el's own comment on this point.
 (use-package gcmh
   :config
   (setq gcmh-high-cons-threshold (* 100 1024 1024) ; 100MB: sized generously
@@ -90,7 +108,7 @@
                                                     ; of similar size
         gcmh-idle-delay 10)                        ; seconds idle before the
                                                     ; deferred GC runs
-  (gcmh-mode 1))
+  (add-hook 'emacs-startup-hook #'gcmh-mode))
 
 ;; ============================================================================
 ;; Module Loading System

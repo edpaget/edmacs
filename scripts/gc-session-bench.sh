@@ -134,17 +134,25 @@ extract_setq_number() {
         (error \"could not find %s in %s\" \"$var\" \"$file\")))" 2>/dev/null
 }
 
-GCMH_HIGH="$(extract_setq_number "$REPO_ROOT/init.el" "gcmh-high-cons-threshold")"
-GCMH_IDLE_DELAY="$(extract_setq_number "$REPO_ROOT/init.el" "gcmh-idle-delay")"
-NEW_UNDO_LIMIT="$(extract_setq_number "$REPO_ROOT/modules/core.el" "undo-limit")"
-NEW_UNDO_STRONG_LIMIT="$(extract_setq_number "$REPO_ROOT/modules/core.el" "undo-strong-limit")"
-
-for v in GCMH_HIGH GCMH_IDLE_DELAY NEW_UNDO_LIMIT NEW_UNDO_STRONG_LIMIT; do
-  if [[ -z "${!v}" ]]; then
-    echo "error: failed to extract $v from tracked config -- has the variable name changed?" >&2
+# NOTE: under `set -e`, `VAR="$(some-failing-command)"` aborts the script
+# at that line -- bash's errexit fires on the command substitution's own
+# exit status before control ever reaches a later check on whether `$VAR`
+# came back empty. So each extraction below checks its exit status
+# directly (`|| { ...; exit 1; }`) rather than relying on a diagnostic
+# loop after the fact, which `set -e` would never let run.
+extract_or_die() {
+  local file="$1" var="$2" out
+  if ! out="$(extract_setq_number "$file" "$var")" || [[ -z "$out" ]]; then
+    echo "error: failed to extract $var from $file -- has the variable name changed?" >&2
     exit 1
   fi
-done
+  printf '%s' "$out"
+}
+
+GCMH_HIGH="$(extract_or_die "$REPO_ROOT/init.el" "gcmh-high-cons-threshold")"
+GCMH_IDLE_DELAY="$(extract_or_die "$REPO_ROOT/init.el" "gcmh-idle-delay")"
+NEW_UNDO_LIMIT="$(extract_or_die "$REPO_ROOT/modules/core.el" "undo-limit")"
+NEW_UNDO_STRONG_LIMIT="$(extract_or_die "$REPO_ROOT/modules/core.el" "undo-strong-limit")"
 
 echo "Post-change values read from tracked config:"
 echo "  gcmh-high-cons-threshold = $GCMH_HIGH"
@@ -271,8 +279,23 @@ sum_baseline=0
 sum_post=0
 
 for ((i = 1; i <= RUNS; i++)); do
-  b="$(run_session baseline)"
-  p="$(run_session post-change)"
+  # NOTE: run_session's last stage is `emacs ... | grep '^GCS-DELTA:' |
+  # awk '{print $2}'` under `set -o pipefail`. If the emacs subprocess
+  # errors, or grep simply finds no matching line, grep exits non-zero and
+  # pipefail propagates that out of the pipeline -- which, same as the
+  # extraction calls above, would kill the whole script under `set -e` at
+  # a bare `b="$(run_session baseline)"` before any later emptiness check
+  # ever ran. Checking the assignment's own exit status in the `if`
+  # condition is what actually lets a single bad run be skipped instead of
+  # taking the whole benchmark down with it.
+  if ! b="$(run_session baseline)"; then
+    echo "warning: run $i baseline produced no GCS-DELTA output -- skipping" >&2
+    continue
+  fi
+  if ! p="$(run_session post-change)"; then
+    echo "warning: run $i post-change produced no GCS-DELTA output -- skipping" >&2
+    continue
+  fi
   if [[ -z "$b" || -z "$p" ]]; then
     echo "warning: run $i produced no GCS-DELTA output -- skipping" >&2
     continue
@@ -284,14 +307,22 @@ done
 
 echo
 echo "=== Summary over $RUNS run(s) ==="
+# Matches the PASS/FAIL-with-nonzero-exit convention scripts/verify-
+# redisplay-settings.sh and scripts/verify-lsp-and-completion-io.sh already
+# established in this roadmap, rather than only printing a human-readable
+# line someone has to read to notice a regression -- this lets the script
+# be wired into a gate (CI, a pre-merge check, `&& echo ok`) that fails
+# loudly if a future change regresses gcs-done back above baseline.
 awk -v b="$sum_baseline" -v p="$sum_post" -v n="$RUNS" '
   BEGIN {
     printf "  baseline    mean gcs-done delta: %.2f\n", b / n
     printf "  post-change mean gcs-done delta: %.2f\n", p / n
     if (p < b) {
-      printf "  RESULT: post-change is lower (-%.2f, %.1f%% fewer GCs) -- AC6 satisfied\n", (b - p) / n, 100 * (b - p) / b
+      printf "  RESULT: post-change is lower (-%.2f, %.1f%% fewer GCs) -- AC6 satisfied (PASS)\n", (b - p) / n, 100 * (b - p) / b
+      exit 0
     } else {
-      printf "  RESULT: post-change is NOT lower than baseline -- AC6 NOT satisfied\n"
+      printf "  RESULT: post-change is NOT lower than baseline -- AC6 NOT satisfied (FAIL)\n"
+      exit 1
     }
   }
 '
