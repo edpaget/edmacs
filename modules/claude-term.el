@@ -68,6 +68,16 @@
 (declare-function ghostel-send-C-g "ghostel")
 (declare-function evil-define-minor-mode-key "evil-core")
 
+;; claude-term-registry.el loads immediately after this file (see
+;; init.el's `load-module' order); declare its API surface here so the
+;; byte-compiler doesn't warn about forward references that resolve
+;; fine at call time under this codebase's plain-load module system.
+(declare-function claude-term-registry-put "claude-term-registry")
+(declare-function claude-term-registry-touch "claude-term-registry")
+(declare-function claude-term-registry-remove "claude-term-registry")
+(declare-function claude-term--read-session "claude-term-registry")
+(declare-function claude-term-session-buffer "claude-term-registry")
+
 ;; ============================================================================
 ;; Customization
 ;; ============================================================================
@@ -475,6 +485,12 @@ This function never recomputes it, including on restart."
     (setq claude-term--root root
           claude-term--instance instance
           claude-term--args args)
+    ;; Registers/refreshes this buffer as the live session for
+    ;; ROOT/INSTANCE -- phase 4's registry. Called on every `--exec'
+    ;; (a fresh spawn AND a restart), which is correct: a restart keeps
+    ;; the same buffer object, so re-`puthash'ing it is a harmless
+    ;; overwrite of the same entry with a fresh last-used stamp.
+    (claude-term-registry-put root instance buffer)
     ;; Exit cleanup is routed entirely through `claude-term--on-exit'
     ;; instead of ghostel's own default kill-on-exit, so there is exactly
     ;; one place that decides what happens to a dead buffer.
@@ -531,6 +547,10 @@ everything else from the dead session."
                 (args claude-term--args))
             (setq claude-term--restarting nil)
             (run-at-time 0 nil #'claude-term--deferred-reexec buf root instance args))
+        ;; Deregister before killing -- buffer-locals are still readable
+        ;; here (the kill hasn't happened yet), and a killed buffer must
+        ;; not linger as a phantom registry entry.
+        (claude-term-registry-remove claude-term--root claude-term--instance)
         (kill-buffer buf)))))
 
 ;; ============================================================================
@@ -641,7 +661,9 @@ this module."
          (name (claude-term-buffer-name root instance))
          (buffer (get-buffer-create name)))
     (if (with-current-buffer buffer (process-live-p ghostel--process))
-        (claude-term--pop-to-side-window buffer)
+        (progn
+          (claude-term-registry-touch root instance)
+          (claude-term--pop-to-side-window buffer))
       (claude-term--exec buffer root instance args)
       (claude-term--pop-to-side-window buffer))))
 
@@ -649,12 +671,20 @@ this module."
 (defun claude-term-kill (&optional buffer)
   "Kill the `claude' process in BUFFER.
 BUFFER defaults to the current buffer when called from inside a
-claude-term buffer, else it is prompted for.  Buffer teardown happens
-asynchronously once the process sentinel fires -- see
-`claude-term--on-exit' -- so this never also calls `kill-buffer'
+claude-term buffer, else it is chosen via the phase 4 registry-based
+`claude-term--read-session' picker (richer than a bare buffer-name
+`completing-read': state icon, worktree slug, repo, elapsed time) --
+repointed there from the flat `claude-term--buffer-list' scan, so
+cross-project kill targets the same picker as `claude-term-jump'.
+Buffer teardown happens asynchronously once the process sentinel fires
+-- see `claude-term--on-exit' -- so this never also calls `kill-buffer'
 itself, which would race the sentinel."
   (interactive)
-  (let ((buffer (or buffer (claude-term--read-buffer "Kill claude-term session: "))))
+  (let ((buffer (or buffer
+                     (if (claude-term--parse-buffer-name (buffer-name))
+                         (current-buffer)
+                       (claude-term-session-buffer
+                        (claude-term--read-session "Kill claude-term session: "))))))
     (with-current-buffer buffer
       (if (process-live-p ghostel--process)
           (kill-process ghostel--process)

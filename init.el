@@ -88,6 +88,7 @@ LANGUAGE should be the name without the .el extension."
 (load-module "vterm")
 (load-module "ai")
 (load-module "claude-term")
+(load-module "claude-term-registry")
 ;; (load-module "org-config")
 (load-module "git")
 (load-module "sessions")
