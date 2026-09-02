@@ -58,14 +58,85 @@ Delete the resulting `.elc` afterwards -- compiled output is not committed.
 
 ### Startup check
 
-The cheapest regression test for any module change is a clean batch start:
+The cheapest regression test for any module change is a clean batch start.
+Run it from the **main checkout only** -- it is the one command here that
+loads the real config, and therefore the one that can corrupt the package
+tree if pointed at a worktree (see Worktrees below):
 
 ```bash
-emacs --init-directory=$PWD --batch -f kill-emacs 2>&1 \
+emacs --batch --init-directory="$PWD" -l "$PWD/init.el" -f kill-emacs 2>&1 \
   | grep -Ei 'error|void-function|Cannot open load file'
 ```
 
 No output means `init.el` loaded every module without error.
+
+`-l init.el` is not redundant: `--batch` implies `-q`, so `--init-directory`
+alone sets `user-emacs-directory` without ever loading `init.el`, and the
+check silently passes no matter what is broken. Confirm a run really loaded
+the config by asking it for something the config sets, e.g. appending
+`--eval '(princ (format "%S\n" custom-enabled-themes))'` -- `nil` means init
+never ran.
+
+## Worktrees
+
+rdm roadmaps and tasks get their own git worktree under
+`../edmacs__worktrees/<slug>/`, so several Claude sessions edit this config
+at once. Module sources are per-worktree; **the package tree is not**.
+
+`.gitignore` ignores `straight/*` except `straight/versions/`, so a fresh
+worktree has a lockfile and nothing else -- no `straight/repos/`, no
+`straight/build/`. There is exactly one populated package tree, in the main
+checkout, and one Emacs daemon, whose `user-emacs-directory` is that main
+checkout. A claude-term session opened in a worktree is just a different
+project root inside that one daemon, not a second Emacs.
+
+### Never point `--init-directory` at a worktree
+
+`emacs --init-directory=<dir>` makes `<dir>` a full `user-emacs-directory`.
+`init.el` then looks for `<dir>/straight/repos/straight.el/bootstrap.el`,
+does not find it, and bootstraps a **second** package tree there -- cloning
+and rebuilding 100+ packages, and littering the worktree with `eln-cache/`,
+`auto-save/`, `backups/`, `recentf.eld`, and `history`. Worse, a build that
+runs with `straight-base-dir` set to a worktree can leave the main
+checkout's `straight/build/` full of symlinks into
+`<worktree>/straight/repos/`, which no longer exists once the worktree is
+cleaned or removed. Every package file then dangles and the daemon fails to
+start on its next launch.
+
+So: any command that loads the real config -- the startup check above, and
+every script under `scripts/` -- runs from the main checkout, even when the
+change under test lives in a worktree. Each `scripts/*.sh` defaults
+`REPO_ROOT` to its own location, so running a worktree's copy points it at
+the worktree. The `verify-*.sh` four take an explicit root as `$1`; pass the
+main checkout. `startup-bench.sh` and `gc-session-bench.sh` do not, so run
+those from the main checkout after copying the change over.
+
+Safe from anywhere, because `-Q` skips init entirely and never touches
+straight: the ERT suites and `batch-byte-compile`. Those are the normal way
+to verify a module change from inside a worktree.
+
+### If the package tree is already poisoned
+
+Symptom: init dies with `Cannot open load file` for a file that plainly
+exists under `straight/build/`, often followed by an eager-macro-expansion
+failure. Confirm it, from the main checkout:
+
+```bash
+find straight/build -type l ! -exec test -e {} \; -print | head
+```
+
+Dangling links naming a path under `edmacs__worktrees/` are the signature.
+Recovery is offline -- `straight/repos/` holds every clone already, so
+nothing is re-fetched:
+
+```bash
+rm -rf straight/build straight/build-cache.el
+emacs --batch --init-directory="$PWD" -l "$PWD/init.el" -f kill-emacs
+```
+
+Rebuilding every package takes a few minutes. Do it when no other session is
+running Emacs commands against this checkout, or the next worktree-rooted
+run will just poison it again.
 
 ## Overall Repository Structure
 
