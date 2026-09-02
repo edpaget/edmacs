@@ -25,6 +25,9 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
 - `modules/claude-term-live-test.el` -- kill/restart/exit lifecycle against real subprocesses
 - `modules/claude-term-registry-test.el` -- pure-function coverage of the session registry
 - `modules/claude-term-registry-live-test.el` -- registry wiring that needs a real spawn
+- `modules/claude-term-approval-parity-live-test.el` -- runs the real `claude`
+  binary to prove an Emacs-hosted session resolves the same permission
+  policy as a terminal one (see Tool Approval below)
 
 Run a suite in batch from the repository root, loading the modules it
 depends on first:
@@ -117,7 +120,24 @@ policy.
 
 The hooks that *are* wired into `settings.json` (Notification, PostToolUse,
 Stop, UserPromptSubmit, SessionEnd) are observational: they report session
-status back into Emacs and make no permission decision.
+status back into Emacs and make no permission decision. The first four each
+carry *two* commands -- the `emacs-status.sh` call and a pre-existing
+`workmux set-window-status` call, which is still in use for tmux-hosted
+sessions -- and both are observational, so neither affects the prompt set.
+
+That parity is checked, not just argued:
+`modules/claude-term-approval-parity-live-test.el` runs the real `claude`
+binary's `auto-mode config` (the resolved allow / soft_deny / hard_deny
+policy) through a login shell and through the real `claude-term` spawn
+context and asserts the two are byte-identical, plus asserts the spawn argv
+carries no permission-affecting flag and the spawn environment contributes
+no `CLAUDE*`/`ANTHROPIC*` variable.
+
+The Emacs-side approval layer this replaced (`modules/claude-repl/`, an
+approval socket served from Emacs plus a `PreToolUse` hook script) is
+archived at the annotated tag `archive/claude-repl`, not lost: `git show
+archive/claude-repl` for the removal and its rationale, `git show
+archive/claude-repl^:modules/claude-repl/<file>` for any file of it.
 
 ## Comments
 

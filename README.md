@@ -82,8 +82,6 @@ once (see the Claude Code docs); Emacs inherits that login and needs no
 API key of its own. Permission prompts are raised by the CLI itself, so an
 Emacs-hosted session asks for exactly what a terminal session asks for.
 
-Add this to your `~/.bashrc`, `~/.zshrc`, or equivalent.
-
 ## Shell Environment Synchronization
 
 This configuration automatically syncs environment variables from your shell to Emacs using `exec-path-from-shell`. This ensures that:
