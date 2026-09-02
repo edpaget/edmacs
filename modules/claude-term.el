@@ -28,7 +28,12 @@
 
 (use-package ghostel
   :straight t
-  :defer t)
+  :defer t
+  ;; 5 MB, ghostel's default, is roughly 5,000 rows at 80 columns and fewer
+  ;; in a narrow side pane -- short of a long agent session and of the 50,000
+  ;; lines tmux is configured for.  The scrollback is materialized into the
+  ;; Emacs buffer, so this is heap as well as terminal memory.
+  :custom (ghostel-max-scrollback (* 20 1024 1024)))
 
 ;; evil-ghostel gives, without work, insert-state on entry, ESC to normal
 ;; with cursor snapping, hjkl/w/b/e motion, and d/c/r/p implemented through
@@ -60,6 +65,7 @@
 (defvar ghostel-buffer-name-function)
 (defvar ghostel-exit-functions)
 (declare-function ghostel-exec "ghostel")
+(declare-function ghostel-sync-theme "ghostel")
 
 ;; evil-ghostel is loaded lazily via its own `:hook' above; declare its API
 ;; surface here for the same byte-compiler reason as the ghostel symbols.
@@ -122,6 +128,60 @@ side-by-side layout and is far too wide here)."
 ;; criterion); the other three edges are left unbounded since nothing
 ;; else in this module uses them yet.
 (setq window-sides-slots '(nil nil 3 nil))
+
+;; ============================================================================
+;; Terminal appearance
+;; ============================================================================
+;; ghostel reads its 16-slot terminal palette out of the `:foreground' of the
+;; `ghostel-color-*' faces, which inherit `ansi-color-*'.  solarized-theme
+;; gives six of those slots the solarized accents but inverts black and
+;; bright-black, lightens the other bright five, and leaves white unset -- so
+;; pin all sixteen to the values Ghostty's own `iTerm2 Solarized Dark' theme
+;; uses, and pin `ghostel-default' to that theme's foreground/background.
+;;
+;; Only `:foreground' is set: the native renderer is handed these as explicit
+;; colors and never applies the faces themselves to buffer text.
+
+(defconst claude-term-palette
+  '((ghostel-color-black          . "#073642")
+    (ghostel-color-red            . "#dc322f")
+    (ghostel-color-green          . "#859900")
+    (ghostel-color-yellow         . "#b58900")
+    (ghostel-color-blue           . "#268bd2")
+    (ghostel-color-magenta        . "#d33682")
+    (ghostel-color-cyan           . "#2aa198")
+    (ghostel-color-white          . "#eee8d5")
+    (ghostel-color-bright-black   . "#335e69")
+    (ghostel-color-bright-red     . "#cb4b16")
+    (ghostel-color-bright-green   . "#586e75")
+    (ghostel-color-bright-yellow  . "#657b83")
+    (ghostel-color-bright-blue    . "#839496")
+    (ghostel-color-bright-magenta . "#6c71c4")
+    (ghostel-color-bright-cyan    . "#93a1a1")
+    (ghostel-color-bright-white   . "#fdf6e3"))
+  "Ghostty's `iTerm2 Solarized Dark' palette, keyed by `ghostel-color-*' face.")
+
+(defconst claude-term-default-foreground "#839496"
+  "Foreground of Ghostty's `iTerm2 Solarized Dark' theme.")
+
+(defconst claude-term-default-background "#002b36"
+  "Background of Ghostty's `iTerm2 Solarized Dark' theme.")
+
+(defun claude-term-apply-palette ()
+  "Pin ghostel's palette faces to the colors Ghostty is configured with.
+Face attributes set this way outrank a theme's own `ansi-color-*' specs
+and survive a theme switch, so this runs once when ghostel loads.
+`ghostel-sync-theme' pushes the result into any terminal already live."
+  (interactive)
+  (pcase-dolist (`(,face . ,hex) claude-term-palette)
+    (set-face-attribute face nil :foreground hex))
+  (set-face-attribute 'ghostel-default nil
+                      :foreground claude-term-default-foreground
+                      :background claude-term-default-background)
+  (ghostel-sync-theme))
+
+(with-eval-after-load 'ghostel
+  (claude-term-apply-palette))
 
 ;; ============================================================================
 ;; Lazy ghostel loading

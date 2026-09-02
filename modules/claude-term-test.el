@@ -353,4 +353,34 @@ in a real Emacs session) to enable this test"))
             (should-not (eq (window-in-direction 'right) win)))
         (kill-buffer buf)))))
 
+(ert-deftest claude-term-test-palette-covers-every-ansi-slot ()
+  "The pinned palette names all sixteen `ghostel-color-*' faces, once each.
+ghostel is not loaded in this harness, so the face names are compared
+against a literal list rather than `ghostel-color-palette'."
+  (let ((faces (mapcar #'car claude-term-palette)))
+    (should (equal (sort (copy-sequence faces) #'string<)
+                   (sort (list 'ghostel-color-black
+                               'ghostel-color-red
+                               'ghostel-color-green
+                               'ghostel-color-yellow
+                               'ghostel-color-blue
+                               'ghostel-color-magenta
+                               'ghostel-color-cyan
+                               'ghostel-color-white
+                               'ghostel-color-bright-black
+                               'ghostel-color-bright-red
+                               'ghostel-color-bright-green
+                               'ghostel-color-bright-yellow
+                               'ghostel-color-bright-blue
+                               'ghostel-color-bright-magenta
+                               'ghostel-color-bright-cyan
+                               'ghostel-color-bright-white)
+                         #'string<)))))
+
+(ert-deftest claude-term-test-palette-colors-are-hex ()
+  (dolist (hex (append (mapcar #'cdr claude-term-palette)
+                       (list claude-term-default-foreground
+                             claude-term-default-background)))
+    (should (string-match-p "\\`#[0-9a-f]\\{6\\}\\'" hex))))
+
 ;;; claude-term-test.el ends here

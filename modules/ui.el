@@ -76,18 +76,27 @@ whole function."
   (set-iosevka-font font-size-standard))
 
 ;; ============================================================================
-;; Theme - Modus Themes
+;; Theme - Solarized Dark
 ;; ============================================================================
 
-;; modus-themes ships with Emacs and applies `modus-themes-fixed-pitch' to
-;; every markdown/org code and table face, so code stays monospaced under
-;; `variable-pitch-mode' without per-face overrides (catppuccin did not).
-;; `modus-themes-mixed-fonts' is what wires that face to `fixed-pitch'; it
-;; must be set before `load-theme'.
-(setq modus-themes-mixed-fonts t)
-
-;; Dark variant; `modus-operandi' is the light one.
-(load-theme 'modus-vivendi :no-confirm)
+;; The palette Ghostty is configured with (`theme = iTerm2 Solarized Dark'),
+;; so an Emacs-hosted Claude session reads like a terminal one.  Unlike
+;; modus-themes, solarized also themes the `ansi-color-*' faces that ghostel
+;; derives its terminal palette from -- claude-term.el pins the handful of
+;; slots solarized maps differently.
+;;
+;; The `:init' settings must land before `load-theme' reads them; scaling and
+;; variable-pitch headings are off to keep the previous modus-vivendi
+;; proportions.
+(use-package solarized-theme
+  :straight t
+  :init
+  (setq solarized-use-variable-pitch nil
+        solarized-scale-org-headlines nil
+        solarized-scale-outline-headlines nil)
+  :config
+  ;; `solarized-light' is the light one.
+  (load-theme 'solarized-dark :no-confirm))
 
 ;; ============================================================================
 ;; Nano Modeline
@@ -185,6 +194,11 @@ whole function."
 (setq scroll-conservatively 10000
       auto-window-vscroll nil
       fast-but-imprecise-scrolling t)
+
+;; ghostel forwards wheel events it does not send to the terminal on to
+;; whatever scroll package is configured, so this also governs how a
+;; claude-term pane scrolls.
+(pixel-scroll-precision-mode 1)
 
 ;; ============================================================================
 ;; Transparency (optional - commented out by default)

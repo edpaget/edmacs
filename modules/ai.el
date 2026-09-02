@@ -27,6 +27,16 @@
          (markdown-mode . olivetti-mode)
          (markdown-mode . (lambda () (setq-local line-spacing 0.15)))))
 
+;; solarized wires only `markdown-code-face' to `fixed-pitch'; the rest of
+;; markdown's code faces resolve through `default', which the
+;; `variable-pitch-mode' above remaps buffer-locally.  modus-themes covered
+;; these via `modus-themes-mixed-fonts'.
+(with-eval-after-load 'markdown-mode
+  (dolist (face '(markdown-inline-code-face
+                  markdown-pre-face
+                  markdown-language-keyword-face))
+    (set-face-attribute face nil :inherit 'fixed-pitch)))
+
 (use-package olivetti
   :straight t
   :custom (olivetti-body-width 84))

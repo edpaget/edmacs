@@ -95,6 +95,7 @@
  ("seq" . "da86da9bf111f68fb81efd466d76d53af5aebc00")
  ("sesman" . "7eb733acb33e610a53979fa7fc13393eeda3cc53")
  ("smartparens" . "82d2cf084a19b0c2c3812e0550721f8a61996056")
+ ("solarized-emacs" . "7ca8e84dc489e3dc2b806c0e2d43ab7dd293d6e3")
  ("spinner" . "fa117f0893788f3fe24673715a6b83bb34d238dd")
  ("straight.el" . "e40a5b7f8b0c1bb2cde0e7e477b5f81303e34b95")
  ("suggest.el" . "d1395f18519527efc3b43a7b148ebb139017e9ae")
