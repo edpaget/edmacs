@@ -754,6 +754,35 @@ still excludes it."
             (let ((buf (edmacs-sidebar--buffer (selected-frame))))
               (when (buffer-live-p buf) (kill-buffer buf)))))))
 
+    (ert-deftest edmacs-frames-live-test-direct-delete-frame-tears-down-watch ()
+      "`edmacs-ns-close-frame' in sessions.el deletes a repo's frame with a
+plain `delete-frame' call, never going through `tab-bar-close-tab'/
+`tab-bar-close-last-tab-choice' at all -- so the watch teardown must
+also fire from the `delete-frame-functions' hook, not only from
+`edmacs-frames--close-last-tab'. This drives that exact bare
+`delete-frame' path against a repo's last frame and asserts the
+watch/timer bookkeeping is gone afterward."
+      (edmacs-frames-live-test--with-sandbox sandbox
+        (let* ((repo-a (expand-file-name "repoA" sandbox))
+               (repo-b (expand-file-name "repoB" sandbox))
+               (edmacs-git-common-dir-cache (make-hash-table :test #'equal)))
+          (edmacs-frames-live-test--make-git-repo repo-a)
+          (edmacs-frames-live-test--make-git-repo repo-b)
+          (edmacs-frames-live-test--with-frames (fa fb)
+            (with-selected-frame fa (edmacs-frames-open repo-a))
+            (with-selected-frame fb (edmacs-frames-open repo-b))
+            (let* ((real-b (edmacs-frames-for-repo (edmacs-frames--repo-of repo-b)))
+                   (common-b (edmacs-frames--repo-of repo-b)))
+              (unless (gethash common-b edmacs-frames--worktree-watches)
+                (ert-skip "no file-notify watch was established for the \
+sandbox repo in this environment (backend unavailable?) -- cannot exercise \
+teardown-on-delete-frame"))
+              ;; Bypass `tab-bar-close-tab' entirely -- exactly what
+              ;; `edmacs-ns-close-frame' does.
+              (delete-frame real-b t)
+              (should-not (gethash common-b edmacs-frames--worktree-watches))
+              (should-not (gethash common-b edmacs-frames--worktree-refresh-timers)))))))
+
     ;; ==========================================================================
     ;; Worktree discovery (edmacs-sidebar roadmap phase 3) -- real
     ;; `workmux add'/`remove' reflected via the real file-notify backend

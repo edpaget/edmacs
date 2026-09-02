@@ -598,6 +598,30 @@ the tty frames this module's own batch test suite creates."
                                             (not (frame-parameter f 'parent-frame))))
                            (frame-list)))))
 
+(defun edmacs-frames--maybe-teardown-watch-for-frame (frame)
+  "Tear down FRAME's repo's worktree watch if FRAME is that repo's last frame.
+Shared by `edmacs-frames--close-last-tab' and the `delete-frame-functions'
+hook below, since a repo frame can be lost two ways on this daemon: tabs
+closed one-by-one down to zero (routed through
+`tab-bar-close-last-tab-choice'), or a direct `delete-frame' call such as
+`edmacs-ns-close-frame' in sessions.el, which never consults
+`tab-bar-close-last-tab-choice' at all. Both callers run this while
+FRAME is still live and its `edmacs-repo' still readable -- required
+because `delete-frame-functions' fires before FRAME is actually removed
+from `frame-list' -- and only tear down when no OTHER live frame still
+carries the same repo (the one-frame-per-repo invariant can be
+transiently violated by spare-frame reuse). Idempotent: a repo whose
+watch is already torn down is a no-op, so the two call sites racing on
+the same frame (`edmacs-frames--close-last-tab' calling `delete-frame',
+which then re-fires this via the hook) is harmless."
+  (let ((common (frame-parameter frame 'edmacs-repo)))
+    (when (and common
+               (null (seq-remove (lambda (f) (eq f frame))
+                                  (edmacs-frames--frames-for-repo-common common))))
+      (edmacs-frames--teardown-worktrees-watch common))))
+
+(add-hook 'delete-frame-functions #'edmacs-frames--maybe-teardown-watch-for-frame)
+
 (defun edmacs-frames--close-last-tab (_tab)
   "`tab-bar-close-last-tab-choice' handler for a repo frame's last tab.
 Deletes the frame, unless it is the only frame left in the whole
@@ -609,17 +633,13 @@ becomes an adoptable spare frame for the next `edmacs-frames-open'
 rather than a stale relic still naming a repo with no tabs left.
 
 Either branch means FRAME's repo (if any) has just lost its last frame,
-so `edmacs-frames--teardown-worktrees-watch' runs first, while
+so `edmacs-frames--maybe-teardown-watch-for-frame' runs first, while
 `edmacs-repo' is still readable and before `delete-frame'/reset can
-race a debounce timer that is already scheduled -- but only when no
-OTHER live frame still carries the same repo (the one-frame-per-repo
-invariant can be transiently violated by spare-frame reuse)."
-  (let* ((frame (selected-frame))
-         (common (frame-parameter frame 'edmacs-repo)))
-    (when (and common
-               (null (seq-remove (lambda (f) (eq f frame))
-                                  (edmacs-frames--frames-for-repo-common common))))
-      (edmacs-frames--teardown-worktrees-watch common))
+race a debounce timer that is already scheduled. The reset branch never
+calls `delete-frame' (so the hook above won't fire for it), which is
+why this teardown call is not redundant with that hook."
+  (let* ((frame (selected-frame)))
+    (edmacs-frames--maybe-teardown-watch-for-frame frame)
     (if (edmacs-frames--only-frame-p frame)
         (progn
           (switch-to-buffer (get-buffer-create "*scratch*"))

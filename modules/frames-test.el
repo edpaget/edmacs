@@ -393,6 +393,50 @@ watch, but leaves the cache entry itself in place."
       ;; Deliberately not evicted -- see the function's own commentary.
       (should (gethash "/repo/.git/" edmacs-frames--worktrees-cache)))))
 
+(ert-deftest edmacs-frames-test-maybe-teardown-watch-wired-to-delete-frame-functions ()
+  "The shared teardown helper must run on ANY frame deletion, not only
+`edmacs-frames--close-last-tab' -- `edmacs-ns-close-frame' in sessions.el
+deletes a frame directly, bypassing `tab-bar-close-last-tab-choice'
+entirely, so `delete-frame-functions' is the only hook both paths share."
+  (should (memq #'edmacs-frames--maybe-teardown-watch-for-frame
+                delete-frame-functions)))
+
+(ert-deftest edmacs-frames-test-maybe-teardown-watch-tears-down-last-frame ()
+  "A direct `delete-frame'-style call on a repo's only frame reaps its
+watch, independent of `tab-bar-close-last-tab-choice'."
+  (edmacs-frames-test--with-fake-frames
+      '((fa . ((edmacs-repo . "/repo/.git/"))))
+    (let ((edmacs-frames--worktree-watches (make-hash-table :test #'equal))
+          (edmacs-frames--worktree-refresh-timers (make-hash-table :test #'equal))
+          (torn-down nil))
+      (cl-letf (((symbol-function 'edmacs-frames--teardown-worktrees-watch)
+                 (lambda (common) (push common torn-down))))
+        (edmacs-frames--maybe-teardown-watch-for-frame 'fa))
+      (should (equal torn-down '("/repo/.git/"))))))
+
+(ert-deftest edmacs-frames-test-maybe-teardown-watch-spares-shared-repo ()
+  "A sibling frame still on the same repo (transient spare-frame reuse)
+keeps the watch alive -- only the truly-last frame for a repo tears it
+down."
+  (edmacs-frames-test--with-fake-frames
+      '((fa . ((edmacs-repo . "/repo/.git/")))
+        (fb . ((edmacs-repo . "/repo/.git/"))))
+    (let ((torn-down nil))
+      (cl-letf (((symbol-function 'edmacs-frames--teardown-worktrees-watch)
+                 (lambda (common) (push common torn-down))))
+        (edmacs-frames--maybe-teardown-watch-for-frame 'fa))
+      (should-not torn-down))))
+
+(ert-deftest edmacs-frames-test-maybe-teardown-watch-noop-for-repo-less-frame ()
+  "A repo-less frame (e.g. the daemon's spare/scratch frame) has no
+`edmacs-repo' to tear anything down for."
+  (edmacs-frames-test--with-fake-frames '((fa . nil))
+    (let ((torn-down nil))
+      (cl-letf (((symbol-function 'edmacs-frames--teardown-worktrees-watch)
+                 (lambda (common) (push common torn-down))))
+        (edmacs-frames--maybe-teardown-watch-for-frame 'fa))
+      (should-not torn-down))))
+
 ;; ============================================================================
 ;; AC4 -- edmacs-frames-open calls refresh/watch exactly once per new repo
 ;; ============================================================================
