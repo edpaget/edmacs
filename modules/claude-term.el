@@ -64,10 +64,9 @@
 ;; evil-ghostel is loaded lazily via its own `:hook' above; declare its API
 ;; surface here for the same byte-compiler reason as the ghostel symbols.
 (defvar evil-ghostel-escape)
-(defvar evil-ghostel-mode-map)
 (declare-function ghostel-send-string "ghostel")
 (declare-function ghostel-send-C-g "ghostel")
-(declare-function evil-define-key* "evil-core")
+(declare-function evil-define-minor-mode-key "evil-core")
 
 ;; ============================================================================
 ;; Customization
@@ -266,6 +265,15 @@ buffer."
 ;; any buffer-local value set before that point. A `ghostel-mode-hook'
 ;; function runs after that wipe, so its `setq-local' survives it.
 
+(define-minor-mode claude-term-mode
+  "Marker minor mode for a claude-term session buffer.
+Carries no keymap of its own; `evil-define-minor-mode-key', below (see
+the C-g scoping section near `claude-term-send-escape'), associates a
+C-g binding with this mode's symbol directly. Turned on, buffer-locally,
+only by `claude-term--configure-evil-escape' -- not meant to be toggled
+by hand."
+  :lighter nil)
+
 (defun claude-term--configure-evil-escape ()
   "Route insert-state ESC to evil, buffer-locally, in claude-term buffers.
 Added to `ghostel-mode-hook' at an early depth so it runs before
@@ -275,9 +283,16 @@ depth by this module's `use-package evil-ghostel' form) reads
 NAME rather than `claude-term--root': name is intrinsic to the buffer
 and survives `kill-all-local-variables' (this hook itself runs after
 that wipe on a first spawn), whereas the buffer-local
-`claude-term--root' does not survive it."
+`claude-term--root' does not survive it.
+
+Also turns on the marker minor mode `claude-term-mode' (see the C-g
+section below), for the same buffers, by the same guard -- this is
+what scopes the C-g interrupt-key override to claude-term buffers at
+the level of real evil key-binding resolution, not merely inside
+`claude-term-send-escape's own dispatch."
   (when (claude-term--parse-buffer-name (buffer-name))
-    (setq-local evil-ghostel-escape 'evil)))
+    (setq-local evil-ghostel-escape 'evil)
+    (claude-term-mode 1)))
 
 ;; Negative DEPTH (Emacs 30+; this repo runs 31.1) guarantees this runs
 ;; before `evil-ghostel-mode's own `ghostel-mode-hook' entry regardless
@@ -323,33 +338,56 @@ reaches the terminal, so Claude Code's own interrupt key needs a
 separate binding -- this one line mirrors claude-code.el's C-g handler
 \(claude-code.el:1087\).
 
-Scoped to claude-term buffers only, by the same
-`claude-term--parse-buffer-name' check `claude-term--configure-evil-escape'
-uses: this is bound on the shared, package-global `evil-ghostel-mode-map',
-which every `evil-ghostel-mode' buffer uses regardless of what program is
-running in it, not just claude-term sessions. In any other ghostel
-buffer, fall through to ghostel's own documented C-g behavior
-\(`ghostel-send-C-g', which sends a raw C-g/BEL byte and clears Emacs's
-`quit-flag'\) rather than silently substituting ESC for programs that
-distinguish the two."
+The buffer-name guard below is defense in depth, kept for callers that
+invoke this command directly (as
+`claude-term-test-send-escape-falls-through-to-C-g-elsewhere' does);
+the real scoping mechanism is that C-g is only EVER bound to this
+command while `claude-term-mode' is on (see the section below), which
+`claude-term--configure-evil-escape' enables in claude-term buffers
+only. In any other ghostel buffer, fall through to ghostel's own
+documented C-g behavior (`ghostel-send-C-g', which sends a raw C-g/BEL
+byte and clears Emacs's `quit-flag') rather than silently substituting
+ESC for programs that distinguish the two."
   (interactive)
   (if (claude-term--parse-buffer-name (buffer-name))
       (ghostel-send-string "\e")
     (ghostel-send-C-g)))
 
-;; Bound to C-g in insert state, once evil-ghostel is loaded. This
-;; deliberately shadows ghostel's default passthrough of a raw C-g to
-;; the terminal IN CLAUDE-TERM BUFFERS ONLY (see
-;; `claude-term-send-escape's own buffer-name guard) -- Claude Code's
-;; own default C-g binding is "edit prompt in external editor", an
-;; accepted trade-off per the phase body, remediable via
-;; ~/.claude/keybindings.json if it proves painful. The keymap itself is
-;; package-global (every `evil-ghostel-mode' buffer shares
-;; `evil-ghostel-mode-map'), so the buffer-name guard inside
-;; `claude-term-send-escape' -- not this binding -- is what keeps the
-;; override from leaking into unrelated `M-x ghostel' terminals.
+;; ----------------------------------------------------------------------------
+;; C-g scoping: a dedicated marker minor mode, not the shared
+;; evil-ghostel-mode-map
+;; ----------------------------------------------------------------------------
+;; "Scoped to claude-term buffers and only those" is a claim about REAL
+;; evil key-binding resolution, not merely about `claude-term-send-escape's
+;; own internal dispatch (kept above as defense in depth). Binding C-g
+;; directly on the shared, package-global `evil-ghostel-mode-map' -- as an
+;; earlier pass of this phase did -- makes `(key-binding (kbd "C-g"))'
+;; resolve to `claude-term-send-escape' in EVERY `evil-ghostel-mode'
+;; buffer, since that one keymap object is shared by all of them
+;; regardless of what program is running underneath.
+;;
+;; Fixed by binding C-g to a lightweight marker minor mode's own keymap
+;; instead, via `evil-define-minor-mode-key' rather than `evil-define-key*'
+;; on `evil-ghostel-mode-map'. `evil-state-keymaps' (evil-core.el)
+;; concatenates keymap buckets in a fixed structural order: intercept,
+;; local, MINOR-MODE-MAPS (`evil-define-minor-mode-key's bucket), then
+;; AUXILIARY-MAPS (where `evil-define-key*' on an ordinary keymap like
+;; `evil-ghostel-mode-map' lands), then overriding maps, then the main
+;; state map. A minor-mode-maps entry therefore always wins over an
+;; aux-maps entry -- independent of which mode was turned on first --
+;; so scoping the binding to a mode that is buffer-local-off everywhere
+;; except claude-term buffers makes real key-binding resolution itself
+;; buffer-scoped, not just this command's own internal branch.
+;; `claude-term-mode' itself is defined earlier, next to
+;; `claude-term--configure-evil-escape' (which turns it on), so that
+;; function's use of it is never a forward reference.
+
+;; Claude Code's own default C-g binding is "edit prompt in external
+;; editor", so this is a deliberate, accepted shadowing trade-off per the
+;; phase body, remediable via ~/.claude/keybindings.json if it proves
+;; painful in daily use -- not fixed here.
 (with-eval-after-load 'evil-ghostel
-  (evil-define-key* 'insert evil-ghostel-mode-map
+  (evil-define-minor-mode-key 'insert 'claude-term-mode
     (kbd "C-g") #'claude-term-send-escape))
 
 ;; "No binding requires conscious thought" (the phase's Done-when
