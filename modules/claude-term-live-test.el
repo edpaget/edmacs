@@ -79,15 +79,30 @@
 ;;   `evil-ghostel-escape' on enable.
 ;; - `claude-term-live-test-real-evil-ghostel-c-g-dispatches-to-send-escape'
 ;;   closes the matching gap on the C-g/interrupt side: with the real
-;;   `evil-ghostel-mode-map' active in a real `ghostel-mode' buffer and
-;;   evil actually in insert state, `(key-binding (kbd "C-g"))' --
-;;   exactly what a real keypress resolves through, via evil's
-;;   auxiliary/emulation keymaps, not a plain `lookup-key' against the
-;;   base map -- must return `claude-term-send-escape', and invoking it
-;;   must call `ghostel-send-string' with a literal ESC. Previously only
-;;   `claude-term-send-escape's own dispatch logic was unit-tested in
-;;   isolation; the `evil-define-key*' installation call itself, and the
-;;   real keymap it installs into, had no exercise.
+;;   `claude-term-mode' and `evil-ghostel-mode' both active in a real
+;;   `ghostel-mode' claude-term buffer and evil actually in insert state,
+;;   `(key-binding (kbd "C-g"))' -- exactly what a real keypress resolves
+;;   through, via evil's minor-mode/auxiliary/emulation keymaps, not a
+;;   plain `lookup-key' against a base map -- must return
+;;   `claude-term-send-escape', and invoking it must call
+;;   `ghostel-send-string' with a literal ESC.
+;; - `claude-term-live-test-real-evil-ghostel-c-g-scoped-to-claude-term-buffers-only'
+;;   closes the "and only those" half of AC2: in a real `evil-ghostel-mode'
+;;   buffer that is NOT a claude-term buffer (so `claude-term-mode' is
+;;   never turned on), the same real key-binding resolution for C-g must
+;;   NOT return `claude-term-send-escape' -- it must fall through to
+;;   ghostel's own default (`ghostel-send-C-g', bound on `ghostel-mode-map').
+;;   Before this, `claude-term-send-escape' was bound directly on the
+;;   shared, package-global `evil-ghostel-mode-map', so `(key-binding (kbd
+;;   "C-g"))' resolved to it in EVERY `evil-ghostel-mode' buffer regardless
+;;   of buffer identity, and only this command's own internal
+;;   `claude-term--parse-buffer-name' branch (exercised in isolation by
+;;   `claude-term-test-send-escape-falls-through-to-C-g-elsewhere') kept
+;;   behavior correct -- real key-binding resolution itself did not scope
+;;   the override. The fix binds C-g via `evil-define-minor-mode-key' on
+;;   the marker minor mode `claude-term-mode' instead of `evil-define-key*'
+;;   on `evil-ghostel-mode-map', so the binding is reachable only while
+;;   that mode is buffer-locally on.
 ;;
 ;; Run:
 ;;   emacs -Q --batch -l ert -l modules/claude-term.el \
@@ -750,19 +765,20 @@ outside an alt-screen app, exactly the bug this phase exists to fix."
 
 (ert-deftest claude-term-live-test-real-evil-ghostel-c-g-dispatches-to-send-escape ()
   "`claude-term-send-escape' must be C-g's REACHABLE insert-state binding
-in a real `evil-ghostel-mode' buffer, and invoking it must send a
-literal ESC.
+in a real claude-term buffer, and invoking it must send a literal ESC.
 
 `(key-binding (kbd \"C-g\"))' is what a real keypress resolves through
--- evil's auxiliary/emulation-mode-map-alist machinery layered on top
-of `evil-ghostel-mode-map', not a plain `lookup-key' against that map
-directly (which returns nil even when the binding is live, since
-`evil-define-key*' installs state bindings into a separate auxiliary
-keymap). Only `claude-term-send-escape's own dispatch logic
-\(buffer-name guard -> `ghostel-send-string' vs. `ghostel-send-C-g'\) had
-unit coverage before this; the `evil-define-key*' call installing it on
-`evil-ghostel-mode-map', and evil's own state-keymap resolution, had
-none."
+-- evil's minor-mode/auxiliary/emulation-mode-map-alist machinery, not a
+plain `lookup-key' against a base map directly (which returns nil even
+when the binding is live, since `evil-define-minor-mode-key' installs
+state bindings into a separate keymap keyed by the mode symbol, not a
+literal keymap object). This buffer's name matches
+`claude-term--buffer-name-regexp', so the real `ghostel-mode-hook' chain
+(`claude-term--configure-evil-escape' at depth -90) turns on the marker
+minor mode `claude-term-mode', which is what C-g's binding is actually
+keyed to -- see
+`claude-term-live-test-real-evil-ghostel-c-g-scoped-to-claude-term-buffers-only'
+immediately below for the negative case proving that scoping is real."
   (unless (claude-term-live-test--real-evil-ghostel-stack-available-p)
     (ert-skip "real evil/ghostel/evil-ghostel sources not all present in this checkout"))
   (claude-term-live-test--load-real-evil-ghostel-stack)
@@ -805,6 +821,76 @@ none."
                          (lambda () (push :c-g sent))))
                 (call-interactively #'claude-term-send-escape))
               (should (equal sent '("\e"))))))
+      (remove-hook 'ghostel-mode-hook #'evil-ghostel-mode)
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (when (bound-and-true-p evil-local-mode) (evil-local-mode -1))
+          (when (bound-and-true-p evil-ghostel-mode) (evil-ghostel-mode -1))
+          (when (bound-and-true-p claude-term-mode) (claude-term-mode -1))))
+      (dolist (fn stubbed) (fmakunbound fn))
+      (when-let* ((proc (get-buffer-process buf))) (delete-process proc))
+      (kill-buffer buf))))
+
+(ert-deftest claude-term-live-test-real-evil-ghostel-c-g-scoped-to-claude-term-buffers-only ()
+  "C-g must NOT resolve to `claude-term-send-escape' outside claude-term buffers.
+
+This is the negative half of AC2's \"and only those\" clause, proven at
+the level of real evil key-binding resolution rather than only
+`claude-term-send-escape's own internal dispatch branch (already
+covered, for a plain non-claude-term buffer name, by
+`claude-term-test-send-escape-falls-through-to-C-g-elsewhere' -- but
+that test calls the command directly, never driving real evil keymap
+resolution at all).
+
+This buffer's name does NOT match `claude-term--buffer-name-regexp', so
+`claude-term--configure-evil-escape' (on `ghostel-mode-hook' at depth
+-90) declines to turn on `claude-term-mode' for it, even though
+`evil-ghostel-mode' itself is still turned on (mirroring
+`use-package evil-ghostel's global `:hook', which activates the minor
+mode for every ghostel buffer regardless of program). With
+`claude-term-mode' off, real key-binding resolution for insert-state
+C-g must fall through past evil entirely to `ghostel-mode-map's own
+default, `ghostel-send-C-g' -- proving the scoping lives in which
+keymap the binding is installed on, not merely in a guard inside the
+command."
+  (unless (claude-term-live-test--real-evil-ghostel-stack-available-p)
+    (ert-skip "real evil/ghostel/evil-ghostel sources not all present in this checkout"))
+  (claude-term-live-test--load-real-evil-ghostel-stack)
+  (let ((stubbed nil)
+        (buf (get-buffer-create "*ghostel:live-test-c-g-elsewhere*")))
+    (unwind-protect
+        (progn
+          (dolist (fn claude-term-live-test--ghostel-native-fns)
+            (unless (fboundp fn)
+              (push fn stubbed)
+              (fset fn (lambda (&rest _) nil))))
+          (add-hook 'ghostel-mode-hook #'evil-ghostel-mode)
+          (cl-letf (((symbol-function 'claude-term--ensure-ghostel)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'ghostel--load-module)
+                     (lambda (&rest _) t))
+                    ((symbol-function 'ghostel--spawn-pty)
+                     (lambda (&rest _)
+                       (let ((proc (start-process
+                                    "claude-term-live-test-c-g-elsewhere" (current-buffer)
+                                    "sleep" "3600")))
+                         (set-process-query-on-exit-flag proc nil)
+                         (setq-local ghostel--process proc)
+                         proc))))
+            (claude-term--exec buf (temporary-file-directory) nil nil))
+          (with-current-buffer buf
+            (evil-local-mode 1)
+            (evil-insert-state)
+            ;; Guard the guard: `evil-ghostel-mode' is still on (the
+            ;; global-activation side effect this phase's plan calls
+            ;; out), but this buffer's name must not have triggered the
+            ;; claude-term-only guard.
+            (should (derived-mode-p 'ghostel-mode))
+            (should (bound-and-true-p evil-ghostel-mode))
+            (should-not (bound-and-true-p claude-term-mode))
+            (should (eq evil-state 'insert))
+            (should-not (eq (key-binding (kbd "C-g")) #'claude-term-send-escape))
+            (should (eq (key-binding (kbd "C-g")) #'ghostel-send-C-g))))
       (remove-hook 'ghostel-mode-hook #'evil-ghostel-mode)
       (when (buffer-live-p buf)
         (with-current-buffer buf

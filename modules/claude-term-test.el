@@ -47,13 +47,19 @@
   (with-temp-buffer
     (rename-buffer "*claude-term:demo*")
     (claude-term--configure-evil-escape)
-    (should (eq (buffer-local-value 'evil-ghostel-escape (current-buffer)) 'evil))))
+    (should (eq (buffer-local-value 'evil-ghostel-escape (current-buffer)) 'evil))
+    ;; `claude-term-mode' is what AC2's C-g binding is actually keyed to
+    ;; (see the section comment near `claude-term-send-escape' in
+    ;; claude-term.el); confirm it comes on alongside the escape-routing
+    ;; value in the same guarded branch.
+    (should (bound-and-true-p claude-term-mode))))
 
 (ert-deftest claude-term-test-configure-evil-escape-ignores-unrelated-buffer ()
   (with-temp-buffer
     (rename-buffer "*scratch-unrelated*")
     (claude-term--configure-evil-escape)
-    (should-not (local-variable-p 'evil-ghostel-escape))))
+    (should-not (local-variable-p 'evil-ghostel-escape))
+    (should-not (bound-and-true-p claude-term-mode))))
 
 (ert-deftest claude-term-test-send-escape-sends-raw-escape-in-claude-term-buffer ()
   (let ((calls nil))
@@ -66,10 +72,14 @@
 
 (ert-deftest claude-term-test-send-escape-falls-through-to-C-g-elsewhere ()
   "In a non-claude-term ghostel buffer, C-g must not become a raw ESC.
-Guards against `claude-term-send-escape' leaking beyond claude-term
-sessions when bound on the shared, package-global
-`evil-ghostel-mode-map' (every `evil-ghostel-mode' buffer, not only
-claude-term ones, uses that one keymap object)."
+Exercises `claude-term-send-escape's own internal buffer-name guard in
+isolation (defense in depth); the real scoping mechanism -- C-g is only
+ever bound to this command via the marker minor mode `claude-term-mode',
+which is buffer-locally off outside claude-term buffers -- is proven at
+the level of real evil key-binding resolution by
+`claude-term-live-test-real-evil-ghostel-c-g-scoped-to-claude-term-buffers-only'
+in claude-term-live-test.el, since a plain call here never drives evil's
+keymap machinery at all."
   (let ((escape-calls nil)
         (c-g-calls 0))
     (cl-letf (((symbol-function 'ghostel-send-string)
