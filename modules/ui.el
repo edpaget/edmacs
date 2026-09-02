@@ -104,6 +104,23 @@ whole function."
   (add-hook 'messages-buffer-mode-hook #'nano-modeline-message-mode)
   (add-hook 'term-mode-hook #'nano-modeline-term-mode))
 
+;; nano-modeline bakes theme colors into its faces at load time, and a daemon
+;; has no display then, so they come out as tty fallbacks. Re-declare them
+;; once the first GUI frame exists; `defface' only re-evaluates a face whose
+;; `face-defface-spec' property has been cleared.
+(defun edmacs--nano-modeline-refresh-faces (frame)
+  "Re-derive nano-modeline's faces on FRAME, the first graphical frame."
+  (when (display-graphic-p frame)
+    (remove-hook 'after-make-frame-functions #'edmacs--nano-modeline-refresh-faces)
+    (with-selected-frame frame
+      (dolist (face (face-list))
+        (when (string-prefix-p "nano-modeline" (symbol-name face))
+          (put face 'face-defface-spec nil)))
+      (load-library "nano-modeline"))))
+
+(when (daemonp)
+  (add-hook 'after-make-frame-functions #'edmacs--nano-modeline-refresh-faces))
+
 ;; ============================================================================
 ;; Icons - Nerd Icons
 ;; ============================================================================
