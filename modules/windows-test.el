@@ -637,6 +637,22 @@ match `claude-term--display-buffer' exactly."
             (should (eq (window-buffer win) buf)))
         (kill-buffer buf)))))
 
+(ert-deftest edmacs-windows-test-promote-numeric-prefix-negative-is-noop ()
+  "A negative prefix must not fall through to `nth's CAR-on-negative-index behavior."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (main-buf (window-buffer main))
+           (buf (generate-new-buffer "*ewt-promote-negative*"))
+           (win (edmacs-windows-test--display-agent-pane buf 0)))
+      (unwind-protect
+          (let ((current-prefix-arg -1))
+            (call-interactively #'edmacs-window-promote)
+            (should (eq (window-buffer main) main-buf))
+            (should (eq (window-buffer win) buf)))
+        (kill-buffer buf)))))
+
 ;; ---------------------------------------------------------------------------
 ;; AC4 -- stack-close deletes an agent pane's window without killing its buffer
 ;; ---------------------------------------------------------------------------
@@ -845,6 +861,23 @@ auxiliary keymap hung off `general-override-mode-map', not into
     (dolist (pair edmacs-windows-test--spc-w-new-leaves)
       (should (eq (lookup-key keymap (kbd (concat "SPC w " (car pair))))
                   (cdr pair))))))
+
+(ert-deftest edmacs-windows-test-spc-w-not-in-evil-normal-state-map-directly ()
+  "Documents why this file resolves `SPC w' through the override auxiliary
+keymap rather than `evil-normal-state-map' directly: `leader-def' binds
+with `:keymaps \\='override', which general.el/evil put ahead of
+`evil-normal-state-map' in the active keymap search order via
+`general-override-mode-map' (a minor-mode map), so `evil-normal-state-map'
+itself never gains these entries even though the override keymap is what
+a real `SPC w -' keypress actually dispatches through. `lookup-key'
+returns nil or an integer (a valid-prefix-but-undefined-continuation
+marker, per its docstring) here, never the command -- asserted as
+\"not the command symbol\" so the two keymaps' differing contents can't
+be mistaken for a bug."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (should-not (eq (lookup-key evil-normal-state-map (kbd "SPC w -"))
+                  'edmacs-window-demote)))
 
 (ert-deftest edmacs-windows-test-spc-w-keeps-a-which-key-heading ()
   (unless (edmacs-windows-test--ensure-spc-w-bindings)

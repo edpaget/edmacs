@@ -96,12 +96,12 @@ claude-term and *Warnings* use) count as stack windows: promoting from
 one puts its buffer in main and the old main buffer in that pane. From
 the main window itself, swap with the first stack window.
 With a numeric prefix arg N, WINDOW defaults to the Nth window of
-`edmacs-stack-windows' (0-based); an N past the end of the stack is a
-no-op with a message rather than an error."
+`edmacs-stack-windows' (0-based); an N past the end of the stack, or
+a negative N, is a no-op with a message rather than an error."
   (interactive
    (list (when current-prefix-arg
            (let* ((idx (prefix-numeric-value current-prefix-arg))
-                  (win (nth idx (edmacs-stack-windows))))
+                  (win (and (>= idx 0) (nth idx (edmacs-stack-windows)))))
              (or win
                  (progn
                    (message "edmacs-window-promote: no stack window at index %d" idx)
