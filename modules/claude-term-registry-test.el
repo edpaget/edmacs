@@ -9,7 +9,8 @@
 ;; wiring, both of which need a real subprocess to observe.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/claude-term.el \
+;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/claude-term.el \
 ;;         -l modules/claude-term-registry.el \
 ;;         -l modules/claude-term-registry-test.el \
 ;;         -f ert-run-tests-batch-and-exit
@@ -59,6 +60,27 @@ as a second, distinct session there)."
           (should (> (claude-term-session-last-used (claude-term-registry-get root "x")) 1.0))
           (claude-term-registry-remove root "x")
           (should-not (claude-term-registry-get root "x")))
+      (kill-buffer buf))))
+
+(ert-deftest claude-term-registry-test-put-populates-process-field ()
+  "The registry's struct literally holds a PROCESS field (per the phase
+body's own \"buffer, process, instance name, and last-used time\" data
+shape), snapshotted from the buffer's own `ghostel--process' at put-time.
+A buffer with no buffer-local `ghostel--process' at all -- e.g. a bare
+test buffer never passed through `claude-term--exec' -- gets nil rather
+than a `void-variable' error."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (buf (generate-new-buffer "claude-term-registry-test-process-field")))
+    (unwind-protect
+        (progn
+          (claude-term-registry-put "/tmp/ctr-proc-none/" nil buf)
+          (should-not (claude-term-session-process
+                       (claude-term-registry-get "/tmp/ctr-proc-none/" nil)))
+          (with-current-buffer buf (setq-local ghostel--process 'fake-process))
+          (claude-term-registry-put "/tmp/ctr-proc-some/" nil buf)
+          (should (eq (claude-term-session-process
+                       (claude-term-registry-get "/tmp/ctr-proc-some/" nil))
+                      'fake-process)))
       (kill-buffer buf))))
 
 (ert-deftest claude-term-registry-test-touch-is-noop-for-unregistered-session ()
@@ -196,7 +218,7 @@ needing a real pruned worktree) falls back to the bare leaf name rather
 than erroring the whole label."
   (let ((root (file-name-as-directory
                (make-temp-file "claude-term-registry-test-nogit-" t)))
-        (claude-term-registry--repo-name-cache (make-hash-table :test #'equal)))
+        (edmacs-git-common-dir-cache (make-hash-table :test #'equal)))
     (unwind-protect
         (cl-letf (((symbol-function 'process-file) (lambda (&rest _) 128)))
           (should (equal (claude-term-registry--repo-name root) (claude-term--leaf root))))
@@ -278,6 +300,37 @@ than erroring the whole label."
           (should (claude-term-registry-get root "a")))
       (kill-buffer buf))))
 
+(ert-deftest claude-term-registry-test-rename-rejects-cross-root-leaf-collision ()
+  "Renaming to an instance label already used by an UNRELATED project's
+live buffer that merely shares ROOT's leaf directory name is rejected
+via `user-error' -- `claude-term-registry-rename's own collision check
+is scoped to THIS root, so it cannot see a different root's buffer; left
+unhandled, `rename-buffer' would silently uniquify the on-disk name
+(e.g. a `<2>' suffix) out of `claude-term--buffer-name-regexp's reach,
+with no error at all. The rejection happens before anything is
+touched: the buffer being renamed keeps its original registry entry and
+buffer-local instance."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (buf (generate-new-buffer "*claude-term:shared-leaf*"))
+        ;; An unrelated project's live claude-term buffer -- same leaf,
+        ;; different root -- deliberately never registered in THIS
+        ;; test's registry table, mirroring a session this Emacs
+        ;; instance happens to have open that this test never put.
+        (other-buf (generate-new-buffer "*claude-term:shared-leaf:taken*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (setq-local claude-term--root "/tmp/ctr-rename-cross-root-a/shared-leaf/")
+            (setq-local claude-term--instance nil))
+          (claude-term-registry-put "/tmp/ctr-rename-cross-root-a/shared-leaf/" nil buf)
+          (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "taken")))
+            (should-error (claude-term-rename buf) :type 'user-error))
+          (should (claude-term-registry-get "/tmp/ctr-rename-cross-root-a/shared-leaf/" nil))
+          (should-not (buffer-local-value 'claude-term--instance buf))
+          (should (equal (buffer-name buf) "*claude-term:shared-leaf*")))
+      (kill-buffer buf)
+      (kill-buffer other-buf))))
+
 ;; ============================================================================
 ;; EDMACS_AGENT_INSTANCE pre-spawn env hook
 ;; ============================================================================
@@ -306,6 +359,96 @@ non-claude-term ghostel session someone opens directly."
       (rename-buffer "*claude-term:leaf:b*")
       (claude-term-registry--set-instance-env)
       (should (equal (getenv "EDMACS_AGENT_INSTANCE") "b")))))
+
+;; ============================================================================
+;; SPC a command bodies (F1: exercise the command functions themselves,
+;; not merely their SPC a keybindings)
+;; ============================================================================
+
+(ert-deftest claude-term-registry-test-jump-selects-and-touches-session ()
+  "`claude-term-jump' -- the actual command SPC a j invokes -- displays
+the chosen session's buffer in a (real) side window, selecting it, and
+touches its last-used time. Wires the separately-tested
+`claude-term--read-session' picker primitive onto
+`claude-term--pop-to-side-window'/`claude-term-registry-touch', neither
+of which was previously exercised by any test calling `claude-term-jump'
+itself."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (claude-term--next-slot 0)
+        (window-sides-slots '(nil nil 3 nil))
+        (buf (generate-new-buffer "*claude-term:jump-leaf*"))
+        (root "/tmp/ctr-jump-root/"))
+    (unwind-protect
+        (progn
+          (claude-term-registry-put root nil buf)
+          (setf (claude-term-session-last-used (claude-term-registry-get root nil)) 1.0)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _)
+                       (claude-term--session-label (claude-term-registry-get root nil)))))
+            (claude-term-jump))
+          (should (eq (window-buffer (selected-window)) buf))
+          (should (> (claude-term-session-last-used (claude-term-registry-get root nil)) 1.0)))
+      (kill-buffer buf))))
+
+(ert-deftest claude-term-registry-test-new-session-delegates-to-claude-term ()
+  "`claude-term-new-session' -- the actual command SPC a n invokes --
+delegates directly to the existing `claude-term' entry point with the
+given instance."
+  (let (captured)
+    (cl-letf (((symbol-function 'claude-term)
+               (lambda (&optional instance &rest _) (setq captured instance))))
+      (claude-term-new-session "b")
+      (should (equal captured "b")))))
+
+(ert-deftest claude-term-registry-test-list-sessions-populates-tabulated-list ()
+  "`claude-term-list-sessions' -- the actual command SPC a L invokes --
+builds a `claude-term-session-list-mode' buffer whose
+`tabulated-list-entries' reflect every registered session."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (buf (generate-new-buffer "claude-term-registry-test-list-session")))
+    (unwind-protect
+        (progn
+          (claude-term-registry-put "/tmp/ctr-list-root/" "x" buf)
+          (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+            (claude-term-list-sessions))
+          (with-current-buffer (get-buffer "*claude-term-sessions*")
+            (should (derived-mode-p 'claude-term-session-list-mode))
+            (should (= (length tabulated-list-entries) 1))
+            (should (eq (car (car tabulated-list-entries))
+                        (claude-term-registry-get "/tmp/ctr-list-root/" "x")))))
+      (kill-buffer buf)
+      (when (get-buffer "*claude-term-sessions*")
+        (kill-buffer "*claude-term-sessions*")))))
+
+(ert-deftest claude-term-registry-test-toggle-pane-calls-window-toggle-side-windows ()
+  "`claude-term-toggle-pane' -- the actual command SPC a w invokes -- is a
+thin wrapper around the stock `window-toggle-side-windows'."
+  (let (called)
+    (cl-letf (((symbol-function 'window-toggle-side-windows)
+               (lambda () (setq called t))))
+      (claude-term-toggle-pane)
+      (should called))))
+
+(ert-deftest claude-term-registry-test-show-all-displays-every-live-session ()
+  "`claude-term-show-all' -- the actual command SPC a A invokes -- calls
+`claude-term--display-buffer' on every registered, live session's
+buffer."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (buf1 (generate-new-buffer "claude-term-registry-test-show-all-1"))
+        (buf2 (generate-new-buffer "claude-term-registry-test-show-all-2"))
+        displayed)
+    (unwind-protect
+        (progn
+          (claude-term-registry-put "/tmp/ctr-show-all-1/" nil buf1)
+          (claude-term-registry-put "/tmp/ctr-show-all-2/" nil buf2)
+          (cl-letf (((symbol-function 'claude-term--display-buffer)
+                     (lambda (b) (push b displayed))))
+            (claude-term-show-all))
+          (should (= (length displayed) 2))
+          (should (memq buf1 displayed))
+          (should (memq buf2 displayed)))
+      (kill-buffer buf1)
+      (kill-buffer buf2))))
 
 ;; ============================================================================
 ;; SPC a binding-collision surface (AC7)

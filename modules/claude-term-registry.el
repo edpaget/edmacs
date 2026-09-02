@@ -15,7 +15,11 @@
 ;; file's functions (registry put/touch/remove, the kill picker) use
 ;; `declare-function' stubs there, since this file loads strictly
 ;; after it and the forward reference resolves fine at call time --
-;; never at claude-term.el's own load time.
+;; never at claude-term.el's own load time. `modules/git-common-dir.el'
+;; loads BEFORE this file (init.el's `load-module' order, ahead of
+;; claude-term-registry) precisely so this file's repo-name labeling can
+;; call its shared, single-implementation `edmacs-git-common-dir'
+;; instead of carrying its own second copy of that resolution.
 ;;
 ;; Two sharp edges named in the phase body, both fixed here rather than
 ;; reproduced (see claude-code-ide.el's implementation):
@@ -34,12 +38,14 @@
 ;; deliberately leaves unbound.
 ;;
 ;; Run pure-function tests:
-;;   emacs -Q --batch -l ert -l modules/claude-term.el \
+;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/claude-term.el \
 ;;         -l modules/claude-term-registry.el \
 ;;         -l modules/claude-term-registry-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 ;; Run live-subprocess tests:
-;;   emacs -Q --batch -l ert -l modules/claude-term.el \
+;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/claude-term.el \
 ;;         -l modules/claude-term-registry.el \
 ;;         -l modules/claude-term-registry-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
@@ -81,9 +87,28 @@ ROOT is the project root exactly as passed to `claude-term-registry-put'
 -- untouched, not truename-normalized (see `claude-term-registry--key'
 for where that normalization actually happens, and why only the key
 needs it). INSTANCE is the instance label, or nil for the default
-instance. BUFFER is the live claude-term buffer. LAST-USED is a
-`float-time' timestamp, updated by `claude-term-registry-touch'."
-  root instance buffer last-used)
+instance. BUFFER is the live claude-term buffer. PROCESS is BUFFER's
+`ghostel--process' as of the last `claude-term-registry-put' (a fresh
+spawn or a restart's re-exec both call it, so this stays current; see
+`claude-term-registry--process-of') -- present as a literal struct
+field to match the phase body's own \"buffer, process, instance name,
+and last-used time\" data shape, even though every current call site
+(`claude-term-kill', `claude-term-kill-all') still reads the live
+process off the buffer-local `ghostel--process' directly rather than
+through this field, since that is definitionally always at least as
+fresh. LAST-USED is a `float-time' timestamp, updated by
+`claude-term-registry-touch'."
+  root instance buffer process last-used)
+
+(defun claude-term-registry--process-of (buffer)
+  "Return BUFFER's buffer-local `ghostel--process' value, or nil.
+Uses `local-variable-p' rather than `buffer-local-value' directly so a
+BUFFER with no buffer-local `ghostel--process' at all -- e.g. a bare
+test buffer never passed through `claude-term--exec' -- never signals
+`void-variable': `ghostel--process' carries no global default value of
+its own (see claude-term.el's bare `(defvar ghostel--process)')."
+  (and (local-variable-p 'ghostel--process buffer)
+       (buffer-local-value 'ghostel--process buffer)))
 
 (defvar claude-term-registry--table (make-hash-table :test #'equal)
   "Hash table of registered claude-term sessions.
@@ -103,10 +128,16 @@ the sharp edge the phase body names in claude-code-ide.el's own
   "Register BUFFER as the live session for ROOT/INSTANCE.
 Stamps LAST-USED to now -- a freshly spawned session should sort as
 most-recently-used from the moment it exists, not only from its first
-later `claude-term-registry-touch'."
+later `claude-term-registry-touch'. Snapshots BUFFER's current
+`ghostel--process' into the PROCESS field via
+`claude-term-registry--process-of' -- called again on every fresh spawn
+and every restart's re-exec, so this stays current across a restart
+without needing its own separate update path."
   (puthash (claude-term-registry--key root instance)
            (make-claude-term-session :root root :instance instance
-                                      :buffer buffer :last-used (float-time))
+                                      :buffer buffer
+                                      :process (claude-term-registry--process-of buffer)
+                                      :last-used (float-time))
            claude-term-registry--table))
 
 (defun claude-term-registry-get (root instance)
@@ -177,57 +208,32 @@ touching `claude-term--read-session's body.")
 ;; ============================================================================
 ;; Repo name / elapsed time / label
 ;; ============================================================================
-
-(defvar claude-term-registry--repo-name-cache (make-hash-table :test #'equal)
-  "Memoized ROOT -> repo name results from `claude-term-registry--repo-name'.
-Mirrors `edmacs-sessions--git-common-dir-cache's own reasoning in
-modules/sessions.el -- a worktree's git-common-dir cannot change during
-the life of a running Emacs, so a cached miss (stored as the symbol
-`claude-term-registry--none') is never re-shelled-out-to on every
-picker/list render. The git-common-dir lookup itself is reimplemented
-locally below rather than calling into modules/sessions.el: that
-module loads AFTER this one in init.el's load order and has no
-`provide', so a cross-module call is unavailable at this file's own
-load time.")
-
-(defun claude-term-registry--git-common-dir (root)
-  "Return the absolute git common directory for ROOT, or nil.
-Uses `process-file', not `call-process': ROOT may be a TRAMP remote
-directory, and `call-process' silently runs in `~' rather than ROOT
-when `default-directory' is remote. Mirrors
-`edmacs-sessions--git-common-dir-1's own reasoning in
-modules/sessions.el (read, not called into -- see the cache variable's
-docstring above for why)."
-  (let ((default-directory root))
-    (condition-case nil
-        (with-temp-buffer
-          (when (zerop (process-file "git" nil t nil "rev-parse" "--git-common-dir"))
-            (let ((raw (string-trim (buffer-string)))
-                  (remote (file-remote-p root)))
-              (cond
-               ((not (file-name-absolute-p raw)) (expand-file-name raw root))
-               ((and remote (not (file-remote-p raw))) (concat remote raw))
-               (t raw)))))
-      (file-error nil))))
+;; The git-common-dir resolution itself (TRAMP-safe `process-file' call,
+;; relative/remote path normalization, cached-miss memoization) lives in
+;; `modules/git-common-dir.el', shared with `modules/sessions.el's own
+;; repo-name-for-tab-naming need, rather than reimplemented here -- both
+;; consumers previously carried independent copies of the same
+;; algorithm, which this factoring removes. That module loads before
+;; this one (init.el's `load-module' order), so no `require' is needed
+;; under this codebase's shared-obarray plain-`load' module system; the
+;; `declare-function' below exists only for standalone byte-compilation
+;; clarity.
+(declare-function edmacs-git-common-dir "git-common-dir")
 
 (defun claude-term-registry--repo-name (root)
   "Return the repo name owning ROOT, falling back to ROOT's bare leaf name.
-Memoized per ROOT. Falls back rather than erroring when the git lookup
-fails -- a pruned worktree still lingering in the registry, or a
-non-git root reachable only in tests -- so a single bad entry never
-takes down the whole picker/list render."
-  (let ((cached (gethash root claude-term-registry--repo-name-cache
-                         'claude-term-registry--miss)))
-    (if (not (eq cached 'claude-term-registry--miss))
-        cached
-      (let* ((common (claude-term-registry--git-common-dir root))
-             (result (if common
-                         (file-name-nondirectory
-                          (directory-file-name
-                           (file-name-directory (directory-file-name common))))
-                       (claude-term--leaf root))))
-        (puthash root result claude-term-registry--repo-name-cache)
-        result))))
+Derives the name from `edmacs-git-common-dir's parent directory -- that
+call is itself memoized per ROOT, so no separate cache is needed here
+for the cheap string manipulation on top of it. Falls back rather than
+erroring when the git lookup fails -- a pruned worktree still lingering
+in the registry, or a non-git root reachable only in tests -- so a
+single bad entry never takes down the whole picker/list render."
+  (let ((common (edmacs-git-common-dir root)))
+    (if common
+        (file-name-nondirectory
+         (directory-file-name
+          (file-name-directory (directory-file-name common))))
+      (claude-term--leaf root))))
 
 (defun claude-term-registry--elapsed-string (session)
   "Return a short humanized elapsed-time string for SESSION's last-used time.
@@ -292,9 +298,12 @@ Sorts candidates through `claude-term-registry-sort-function' and
 labels them via `claude-term--session-label', so both phase 5 swap
 points (state accessor, sort comparator) are exercised even though
 this phase ships only the stub/MRU behavior. Signals a clear
-`user-error' -- mirroring `claude-term--read-buffer's own empty-list
-handling in claude-term.el -- rather than handing `completing-read' an
-empty candidate list when no session is registered."
+`user-error' rather than handing `completing-read' an empty candidate
+list when no session is registered -- claude-term.el's
+`claude-term--read-buffer' (the shared session-selection entry point
+for `claude-term-kill' and `claude-term-restart') delegates to this
+function for its own cross-project picking, so this is the one place
+that empty-list handling lives."
   (let ((sessions (sort (claude-term-registry-sessions) claude-term-registry-sort-function)))
     (when (null sessions)
       (user-error "Claude-term: no registered sessions"))
@@ -367,7 +376,24 @@ same-root collision against a DIFFERENT session), updates the
 buffer-local `claude-term--instance', and renames the buffer itself to
 match -- but does NOT alter `EDMACS_AGENT_INSTANCE' in the already-
 running child process; see `claude-term-registry--set-instance-env's
-docstring for why."
+docstring for why.
+
+Also rejects (via `user-error', before touching the registry or
+renaming anything) a CROSS-root leaf-name collision: the target buffer
+name is computed from ROOT's bare leaf directory name only (see
+`claude-term-buffer-name'), so an unrelated project whose root merely
+shares that leaf name -- rdm slugs are unique by convention, not by
+invariant -- could already own a live buffer under NEW-INSTANCE.
+`claude-term-registry-rename's own collision check is scoped to THIS
+root, so it cannot see that case; left unhandled, `rename-buffer' would
+silently uniquify the on-disk name (e.g. a `<2>' suffix), which no
+longer matches `claude-term--buffer-name-regexp' -- breaking every
+other claude-term command's `claude-term--parse-buffer-name' buffer-is-
+a-claude-term-session test against it, with no error at all. Mirrors
+`claude-term--resolve-instance's own numeric-fallback rationale for the
+same underlying hazard on fresh spawns, but rejects here rather than
+silently substituting a different label, since the user explicitly
+chose NEW-INSTANCE by name."
   (interactive)
   (let* ((buffer (or buffer
                       (if (claude-term--parse-buffer-name (buffer-name))
@@ -377,11 +403,16 @@ docstring for why."
          (root (buffer-local-value 'claude-term--root buffer))
          (old-instance (buffer-local-value 'claude-term--instance buffer))
          (input (read-string "New instance label: "))
-         (new-instance (if (string-empty-p input) nil input)))
+         (new-instance (if (string-empty-p input) nil input))
+         (target-name (claude-term-buffer-name root new-instance))
+         (colliding (get-buffer target-name)))
+    (when (and colliding (not (eq colliding buffer)))
+      (user-error "Claude-term: buffer %s already exists (an unrelated project's session sharing this leaf name) -- pick a different instance label"
+                  target-name))
     (claude-term-registry-rename root old-instance new-instance)
     (with-current-buffer buffer
       (setq-local claude-term--instance new-instance)
-      (rename-buffer (claude-term-buffer-name root new-instance) t))))
+      (rename-buffer target-name t))))
 
 ;; ============================================================================
 ;; SPC a commands

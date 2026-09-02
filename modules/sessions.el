@@ -82,80 +82,14 @@
 ;; `SPC T' bindings below.
 (setq tab-bar-define-keys nil)
 
-(defvar edmacs-sessions--git-common-dir-cache (make-hash-table :test #'equal)
-  "Memoized ROOT -> git-common-dir results from `edmacs-sessions--git-common-dir'.
-`tab-bar-tabs' recomputes the *current* tab's name via
-`tab-bar-tab-name-function' on essentially every redisplay of the tab
-line, not merely on tab creation, so without this cache each worktree
-tab would pay a synchronous git subprocess spawn on that same cadence.
-A worktree's git-common-dir cannot change during the life of a running
-Emacs, so entries are never invalidated. A miss is cached too (as the
-symbol `none', since a plain nil can't be told apart from \"not yet
-looked up\" in `gethash''s single optional-default arg) so a
-worktree git can't identify doesn't get re-shelled-out-to forever.")
-
-(defun edmacs-sessions--git-common-dir-1 (root)
-  "Uncached implementation of `edmacs-sessions--git-common-dir' for ROOT.
-Every worktree of one repository shares this path (it is the main
-checkout's `.git', per git-worktree(1)), so its parent directory names
-the repository independent of any individual worktree's own directory
-name.
-
-Uses `process-file', not `call-process': ROOT may be a TRAMP remote
-directory (project.el and vc.el both support those), and
-`call-process' is documented to run in `default-directory' only when
-that is local, silently falling back to running the command in `~'
-otherwise -- exactly the directory-confusion bug this function exists
-to avoid, just relocated to a remote-vs-local split instead of a
-stale-`default-directory' one. `process-file' dispatches through
-TRAMP for a remote `default-directory' and runs locally otherwise.
-
-For a linked worktree, git prints an already-absolute path here; for
-the *main* worktree, though, it prints a path relative to the
-directory git was invoked from (typically \".git\"). That expansion to
-an absolute path has to happen right here, while `default-directory'
-is still bound to ROOT -- a caller expanding the returned string later
-against its own, unrelated `default-directory' (e.g. whatever buffer
-happens to be selected when tab-bar recomputes the tab name) would
-silently resolve it against the wrong base and misname the tab.
-
-When ROOT is remote, git itself only ever prints a bare on-host path
-(git has no notion of TRAMP), so an already-\"absolute\" answer like
-\"/home/user/repo/.git\" still needs ROOT's own TRAMP method/host
-prefix grafted back on by hand -- `expand-file-name' leaves an
-already-absolute NAME untouched and would otherwise silently drop the
-remote host, resolving to a same-named but purely local path.
-
-`process-file' can *signal* rather than merely exit non-zero -- e.g.
-`file-missing' when git itself isn't found, or when ROOT no longer
-exists on disk (a pruned worktree) or a TRAMP connection to it has
-dropped. The `condition-case' below folds that into the same nil
-result as an ordinary non-zero exit, so the caller's memoization-of-nil
-in `edmacs-sessions--git-common-dir' covers this case too instead of
-re-shelling-out (and re-signaling) on every subsequent tab-bar
-redisplay."
-  (let ((default-directory root))
-    (condition-case nil
-        (with-temp-buffer
-          (when (zerop (process-file "git" nil t nil "rev-parse" "--git-common-dir"))
-            (let ((raw (string-trim (buffer-string)))
-                  (remote (file-remote-p root)))
-              (cond
-               ((not (file-name-absolute-p raw)) (expand-file-name raw root))
-               ((and remote (not (file-remote-p raw))) (concat remote raw))
-               (t raw)))))
-      (file-error nil))))
-
-(defun edmacs-sessions--git-common-dir (root)
-  "Return the absolute git common directory for the worktree at ROOT, or nil.
-Memoized per ROOT; see `edmacs-sessions--git-common-dir-cache' and
-`edmacs-sessions--git-common-dir-1' for why and how."
-  (let ((cached (gethash root edmacs-sessions--git-common-dir-cache 'edmacs-sessions--miss)))
-    (if (not (eq cached 'edmacs-sessions--miss))
-        (and (not (eq cached 'none)) cached)
-      (let ((result (edmacs-sessions--git-common-dir-1 root)))
-        (puthash root (or result 'none) edmacs-sessions--git-common-dir-cache)
-        result))))
+;; `edmacs-git-common-dir' (modules/git-common-dir.el) is loaded before
+;; this module by init.el's `load-module' order; these are forward
+;; declarations for standalone byte-compilation clarity only, never a
+;; real forward reference at call time. `tab-bar-tabs' recomputes the
+;; *current* tab's name via `tab-bar-tab-name-function' on essentially
+;; every redisplay of the tab line, which is exactly why that shared
+;; function memoizes -- see its own docstring.
+(declare-function edmacs-git-common-dir "git-common-dir")
 
 (defun edmacs-sessions--tab-name ()
   "Name the current tab after its project/worktree, falling back sanely.
@@ -169,12 +103,12 @@ basename (e.g. both named `feature-x', or two rdm worktrees named
 `roadmap-foundation' from two different rdm projects), which a bare
 basename would render as identical, ambiguous tab names. Disambiguate
 by prefixing the owning repository's own directory name, derived from
-`--git-common-dir' (shared by every worktree of one repo, so it names
-the repo rather than the worktree)."
+`edmacs-git-common-dir' (shared by every worktree of one repo, so it
+names the repo rather than the worktree)."
   (if-let* ((proj (project-current))
             (root (project-root proj)))
       (let* ((base (file-name-nondirectory (directory-file-name root)))
-             (common (edmacs-sessions--git-common-dir root))
+             (common (edmacs-git-common-dir root))
              (repo (and common
                         (file-name-nondirectory
                          (directory-file-name

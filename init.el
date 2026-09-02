@@ -99,6 +99,12 @@ LANGUAGE should be the name without the .el extension."
 ;; AI assistant integration
 (load-module "ai")
 
+;; Shared, TRAMP-safe git-common-dir resolution -- loaded before both of
+;; its consumers below (claude-term-registry) and further down
+;; (sessions), so neither carries its own independent copy of the same
+;; algorithm.
+(load-module "git-common-dir")
+
 ;; Claude terminal launcher (ghostel-based)
 (load-module "claude-term")
 
