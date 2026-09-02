@@ -280,30 +280,60 @@ binary degrades to a warning instead."
 
 (use-package project
   :config
-  (setq project-switch-commands
-        '((project-find-file "Find file")
-          (project-find-regexp "Find regexp")
-          (project-dired "Dired")
-          (project-shell "Shell")))
+  ;; `edmacs-frames-open-project' (modules/frames.el) is the sole
+  ;; `project-switch-commands' entry point: `SPC p p' lands in the chosen
+  ;; project's repo frame rather than running one of a menu of in-place
+  ;; commands. `project-switch-project' calls it with
+  ;; `project-current-directory-override' bound to the chosen directory.
+  (declare-function edmacs-frames-open-project "frames")
+  (setq project-switch-commands #'edmacs-frames-open-project)
 
   ;; rdm worktrees vendor their own straight checkouts and caches; never
-  ;; remember those as projects.
-  (setq project-list-exclude '("/straight/repos/" "/\\.eldev/" "/node_modules/"))
+  ;; remember those as projects. Worktrees themselves are excluded too --
+  ;; not "/__worktrees/" with a leading slash, since the directories are
+  ;; ~/Projects/<repo>__worktrees/ with no slash before the marker -- so
+  ;; the picker lists repos only; a worktree is reached from the sidebar
+  ;; or `SPC T p' (modules/frames.el) instead.
+  (setq project-list-exclude '("/straight/repos/" "/\\.eldev/" "/node_modules/"
+                                "__worktrees/"))
   ;; rdm reaps worktrees on disk; drop entries that no longer exist.
   (when (fboundp 'project-forget-zombie-projects)
     (add-hook 'emacs-startup-hook #'project-forget-zombie-projects))
 
-  ;; Register every rdm worktree with project.el so it appears in
-  ;; `project-switch-project' without being visited first. Non-recursive:
-  ;; recursing would also register each worktree's vendored straight/repos.
-  (defun edmacs--register-project-worktrees ()
-    "Register every rdm worktree under ~/Projects/*__worktrees/ with project.el."
+  ;; Seed the picker from ~/Projects itself rather than rdm's *__worktrees
+  ;; layout: every repo directly under ~/Projects becomes known, visited
+  ;; or not, and no worktree ever does. Non-recursive per directory (a
+  ;; repo's own vendored straight/repos must never be recursed into), and
+  ;; *__worktrees containers are skipped outright rather than relying on
+  ;; `project-list-exclude' alone to catch what they might resolve to.
+  (defun edmacs--register-projects-under-projects-dir ()
+    "Register every git repo directly under ~/Projects/ with project.el."
     (ignore-errors
-      (dolist (worktrees-dir (file-expand-wildcards
-                               (expand-file-name "*__worktrees" "~/Projects")))
-        (when (file-directory-p worktrees-dir)
-          (project-remember-projects-under worktrees-dir)))))
-  (add-hook 'emacs-startup-hook #'edmacs--register-project-worktrees))
+      (dolist (dir (directory-files "~/Projects" t))
+        (let ((base (file-name-nondirectory (directory-file-name dir))))
+          (unless (or (member base '("." ".."))
+                      (string-match-p "__worktrees\\'" base)
+                      (not (file-directory-p dir)))
+            (ignore-errors (project-remember-projects-under dir nil)))))))
+  (add-hook 'emacs-startup-hook #'edmacs--register-projects-under-projects-dir)
+
+  ;; One-shot migration: forget every root the old *__worktrees registrar
+  ;; remembered, so a stale ~/.config/emacs/projects.eld doesn't keep
+  ;; showing worktrees after this change. Guarded by a sentinel file so a
+  ;; later deliberate `project-remember-project' on a worktree is never
+  ;; re-forgotten on a subsequent boot.
+  (defun edmacs--migrate-forget-worktree-projects ()
+    "Forget previously-remembered __worktrees/ project roots, once ever."
+    (let ((sentinel (expand-file-name ".cache/frames-worktree-migration-done"
+                                      user-emacs-directory)))
+      (unless (file-exists-p sentinel)
+        (ignore-errors
+          (dolist (root (project-known-project-roots))
+            (when (string-match-p "__worktrees/" root)
+              (project-forget-project root))))
+        (make-directory (file-name-directory sentinel) t)
+        (write-region "" nil sentinel nil 'silent))))
+  (add-hook 'emacs-startup-hook #'edmacs--migrate-forget-worktree-projects))
 
 ;; ============================================================================
 ;; Display Line Numbers

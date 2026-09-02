@@ -13,6 +13,16 @@
 ;; them through `edmacs-evil-config-add-c-x-chord' rather than redefining
 ;; `C-x' (which would depend on module load order). `SPC T' and `SPC p w'
 ;; are the no-delay path to the same commands.
+;;
+;; A tab is scoped to one frame, and `modules/frames.el' now gives each
+;; repo exactly one frame -- checked upstream on 2026-09-01 against the two
+;; bugs an earlier design avoided frames over: manzaltu#197 is a bug in
+;; claude-code-ide.el's own terminal reflow filter, a package this config
+;; never loads, and ghostel#504 was closed as fixed. The constraint that
+;; remains is `window-adjust-process-window-size-smallest', which ghostel
+;; uses to size its PTY: never show one terminal buffer in two frames at
+;; once. Frame-per-repo never does that, so it satisfies the constraint by
+;; construction rather than by avoiding frames altogether.
 
 ;;; Code:
 
@@ -30,6 +40,7 @@
 ;; Available via init.el's `load-module' order, not a `require'.
 (declare-function edmacs-git-common-dir "git-common-dir")
 (declare-function edmacs-stack-sweep-stale-panes "windows")
+(declare-function edmacs-frames-tab-in-own-repo-p "frames")
 
 (defun edmacs-sessions--tab-name ()
   "Name the current tab after its project/worktree, falling back sanely.
@@ -44,18 +55,25 @@ basename (e.g. both named `feature-x', or two rdm worktrees named
 basename would render as identical, ambiguous tab names. Disambiguate
 by prefixing the owning repository's own directory name, derived from
 `edmacs-git-common-dir' (shared by every worktree of one repo, so it
-names the repo rather than the worktree)."
+names the repo rather than the worktree) -- except when that repo is
+already the one the selected frame itself carries (`modules/frames.el's
+`edmacs-repo' parameter): the frame's own title already disambiguates
+it, so a tab inside it need only name its worktree. A tab whose repo is
+some *other* one -- a foreign-project scratch tab, which `frames.el's
+stray-visit relocator should make rare -- still gets the prefix."
   (if-let* ((proj (project-current))
             (root (project-root proj)))
       (let* ((base (file-name-nondirectory (directory-file-name root)))
-             (common (edmacs-git-common-dir root))
-             (repo (and common
-                        (file-name-nondirectory
-                         (directory-file-name
-                          (file-name-directory (directory-file-name common)))))))
-        (if (and repo (not (string= repo base)))
-            (format "%s/%s" repo base)
-          base))
+             (common (edmacs-git-common-dir root)))
+        (if (edmacs-frames-tab-in-own-repo-p common)
+            base
+          (let ((repo (and common
+                            (file-name-nondirectory
+                             (directory-file-name
+                              (file-name-directory (directory-file-name common)))))))
+            (if (and repo (not (string= repo base)))
+                (format "%s/%s" repo base)
+              base))))
     (tab-bar-tab-name-current)))
 
 (setq tab-bar-tab-name-function #'edmacs-sessions--tab-name)
@@ -287,35 +305,17 @@ login."
 ;; ============================================================================
 ;; Registered via evil-config.el's extension point rather than a competing
 ;; `define-key' on `C-x', so this works regardless of module load order.
-(dolist (chord '(("t p" . project-other-tab-command)
+;; "t p" targets `edmacs-frames-open-worktree-tab' (modules/frames.el, loaded
+;; after this module) rather than the stock `project-other-tab-command': a
+;; plain quoted symbol here carries no forward-reference/compile issue, and
+;; is only ever looked up once evil actually dispatches the chord.
+(dolist (chord '(("t p" . edmacs-frames-open-worktree-tab)
                   ("v w w" . vc-switch-working-tree)
                   ("v w s" . vc-working-tree-switch-project)
                   ("v w k" . vc-kill-other-working-tree-buffers)
                   ("v w a" . vc-apply-to-other-working-tree)
                   ("v w A" . vc-apply-root-to-other-working-tree)))
   (edmacs-evil-config-add-c-x-chord (car chord) (cdr chord)))
-
-;; ============================================================================
-;; One tab per worktree - collapse duplicates from re-opening the same one
-;; ============================================================================
-;; `project-other-tab-command' always creates a new tab; it has no notion of
-;; an existing tab for the same worktree. Advising around it and reconciling
-;; afterward is simpler than pre-empting its project resolution.
-(defun edmacs-sessions--dedupe-tab-after-open (orig-fn &rest args)
-  "Run ORIG-FN (`project-other-tab-command') with ARGS, then dedupe.
-If a tab with the new tab's name already existed, close the new one and
-switch to the existing one."
-  (let ((before-tabs (tab-bar-tabs)))
-    (apply orig-fn args)
-    (let* ((new-name (funcall tab-bar-tab-name-function))
-           (dup (seq-find (lambda (tab) (equal (alist-get 'name tab) new-name))
-                           before-tabs))
-           (dup-index (and dup (tab-bar--tab-index dup))))
-      (when dup-index
-        (tab-bar-close-tab nil (1+ dup-index))))))
-
-(advice-add 'project-other-tab-command :around
-            #'edmacs-sessions--dedupe-tab-after-open)
 
 ;; ============================================================================
 ;; Leader-key bindings
@@ -325,7 +325,7 @@ switch to the existing one."
  :states 'normal
  :prefix "SPC T"
  "" '(:ignore t :which-key "tabs")
- "p" '(project-other-tab-command :which-key "open worktree in new tab")
+ "p" '(edmacs-frames-open-worktree-tab :which-key "open worktree in its repo frame")
  "n" '(tab-bar-new-tab :which-key "new tab")
  "d" '(tab-bar-close-tab :which-key "close tab")
  "r" '(tab-bar-rename-tab :which-key "rename tab")

@@ -97,6 +97,9 @@ LANGUAGE should be the name without the .el extension."
 (load-module "git")
 (load-module "sessions")
 (load-module "sidebar")
+;; After sidebar (calls `edmacs-sidebar-show'), sessions (reuses its
+;; tab-bar/desktop setup), and evil-config (its C-x chord registrar).
+(load-module "frames")
 
 ;; ============================================================================
 ;; Language-specific configurations
