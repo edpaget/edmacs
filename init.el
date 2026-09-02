@@ -95,6 +95,7 @@ LANGUAGE should be the name without the .el extension."
 ;; (load-module "org-config")
 (load-module "git")
 (load-module "sessions")
+(load-module "sidebar")
 
 ;; ============================================================================
 ;; Language-specific configurations
