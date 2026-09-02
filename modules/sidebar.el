@@ -52,8 +52,33 @@
   (when (fboundp 'evil-set-initial-state)
     (evil-set-initial-state 'edmacs-sidebar-mode 'motion)))
 
+;; Plain `define-key' on the mode's own local map is not enough by
+;; itself: evil installs its state keymaps via `emulation-mode-map-alists',
+;; which key lookup consults BEFORE the buffer's local map, and
+;; `evil-motion-state-map' already binds RET to `evil-ret' -- so with
+;; only this, RET in a motion-state sidebar buffer resolves to
+;; `evil-ret', never reaching `edmacs-sidebar-visit-tab' (verified live:
+;; `(key-binding (kbd "RET"))' in a motion-state sidebar buffer returned
+;; `evil-ret' despite `(lookup-key edmacs-sidebar-mode-map (kbd "RET"))'
+;; correctly showing the intended binding present but unreachable). `q'
+;; happens to work today only because `evil-motion-state-map' has no
+;; binding for it (`evil-record-macro' on `q' lives in
+;; `evil-normal-state-map', not motion) -- a coincidence, not a
+;; mechanism, so it gets the same real fix below rather than relying on
+;; that continuing to hold.
+;;
+;; `edmacs-sidebar-mode-map' is this mode's own dedicated map (not a
+;; shared package-global one), so `evil-define-key' on it -- landing in
+;; evil's AUXILIARY-MAPS bucket, which wins over the main motion-state
+;; map -- is exactly git.el's `git-timemachine-mode-map' pattern, safely
+;; scoped to sidebar buffers only.
 (define-key edmacs-sidebar-mode-map (kbd "RET") #'edmacs-sidebar-visit-tab)
 (define-key edmacs-sidebar-mode-map (kbd "q") #'edmacs-sidebar-hide)
+
+(with-eval-after-load 'evil
+  (evil-define-key 'motion edmacs-sidebar-mode-map
+    (kbd "RET") #'edmacs-sidebar-visit-tab
+    (kbd "q") #'edmacs-sidebar-hide))
 
 ;; ============================================================================
 ;; Per-frame buffer management

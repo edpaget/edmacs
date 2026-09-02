@@ -621,12 +621,13 @@ everything else from the dead session."
 ;; in the window-parameters/action alist is stock `display-buffer'
 ;; plumbing.
 ;;
-;; DECIDED: `windmove-allow-repeated-command-override' is left at its
-;; Emacs 31 default (t), so a REPEATED `SPC w l' (or any windmove
-;; direction key) deliberately does enter an agent pane -- an
-;; intentional escape hatch, not an oversight this module should close.
-;; A single invocation still respects `no-other-window' via
-;; `window-no-other-p'.
+;; DECIDED: a single `SPC w l' (or any windmove direction key) does
+;; enter an agent pane despite `no-other-window' -- that parameter only
+;; ever blocks `other-window'/`SPC w w'/`C-x 1' cycling here.  The
+;; `edmacs-windmove-reachable' parameter below is what opts a pane back
+;; into single-invocation windmove reachability; see ui.el's advice on
+;; `windmove-find-other-window' for the mechanism and why the blunter
+;; `windmove-allow-all-windows' can't express this per-window.
 
 (defun claude-term--allocate-slot (buffer)
   "Return the side-window slot assigned to BUFFER, assigning one if needed.
@@ -646,8 +647,9 @@ slot-reuse eviction once its cap of 3 is reached."
 Builds this phase's verified target shape: a right side window sized by
 `claude-term-window-width', sized-preserving across a
 `window-toggle-side-windows' hide/show cycle, excluded from
-`delete-other-windows' and from `other-window'/single-invocation
-`windmove' via `no-other-window' (see the section comment above).
+`delete-other-windows'/`other-window' via `no-other-window' but kept
+reachable by a single windmove direction key via
+`edmacs-windmove-reachable' (see the section comment above).
 Returns nil exactly when `display-buffer-in-side-window' does -- e.g.
 when `window-sides-slots' forbids side-window creation on this edge --
 never signals in that case."
@@ -659,7 +661,8 @@ never signals in that case."
      (window-width . ,claude-term-window-width)
      (preserve-size . (t . nil))
      (window-parameters . ((no-delete-other-windows . t)
-                            (no-other-window . t))))))
+                            (no-other-window . t)
+                            (edmacs-windmove-reachable . t))))))
 
 (defun claude-term--pop-to-side-window (buffer)
   "Display BUFFER in a side window via `claude-term--display-buffer' and select it.

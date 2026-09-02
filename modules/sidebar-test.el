@@ -24,6 +24,21 @@
 (require 'subr-x)
 (require 'cl-lib)
 
+;; Disabled file-wide, before anything below loads magit-section (and its
+;; five transitive deps) or evil: on a natively-compiled Emacs,
+;; `advice-add' on a primitive subr (`select-window', `use-global-map',
+;; `read-key-sequence', `set-window-buffer', etc. -- exactly the sort of
+;; thing evil/magit-section/this suite's own tests do) makes Emacs spawn
+;; a whole second `emacs -Q --batch -l <trampoline>.el' subprocess on the
+;; spot to compile a native "trampoline" for it, so the advice still
+;; takes effect from already-native-compiled callers. That is a real
+;; `call-process' invocation, but Emacs's own internal compiler
+;; plumbing, not sidebar.el's -- confirmed via a live backtrace showing
+;; `comp-subr-trampoline-install' as the caller, entirely independent of
+;; `native-comp-jit-compilation' (which only gates compiling freshly
+;; loaded .el source and does not affect this).
+(setq native-comp-enable-subr-trampolines nil)
+
 (defun edmacs-sidebar-test--locate-straight-build-root ()
   "Return this checkout's `straight/build' directory, or nil.
 Tries this checkout's own `straight/build' first -- present once this
@@ -143,6 +158,76 @@ must never leave stray tabs behind for a later test."
                 (goto-char (point-min))
                 (should (looking-at-p "●"))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+
+    (defun edmacs-sidebar-test--locate-straight-repos-root ()
+      "Return this checkout's `straight/repos' directory, or its sibling
+main checkout's -- the same fallback `edmacs-sidebar-test--locate-straight-build-root'
+uses for `straight/build'. Needed only as a fallback for `evil' below,
+whose `straight/build/evil' symlink can point at a worktree that has
+itself never bootstrapped straight (no `straight/repos' of its own),
+in which case `straight/repos/evil' -- straight's raw git checkout,
+identical content for a pure-elisp package with no build-time file
+subsetting -- still resolves."
+      (or
+       (let ((here (expand-file-name "straight/repos" default-directory)))
+         (and (file-directory-p here) here))
+       (let* ((root (directory-file-name (expand-file-name default-directory)))
+              (worktrees-dir (directory-file-name (file-name-directory root))))
+         (when (string-suffix-p "__worktrees" worktrees-dir)
+           (let* ((projects-dir (file-name-directory worktrees-dir))
+                  (repo-name (string-remove-suffix
+                              "__worktrees" (file-name-nondirectory worktrees-dir)))
+                  (main-repos (expand-file-name
+                               (concat repo-name "/straight/repos") projects-dir)))
+             (and (file-directory-p main-repos) main-repos))))))
+
+    (defun edmacs-sidebar-test--locate-real-evil ()
+      "Return the directory holding the real `evil.el', or nil.
+Tries `straight/build/evil' first (file-exists-p follows a working
+symlink); falls back to `straight/repos/evil' when that symlink is
+broken or the build tree was never generated."
+      (or
+       (let* ((root (or edmacs-sidebar-test--build-root
+                         (edmacs-sidebar-test--locate-straight-build-root)))
+              (path (and root (expand-file-name "evil/evil.el" root))))
+         (and path (file-exists-p path) (file-name-directory path)))
+       (let* ((root (edmacs-sidebar-test--locate-straight-repos-root))
+              (path (and root (expand-file-name "evil/evil.el" root))))
+         (and path (file-exists-p path) (file-name-directory path)))))
+
+    (defun edmacs-sidebar-test--ensure-real-evil ()
+      "Load the real `evil', skipping the calling test if unavailable.
+A second, independent optional straight dependency from `magit-section'
+and `rotate.el' -- pure elisp, no external deps beyond stock Emacs."
+      (unless (featurep 'evil)
+        (let ((dir (edmacs-sidebar-test--locate-real-evil)))
+          (unless dir
+            (ert-skip "evil's straight build was not found in this checkout \
+or its sibling main checkout; bootstrap straight once (open this worktree in \
+a real Emacs session) to enable this test"))
+          (let ((load-path (cons dir load-path)))
+            (require 'evil)))))
+
+    (ert-deftest edmacs-sidebar-test-ret-and-q-resolve-through-real-evil-keymaps ()
+      "Regression test for the RET-shadowed-by-evil-motion-state fix.
+A plain `define-key' on `edmacs-sidebar-mode-map' alone is invisible to
+real key lookup in motion state: evil's state keymaps are installed via
+`emulation-mode-map-alists', consulted BEFORE the buffer's local map, and
+`evil-motion-state-map' already binds RET to `evil-ret'. Calling
+`edmacs-sidebar-visit-tab'/`edmacs-sidebar-hide' directly as Lisp
+functions (as the tests above do) cannot catch this -- only dispatching
+through the real, active keymaps the way a keypress does can."
+      (edmacs-sidebar-test--ensure-real-evil)
+      (unwind-protect
+          (progn
+            (evil-mode 1)
+            (with-temp-buffer
+              (edmacs-sidebar-mode)
+              (evil-motion-state)
+              (should (eq evil-state 'motion))
+              (should (eq (key-binding (kbd "RET")) #'edmacs-sidebar-visit-tab))
+              (should (eq (key-binding (kbd "q")) #'edmacs-sidebar-hide))))
+        (evil-mode -1)))
 
     (ert-deftest edmacs-sidebar-test-redraw-passes-tabs-and-frame-explicitly ()
       "Regression test for the frame-mismatch fix.
@@ -274,12 +359,20 @@ batch environment: %s" e)))))
       "Return the path to the real `rotate.el' straight build, or nil.
 Reuses `edmacs-sidebar-test--build-root's own worktree-vs-sibling-main-
 checkout resolution -- rotate.el is a second, independent optional
-straight dependency from magit-section."
-      (let ((root (or edmacs-sidebar-test--build-root
-                       (edmacs-sidebar-test--locate-straight-build-root))))
-        (when root
-          (let ((path (expand-file-name "rotate/rotate.el" root)))
-            (and (file-exists-p path) path)))))
+straight dependency from magit-section. Falls back to
+`straight/repos/emacs-rotate' (the package's repo name differs from its
+feature name) the same way `edmacs-sidebar-test--locate-real-evil' falls
+back to `straight/repos/evil', for the same broken-build-symlink case."
+      (or
+       (let ((root (or edmacs-sidebar-test--build-root
+                        (edmacs-sidebar-test--locate-straight-build-root))))
+         (when root
+           (let ((path (expand-file-name "rotate/rotate.el" root)))
+             (and (file-exists-p path) path))))
+       (let ((root (edmacs-sidebar-test--locate-straight-repos-root)))
+         (when root
+           (let ((path (expand-file-name "emacs-rotate/rotate.el" root)))
+             (and (file-exists-p path) path))))))
 
     (defun edmacs-sidebar-test--ensure-real-rotate ()
       "Load the real `rotate.el', skipping the calling test if unavailable."
@@ -347,6 +440,48 @@ worktree in a real Emacs session) to enable this test"))
               (tab-bar-switch-to-tab first-name)
               (should (= 0 (tab-bar--current-tab-index))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+
+    ;; ==========================================================================
+    ;; AC8 -- no subprocess work during redraw/hook activity
+    ;; ==========================================================================
+    ;; The phase's own step 9 fallback treats "M-x profiler-start over a
+    ;; minute of interactive tab switching" as not ERT-automatable, but the
+    ;; underlying property it checks -- sidebar.el never shells out -- is:
+    ;; advise every subprocess primitive to signal instead of run, then
+    ;; drive every redraw/hook path here many times over. This is a
+    ;; stronger guarantee than the manual profiler pass (it catches an
+    ;; indirect call through a variable, not just a `grep'-visible
+    ;; literal) and needs neither a display nor real wall-clock time.
+    ;; (`native-comp-enable-subr-trampolines' is disabled file-wide,
+    ;; above, so `advice-add' on a primitive below can't spawn Emacs's
+    ;; own trampoline-compiler subprocess and get misattributed to
+    ;; sidebar.el.)
+
+    (ert-deftest edmacs-sidebar-test-redraw-and-hooks-never-shell-out ()
+      (edmacs-sidebar-test--with-extra-tab
+        (let ((violations nil)
+              (guarded '(call-process call-process-region process-file
+                         start-process start-file-process make-process)))
+          (unwind-protect
+              (progn
+                (dolist (fn guarded)
+                  (advice-add fn :before
+                              (lambda (&rest _) (push fn violations))
+                              `((name . ,(intern (format "edmacs-sidebar-test--guard-%s" fn))))))
+                (edmacs-sidebar-show (selected-frame))
+                (dotimes (_ 50)
+                  (edmacs-sidebar--redraw (selected-frame))
+                  (edmacs-sidebar--on-tab-select nil nil)
+                  (edmacs-sidebar--on-tab-open nil)
+                  (edmacs-sidebar--on-tab-pre-close nil nil)
+                  (tab-bar-rename-tab "edmacs-sidebar-test-shellout-check"))
+                (sleep-for 0.2)
+                (sit-for 0)
+                (should-not violations))
+            (dolist (fn guarded)
+              (advice-remove fn (intern (format "edmacs-sidebar-test--guard-%s" fn))))
+            (ignore-errors (tab-bar-rename-tab ""))
+            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
 
     )) ; end of build-root-found branch
 

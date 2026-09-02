@@ -269,7 +269,25 @@ it is in a side window, close that side window."
 
 ;; claude-term panes set `no-other-window' to stay out of `other-window'
 ;; cycling; directional moves (SPC w h/j/k/l) should still reach them.
-(setq windmove-allow-all-windows t)
+;; `windmove-allow-all-windows' can't express that on its own -- it's a
+;; single global boolean forwarded as `window-in-direction''s IGNORE
+;; argument, so turning it on makes every `no-other-window' window
+;; windmove-reachable, sidebar.el's own side window included, which
+;; that module's own acceptance criteria forbid. So the flag stays at
+;; its default (nil) and reachability is opt-in per window instead: a
+;; window sets its own `edmacs-windmove-reachable' parameter (see
+;; claude-term.el) to be found on a direction search that would
+;; otherwise stop at `no-other-window'.
+(require 'windmove)
+
+(advice-add 'windmove-find-other-window :around
+            (lambda (orig dir &optional arg window)
+              (or (funcall orig dir arg window)
+                  (let* ((windmove-allow-all-windows t)
+                         (found (funcall orig dir arg window)))
+                    (and found
+                         (window-parameter found 'edmacs-windmove-reachable)
+                         found)))))
 
 ;; Stack *Warnings* in the right-hand column beside claude-term panes (slot -1
 ;; puts it above them). Width matches `claude-term-window-width'.
