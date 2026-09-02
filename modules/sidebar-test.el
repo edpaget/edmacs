@@ -17,6 +17,21 @@
 ;; neither this checkout nor its sibling main `edmacs' checkout has ever
 ;; bootstrapped straight, the whole suite reports a single skip rather than
 ;; erroring out on file load.
+;;
+;; `edmacs-sidebar-test-per-frame-buffers-distinct-and-delete-frame-scoped'
+;; (AC2: per-frame buffers, delete-frame scoping) needs a second real
+;; frame, which needs a controlling terminal to attach to -- plain `-Q
+;; --batch' with no pty has none, so that one test skips cleanly under
+;; the invocation above. To actually exercise it, wrap the same
+;; invocation in `script' to attach a pty:
+;;
+;;   script -q /dev/null emacs -Q --batch -l ert \
+;;         -l modules/git-common-dir.el -l modules/sidebar-test.el \
+;;         -f ert-run-tests-batch-and-exit
+;;
+;; This draws real terminal escape sequences to that pty as a side
+;; effect (the second frame is a live tty frame) -- harmless, but expect
+;; screen-clear/cursor codes in the raw output.
 
 ;;; Code:
 
@@ -261,14 +276,27 @@ non-selected frame, making that frame's rows non-selectable via RET."
     ;; rotate.el.
 
     (defun edmacs-sidebar-test--make-second-frame-or-skip ()
-      "Return a second real frame on this process's terminal, or skip."
+      "Return a second real frame on this process's controlling terminal, or skip.
+Passes `tty'/`tty-type' explicitly rather than relying on `window-system'
+alone: with no controlling terminal at all (the common `-Q --batch' case,
+run with no pty attached) opening \"/dev/tty\" fails and this skips, same
+as before. But run under a pty (e.g. `script -q /dev/null emacs -Q
+--batch ...') \"/dev/tty\" does exist, and `tty-type' is hardcoded to
+\"xterm\" rather than inherited from `$TERM' because the invoking shell's
+own terminal type (e.g. \"xterm-ghostty\") may have no terminfo entry on
+this machine, which would otherwise fail with \"Unknown terminal type\"
+even though a real controlling terminal is attached; \"xterm\" is close
+to universally present in terminfo databases."
       (condition-case e
-          (let ((frame (make-frame '((window-system . nil)))))
+          (let ((frame (make-frame '((window-system . nil)
+                                      (tty . "/dev/tty")
+                                      (tty-type . "xterm")))))
             (unless (frame-live-p frame)
               (ert-skip "could not create a second frame in this batch environment"))
             frame)
         (error (ert-skip (format "could not create a second frame in this \
-batch environment: %s" e)))))
+batch environment (no controlling terminal? run under `script -q /dev/null \
+emacs ...' to exercise this test): %s" e)))))
 
     (ert-deftest edmacs-sidebar-test-per-frame-buffers-distinct-and-delete-frame-scoped ()
       (let* ((f1 (selected-frame))
@@ -440,6 +468,69 @@ worktree in a real Emacs session) to enable this test"))
               (tab-bar-switch-to-tab first-name)
               (should (= 0 (tab-bar--current-tab-index))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+
+    ;; ==========================================================================
+    ;; AC7 -- desktop/daemon restore regenerates a live sidebar
+    ;; ==========================================================================
+    ;; A genuine `desktop-save'/`desktop-read' round trip cannot run here:
+    ;; `desktop-read' is unconditionally a no-op under `-Q --batch' --
+    ;; "This function is a no-op when Emacs is running in batch mode",
+    ;; straight from its own docstring, confirmed empirically (it prints
+    ;; "Not reloading the desktop" and never fires
+    ;; `desktop-after-read-hook' regardless of lock state or
+    ;; `desktop-file-modtime'). So these tests instead call the exact,
+    ;; named functions sidebar.el registers on the two restore hooks
+    ;; directly -- the same functions a real restore would invoke -- and
+    ;; assert they leave each frame with a live, freshly-populated
+    ;; sidebar rather than none/a stale one. This is real coverage of
+    ;; sidebar.el's own regeneration logic, even though the surrounding
+    ;; desktop.el/daemon machinery itself stays a manual M-x checklist
+    ;; (see the commit body) per the phase's own step 9 fallback.
+
+    (ert-deftest edmacs-sidebar-test-desktop-excludes-sidebar-mode ()
+      (should (memq 'edmacs-sidebar-mode desktop-modes-not-to-save)))
+
+    (ert-deftest edmacs-sidebar-test-desktop-after-read-hook-regenerates-sidebar ()
+      "Simulates the state a real restore leaves a frame in -- no live
+sidebar buffer yet, since `edmacs-sidebar-mode' is excluded from the
+saved desktop -- and asserts the function registered on
+`desktop-after-read-hook' produces a fresh, correctly-populated one.
+`edmacs-sidebar-test--cleanup-sidebar' forces that starting state
+explicitly rather than assuming it: AC3's own post-open hook
+(`edmacs-sidebar--on-tab-open') already auto-shows the sidebar as soon
+as `edmacs-sidebar-test--with-extra-tab's `tab-bar-new-tab' runs, so a
+live buffer already exists by this point and must be torn down first to
+model \"freshly restored, buffer excluded from the save\" rather than
+\"already showing\"."
+      (edmacs-sidebar-test--with-extra-tab
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-test--cleanup-sidebar (selected-frame))
+              (should-not (edmacs-sidebar--buffer (selected-frame)))
+              (edmacs-sidebar--on-desktop-read)
+              (let ((buf (edmacs-sidebar--buffer (selected-frame))))
+                (should (buffer-live-p buf))
+                (with-current-buffer buf
+                  (should (= 2 (length (split-string (buffer-string) "\n" t)))))))
+          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+
+    (ert-deftest edmacs-sidebar-test-regenerate-after-frame-shows-sidebar-once-deferred ()
+      "Direct regression test for the daemon-restart path's own function
+\(`edmacs-sidebar--regenerate-after-frame', registered on
+`after-make-frame-functions' at depth 100). Unlike sessions.el's own
+frameset-restore hook, this one is not gated on `display-graphic-p' -- it
+must show a fresh sidebar once its `run-at-time 0' fires, even on a
+non-graphical batch frame."
+      (unwind-protect
+          (progn
+            (should-not (edmacs-sidebar--buffer (selected-frame)))
+            (edmacs-sidebar--regenerate-after-frame (selected-frame))
+            ;; Deferred -- must not have run synchronously.
+            (should-not (edmacs-sidebar--buffer (selected-frame)))
+            (sleep-for 0.2)
+            (sit-for 0)
+            (should (buffer-live-p (edmacs-sidebar--buffer (selected-frame)))))
+        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
 
     ;; ==========================================================================
     ;; AC8 -- no subprocess work during redraw/hook activity

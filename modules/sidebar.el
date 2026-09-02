@@ -303,10 +303,17 @@ firing and the timer executing."
 
 (add-to-list 'desktop-modes-not-to-save 'edmacs-sidebar-mode)
 
-(add-hook 'desktop-after-read-hook
-          (lambda ()
-            (dolist (f (frame-list))
-              (edmacs-sidebar-show f))))
+(defun edmacs-sidebar--on-desktop-read ()
+  "Regenerate every live frame's sidebar after a desktop restore.
+A named function, not an anonymous lambda, so tests can invoke exactly
+what `desktop-after-read-hook' runs: `desktop-read' itself is a no-op
+under `-Q --batch' (\"This function is a no-op when Emacs is running in
+batch mode\", per its own docstring), so this is the only way to exercise
+this half of the restore path in the ERT suite -- see sidebar-test.el."
+  (dolist (f (frame-list))
+    (edmacs-sidebar-show f)))
+
+(add-hook 'desktop-after-read-hook #'edmacs-sidebar--on-desktop-read)
 
 ;; Under the daemon, `sessions.el's `edmacs-sessions--restore-pending-frameset'
 ;; restores a stashed frameset from `after-make-frame-functions', deferred
