@@ -22,10 +22,19 @@
 ;; Environment Variables from Shell
 ;; ============================================================================
 
-;; macOS GUI apps don't inherit the shell environment.
+;; macOS GUI apps and launchd-started daemons don't inherit the shell
+;; environment. `window-system' is nil in a daemon, so check `daemonp' too.
 (use-package exec-path-from-shell
-  :if (memq window-system '(mac ns x))
+  :if (or (daemonp) (memq window-system '(mac ns x)))
   :config
+  ;; launchd leaves SHELL unset, which would make this run /bin/sh -l and
+  ;; miss Homebrew and mise. Ask the directory service for the login shell.
+  (unless (getenv "SHELL")
+    (let ((shell (ignore-errors
+                   (car (last (split-string
+                               (shell-command-to-string "dscl . -read ~ UserShell")))))))
+      (when (and shell (file-executable-p shell))
+        (setq exec-path-from-shell-shell-name shell))))
   (setq exec-path-from-shell-variables
         '("PATH"
           "MANPATH"
@@ -49,8 +58,16 @@
 ;; mise.el sets per-project env buffer-locally from the mise config chain.
 ;; Activated on `after-init' because it shells out to mise several times.
 ;; Note: first activation writes `experimental = true' to the global mise config.
+(defun edmacs--enable-mise ()
+  "Enable `global-mise-mode' when the mise binary is available.
+An error in `after-init-hook' kills a daemon (exit 255), so a missing
+binary degrades to a warning instead."
+  (if (executable-find "mise")
+      (global-mise-mode 1)
+    (display-warning 'edmacs "mise not found on PATH; global-mise-mode not enabled")))
+
 (use-package mise
-  :hook (after-init . global-mise-mode)
+  :hook (after-init . edmacs--enable-mise)
   :config
   ;; Prompt before trusting a newly-seen config rather than blanket-trusting.
   ;; Answering yes runs `mise trust --all', which trusts the whole parent chain

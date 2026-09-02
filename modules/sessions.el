@@ -113,6 +113,11 @@ project."
 (with-eval-after-load 'claude-repl-buffer
   (add-to-list 'desktop-modes-not-to-save 'claude-repl-buffer-mode))
 
+;; desktop restores each buffer's minor modes by calling them. mise-mode
+;; shells out to mise, and an error during restore in a frameless daemon is
+;; fatal (Emacs exits 255). `global-mise-mode' re-enables it anyway.
+(add-to-list 'desktop-minor-mode-table '(mise-mode nil))
+
 (desktop-save-mode 1)
 
 ;; ----------------------------------------------------------------------------
