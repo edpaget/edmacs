@@ -400,9 +400,21 @@ reason."
 ;; ============================================================================
 
 (defun edmacs-frames--only-frame-p (frame)
-  "Return non-nil when FRAME is the only live frame Emacs currently has."
+  "Return non-nil when FRAME is the only real, user-visible top-level frame.
+A naive `frame-live-p' count is fooled by a child frame such as corfu's
+completion popup: `corfu--hide-frame' only calls `make-frame-invisible',
+never `delete-frame', so that frame stays live -- but invisible, and
+parented to the frame it popped up from -- for the rest of the session.
+Excluding both invisible frames and any frame with a non-nil
+`parent-frame' parameter (as `edmacs-ns-close-frame' in sessions.el
+excludes non-graphic/invisible frames from its own \"only frame\" count)
+keeps such a popup from ever being mistaken for a second real frame,
+without requiring `display-graphic-p' -- this handler also runs under
+the tty frames this module's own batch test suite creates."
   (ignore frame)
-  (= 1 (length (seq-filter #'frame-live-p (frame-list)))))
+  (= 1 (length (seq-filter (lambda (f) (and (frame-visible-p f)
+                                            (not (frame-parameter f 'parent-frame))))
+                           (frame-list)))))
 
 (defun edmacs-frames--close-last-tab (_tab)
   "`tab-bar-close-last-tab-choice' handler for a repo frame's last tab.

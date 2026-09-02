@@ -70,14 +70,21 @@ inside the same worktree share one cache entry."
 ;; so no real frame is ever created here.
 
 (defmacro edmacs-frames-test--with-fake-frames (alist &rest body)
-  "Run BODY with `frame-list'/`frame-live-p'/`frame-parameter' faked from ALIST.
-ALIST is a list of (FRAME-SYMBOL . PARAMS-ALIST)."
+  "Run BODY with frame-scanning primitives faked from ALIST.
+ALIST is a list of (FRAME-SYMBOL . PARAMS-ALIST); a PARAMS-ALIST entry
+for `visible' controls `frame-visible-p' and defaults to t when absent,
+so existing callers that never mention visibility keep behaving as a
+plain live, visible frame."
   (declare (indent 1))
   `(let ((frames--alist ,alist))
      (cl-letf (((symbol-function 'frame-list)
                 (lambda () (mapcar #'car frames--alist)))
                ((symbol-function 'frame-live-p)
                 (lambda (f) (assq f frames--alist)))
+               ((symbol-function 'frame-visible-p)
+                (lambda (f)
+                  (let ((params (cdr (assq f frames--alist))))
+                    (if (assq 'visible params) (alist-get 'visible params) t))))
                ((symbol-function 'frame-parameter)
                 (lambda (f param)
                   (if f
@@ -115,6 +122,22 @@ ALIST is a list of (FRAME-SYMBOL . PARAMS-ALIST)."
     (should (edmacs-frames--only-frame-p 'fa)))
   (edmacs-frames-test--with-fake-frames '((fa . nil) (fb . nil))
     (should-not (edmacs-frames--only-frame-p 'fa))))
+
+(ert-deftest edmacs-frames-test-only-frame-p-ignores-corfu-style-child-frame ()
+  "A corfu-style completion popup must never count as a second frame.
+`corfu--hide-frame' only calls `make-frame-invisible' -- the popup frame
+stays `frame-live-p' but invisible, and carries a `parent-frame'
+parameter, for the rest of the session once it has ever shown once."
+  (edmacs-frames-test--with-fake-frames
+      '((fa . nil)
+        (corfu . ((visible . nil) (parent-frame . fa))))
+    (should (edmacs-frames--only-frame-p 'fa)))
+  ;; Even a momentarily-VISIBLE popup is still a child frame, not a
+  ;; second real one.
+  (edmacs-frames-test--with-fake-frames
+      '((fa . nil)
+        (corfu . ((visible . t) (parent-frame . fa))))
+    (should (edmacs-frames--only-frame-p 'fa))))
 
 ;; ============================================================================
 ;; edmacs-frames-tab-in-own-repo-p -- the tab-name repo-prefix-drop predicate
