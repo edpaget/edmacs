@@ -23,6 +23,11 @@
   ;; In vterm-copy-mode, use normal state for navigation
   (evil-set-initial-state 'vterm-copy-mode 'normal)
 
+  ;; vterm moves point on every output chunk, forcing an hl-line overlay
+  ;; recompute per chunk under heavy terminal output; disable hl-line
+  ;; buffer-locally in vterm buffers rather than touching the global mode.
+  (add-hook 'vterm-mode-hook (lambda () (setq-local global-hl-line-mode nil)))
+
   ;; VTerm keybindings
   (general-define-key
    :states 'normal

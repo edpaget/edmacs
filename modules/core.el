@@ -141,15 +141,43 @@
 
  ;; Scrolling
  scroll-margin 0                ; Scroll margin
- scroll-conservatively 100000   ; Smooth scrolling
  scroll-preserve-screen-position t
-
- ;; Performance
- redisplay-dont-pause t         ; Don't pause redisplay
 
  ;; Misc
  require-final-newline t        ; Always end files with newline
  )
+
+;; ============================================================================
+;; Performance
+;; ============================================================================
+;; Cheap redisplay/perf settings that cost nothing at startup but prevent
+;; per-redisplay overhead from compounding with this config's other features
+;; (rainbow-delimiters, flycheck, tree-sitter, hl-todo, global-auto-revert,
+;; diff-hl, etc.).
+
+;; Detect very long lines (minified bundles, lockfiles, wide CSVs) and
+;; neutralize expensive per-line features (font-lock, visual-line-mode,
+;; evil) for that buffer instead of freezing on them.
+(global-so-long-mode 1)
+
+;; This config is exclusively left-to-right code; skip per-paragraph
+;; direction auto-detection and the bracket-pair-algorithm redisplay cost,
+;; which lands hardest on bracket-dense buffers where rainbow-delimiters
+;; is unconditionally enabled.
+(setq-default bidi-paragraph-direction 'left-to-right)
+(setq bidi-inhibit-bpa t)
+
+;; This is an all-Git setup; skip the extra vc-registered probes against
+;; RCS/CVS/SVN/SCCS/SRC/Bzr/Hg on every file visit.
+(setq vc-handled-backends '(Git))
+
+;; Keep fontification off the typing path.
+(setq redisplay-skip-fontification-on-input t)
+
+;; toggle-font-size switches faces across default/fixed-pitch/variable-pitch
+;; at runtime, and nerd-icons brings in large glyph-count fonts; don't
+;; compact font caches on GC.
+(setq inhibit-compacting-font-caches t)
 
 ;; Disable startup screen
 (setq inhibit-startup-screen t
