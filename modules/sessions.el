@@ -126,8 +126,8 @@ project."
 ;; placeholder frame, nothing retries once a client attaches, and
 ;; `desktop-read' nils `desktop-saved-frameset' right after
 ;; `desktop-after-read-hook'. So stash it from that hook and replay it on
-;; `server-after-make-frame-hook'; `desktop-restore-reuses-frames' (default t)
-;; makes it reuse the client frame rather than pop a new one.
+;; the first GUI frame; `desktop-restore-reuses-frames' (default t) makes it
+;; reuse that frame rather than pop a new one.
 (require 'server)
 
 (defvar edmacs-sessions--pending-frameset nil
@@ -147,19 +147,56 @@ loaded but before `desktop-read' unconditionally nils it back out."
 
 (add-hook 'desktop-after-read-hook #'edmacs-sessions--stash-frameset-for-daemon)
 
-(defun edmacs-sessions--restore-pending-frameset-on-client-frame ()
-  "Restore a daemon-boot-stashed frameset onto the first client frame.
-`server-after-make-frame-hook' selects the client frame before running
-this, so `frameset-restore' (with `desktop-restore-reuses-frames'
-defaulting to t) reuses it instead of creating a new one. Runs once:
-later client frames just get the normal, empty daemon frame."
-  (when edmacs-sessions--pending-frameset
-    (let ((desktop-saved-frameset edmacs-sessions--pending-frameset))
-      (desktop-restore-frameset))
-    (setq edmacs-sessions--pending-frameset nil)))
+(defun edmacs-sessions--restore-pending-frameset (frame)
+  "Restore a daemon-boot-stashed frameset onto FRAME, the first GUI frame.
+Runs from `after-make-frame-functions' so it covers the boot frame,
+emacsclient frames, and the Dock's reopen event alike.
+`desktop-restore-reuses-frames' (default t) reuses FRAME. Deferred by a
+timer so the frame is fully created before frameset-restore touches it."
+  (when (and edmacs-sessions--pending-frameset (display-graphic-p frame))
+    (let ((frameset edmacs-sessions--pending-frameset))
+      (setq edmacs-sessions--pending-frameset nil)
+      (run-at-time 0 nil
+                   (lambda ()
+                     (when (frame-live-p frame)
+                       (let ((desktop-saved-frameset frameset))
+                         (with-selected-frame frame
+                           (desktop-restore-frameset)))))))))
 
-(add-hook 'server-after-make-frame-hook
-          #'edmacs-sessions--restore-pending-frameset-on-client-frame)
+(add-hook 'after-make-frame-functions #'edmacs-sessions--restore-pending-frameset)
+
+;; ----------------------------------------------------------------------------
+;; Keep the daemon owned by the Dock's Emacs.app tile. Emacs becomes a regular
+;; Dock app only once it has a visible frame, and drops out again (activation
+;; policy Prohibited) when its last NS frame is deleted; after that a Dock
+;; click launches a second Emacs. So the daemon opens one frame at boot, and
+;; closing the last window hides Emacs (what s-h does) instead of deleting the
+;; frame. A Dock click then unhides it with the layout intact.
+(defun edmacs-ns-close-frame (&optional frame)
+  "Close FRAME, hiding Emacs instead when it is the last visible GUI frame.
+Under the daemon a deleted last frame would drop Emacs out of the Dock."
+  (interactive)
+  (let ((frame (or frame (selected-frame))))
+    (if (and (daemonp)
+             (display-graphic-p frame)
+             (= 1 (length (seq-filter (lambda (f) (and (display-graphic-p f)
+                                                       (frame-visible-p f)))
+                                      (frame-list)))))
+        (ns-do-hide-emacs)
+      (delete-frame frame t))))
+
+(defun edmacs-ns-handle-delete-frame (event)
+  "Handle the window close button EVENT via `edmacs-ns-close-frame'."
+  (interactive "e")
+  (edmacs-ns-close-frame (posn-window (event-start event))))
+
+(when (and (daemonp) (eq system-type 'darwin))
+  (define-key global-map [remap delete-frame] #'edmacs-ns-close-frame)
+  (define-key special-event-map [delete-frame] #'edmacs-ns-handle-delete-frame)
+  (add-hook 'emacs-startup-hook
+            (lambda ()
+              ;; Never let a headless daemon die here (see core.el on exit 255).
+              (ignore-errors (make-frame '((window-system . ns)))))))
 
 ;; ============================================================================
 ;; Bufferlo - per-tab buffer lists (desktop.el deliberately omits these)

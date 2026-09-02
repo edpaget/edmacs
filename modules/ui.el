@@ -63,8 +63,17 @@ whole function."
       (set-iosevka-font font-size-standard)
       (message "Font size: %dpt (standard)" font-size-standard))))
 
-;; Set initial font
-(set-iosevka-font font-size-standard)
+;; A daemon has no display at load time, so `find-font' fails there; apply
+;; the font once the first graphical frame exists instead.
+(defun edmacs--set-font-on-first-frame (frame)
+  "Apply the Iosevka font when FRAME is the first graphical frame."
+  (when (display-graphic-p frame)
+    (with-selected-frame frame (set-iosevka-font font-size-current))
+    (remove-hook 'after-make-frame-functions #'edmacs--set-font-on-first-frame)))
+
+(if (daemonp)
+    (add-hook 'after-make-frame-functions #'edmacs--set-font-on-first-frame)
+  (set-iosevka-font font-size-standard))
 
 ;; ============================================================================
 ;; Theme - Modus Themes
