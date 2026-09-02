@@ -161,6 +161,24 @@ To configure auto-approval in your Emacs configuration:
         (tool "Grep" action allow)))
 ```
 
+## Comments
+
+Keep comments concise. A comment explains **why** only when the reason is not obvious from the code; it never narrates the thinking, history, or measurements that led to the change.
+
+- **Don't restate the code.** `(setq foo t)` does not need `;; set foo to t`.
+- **Explain the non-obvious.** A surprising ordering constraint, a workaround for an upstream bug, or a setting that looks wrong but isn't gets one or two lines saying why.
+- **No design narratives.** Benchmark numbers, rejected alternatives, what the old code did, roadmap or phase references, and "verified in upstream source" notes belong in the commit message, not the source. A comment block longer than about four lines is a signal to cut.
+- **No trailing-comment paragraphs.** A short end-of-line note is fine; wrapping a paragraph across trailing comments is not.
+
+Good:
+
+```elisp
+;; Must be set before bootstrap.el loads: it reads this while checking straight's own repo.
+(setq straight-check-for-modifications '(check-on-save))
+```
+
+Bad: the same setting preceded by a paragraph of benchmark timings, phase references, and a description of what the previous mechanism did.
+
 ## Best Practices
 
 - **Test-driven development**: Add tests before or alongside code changes
