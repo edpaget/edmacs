@@ -253,6 +253,10 @@ it is in a side window, close that side window."
 ;; from `window-layout-transpose' the moment something does.
 (setq transpose-dedicated-windows t)
 
+;; claude-term panes set `no-other-window' to stay out of `other-window'
+;; cycling; directional moves (SPC w h/j/k/l) should still reach them.
+(setq windmove-allow-all-windows t)
+
 ;; Stack *Warnings* in the right-hand column beside claude-term panes (slot -1
 ;; puts it above them). Width matches `claude-term-window-width'.
 (add-to-list 'display-buffer-alist
