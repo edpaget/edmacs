@@ -596,7 +596,7 @@ buffer."
       (kill-buffer buf2))))
 
 ;; ============================================================================
-;; SPC a binding-collision surface (AC7)
+;; SPC a binding surface after the claude-repl retirement
 ;; ============================================================================
 ;; Drives the REAL `general-define-key' and real evil keymap resolution
 ;; -- vendored `general.el'/`evil.el' sources added to `load-path', the
@@ -604,15 +604,17 @@ buffer."
 ;; evil-ghostel sources -- rather than re-implementing general.el's own
 ;; :states/:prefix dispatch by hand.
 ;;
-;; ai.el's own plain "SPC a" `general-define-key' call is extracted and
-;; `eval'd straight out of its unmodified source with `read', exactly
-;; `claude-term-live-test--load-real-escape-defun's technique in
-;; claude-term-live-test.el -- rather than loading the whole file via
-;; `require', since ai.el's own `(require \\='claude-repl-core)' would
-;; otherwise drag in markdown-mode and the whole claude-repl module for
-;; no reason a collision check needs: a `general-define-key' call's MAPS
-;; are quoted `(COMMAND :which-key STRING)' lists, so the command
-;; symbols never need to be `fbound' for `define-key' to install them.
+;; This started life as a collision check against modules/ai.el's ten
+;; claude-repl bindings, which had to coexist with this module's eight.
+;; claude-repl is now retired and ai.el's whole keybinding block is gone,
+;; so the interesting property inverted: those ten letters (and the "p"
+;; approval-policy submenu) must now resolve to NOTHING. A binding form
+;; left behind would resolve to a removed command and fail at press time,
+;; which no grep over the source would catch.
+;;
+;; ai.el is checked at the source level rather than loaded: `require'ing
+;; it would drag in markdown-mode and olivetti for a check that only
+;; needs to know no binding form naming a deleted command survives.
 
 (defconst claude-term-registry-test--evil-source
   (expand-file-name "../straight/repos/evil/evil.el"
@@ -628,6 +630,12 @@ buffer."
   (expand-file-name "ai.el" (file-name-directory (or load-file-name buffer-file-name)))
   "Path to the real modules/ai.el, sibling to this test file.")
 
+(defconst claude-term-registry-test--retired-spc-a-keys
+  '("a" "I" "b" "c" "s" "k" "K" "l" "i" "t" "p")
+  "Every `SPC a' leaf key modules/ai.el bound to a claude-repl command.
+\"p\" was the approval-policy submenu prefix rather than a leaf.  All of
+them must be unbound now that the module is deleted.")
+
 (defun claude-term-registry-test--load-real-general-and-evil ()
   "Add load-path entries for, and `require', the real evil and general.
 Returns non-nil on success; nil (without erroring) when either source
@@ -641,30 +649,12 @@ straight locally -- so the caller can `ert-skip' instead of failing."
     (require 'general)
     t))
 
-(defun claude-term-registry-test--eval-real-ai-el-spc-a-form ()
-  "Eval the real, unmodified plain \"SPC a\" `general-define-key' call from
-modules/ai.el. See this section's Commentary for why source-extraction,
-not a full `require', is used. Returns non-nil on success; nil when
-`claude-term-registry-test--ai-el-source' is not present."
-  (when (file-exists-p claude-term-registry-test--ai-el-source)
-    (with-temp-buffer
-      (insert-file-contents claude-term-registry-test--ai-el-source)
-      (goto-char (point-min))
-      (when (re-search-forward
-             "(general-define-key\n   :states 'normal\n   :prefix \"SPC a\"\n" nil t)
-        (goto-char (match-beginning 0))
-        (eval (read (current-buffer)) t)
-        t))))
-
-(ert-deftest claude-term-registry-test-spc-a-bindings-do-not-collide-with-ai-el ()
-  "None of this module's eight SPC a leaf keys collides with modules/ai.el's
-existing claude-repl bindings, and `SPC a TAB' stays unbound -- phase 5
-owns that binding, together with the attention-ordered comparator it
-needs."
+(ert-deftest claude-term-registry-test-spc-a-bindings-resolve ()
+  "This module's eight SPC a leaf keys resolve to its own commands.
+`SPC a TAB' stays unbound: the attention-ordered comparator that binding
+would need is not part of this module's surface."
   (unless (claude-term-registry-test--load-real-general-and-evil)
     (ert-skip "real evil.el/general.el not found in this checkout; bootstrap straight once locally to enable this test"))
-  (unless (claude-term-registry-test--eval-real-ai-el-spc-a-form)
-    (ert-skip "modules/ai.el not found next to this test file"))
   ;; This module's own `with-eval-after-load 'general' bindings
   ;; (claude-term-registry.el, loaded via -l before this test file) were
   ;; deferred until 'general' actually loaded -- `require' above just
@@ -676,25 +666,49 @@ needs."
                 ("A" . claude-term-show-all)
                 ("x" . claude-term-kill)
                 ("X" . claude-term-kill-all)
-                ("r" . claude-term-rename)))
-        (ai-el '(("a" . claude-repl-ask)
-                 ("I" . claude-repl-interrupt-and-ask)
-                 ("b" . claude-repl-open-buffer)
-                 ("c" . claude-repl-clear-buffer)
-                 ("s" . claude-repl-process-start-current-project)
-                 ("k" . claude-repl-process-kill-current-project)
-                 ("K" . claude-repl-process-kill-all)
-                 ("l" . claude-repl-show-processes)
-                 ("i" . claude-repl-process-status-current-project)
-                 ("t" . claude-repl-test-prompt))))
+                ("r" . claude-term-rename))))
     (dolist (pair ours)
       (should (eq (lookup-key evil-normal-state-map (kbd (concat "SPC a " (car pair))))
-                  (cdr pair))))
-    ;; The reverse direction: none of ai.el's own commands got silently
-    ;; overwritten by this module's bindings either.
-    (dolist (pair ai-el)
-      (should (eq (lookup-key evil-normal-state-map (kbd (concat "SPC a " (car pair))))
-                  (cdr pair))))
-    (should-not (lookup-key evil-normal-state-map (kbd "SPC a TAB")))))
+                  (cdr pair)))))
+  (should-not (lookup-key evil-normal-state-map (kbd "SPC a TAB"))))
+
+(ert-deftest claude-term-registry-test-retired-claude-repl-keys-are-unbound ()
+  "None of modules/ai.el's former claude-repl SPC a keys still resolves.
+Each would now point at a command deleted with the module, so pressing
+it would fail at the keymap level -- something no grep over the sources
+would catch."
+  (unless (claude-term-registry-test--load-real-general-and-evil)
+    (ert-skip "real evil.el/general.el not found in this checkout; bootstrap straight once locally to enable this test"))
+  (dolist (key claude-term-registry-test--retired-spc-a-keys)
+    (should-not (lookup-key evil-normal-state-map (kbd (concat "SPC a " key))))))
+
+(ert-deftest claude-term-registry-test-spc-a-keeps-a-which-key-heading ()
+  "This module supplies the `SPC a' which-key heading ai.el used to own.
+ai.el's `\"\" (:ignore t :which-key \"ai/claude\")' entry was the only
+thing labelling the prefix; deleting it without adopting one here would
+silently leave `SPC a' headless, a regression invisible to `lookup-key'."
+  (unless (claude-term-registry-test--load-real-general-and-evil)
+    (ert-skip "real evil.el/general.el not found in this checkout; bootstrap straight once locally to enable this test"))
+  (require 'which-key)
+  ;; general.el records a `:which-key' prefix label as a
+  ;; `which-key-replacement-alist' entry keyed on the anchored key
+  ;; sequence -- see `general--add-which-key-replacement'.
+  (should (seq-find (lambda (entry)
+                      (and (consp entry)
+                           (consp (car entry))
+                           (equal (caar entry) "\\`SPC a\\'")))
+                    which-key-replacement-alist)))
+
+(ert-deftest claude-term-registry-test-ai-el-names-no-deleted-command ()
+  "modules/ai.el's source mentions claude-repl nowhere.
+`init.el' loads ai.el unconditionally, so a surviving
+`(require \\='claude-repl-core)' would break startup outright and a
+surviving binding form would install a void command."
+  (unless (file-exists-p claude-term-registry-test--ai-el-source)
+    (ert-skip "modules/ai.el not found next to this test file"))
+  (with-temp-buffer
+    (insert-file-contents claude-term-registry-test--ai-el-source)
+    (goto-char (point-min))
+    (should-not (re-search-forward "claude-repl" nil t))))
 
 ;;; claude-term-registry-test.el ends here
