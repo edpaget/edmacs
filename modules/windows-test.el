@@ -552,7 +552,8 @@ match `claude-term--display-buffer' exactly."
               (should (eq (window-buffer slot-1) buf-a))
               (should (eq (window-buffer main) buf-b))
               (edmacs-window-promote slot-1)
-              (should (eq (window-buffer main) buf-a))))
+              (should (eq (window-buffer main) buf-a))
+              (should (eq (window-buffer slot-1) buf-b))))
         (kill-buffer buf-a)
         (kill-buffer buf-b)))))
 
