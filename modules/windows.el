@@ -94,22 +94,33 @@ side window clears `no-other-window' so window navigation still reaches it."
 Like dwm's zoom or tmux's promote. Side windows (the right-hand column
 claude-term and *Warnings* use) count as stack windows: promoting from
 one puts its buffer in main and the old main buffer in that pane. From
-the main window itself, swap with the first stack window."
-  (interactive)
-  (let* ((window (or window (selected-window)))
-         (main (edmacs-main-window))
-         (other (if (eq window main)
-                    (seq-find (lambda (w) (not (eq w main)))
-                              (window-list nil 'no-minibuf main))
-                  window)))
-    (when other
-      (edmacs--swap-window-buffers main other)
-      ;; `window-swap-states' swaps non-side window-parameters along with
-      ;; the buffers, so without this re-stamp `edmacs-main' would migrate
-      ;; onto OTHER (the window that used to hold it) instead of staying
-      ;; on the geometric main slot.
-      (edmacs-window-set-main main))
-    (select-window main)))
+the main window itself, swap with the first stack window.
+With a numeric prefix arg N, WINDOW defaults to the Nth window of
+`edmacs-stack-windows' (0-based); an N past the end of the stack is a
+no-op with a message rather than an error."
+  (interactive
+   (list (when current-prefix-arg
+           (let* ((idx (prefix-numeric-value current-prefix-arg))
+                  (win (nth idx (edmacs-stack-windows))))
+             (or win
+                 (progn
+                   (message "edmacs-window-promote: no stack window at index %d" idx)
+                   :noop))))))
+  (unless (eq window :noop)
+    (let* ((window (or window (selected-window)))
+           (main (edmacs-main-window))
+           (other (if (eq window main)
+                      (seq-find (lambda (w) (not (eq w main)))
+                                (window-list nil 'no-minibuf main))
+                    window)))
+      (when other
+        (edmacs--swap-window-buffers main other)
+        ;; `window-swap-states' swaps non-side window-parameters along with
+        ;; the buffers, so without this re-stamp `edmacs-main' would migrate
+        ;; onto OTHER (the window that used to hold it) instead of staying
+        ;; on the geometric main slot.
+        (edmacs-window-set-main main))
+      (select-window main))))
 
 (defun edmacs-window-pop-buffer-to-main (buffer)
   "Show BUFFER in the main window and select it.
@@ -121,6 +132,35 @@ it is in a side window, close that side window."
         (edmacs-window-promote window)
       (let ((main (edmacs-main-window)))
         (set-window-buffer main buffer)
+        (select-window main)))))
+
+(defun edmacs--previous-buffer-for (window)
+  "Return a buffer to show in WINDOW once its current buffer is demoted.
+Prefers the first live `window-prev-buffers' entry that differs from
+WINDOW's current buffer, then `other-buffer', then the scratch buffer --
+so demoting never leaves WINDOW showing a dead buffer."
+  (let ((current (window-buffer window)))
+    (or (seq-some (lambda (entry)
+                     (let ((buf (car entry)))
+                       (and (buffer-live-p buf) (not (eq buf current)) buf)))
+                   (window-prev-buffers window))
+        (let ((ob (other-buffer current t)))
+          (and (buffer-live-p ob) (not (eq ob current)) ob))
+        (get-scratch-buffer-create))))
+
+(defun edmacs-window-demote ()
+  "Move MAIN's buffer into the stack's shared popup slot.
+Displays main's current buffer in the shared right-column popup slot
+(see `edmacs-stack--popup-alist') and replaces main's buffer with
+`edmacs--previous-buffer-for's result. `edmacs-window-promote' on that
+slot is the inverse: it swaps the two buffers straight back."
+  (interactive)
+  (let ((main (edmacs-main-window)))
+    (when main
+      (let ((buf (window-buffer main))
+            (replacement (edmacs--previous-buffer-for main)))
+        (display-buffer-in-side-window buf (edmacs-stack--popup-alist))
+        (set-window-buffer main replacement)
         (select-window main)))))
 
 ;; Nothing marks a window dedicated today, but this heads off a `user-error'
@@ -303,6 +343,111 @@ buffer after the window is gone, matching stock `quit-restore-window'."
       (funcall orig-fn window bury-or-kill))))
 
 (advice-add 'quit-restore-window :around #'edmacs-stack--quit-restore-window)
+
+;; ============================================================================
+;; Master-and-stack moves: cycling, closing, and resizing the stack
+;; ============================================================================
+
+(defun edmacs-stack-next ()
+  "Select the next stack window in slot order, wrapping through main.
+From main, selects the first stack window (a no-op when the stack is
+empty). From the last stack window, wraps back to main."
+  (interactive)
+  (let* ((stack (edmacs-stack-windows))
+         (main (edmacs-main-window)))
+    (if (eq (selected-window) main)
+        (when stack (select-window (car stack)))
+      (let ((rest (cdr (memq (selected-window) stack))))
+        (if rest
+            (select-window (car rest))
+          (when main (select-window main)))))))
+
+(defun edmacs-stack-prev ()
+  "Select the previous stack window in slot order, wrapping through main.
+The exact reverse traversal of `edmacs-stack-next'."
+  (interactive)
+  (let* ((stack (edmacs-stack-windows))
+         (main (edmacs-main-window)))
+    (if (eq (selected-window) main)
+        (when stack (select-window (car (last stack))))
+      (let ((pos (seq-position stack (selected-window))))
+        (if (and pos (> pos 0))
+            (select-window (nth (1- pos) stack))
+          (when main (select-window main)))))))
+
+(defun edmacs-stack-close ()
+  "Close the selected stack window without killing its buffer.
+Never acts on `edmacs-main-window' itself. Deletes the window -- an
+agent pane's live session buffer, in particular, is never killed -- then
+selects main."
+  (interactive)
+  (let ((window (selected-window))
+        (main (edmacs-main-window)))
+    (when (and (not (eq window main)) (window-live-p window))
+      (ignore-errors (delete-window window)))
+    (when (and main (window-live-p main))
+      (select-window main))))
+
+(defun edmacs--center-split-p ()
+  "Return non-nil when the frame has more than one non-side window."
+  (> (length (seq-filter (lambda (w) (not (window-parameter w 'window-side)))
+                          (window-list nil 'no-minibuf)))
+     1))
+
+(defun edmacs-window-delete-or-demote ()
+  "On main, demote if a center split exists, else message; elsewhere, delete.
+Replaces plain `delete-window' on `SPC w d': deleting `edmacs-main-window'
+outright would leave the frame without one, so main demotes instead."
+  (interactive)
+  (if (eq (selected-window) (edmacs-main-window))
+      (if (edmacs--center-split-p)
+          (edmacs-window-demote)
+        (message "edmacs-window-delete-or-demote: no center split to demote into"))
+    (delete-window)))
+
+(defun edmacs-stack--apply-width ()
+  "Resize every live stack window to the current `edmacs-stack-width'."
+  (dolist (w (edmacs-stack-windows))
+    (edmacs-stack--resize-width w)))
+
+(defun edmacs-stack--round-to-grid (value)
+  "Round VALUE to the nearest 1/20.
+Naive repeated +/-0.05 arithmetic on a float can land a hair off its
+target (0.5500000000000001 and the like); this keeps `edmacs-stack-width'
+on the exact grid `edmacs-stack-widen'/`edmacs-stack-narrow' step by."
+  (/ (float (round (* value 20))) 20))
+
+(defun edmacs-stack--set-width (new-width)
+  "Set `edmacs-stack-width' to NEW-WIDTH, grid-rounded and clamped, and resize."
+  (setq edmacs-stack-width
+        (max 0.05 (min 0.95 (edmacs-stack--round-to-grid new-width))))
+  (edmacs-stack--apply-width))
+
+(defun edmacs-stack-widen ()
+  "Widen the stack column by 0.05 and resize every stack window to match."
+  (interactive)
+  (edmacs-stack--set-width (+ edmacs-stack-width 0.05)))
+
+(defun edmacs-stack-narrow ()
+  "Narrow the stack column by 0.05 and resize every stack window to match."
+  (interactive)
+  (edmacs-stack--set-width (- edmacs-stack-width 0.05)))
+
+(defun edmacs-stack-balance-center ()
+  "Balance the center (non-side) windows, leaving the stack column alone.
+`window-main-window' returns the frame's non-side subtree root -- a
+single window when there is no center split, an internal combination
+otherwise -- so scoping `balance-windows' to it never touches a side
+window."
+  (interactive)
+  (let ((root (window-main-window)))
+    (when root
+      (balance-windows root))))
+
+(defun edmacs-stack-toggle ()
+  "Toggle visibility of the frame's side windows."
+  (interactive)
+  (window-toggle-side-windows))
 
 ;; ============================================================================
 ;; Window Rotation (tmux layout replacement)

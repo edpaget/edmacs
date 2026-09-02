@@ -20,6 +20,12 @@
 ;; The width test near the popup-routing section (AC5) skips unless
 ;; `modules/claude-term.el' is also passed on the command line -- see that
 ;; test's own Commentary note for the exact invocation.
+;;
+;; The "SPC w binding surface" section near the bottom loads
+;; `modules/keybindings.el' itself, fixing up `load-path' against the
+;; straight source tree first -- it is deliberately NOT passed on the
+;; invocation line above, the same treatment AC4 gives `modules/sidebar.el'.
+;; See that section's own comments for the straight-bootstrap skip condition.
 
 ;;; Code:
 
@@ -500,5 +506,367 @@ buffer gets killed."
               (should (> popup-w2 popup-w1)))
           (kill-buffer agent-buf)
           (kill-buffer popup-buf))))))
+
+;; ============================================================================
+;; Phase 4 -- demote, stack cycling, close, numeric-prefix promote, widen/narrow
+;; ============================================================================
+
+(defun edmacs-windows-test--display-claude-term-shaped-pane (buffer slot)
+  "Display BUFFER as a right-column stack pane, claude-term.el's real shape.
+`no-delete-other-windows', `no-other-window', and `edmacs-windmove-reachable'
+match `claude-term--display-buffer' exactly."
+  (display-buffer
+   buffer
+   `((display-buffer-in-side-window)
+     (side . right)
+     (slot . ,slot)
+     (window-parameters . ((no-delete-other-windows . t)
+                            (no-other-window . t)
+                            (edmacs-windmove-reachable . t))))))
+
+(defun edmacs-windows-test--slot-1-window ()
+  "Return the selected frame's right-column window at slot -1, or nil."
+  (seq-find (lambda (w) (equal (window-parameter w 'window-slot) -1))
+            (edmacs-windows-test--right-windows)))
+
+;; ---------------------------------------------------------------------------
+;; AC1 -- demote moves main's buffer to the popup slot; promote round-trips it
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-demote-then-promote-round-trips-main-buffer ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (buf-b (edmacs-windows-test--fresh-named-buffer "*ewt-demote-b*"))
+           (buf-a (edmacs-windows-test--fresh-named-buffer "*ewt-demote-a*")))
+      (unwind-protect
+          (progn
+            ;; Two switches leave B as the head of `window-prev-buffers',
+            ;; ahead of whatever main showed before (e.g. *scratch*).
+            (set-window-buffer main buf-b)
+            (set-window-buffer main buf-a)
+            (edmacs-window-demote)
+            (let ((slot-1 (edmacs-windows-test--slot-1-window)))
+              (should slot-1)
+              (should (eq (window-buffer slot-1) buf-a))
+              (should (eq (window-buffer main) buf-b))
+              (edmacs-window-promote slot-1)
+              (should (eq (window-buffer main) buf-a))))
+        (kill-buffer buf-a)
+        (kill-buffer buf-b)))))
+
+;; ---------------------------------------------------------------------------
+;; AC2 -- stack-next / stack-prev walk the stack in slot order, wrapping
+;; through main
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-stack-next-prev-slot-sequence ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((main (edmacs-main-window))
+          bufs)
+      (unwind-protect
+          (progn
+            (dotimes (i 3)
+              (let ((b (generate-new-buffer (format "*ewt-cycle-%d*" i))))
+                (push b bufs)
+                (edmacs-windows-test--display-agent-pane b i)))
+            (select-window main)
+            (let (seq)
+              (dotimes (_ 4)
+                (edmacs-stack-next)
+                (push (window-parameter (selected-window) 'window-slot) seq))
+              (should (equal (nreverse seq) '(0 1 2 nil))))
+            (select-window main)
+            (let (seq)
+              (dotimes (_ 4)
+                (edmacs-stack-prev)
+                (push (window-parameter (selected-window) 'window-slot) seq))
+              (should (equal (nreverse seq) '(2 1 0 nil)))))
+        (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
+
+(ert-deftest edmacs-windows-test-stack-next-prev-empty-stack-stays-on-main ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((main (edmacs-main-window)))
+      (edmacs-stack-next)
+      (should (eq (selected-window) main))
+      (edmacs-stack-prev)
+      (should (eq (selected-window) main)))))
+
+;; ---------------------------------------------------------------------------
+;; AC3 -- a numeric prefix arg promotes the pane at that index
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-promote-numeric-prefix-selects-indexed-pane ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (main-buf (window-buffer main))
+           bufs)
+      (unwind-protect
+          (progn
+            (dotimes (i 3)
+              (let ((b (generate-new-buffer (format "*ewt-promote-idx-%d*" i))))
+                (push b bufs)
+                (edmacs-windows-test--display-agent-pane b i)))
+            (let* ((target (nth 2 (edmacs-stack-windows)))
+                   (target-buf (window-buffer target)))
+              (let ((current-prefix-arg 2))
+                (call-interactively #'edmacs-window-promote))
+              (should (eq (window-buffer main) target-buf))
+              (should (eq (window-buffer target) main-buf))))
+        (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
+
+(ert-deftest edmacs-windows-test-promote-numeric-prefix-out-of-range-is-noop ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (main-buf (window-buffer main))
+           (buf (generate-new-buffer "*ewt-promote-oob*"))
+           (win (edmacs-windows-test--display-agent-pane buf 0)))
+      (unwind-protect
+          (let ((current-prefix-arg 5))
+            (call-interactively #'edmacs-window-promote)
+            (should (eq (window-buffer main) main-buf))
+            (should (eq (window-buffer win) buf)))
+        (kill-buffer buf)))))
+
+;; ---------------------------------------------------------------------------
+;; AC4 -- stack-close deletes an agent pane's window without killing its buffer
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-stack-close-agent-pane-preserves-buffer ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (buf (generate-new-buffer "*ewt-agent-close*"))
+           (win (edmacs-windows-test--display-claude-term-shaped-pane buf 0)))
+      (unwind-protect
+          (progn
+            (should win)
+            (select-window win)
+            (edmacs-stack-close)
+            (should-not (window-live-p win))
+            (should (buffer-live-p buf))
+            (should (eq (selected-window) main)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest edmacs-windows-test-stack-close-on-main-is-noop ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((main (edmacs-main-window)))
+      (select-window main)
+      (edmacs-stack-close)
+      (should (window-live-p main))
+      (should (eq (selected-window) main)))))
+
+;; ---------------------------------------------------------------------------
+;; `SPC w d' -- delete-or-demote's three branches
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-delete-or-demote-on-main-with-center-split-demotes ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (main-buf (window-buffer main))
+           (other (split-window main nil 'below))
+           (other-buf (generate-new-buffer "*ewt-dd-other*")))
+      (unwind-protect
+          (progn
+            (set-window-buffer other other-buf)
+            (select-window main)
+            (edmacs-window-delete-or-demote)
+            ;; Demote leaves OTHER's own split untouched and lands main's
+            ;; old buffer in the popup slot.
+            (should (eq (window-buffer other) other-buf))
+            (let ((slot-1 (edmacs-windows-test--slot-1-window)))
+              (should slot-1)
+              (should (eq (window-buffer slot-1) main-buf))))
+        (kill-buffer other-buf)))))
+
+(ert-deftest edmacs-windows-test-delete-or-demote-on-main-without-center-split-is-noop ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (main-buf (window-buffer main)))
+      (edmacs-window-delete-or-demote)
+      (should (eq (window-buffer main) main-buf))
+      (should (window-live-p main))
+      (should-not (edmacs-windows-test--right-windows)))))
+
+(ert-deftest edmacs-windows-test-delete-or-demote-off-main-deletes-window ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (other (split-window main nil 'below)))
+      (select-window other)
+      (edmacs-window-delete-or-demote)
+      (should-not (window-live-p other))
+      (should (window-live-p main)))))
+
+;; ---------------------------------------------------------------------------
+;; AC5 -- widen/narrow are numeric inverses on a fixed 0.05 grid
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-stack-widen-narrow-numeric-inverses ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((edmacs-stack-width 0.40)
+          bufs)
+      (unwind-protect
+          (progn
+            (dotimes (i 2)
+              (let ((b (generate-new-buffer (format "*ewt-width-%d*" i))))
+                (push b bufs)
+                (edmacs-windows-test--display-agent-pane b i)))
+            (dotimes (_ 3) (edmacs-stack-widen))
+            (should (= edmacs-stack-width 0.55))
+            (dolist (w (edmacs-stack-windows))
+              (should (= (window-total-width w)
+                         (round (* 0.55 (window-total-width (frame-root-window)))))))
+            (dotimes (_ 3) (edmacs-stack-narrow))
+            (should (= edmacs-stack-width 0.40))
+            (dolist (w (edmacs-stack-windows))
+              (should (= (window-total-width w)
+                         (round (* 0.40 (window-total-width (frame-root-window))))))))
+        (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
+
+(ert-deftest edmacs-windows-test-balance-center-leaves-stack-width-untouched ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (buf (generate-new-buffer "*ewt-balance-agent*"))
+           (agent-win (edmacs-windows-test--display-agent-pane buf 0))
+           (agent-width (window-total-width agent-win))
+           (split (split-window main 5 'below)))
+      (unwind-protect
+          (progn
+            (should (/= (window-total-height main) (window-total-height split)))
+            (edmacs-stack-balance-center)
+            (should (<= (abs (- (window-total-height main) (window-total-height split))) 1))
+            (should (= (window-total-width agent-win) agent-width)))
+        (kill-buffer buf)))))
+
+;; ---------------------------------------------------------------------------
+;; AC6/AC7 -- `SPC w' binding surface: real evil.el/general.el, plus
+;; modules/keybindings.el itself
+;; ---------------------------------------------------------------------------
+;; Same technique `claude-term-registry-test.el' uses for `SPC a': vendored
+;; `general.el'/`evil.el' sources added to `load-path' rather than
+;; re-implementing general.el's own :states/:prefix dispatch by hand.
+;; Duplicated locally (not required) to keep this file's own Commentary
+;; invocation self-contained, matching every other *-test.el file's
+;; convention in this repo.
+
+(defun edmacs-windows-test--locate-straight-repos-root ()
+  "Return this checkout's `straight/repos' directory, or nil.
+Tries this checkout's own `straight/repos' first, then falls back to the
+sibling main `edmacs' checkout's -- see
+`edmacs-windows-test--locate-straight-build-root' above for why a
+roadmap worktree needs the fallback."
+  (or
+   (let ((here (expand-file-name "straight/repos" default-directory)))
+     (and (file-directory-p here) here))
+   (let* ((root (directory-file-name (expand-file-name default-directory)))
+          (worktrees-dir (directory-file-name (file-name-directory root))))
+     (when (string-suffix-p "__worktrees" worktrees-dir)
+       (let* ((projects-dir (file-name-directory worktrees-dir))
+              (repo-name (string-remove-suffix
+                          "__worktrees" (file-name-nondirectory worktrees-dir)))
+              (main-repos (expand-file-name
+                           (concat repo-name "/straight/repos") projects-dir)))
+         (and (file-directory-p main-repos) main-repos))))))
+
+(defvar edmacs-windows-test--repos-root
+  (edmacs-windows-test--locate-straight-repos-root)
+  "This checkout's (or its sibling main checkout's) `straight/repos' root.")
+
+(defvar edmacs-windows-test--keybindings-loaded nil
+  "Non-nil once `modules/keybindings.el' has been loaded for real by this file.")
+
+(defun edmacs-windows-test--ensure-spc-w-bindings ()
+  "Load real evil/general and `modules/keybindings.el', once.
+Returns non-nil on success; nil (without erroring) when this checkout
+has never bootstrapped straight locally, so callers can `ert-skip'."
+  (when edmacs-windows-test--repos-root
+    (let ((evil-source (expand-file-name "evil/evil.el" edmacs-windows-test--repos-root))
+          (general-source (expand-file-name "general.el/general.el" edmacs-windows-test--repos-root)))
+      (when (and (file-exists-p evil-source) (file-exists-p general-source))
+        (add-to-list 'load-path (file-name-directory evil-source))
+        (add-to-list 'load-path (file-name-directory general-source))
+        (require 'evil)
+        (require 'general)
+        (unless edmacs-windows-test--keybindings-loaded
+          (load (expand-file-name "modules/keybindings.el" default-directory) nil t)
+          (setq edmacs-windows-test--keybindings-loaded t))
+        t))))
+
+(defconst edmacs-windows-test--spc-w-new-leaves
+  '(("-" . edmacs-window-demote)
+    ("]" . edmacs-stack-next)
+    ("[" . edmacs-stack-prev)
+    ("x" . edmacs-stack-close)
+    (">" . edmacs-stack-widen)
+    ("<" . edmacs-stack-narrow)
+    ("S" . edmacs-stack-toggle)
+    ("d" . edmacs-window-delete-or-demote)
+    ("=" . edmacs-stack-balance-center))
+  "This phase's new/changed `SPC w' leaves, key -> intended command.")
+
+(declare-function evil-get-auxiliary-keymap "evil-core")
+(defvar general-override-mode-map)
+
+(defun edmacs-windows-test--spc-w-keymap ()
+  "Return the real keymap `SPC w' resolves into for normal state.
+`leader-def' (`modules/keybindings.el') binds with `:keymaps \\='override',
+which general.el resolves -- for a given evil state -- into an evil
+auxiliary keymap hung off `general-override-mode-map', not into
+`evil-normal-state-map' itself; `lookup-key' on this is the equivalent of
+`evil-normal-state-map' for `SPC a's directly-bound leaves."
+  (evil-get-auxiliary-keymap general-override-mode-map 'normal))
+
+(ert-deftest edmacs-windows-test-spc-w-new-and-changed-leaves-resolve ()
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (let ((keymap (edmacs-windows-test--spc-w-keymap)))
+    (dolist (pair edmacs-windows-test--spc-w-new-leaves)
+      (should (eq (lookup-key keymap (kbd (concat "SPC w " (car pair))))
+                  (cdr pair))))))
+
+(ert-deftest edmacs-windows-test-spc-w-keeps-a-which-key-heading ()
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (require 'which-key)
+  ;; general.el records a `:which-key' prefix label as a
+  ;; `which-key-replacement-alist' entry keyed on the anchored key
+  ;; sequence -- see `general--add-which-key-replacement'.
+  (should (seq-find (lambda (entry)
+                      (and (consp entry)
+                           (consp (car entry))
+                           (equal (caar entry) "\\`SPC w\\'")))
+                    which-key-replacement-alist)))
+
+(ert-deftest edmacs-windows-test-spc-w-s-v-te-unchanged ()
+  "Phase 5 step 4 depends on `SPC w s'/`SPC w v' staying exactly as-is;
+`SPC w t e' is the kept alias for `edmacs-window-promote'."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (let ((keymap (edmacs-windows-test--spc-w-keymap)))
+    (should (eq (lookup-key keymap (kbd "SPC w s")) 'split-window-below))
+    (should (eq (lookup-key keymap (kbd "SPC w v")) 'split-window-right))
+    (should (eq (lookup-key keymap (kbd "SPC w t e")) 'edmacs-window-promote))))
 
 ;;; windows-test.el ends here
