@@ -30,6 +30,13 @@
 ;; or a package that ignores the frame model) and moves it to the right
 ;; one, off the redisplay path and never shelling out -- see its own
 ;; commentary below.
+;;
+;; `edmacs-worktrees-for-repo' feeds sidebar.el a repo's full worktree
+;; list (tab or not) from a cache populated only at frame-creation time
+;; and refreshed by a debounced `file-notify' watch on
+;; `<common>/worktrees' -- see that section's own Commentary below for
+;; why the redraw path itself never shells out, including on a cache
+;; miss.
 
 ;;; Code:
 
@@ -38,6 +45,7 @@
 (require 'tab-bar)
 (require 'project)
 (require 'vc-git)
+(require 'filenotify)
 
 ;; Available via init.el's `load-module' order, not a `require' -- see
 ;; git-common-dir.el's own commentary on this codebase's shared-obarray
@@ -46,6 +54,7 @@
 (declare-function edmacs-git-common-dir-main-worktree "git-common-dir")
 (declare-function edmacs-git-common-dir-repo-name "git-common-dir")
 (declare-function edmacs-sidebar-show "sidebar")
+(declare-function edmacs-sidebar--redraw "sidebar")
 (defvar edmacs-git-common-dir-cache)
 
 ;; `general' loads only in a real init.el session; declared here so the
@@ -82,6 +91,17 @@ itself already names that repo."
               (and (frame-live-p frame)
                    (equal (frame-parameter frame 'edmacs-repo) common)))
             (frame-list)))
+
+(defun edmacs-frames--frames-for-repo-common (common)
+  "Return every live frame whose `edmacs-repo' parameter equals COMMON.
+Distinct from `edmacs-frames--repo-frames', which returns every frame
+carrying ANY repo -- this is scoped to one exact COMMON, needed because
+the usual one-frame-per-repo invariant can be transiently violated by
+spare-frame reuse, and a worktree refresh must redraw every such frame,
+not just the first one found."
+  (seq-filter (lambda (f) (and (frame-live-p f)
+                               (equal (frame-parameter f 'edmacs-repo) common)))
+              (frame-list)))
 
 (defun edmacs-frames--spare-frame ()
   "Return a live, repo-less frame available to adopt, or nil.
@@ -154,6 +174,12 @@ Returns the frame."
              (frame (or (edmacs-frames--spare-frame) (make-frame))))
         (set-frame-parameter frame 'edmacs-repo common)
         (set-frame-parameter frame 'name label)
+        (when common
+          ;; Populate the worktree cache and arm its watch before the
+          ;; sidebar's first redraw, so `edmacs-worktrees-for-repo' never
+          ;; has to render off a cold cache for this repo's own frame.
+          (edmacs-frames--worktrees-refresh common)
+          (edmacs-frames--ensure-worktrees-watch common))
         (edmacs-frames--without-display-override
           (with-selected-frame frame
             (delete-other-windows)
@@ -243,6 +269,13 @@ the result so the derivation is not repeated."
   (seq-find (lambda (tab) (equal (edmacs-frames--tab-root tab) root))
             (tab-bar-tabs frame)))
 
+(defun edmacs-frames--tab-for-root (root &optional frame)
+  "Return the tab in FRAME (default selected) whose root equals ROOT, or nil.
+Public wrapper over `edmacs-frames--find-tab-by-root', for sidebar.el's
+worktree-aware redraw to look up a worktree's tab without re-deriving
+anything from `project-current'."
+  (edmacs-frames--find-tab-by-root root frame))
+
 (defun edmacs-frames--repo-worktrees (common)
   "Return COMMON's main worktree, then its other worktrees.
 Runs `vc-git-known-other-working-trees' with `default-directory' bound
@@ -253,6 +286,155 @@ worktree among the \"other\" ones."
   (let* ((main (edmacs-git-common-dir-main-worktree common))
          (default-directory main))
     (cons main (vc-git-known-other-working-trees))))
+
+;; ============================================================================
+;; Worktree list -- cached, refreshed only on frame creation or file-notify
+;; ============================================================================
+;; `edmacs-worktrees-for-repo' is a strict pure-cache read: it never calls
+;; `edmacs-frames--worktrees-compute' or `-refresh' itself, even on a
+;; cache miss. Population is guaranteed by call order elsewhere
+;; (`edmacs-frames-open' populates synchronously before the first
+;; `edmacs-sidebar-show', and the file-notify debounce below repopulates
+;; thereafter); a miss simply renders as an empty worktree list for that
+;; repo until the next refresh trigger fires. This is the invariant that
+;; keeps `process-file' out of the redraw/tab-switch path entirely --
+;; `edmacs-frames--worktrees-compute' is the only function in this whole
+;; feature reaching `vc-git-known-other-working-trees' (-> `process-file'),
+;; and it is only ever invoked from `edmacs-frames--worktrees-refresh'.
+
+(defvar edmacs-frames--worktrees-cache (make-hash-table :test #'equal)
+  "COMMON -> list of (NAME . TRUENAME-ROOT), including the main worktree.
+Populated only by `edmacs-frames--worktrees-refresh'; never evicted on
+its own repo's last-frame teardown -- see
+`edmacs-frames--teardown-worktrees-watch'.")
+
+(defvar edmacs-frames--worktree-watches (make-hash-table :test #'equal)
+  "COMMON -> file-notify watch descriptor.
+Watches COMMON's `worktrees' subdirectory directly once it exists, or
+COMMON itself (filtered to that subdirectory's appearance) until then --
+see `edmacs-frames--ensure-worktrees-watch'.")
+
+(defvar edmacs-frames--worktree-refresh-timers (make-hash-table :test #'equal)
+  "COMMON -> pending debounce timer for
+`edmacs-frames--schedule-worktrees-refresh'.")
+
+(defun edmacs-frames--worktrees-compute (common)
+  "Return COMMON's worktrees as a list of (NAME . TRUENAME-ROOT).
+The only function in this feature reaching `vc-git-known-other-working-trees'
+(-> `process-file'), via `edmacs-frames--repo-worktrees'."
+  (mapcar (lambda (dir)
+            (cons (file-name-nondirectory (directory-file-name dir))
+                  (file-truename dir)))
+          (edmacs-frames--repo-worktrees common)))
+
+(defun edmacs-worktrees-for-repo (common)
+  "Return the cached worktree list for git-common-dir COMMON, or nil.
+A strict pure-cache read -- see this section's own Commentary above for
+why a miss is a harmless empty render rather than a fallback compute."
+  (gethash common edmacs-frames--worktrees-cache))
+
+(defun edmacs-frames--worktrees-refresh (common)
+  "Recompute COMMON's worktree list and redraw every frame showing it.
+Invoked only from `edmacs-frames-open's first-frame-for-repo branch and
+from the debounced file-notify callback below -- never from redraw or
+tab-switch."
+  (puthash common (edmacs-frames--worktrees-compute common)
+           edmacs-frames--worktrees-cache)
+  (dolist (frame (edmacs-frames--frames-for-repo-common common))
+    (edmacs-sidebar--redraw frame)))
+
+(defun edmacs-frames--schedule-worktrees-refresh (common)
+  "Debounce a worktree refresh for COMMON by 0.5s.
+Collapses a burst of file-notify events (e.g. `git worktree add' or
+`workmux add' touching several paths under `worktrees/') into a single
+recompute, and is the only timer this feature ever registers -- there
+is no polling."
+  (when-let* ((timer (gethash common edmacs-frames--worktree-refresh-timers)))
+    (cancel-timer timer))
+  (puthash common
+           (run-at-time
+            0.5 nil
+            (lambda ()
+              (remhash common edmacs-frames--worktree-refresh-timers)
+              (edmacs-frames--worktrees-refresh common)))
+           edmacs-frames--worktree-refresh-timers))
+
+(defun edmacs-frames--worktree-watch-callback (common _event)
+  "Schedule a debounced refresh of COMMON in response to a direct-watch EVENT.
+Wrapped in `condition-case': this feature has zero file-notify
+precedent elsewhere in this codebase, so a backend quirk is treated
+defensively rather than allowed to propagate out of the callback."
+  (condition-case err
+      (edmacs-frames--schedule-worktrees-refresh common)
+    (error (message "edmacs-frames: worktree watch callback error for %s: %s"
+                     common err))))
+
+(defun edmacs-frames--upgrade-to-worktrees-watch (common)
+  "Replace COMMON's parent-dir watch with a direct watch on its `worktrees' dir."
+  (when-let* ((old (gethash common edmacs-frames--worktree-watches)))
+    (ignore-errors (file-notify-rm-watch old)))
+  (puthash common
+           (file-notify-add-watch
+            (expand-file-name "worktrees" common) '(change)
+            (lambda (event) (edmacs-frames--worktree-watch-callback common event)))
+           edmacs-frames--worktree-watches))
+
+(defun edmacs-frames--parent-watch-callback (common event)
+  "Handle EVENT on COMMON's temporary parent-dir watch.
+Filters to the literal filename \"worktrees\" -- `.git/' otherwise
+receives frequent unrelated writes (e.g. `.git/index') that would
+trigger wasted recomputes before the upgrade below ever needs to
+happen. Upgrades to a direct watch and refreshes immediately once
+`worktrees' actually appears."
+  (condition-case err
+      (pcase-let ((`(,_desc ,action ,file) event))
+        (when (and (member action '(created changed))
+                   (equal (file-name-nondirectory (directory-file-name file))
+                          "worktrees"))
+          (edmacs-frames--upgrade-to-worktrees-watch common)
+          (edmacs-frames--worktrees-refresh common)))
+    (error (message "edmacs-frames: worktree parent-watch callback error for %s: %s"
+                     common err))))
+
+(defun edmacs-frames--ensure-worktrees-watch (common)
+  "Ensure a file-notify watch is active for COMMON's `worktrees' directory.
+No-op if a watch descriptor is already stored for COMMON. Otherwise
+watches the directory directly if it already exists, else watches
+COMMON itself until `worktrees' first appears (see
+`edmacs-frames--parent-watch-callback'). `file-notify-add-watch' can
+signal on some backends -- wrapped so a watch failure never breaks
+frame creation, only leaves that repo's sidebar refreshing on
+frame-creation events alone."
+  (unless (gethash common edmacs-frames--worktree-watches)
+    (condition-case err
+        (let ((worktrees-dir (expand-file-name "worktrees" common)))
+          (if (file-directory-p worktrees-dir)
+              (puthash common
+                       (file-notify-add-watch
+                        worktrees-dir '(change)
+                        (lambda (event)
+                          (edmacs-frames--worktree-watch-callback common event)))
+                       edmacs-frames--worktree-watches)
+            (puthash common
+                     (file-notify-add-watch
+                      common '(change)
+                      (lambda (event)
+                        (edmacs-frames--parent-watch-callback common event)))
+                     edmacs-frames--worktree-watches)))
+      (file-notify-error
+       (message "edmacs-frames: could not watch worktrees for %s: %s" common err)))))
+
+(defun edmacs-frames--teardown-worktrees-watch (common)
+  "Cancel COMMON's pending debounce timer and remove its file-notify watch.
+The cache entry itself (`edmacs-frames--worktrees-cache') is deliberately
+left in place -- harmless, since `edmacs-worktrees-for-repo' is already a
+safe pure read and nothing draws from it once no frame references COMMON."
+  (when-let* ((timer (gethash common edmacs-frames--worktree-refresh-timers)))
+    (cancel-timer timer)
+    (remhash common edmacs-frames--worktree-refresh-timers))
+  (when-let* ((desc (gethash common edmacs-frames--worktree-watches)))
+    (ignore-errors (file-notify-rm-watch desc))
+    (remhash common edmacs-frames--worktree-watches)))
 
 (defun edmacs-frames--current-frame-common ()
   "Return the git-common-dir the selected frame is on.
@@ -424,15 +606,28 @@ on macOS, to keep owning the Dock's Emacs.app tile; see
 `edmacs-ns-close-frame' in sessions.el). That survivor is reset to a
 scratch buffer and stripped of its `edmacs-repo'/name instead, so it
 becomes an adoptable spare frame for the next `edmacs-frames-open'
-rather than a stale relic still naming a repo with no tabs left."
-  (if (edmacs-frames--only-frame-p (selected-frame))
-      (let ((frame (selected-frame)))
-        (switch-to-buffer (get-buffer-create "*scratch*"))
-        (delete-other-windows)
-        (set-frame-parameter frame 'edmacs-repo nil)
-        (set-frame-parameter frame 'name nil)
-        (tab-bar-rename-tab "emacs"))
-    (delete-frame)))
+rather than a stale relic still naming a repo with no tabs left.
+
+Either branch means FRAME's repo (if any) has just lost its last frame,
+so `edmacs-frames--teardown-worktrees-watch' runs first, while
+`edmacs-repo' is still readable and before `delete-frame'/reset can
+race a debounce timer that is already scheduled -- but only when no
+OTHER live frame still carries the same repo (the one-frame-per-repo
+invariant can be transiently violated by spare-frame reuse)."
+  (let* ((frame (selected-frame))
+         (common (frame-parameter frame 'edmacs-repo)))
+    (when (and common
+               (null (seq-remove (lambda (f) (eq f frame))
+                                  (edmacs-frames--frames-for-repo-common common))))
+      (edmacs-frames--teardown-worktrees-watch common))
+    (if (edmacs-frames--only-frame-p frame)
+        (progn
+          (switch-to-buffer (get-buffer-create "*scratch*"))
+          (delete-other-windows)
+          (set-frame-parameter frame 'edmacs-repo nil)
+          (set-frame-parameter frame 'name nil)
+          (tab-bar-rename-tab "emacs"))
+      (delete-frame))))
 
 (setq tab-bar-close-last-tab-choice #'edmacs-frames--close-last-tab)
 

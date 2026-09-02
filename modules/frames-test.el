@@ -247,5 +247,191 @@ records the real constraint, with the corrected upstream citations."
     (should (string-match-p "manzaltu#197" text))
     (should (string-match-p "ghostel#504" text))))
 
+;; ============================================================================
+;; AC1 -- edmacs-frames--worktrees-compute / edmacs-worktrees-for-repo
+;; ============================================================================
+
+(ert-deftest edmacs-frames-test-worktrees-compute-shape ()
+  "COMMON's worktrees become (NAME . TRUENAME-ROOT), main worktree included."
+  (cl-letf (((symbol-function 'edmacs-frames--repo-worktrees)
+             (lambda (_common) '("/repo/" "/repo/../wt-a/" "/repo/../wt-b/")))
+            ((symbol-function 'file-truename) #'identity))
+    (should (equal (edmacs-frames--worktrees-compute "/repo/.git")
+                   '(("repo" . "/repo/")
+                     ("wt-a" . "/repo/../wt-a/")
+                     ("wt-b" . "/repo/../wt-b/"))))))
+
+(ert-deftest edmacs-frames-test-worktrees-for-repo-returns-cached-value-verbatim ()
+  "A populated cache is returned without ever recomputing."
+  (let ((edmacs-frames--worktrees-cache (make-hash-table :test #'equal)))
+    (puthash "/repo/.git" '(("repo" . "/repo/")) edmacs-frames--worktrees-cache)
+    (cl-letf (((symbol-function 'edmacs-frames--worktrees-compute)
+               (lambda (&rest _) (error "should not recompute on a cache hit"))))
+      (should (equal (edmacs-worktrees-for-repo "/repo/.git")
+                     '(("repo" . "/repo/")))))))
+
+(ert-deftest edmacs-frames-test-worktrees-for-repo-miss-is-nil-never-computes ()
+  "The direct regression test for the strict-pure-cache-read contract:
+a cache miss is an empty list, never a fallback compute or refresh."
+  (let ((edmacs-frames--worktrees-cache (make-hash-table :test #'equal)))
+    (cl-letf (((symbol-function 'edmacs-frames--worktrees-compute)
+               (lambda (&rest _) (error "must not compute on a cache miss")))
+              ((symbol-function 'edmacs-frames--worktrees-refresh)
+               (lambda (&rest _) (error "must not refresh on a cache miss"))))
+      (should-not (edmacs-worktrees-for-repo "/never/seen/.git")))))
+
+(ert-deftest edmacs-frames-test-worktrees-refresh-populates-cache-and-redraws-matching-frames ()
+  "Refresh writes the cache and redraws every frame for COMMON, no others --
+covering the two-frames-same-repo edge case via `edmacs-frames--frames-for-repo-common'."
+  (let ((edmacs-frames--worktrees-cache (make-hash-table :test #'equal))
+        (redrawn nil))
+    (edmacs-frames-test--with-fake-frames
+        '((fa . ((edmacs-repo . "/repo/.git")))
+          (fb . ((edmacs-repo . "/other/.git")))
+          (fc . ((edmacs-repo . "/repo/.git"))))
+      (cl-letf (((symbol-function 'edmacs-frames--worktrees-compute)
+                 (lambda (_common) '(("repo" . "/repo/"))))
+                ((symbol-function 'edmacs-sidebar--redraw)
+                 (lambda (frame) (push frame redrawn))))
+        (edmacs-frames--worktrees-refresh "/repo/.git")
+        (should (equal (gethash "/repo/.git" edmacs-frames--worktrees-cache)
+                       '(("repo" . "/repo/"))))
+        (should (equal (sort (mapcar #'symbol-name redrawn) #'string<)
+                       '("fa" "fc")))))))
+
+;; ============================================================================
+;; AC3 -- debounce and lazy watch creation
+;; ============================================================================
+
+(ert-deftest edmacs-frames-test-schedule-worktrees-refresh-debounces ()
+  "A burst of scheduling calls collapses to exactly one refresh, and never
+leaves more than one pending timer per COMMON -- i.e. no polling timer."
+  (let ((edmacs-frames--worktree-refresh-timers (make-hash-table :test #'equal))
+        (calls 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'edmacs-frames--worktrees-refresh)
+                   (lambda (_common) (setq calls (1+ calls)))))
+          (edmacs-frames--schedule-worktrees-refresh "/repo/.git")
+          (edmacs-frames--schedule-worktrees-refresh "/repo/.git")
+          (edmacs-frames--schedule-worktrees-refresh "/repo/.git")
+          (should (= 1 (hash-table-count edmacs-frames--worktree-refresh-timers)))
+          (sleep-for 0.7)
+          (sit-for 0)
+          (should (= 1 calls))
+          (should (= 0 (hash-table-count edmacs-frames--worktree-refresh-timers))))
+      (maphash (lambda (_k timer) (ignore-errors (cancel-timer timer)))
+                edmacs-frames--worktree-refresh-timers))))
+
+(ert-deftest edmacs-frames-test-ensure-worktrees-watch-direct-when-dir-exists ()
+  "When `worktrees' already exists, it is watched directly, first try."
+  (let ((edmacs-frames--worktree-watches (make-hash-table :test #'equal))
+        (added nil))
+    (cl-letf (((symbol-function 'file-directory-p) (lambda (_d) t))
+              ((symbol-function 'file-notify-add-watch)
+               (lambda (dir flags _cb) (push (cons dir flags) added) 'desc-1)))
+      (edmacs-frames--ensure-worktrees-watch "/repo/.git/")
+      (should (equal (gethash "/repo/.git/" edmacs-frames--worktree-watches) 'desc-1))
+      (should (= 1 (length added)))
+      (should (equal (caar added) (expand-file-name "worktrees" "/repo/.git/")))
+      ;; No-op the second time -- a watch is already stored.
+      (edmacs-frames--ensure-worktrees-watch "/repo/.git/")
+      (should (= 1 (length added))))))
+
+(ert-deftest edmacs-frames-test-ensure-worktrees-watch-parent-then-upgrades ()
+  "Absent `worktrees' watches the parent, filters to that filename, then
+upgrades to a direct watch and refreshes once it actually appears."
+  (let ((edmacs-frames--worktree-watches (make-hash-table :test #'equal))
+        (added nil)
+        (removed nil)
+        (refreshed nil)
+        (dir-exists nil))
+    (cl-letf (((symbol-function 'file-directory-p) (lambda (_d) dir-exists))
+              ((symbol-function 'file-notify-add-watch)
+               (lambda (dir _flags cb)
+                 (let ((desc (intern (format "desc-%d" (1+ (length added))))))
+                   (push (list dir cb desc) added)
+                   desc)))
+              ((symbol-function 'file-notify-rm-watch)
+               (lambda (desc) (push desc removed)))
+              ((symbol-function 'edmacs-frames--worktrees-refresh)
+               (lambda (common) (push common refreshed))))
+      (edmacs-frames--ensure-worktrees-watch "/repo/.git/")
+      (should (= 1 (length added)))
+      (should (equal (nth 0 (car added)) "/repo/.git/"))
+      ;; An unrelated `.git/index' write must not trigger anything.
+      (funcall (nth 1 (car added)) (list 'desc-1 'changed "/repo/.git/index"))
+      (should (= 1 (length added)))
+      (should-not refreshed)
+      ;; `worktrees' itself appearing upgrades to a direct watch and refreshes.
+      (setq dir-exists t)
+      (funcall (nth 1 (car added))
+               (list 'desc-1 'created (expand-file-name "worktrees" "/repo/.git/")))
+      (should (= 2 (length added)))
+      (should (equal (nth 0 (car added)) (expand-file-name "worktrees" "/repo/.git/")))
+      (should removed)
+      (should (equal refreshed '("/repo/.git/"))))))
+
+(ert-deftest edmacs-frames-test-teardown-worktrees-watch-cancels-both ()
+  "Teardown cancels the pending debounce timer and removes the file-notify
+watch, but leaves the cache entry itself in place."
+  (let ((edmacs-frames--worktree-watches (make-hash-table :test #'equal))
+        (edmacs-frames--worktree-refresh-timers (make-hash-table :test #'equal))
+        (edmacs-frames--worktrees-cache (make-hash-table :test #'equal))
+        (rm-called nil))
+    (puthash "/repo/.git/" 'desc-1 edmacs-frames--worktree-watches)
+    (puthash "/repo/.git/" '(("repo" . "/repo/")) edmacs-frames--worktrees-cache)
+    (let ((timer (run-at-time 10 nil #'ignore)))
+      (puthash "/repo/.git/" timer edmacs-frames--worktree-refresh-timers)
+      (unwind-protect
+          (cl-letf (((symbol-function 'file-notify-rm-watch)
+                     (lambda (d) (setq rm-called d))))
+            (edmacs-frames--teardown-worktrees-watch "/repo/.git/"))
+        (ignore-errors (cancel-timer timer)))
+      (should (eq rm-called 'desc-1))
+      (should-not (gethash "/repo/.git/" edmacs-frames--worktree-watches))
+      (should-not (gethash "/repo/.git/" edmacs-frames--worktree-refresh-timers))
+      ;; Deliberately not evicted -- see the function's own commentary.
+      (should (gethash "/repo/.git/" edmacs-frames--worktrees-cache)))))
+
+;; ============================================================================
+;; AC4 -- edmacs-frames-open calls refresh/watch exactly once per new repo
+;; ============================================================================
+
+(ert-deftest edmacs-frames-test-open-first-frame-refreshes-worktrees-once ()
+  "The first `edmacs-frames-open' for a repo refreshes+arms its watch exactly
+once; a second call for the already-open repo does neither again.
+Uses the suite's own real (selected) frame as the \"spare\" frame
+`edmacs-frames-open' adopts -- its window/buffer-touching side effects
+are themselves stubbed out, so nothing here needs a second real frame."
+  (let ((frame (selected-frame))
+        (refresh-calls 0) (watch-calls 0) (existing nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'edmacs-frames--repo-of) (lambda (_dir) "/repo/.git"))
+                  ((symbol-function 'edmacs-frames-for-repo) (lambda (_common) existing))
+                  ((symbol-function 'edmacs-frames--spare-frame) (lambda () frame))
+                  ((symbol-function 'edmacs-git-common-dir-main-worktree)
+                   (lambda (_common) "/repo/"))
+                  ((symbol-function 'edmacs-git-common-dir-repo-name)
+                   (lambda (_common) "repo"))
+                  ((symbol-function 'edmacs-frames--worktrees-refresh)
+                   (lambda (_common) (setq refresh-calls (1+ refresh-calls))))
+                  ((symbol-function 'edmacs-frames--ensure-worktrees-watch)
+                   (lambda (_common) (setq watch-calls (1+ watch-calls))))
+                  ((symbol-function 'edmacs-frames--visit-root) #'ignore)
+                  ((symbol-function 'edmacs-frames--stamp-current-tab-root) #'ignore)
+                  ((symbol-function 'tab-bar-rename-tab) #'ignore)
+                  ((symbol-function 'edmacs-sidebar-show) #'ignore)
+                  ((symbol-function 'select-frame-set-input-focus) #'ignore)
+                  ((symbol-function 'delete-other-windows) #'ignore))
+          (edmacs-frames-open "/repo/")
+          (should (= 1 refresh-calls))
+          (should (= 1 watch-calls))
+          (setq existing frame)
+          (edmacs-frames-open "/repo/")
+          (should (= 1 refresh-calls))
+          (should (= 1 watch-calls)))
+      (set-frame-parameter frame 'edmacs-repo nil)
+      (set-frame-parameter frame 'name nil))))
+
 (provide 'frames-test)
 ;;; frames-test.el ends here
