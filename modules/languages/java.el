@@ -11,17 +11,34 @@
 ;; ============================================================================
 
 ;; Configure built-in java-mode before LSP
+;;
+;; NOTE: real .java buffers already run `java-ts-mode', not `java-mode' --
+;; treesit-auto's `set-auto-mode-0' advice installs a buffer-local
+;; major-mode-remap-alist entry at mode-resolution time that wins regardless
+;; of auto-mode-alist content or ordering. This :mode association is
+;; therefore inert for real buffers; it is left as-is because touching mode
+;; resolution is out of scope for this fix. Deliberately no :config here:
+;; java-mode is provided by cc-mode.el (`(cc-provide 'cc-mode)`), never
+;; `(provide 'java-mode)`, so use-package's `eval-after-load 'java-mode'
+;; never fires -- confirmed empirically that a :config block on this form
+;; never runs, at any time.
 (use-package java-mode
   :straight nil
-  :mode "\\.java\\'"
-  :config
-  ;; Basic Java settings
-  (setq-default c-basic-offset 4
-                tab-width 4
-                indent-tabs-mode nil)
+  :mode "\\.java\\'")
 
+;; The mode real .java buffers actually run (see note above). java-ts-mode.el
+;; genuinely (provide 'java-ts-mode), so with-eval-after-load reliably fires
+;; here -- the same pattern already used by rust.el/clojure.el/go.el/
+;; javascript.el for their respective *-ts-mode hooks.
+(with-eval-after-load 'java-ts-mode
   ;; Enable LSP for Java
-  (add-hook 'java-mode-hook #'lsp-deferred))
+  (add-hook 'java-ts-mode-hook #'lsp-deferred)
+
+  ;; Basic Java settings -- java-ts-mode has its own indent-offset
+  ;; defcustom; it does not consult cc-mode's c-basic-offset.
+  (setq java-ts-mode-indent-offset 4
+        tab-width 4
+        indent-tabs-mode nil))
 
 ;; ============================================================================
 ;; LSP Java - Eclipse JDT Language Server
@@ -56,7 +73,7 @@
   ;; Java-specific keybindings with local leader
   (general-define-key
    :states 'normal
-   :keymaps 'java-mode-map
+   :keymaps 'java-ts-mode-map
    :prefix "SPC c"
    ;; Organize imports
    "o" '(:ignore t :which-key "organize")
@@ -112,7 +129,7 @@
   ;; DAP keybindings
   (general-define-key
    :states 'normal
-   :keymaps 'java-mode-map
+   :keymaps 'java-ts-mode-map
    :prefix "SPC d"
    "" '(:ignore t :which-key "debug")
    "b" '(dap-breakpoint-toggle :which-key "toggle breakpoint")
@@ -140,11 +157,19 @@
 ;; ============================================================================
 
 (use-package mvn
+  ;; :commands alone is not a real load trigger here: nothing calls
+  ;; mvn-clean/mvn-compile/mvn-test until *after* this file's :config has
+  ;; already run and bound the ", m" prefix, so on a fresh session mvn.el
+  ;; never loads and its :config-defined keybindings never get installed
+  ;; (confirmed empirically with a live use-package repro). :after
+  ;; java-ts-mode loads it as soon as a .java buffer is visited, mirroring
+  ;; how dap-mode/lsp-java above load via :after lsp-mode.
+  :after java-ts-mode
   :commands (mvn-clean mvn-compile mvn-test)
   :config
   (general-define-key
    :states 'normal
-   :keymaps 'java-mode-map
+   :keymaps 'java-ts-mode-map
    :prefix ", m"
    "" '(:ignore t :which-key "maven")
    "c" '(mvn-clean :which-key "clean")
@@ -159,11 +184,11 @@
 ;; ============================================================================
 
 (use-package gradle-mode
-  :hook (java-mode . gradle-mode)
+  :hook (java-ts-mode . gradle-mode)
   :config
   (general-define-key
    :states 'normal
-   :keymaps 'java-mode-map
+   :keymaps 'java-ts-mode-map
    :prefix ", g"
    "" '(:ignore t :which-key "gradle")
    "b" '(gradle-build :which-key "build")

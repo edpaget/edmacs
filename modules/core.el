@@ -37,6 +37,19 @@
 
 ;; Ensure Emacs uses the same PATH and environment as your shell
 ;; This is especially important on macOS where GUI apps don't inherit shell env
+;; LSP_USE_PLISTS decision (edmacs-performance/phase-4-lsp-and-idle-tuning):
+;; DECLINED. The variable is absent from this repo and from the
+;; `exec-path-from-shell-variables' list immediately below. Even if it were
+;; added there, `exec-path-from-shell-initialize' (a few lines down) runs
+;; during init -- long after straight.el has already byte-compiled lsp-mode,
+;; and lsp-mode's plist-vs-hash-table representation is gated at
+;; byte-compile time, not read at runtime from the environment. Making
+;; LSP_USE_PLISTS take effect would require (a) exporting it in the real
+;; shell environment *before* Emacs starts, so it's present at Emacs launch
+;; regardless of exec-path-from-shell, and (b) a forced rebuild of lsp-mode
+;; (straight-use-package with a fresh build) so the byte-compiled gate picks
+;; it up. Judged not worth the operational complexity for the expected gain;
+;; not re-adding it here is deliberate, not an oversight.
 (use-package exec-path-from-shell
   :if (memq window-system '(mac ns x))
   :config

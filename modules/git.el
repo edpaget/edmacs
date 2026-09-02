@@ -20,7 +20,12 @@
   :config
   ;; Magit settings
   (setq magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1
-        magit-diff-refine-hunk t))
+        ;; Was t: forces word-level refinement on every hunk, which combines
+        ;; badly with `global-auto-revert-non-file-buffers' (modules/core.el)
+        ;; re-refreshing a visible magit-status every 5 seconds. nil is
+        ;; magit's own default; refinement is still available per-hunk on
+        ;; demand (magit-diff-toggle-refine-hunk).
+        magit-diff-refine-hunk nil))
 
 ;; Git keybindings - defined outside use-package so they're available immediately
 (general-define-key

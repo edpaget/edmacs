@@ -22,11 +22,24 @@
         lsp-enable-file-watchers nil
         lsp-enable-folding nil
         lsp-enable-snippet t
+        ;; documentHighlight fires on the same idle-delay tick as
+        ;; lsp-ui-doc's hover request below; decided to keep it, since
+        ;; "other occurrences of the symbol at point" is a low-cost,
+        ;; frequently-used affordance and this config's real idle-request
+        ;; savings come from taming the hover popup and modeline code
+        ;; actions instead (see lsp-ui-doc-show-with-cursor and
+        ;; lsp-modeline-code-actions-enable below).
         lsp-enable-symbol-highlighting t
         lsp-enable-links t
         lsp-signature-auto-activate t
         lsp-signature-render-documentation t
-        lsp-modeline-code-actions-enable t
+        ;; Was t: this polled textDocument/codeAction purely to populate the
+        ;; modeline indicator on every idle tick. The on-demand "SPC c a"
+        ;; binding below still executes code actions; only the passive
+        ;; modeline polling is removed. Visible behavior change: the
+        ;; modeline no longer shows a lightbulb/indicator when actions are
+        ;; available.
+        lsp-modeline-code-actions-enable nil
         lsp-modeline-diagnostics-enable t
         lsp-completion-provider :none  ; Use corfu instead
         lsp-headerline-breadcrumb-enable t)
@@ -59,14 +72,24 @@
   :commands lsp-ui-mode
   :config
   (setq lsp-ui-doc-enable t
-        lsp-ui-doc-show-with-cursor t
+        ;; Was t: this fired a hover request every time the cursor merely
+        ;; rested anywhere, not just on a symbol. Hover is not lost as a
+        ;; feature -- it is now on-demand via the "SPC c h" binding below.
+        lsp-ui-doc-show-with-cursor nil
         lsp-ui-doc-position 'at-point
         lsp-ui-doc-delay 0.5
         lsp-ui-peek-enable t
         lsp-ui-sideline-enable nil
         lsp-ui-sideline-show-hover nil
         lsp-ui-sideline-show-diagnostics nil
-        lsp-ui-sideline-show-code-actions nil))
+        lsp-ui-sideline-show-code-actions nil)
+
+  ;; Explicit on-demand hover, replacing the automatic cursor-triggered popup.
+  (general-define-key
+   :states 'normal
+   :keymaps 'lsp-mode-map
+   :prefix "SPC c"
+   "h" '(lsp-ui-doc-show :which-key "hover doc")))
 
 ;; Consult-LSP - Consult integration for LSP
 (use-package consult-lsp

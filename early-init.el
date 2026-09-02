@@ -44,4 +44,14 @@
 ;; Prefer loading newer compiled files
 (setq load-prefer-newer t)
 
+;; Raise the per-read chunk size for subprocess output (LSP servers in
+;; particular -- rust-analyzer, gopls, jdtls, clojure-lsp are all chatty).
+;; The Emacs 31.1 built-in default is 65536, not the 4096 most published
+;; advice cites; 1MB is a global process knob, not per-package config, so it
+;; lives here rather than in modules/programming.el. Do NOT also set
+;; `process-adaptive-read-buffering' -- it is already nil by default in
+;; 31.1, so the classic pairing advice is stale and setting it would be a
+;; no-op at best.
+(setq read-process-output-max (* 1024 1024))
+
 ;;; early-init.el ends here

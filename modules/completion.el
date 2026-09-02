@@ -114,7 +114,11 @@
 
   :config
   ;; Optionally configure preview
-  (setq consult-preview-key 'any)
+  ;; Was 'any: every momentary hover while arrowing through a
+  ;; consult-ripgrep/consult-buffer result list opened and fontified the
+  ;; hovered candidate with no debounce. Only a cursor rest past 0.3s now
+  ;; triggers a preview.
+  (setq consult-preview-key '(:debounce 0.3 any))
 
   ;; Use Consult to select xref locations with preview
   (setq xref-show-xrefs-function #'consult-xref
@@ -181,7 +185,7 @@
   (setq corfu-cycle t                ; Cycle through candidates
         corfu-auto t                 ; Enable auto completion
         corfu-auto-delay 0.2         ; Delay before showing completions
-        corfu-auto-prefix 2          ; Minimum prefix length for auto completion
+        corfu-auto-prefix 3          ; Minimum prefix length for auto completion (corfu's own default)
         corfu-quit-no-match 'separator ; Quit if no match
         corfu-preview-current nil    ; Don't preview current candidate
         corfu-preselect 'prompt      ; Preselect the prompt
