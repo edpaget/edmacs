@@ -638,12 +638,15 @@ cannot see the failure.
 
 Regression guard for the defect tracked by rdm task
 `claude-term-exec-buffer-local-wipe': with the setup ordered before
-`ghostel-exec', all five assertions below fail --
+`ghostel-exec', every assertion below fails --
 `claude-term--root'/`--instance'/`--args' come back nil,
-`ghostel-kill-buffer-on-exit' reverts to its global default of t, and
-`claude-term--on-exit' is never registered -- which left
-`claude-term-restart' unable to re-exec and `claude-term--on-exit'
-never running in production, while every stubbed test still passed."
+`ghostel-kill-buffer-on-exit' reverts to its global default of t,
+`ghostel-buffer-name-function' is left unpinned (whatever global value,
+including a global OSC-title renamer, happened to be in effect) rather
+than buffer-locally nil, and `claude-term--on-exit' is never
+registered -- which left `claude-term-restart' unable to re-exec and
+`claude-term--on-exit' never running in production, while every
+stubbed test still passed."
   (unless (file-exists-p claude-term-live-test--ghostel-source)
     (ert-skip "real ghostel.el not present in this checkout"))
   (add-to-list 'load-path
@@ -681,6 +684,8 @@ never running in production, while every stubbed test still passed."
             (should (equal claude-term--instance "2"))
             (should (equal claude-term--args '("--x")))
             (should-not ghostel-kill-buffer-on-exit)
+            (should (local-variable-p 'ghostel-buffer-name-function))
+            (should-not ghostel-buffer-name-function)
             (should (local-variable-p 'ghostel-exit-functions))
             (should (memq #'claude-term--on-exit ghostel-exit-functions))))
       (dolist (fn stubbed) (fmakunbound fn))
