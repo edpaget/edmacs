@@ -18,6 +18,16 @@
 ;;     sibling main checkout's build tree exactly as sidebar-test.el does;
 ;;     reports a single skip if neither has one.
 ;;
+;; A third, real-file-notify worktree-discovery test self-preflights a
+;; trivial watch before doing any real `git worktree add'/`remove' work: on
+;; this suite's own development machine, `--batch' mode's kqueue backend
+;; accepts a watch but never actually delivers a callback for a real
+;; filesystem change (confirmed independently of this feature's own code),
+;; while the identical watch fires immediately under a real `emacs
+;; --daemon'. The preflight distinguishes that known `--batch'/kqueue gap
+;; from an actual regression, and skips (rather than fails) when it can't
+;; be exercised here.
+;;
 ;; AC1/AC5 (the picker-seeding registrar in core.el) additionally load
 ;; core.el itself, standalone, with `straight-use-package' stubbed to a
 ;; no-op (core.el's own compat/cond-let/transient dependencies are pulled
@@ -149,6 +159,47 @@ nil -- this finds the actual leaf window content lives in instead."
       "Add a real git worktree of REPO at WT-DIR."
       (let ((default-directory (file-name-as-directory repo)))
         (call-process "git" nil nil nil "worktree" "add" wt-dir)))
+
+    (defun edmacs-frames-live-test--remove-worktree (repo wt-dir)
+      "Remove real git worktree WT-DIR from REPO."
+      (let ((default-directory (file-name-as-directory repo)))
+        (call-process "git" nil nil nil "worktree" "remove" "--force" wt-dir)))
+
+    (defun edmacs-frames-live-test--wait-until (predicate timeout)
+      "Pump the event loop until PREDICATE is non-nil or TIMEOUT seconds pass.
+Returns PREDICATE's own final value. `sit-for' (not `sleep-for') is what
+actually lets a pending `file-notify' callback run -- it processes
+input/timer/subprocess events, `sleep-for' merely blocks."
+      (let ((deadline (+ (float-time) timeout)))
+        (while (and (< (float-time) deadline) (not (funcall predicate)))
+          (sit-for 0.05))
+        (funcall predicate)))
+
+    (defun edmacs-frames-live-test--file-notify-delivers-p ()
+      "Return non-nil iff a real `file-notify' watch actually delivers here.
+`--batch' mode's own event loop does not service every backend the same
+way an interactive/daemon session's does -- confirmed on this suite's own
+kqueue backend (macOS): `file-notify-add-watch' succeeds and returns a
+live descriptor, but a real filesystem change underneath it never
+invokes the callback no matter how long `sit-for'/`accept-process-output'
+is pumped, while the identical watch fires immediately against a real
+`emacs --daemon'. Preflighting this trivial case, rather than skipping
+only on `file-notify-add-watch' itself signaling, is what actually
+distinguishes \"this backend cannot deliver under `--batch' here\" from
+a genuine regression in this feature's own watch plumbing."
+      (let* ((dir (make-temp-file "edmacs-frames-fnprobe-" t))
+             (probe (expand-file-name "probe" dir))
+             (fired nil)
+             (desc (ignore-errors
+                     (file-notify-add-watch dir '(change) (lambda (_ev) (setq fired t))))))
+        (unwind-protect
+            (progn
+              (when desc
+                (write-region "x" nil probe nil 'silent)
+                (edmacs-frames-live-test--wait-until (lambda () fired) 2.0))
+              fired)
+          (when desc (ignore-errors (file-notify-rm-watch desc)))
+          (delete-directory dir t))))
 
     (defun edmacs-frames-live-test--current-tab-display-name ()
       "Return the selected frame's current tab's actually-displayed name.
@@ -702,6 +753,81 @@ still excludes it."
             (should (equal (buffer-name (window-buffer (selected-window))) "*scratch*"))
             (let ((buf (edmacs-sidebar--buffer (selected-frame))))
               (when (buffer-live-p buf) (kill-buffer buf)))))))
+
+    ;; ==========================================================================
+    ;; Worktree discovery (edmacs-sidebar roadmap phase 3) -- real
+    ;; `workmux add'/`remove' reflected via the real file-notify backend
+    ;; ==========================================================================
+    ;; Every worktree/file-notify test in frames-test.el stubs
+    ;; `file-notify-add-watch'/`-rm-watch' entirely -- appropriate for unit
+    ;; coverage of the debounce/upgrade logic, but none of it proves the
+    ;; real OS backend actually delivers an event for a real
+    ;; `git worktree add'/`remove' the way this feature assumes. This is
+    ;; that end-to-end proof, mirroring claude-term-live-test.el's own
+    ;; precedent of driving a real subprocess for a claim unit tests can't
+    ;; make on their own. `workmux add'/`remove' themselves are a thin
+    ;; wrapper over exactly these two git subcommands (per the phase body),
+    ;; so exercising `git worktree add'/`remove' directly is the same
+    ;; file-notify-visible event this feature actually depends on.
+
+    (ert-deftest edmacs-frames-live-test-real-file-notify-reflects-worktree-add-remove ()
+      "A real `git worktree add' (what `workmux add' wraps) populates
+`edmacs-worktrees-for-repo' within a couple of seconds via the real
+`file-notify' backend and the 0.5s debounce -- no polling. `git worktree
+remove' (what `workmux remove' wraps) then removes it the same way."
+      (unless (edmacs-frames-live-test--file-notify-delivers-p)
+        (ert-skip "the real file-notify backend in this batch environment \
+never delivers a callback for an actual filesystem change (confirmed via a \
+trivial probe watch, independent of this feature's own code) -- run this \
+suite from a real `emacs --daemon' or interactive session to exercise it"))
+      (edmacs-frames-live-test--with-sandbox sandbox
+        (let* ((repo (expand-file-name "repoA" sandbox))
+               (wt (expand-file-name "wt-test" sandbox))
+               (edmacs-git-common-dir-cache (make-hash-table :test #'equal))
+               (edmacs-frames--worktrees-cache (make-hash-table :test #'equal))
+               (edmacs-frames--worktree-watches (make-hash-table :test #'equal))
+               (edmacs-frames--worktree-refresh-timers (make-hash-table :test #'equal)))
+          (edmacs-frames-live-test--make-git-repo repo)
+          (edmacs-frames-live-test--with-frames (frame)
+            (let (common)
+              (unwind-protect
+                  (progn
+                    (with-selected-frame frame (edmacs-frames-open repo))
+                    (setq common (edmacs-frames--repo-of repo))
+                    (unless (gethash common edmacs-frames--worktree-watches)
+                      (ert-skip "no file-notify watch was established for the \
+sandbox repo in this environment (backend unavailable?) -- cannot exercise \
+real add/remove reflection"))
+                    ;; Baseline: only the main worktree, from the synchronous
+                    ;; refresh `edmacs-frames-open' already ran.
+                    (should (= 1 (length (edmacs-worktrees-for-repo common))))
+                    (edmacs-frames-live-test--add-worktree repo wt)
+                    (should (edmacs-frames-live-test--wait-until
+                             (lambda () (assoc "wt-test" (edmacs-worktrees-for-repo common)))
+                             5.0))
+                    (should (= 2 (length (edmacs-worktrees-for-repo common))))
+                    ;; `git worktree add' writes several files under the new
+                    ;; worktree's `worktrees/<name>/' directory, so more than
+                    ;; one file-notify event -- and so more than one
+                    ;; reschedule of the debounce timer -- can land after the
+                    ;; `assoc' above already went true off an earlier one;
+                    ;; each reschedule still collapses to a single pending
+                    ;; timer (`edmacs-frames--schedule-worktrees-refresh'
+                    ;; cancels the old one first), so this settles to zero
+                    ;; shortly after, never accumulating a second entry --
+                    ;; the concrete "no polling timer" proof.
+                    (should (edmacs-frames-live-test--wait-until
+                             (lambda () (= 0 (hash-table-count
+                                               edmacs-frames--worktree-refresh-timers)))
+                             2.0))
+                    (should (<= (hash-table-count edmacs-frames--worktree-refresh-timers) 1))
+                    (edmacs-frames-live-test--remove-worktree repo wt)
+                    (should (edmacs-frames-live-test--wait-until
+                             (lambda () (not (assoc "wt-test" (edmacs-worktrees-for-repo common))))
+                             5.0))
+                    (should (= 1 (length (edmacs-worktrees-for-repo common)))))
+                (when common
+                  (ignore-errors (edmacs-frames--teardown-worktrees-watch common)))))))))
 
     (provide 'frames-live-test)))
 ;;; frames-live-test.el ends here

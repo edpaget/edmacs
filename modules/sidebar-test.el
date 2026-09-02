@@ -427,6 +427,101 @@ the SECOND entry, \"wt\", which starts with no tab of its own."
                 (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
 
     ;; ==========================================================================
+    ;; AC4 (worktree redraw path) -- no subprocess work through the
+    ;; worktree-aware render/activate/close surface
+    ;; ==========================================================================
+    ;; `edmacs-sidebar-test-redraw-and-hooks-never-shell-out' above (the
+    ;; phase-2 regression test) only ever drives a repo-LESS frame -- it
+    ;; never sets `edmacs-repo', so it exercises `edmacs-sidebar--redraw-tabs'
+    ;; but never `edmacs-sidebar--redraw-worktrees', `edmacs-sidebar-activate'
+    ;; on an already-open row, or `edmacs-sidebar-close-worktree'. This is
+    ;; the direct regression test for THIS phase's own no-shellout claim,
+    ;; covering both a populated cache and a cache miss.
+
+    (ert-deftest edmacs-sidebar-test-redraw-worktrees-never-shell-out ()
+      (let* ((current (tab-bar--current-tab-find))
+             (root-alist (list (cons current "/repo/")))
+             (worktrees '(("repo" . "/repo/")
+                          ("wt-a" . "/repo/wt-a/")
+                          ("wt-b" . "/repo/wt-b/")))
+             (violations nil)
+             (guarded '(call-process call-process-region process-file
+                        start-process start-file-process make-process)))
+        (edmacs-sidebar-test--stub-worktree-lookup root-alist
+          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo)
+                     (lambda (_common) worktrees))
+                    ;; Correctness of RET's open-vs-select dispatch is
+                    ;; already covered by the AC2 tests above; this stub only
+                    ;; needs to do nothing, so the tab-less row's activation
+                    ;; below cannot itself register a (real) subprocess call.
+                    ((symbol-function 'edmacs-frames-open-worktree-tab)
+                     (lambda (_root) nil))
+                    ;; Real `tab-bar-close-tab' would actually close the one
+                    ;; live tab this whole suite shares -- recorded instead,
+                    ;; since all that matters here is that closing an
+                    ;; already-open row never reaches a subprocess primitive.
+                    ((symbol-function 'tab-bar-close-tab) (lambda (&optional _n) nil)))
+            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
+              (unwind-protect
+                  (progn
+                    (dolist (fn guarded)
+                      (advice-add fn :before
+                                  (lambda (&rest _) (push fn violations))
+                                  `((name . ,(intern (format "edmacs-sidebar-test--guard-wt-%s" fn))))))
+                    (edmacs-sidebar-show (selected-frame))
+                    (dotimes (_ 50)
+                      (edmacs-sidebar--redraw (selected-frame))
+                      (edmacs-sidebar--redraw-worktrees (selected-frame) "/repo/.git")
+                      (edmacs-sidebar--on-tab-select nil nil)
+                      (edmacs-sidebar--on-tab-open nil)
+                      (edmacs-sidebar--on-tab-pre-close nil nil)
+                      (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                        ;; First row ("repo") is the open one (stamped onto
+                        ;; the current tab above) -- activating/closing it
+                        ;; stays on the tab-number branch.
+                        (goto-char (point-min))
+                        (edmacs-sidebar-activate)
+                        (edmacs-sidebar-close-worktree)
+                        ;; Second row ("wt-a") is tab-less -- both must no-op
+                        ;; rather than reach for a subprocess.
+                        (goto-char (point-min))
+                        (forward-line 1)
+                        (edmacs-sidebar-activate)
+                        (edmacs-sidebar-close-worktree)))
+                    (sleep-for 0.2)
+                    (sit-for 0)
+                    (should-not violations))
+                (dolist (fn guarded)
+                  (advice-remove fn (intern (format "edmacs-sidebar-test--guard-wt-%s" fn))))
+                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+
+    (ert-deftest edmacs-sidebar-test-redraw-worktrees-cache-miss-never-shell-out ()
+      "The cache-miss render path (nil from `edmacs-worktrees-for-repo') is
+just as much a no-shellout surface as the populated-cache one -- it must
+never fall back to a compute/subprocess call, only an empty render."
+      (let ((violations nil)
+            (guarded '(call-process call-process-region process-file
+                       start-process start-file-process make-process)))
+        (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) nil)))
+          (edmacs-sidebar-test--with-repo-frame "/repo/.git"
+            (unwind-protect
+                (progn
+                  (dolist (fn guarded)
+                    (advice-add fn :before
+                                (lambda (&rest _) (push fn violations))
+                                `((name . ,(intern (format "edmacs-sidebar-test--guard-wtmiss-%s" fn))))))
+                  (edmacs-sidebar-show (selected-frame))
+                  (dotimes (_ 50)
+                    (edmacs-sidebar--redraw (selected-frame))
+                    (edmacs-sidebar--redraw-worktrees (selected-frame) "/repo/.git"))
+                  (sleep-for 0.2)
+                  (sit-for 0)
+                  (should-not violations))
+              (dolist (fn guarded)
+                (advice-remove fn (intern (format "edmacs-sidebar-test--guard-wtmiss-%s" fn))))
+              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+
+    ;; ==========================================================================
     ;; AC2 -- per-frame buffers; delete-frame kills only that frame's buffer
     ;; ==========================================================================
     ;; `-Q --batch' generally cannot open a second real frame (no controlling
