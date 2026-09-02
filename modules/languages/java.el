@@ -34,11 +34,24 @@
   ;; Enable LSP for Java
   (add-hook 'java-ts-mode-hook #'lsp-deferred)
 
-  ;; Basic Java settings -- java-ts-mode has its own indent-offset
-  ;; defcustom; it does not consult cc-mode's c-basic-offset.
-  (setq java-ts-mode-indent-offset 4
-        tab-width 4
-        indent-tabs-mode nil))
+  ;; java-ts-mode has its own indent-offset defcustom; it does not consult
+  ;; cc-mode's c-basic-offset.  This variable is NOT auto-buffer-local, so a
+  ;; plain setq here does reach every java-ts-mode buffer.
+  (setq java-ts-mode-indent-offset 4)
+
+  ;; tab-width and indent-tabs-mode must NOT be set here.  Both are
+  ;; auto-buffer-local (`local-variable-if-set-p' is t for each), so a plain
+  ;; setq inside this load-once block binds them only in whatever buffer
+  ;; happened to be current when java-ts-mode.el was loaded -- never in a real
+  ;; .java buffer.  Verified by mutation: with `tab-width 7' set in the block
+  ;; above, a freshly visited .java buffer still read tab-width=4, inherited
+  ;; from modules/core.el's setq-default, and `local-variable-p' was nil.
+  ;; That made them dead settings of exactly the kind this phase exists to
+  ;; remove.  Setting them from the mode hook binds them per buffer.
+  (add-hook 'java-ts-mode-hook
+            (lambda ()
+              (setq tab-width 4
+                    indent-tabs-mode nil))))
 
 ;; ============================================================================
 ;; LSP Java - Eclipse JDT Language Server

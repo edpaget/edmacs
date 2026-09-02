@@ -111,6 +111,17 @@
 #   left to interactive manual verification per the phase body; everything
 #   about them that IS mechanically checkable headless is covered above.
 #
+#   Also NOT checked, and called out explicitly so it is not mistaken for
+#   covered: AC5's comparative clause, "lsp-log-io-free timing shows fewer
+#   idle requests than before". This script verifies the MECHANISM changes
+#   that should reduce idle traffic (lsp-ui-doc-show-with-cursor nil,
+#   lsp-modeline-code-actions-enable nil, the raised corfu prefix), but it
+#   never counts requests, and no before/after idle-request baseline was
+#   ever recorded for this config. The request-reduction half of AC5 has no
+#   evidence, headless or manual -- treat it as an untested claim, not a
+#   measured result, until someone counts textDocument/* traffic over a
+#   fixed idle window with lsp-log-io temporarily enabled.
+#
 # USAGE
 #   scripts/verify-lsp-and-completion-io.sh [path-to-edmacs-checkout]
 #   Defaults to the checkout containing this script. Exits 0 if every
@@ -190,6 +201,16 @@ PROBE_ELISP='
   (message "PROBE:indent-offset=%S" (buffer-local-value (quote java-ts-mode-indent-offset) (current-buffer)))
   (message "PROBE:tab-width=%S" (buffer-local-value (quote tab-width) (current-buffer)))
   (message "PROBE:indent-tabs-mode=%S" (buffer-local-value (quote indent-tabs-mode) (current-buffer)))
+  ;; buffer-local-value returns the effective value, which for an
+  ;; auto-buffer-local variable is the global default when no local binding
+  ;; exists -- so the two assertions above cannot tell "java.el applied it"
+  ;; apart from "java.el did nothing and core.el happens to supply the same
+  ;; number". Probe whether a LOCAL binding actually exists; that is the part
+  ;; java.el is responsible for. (A load-time setq in with-eval-after-load
+  ;; binds these in whatever buffer was current when java-ts-mode.el loaded,
+  ;; never in a real .java buffer -- verified by mutation.)
+  (message "PROBE:tab-width-local=%S" (local-variable-p (quote tab-width)))
+  (message "PROBE:indent-tabs-mode-local=%S" (local-variable-p (quote indent-tabs-mode)))
   (message "PROBE:gradle-mode-active=%S" (bound-and-true-p gradle-mode))
 
   ;; These three packages :config only when actually `require-d; confirm
@@ -367,6 +388,15 @@ fi
 [[ "$(get indent-tabs-mode)" == "nil" ]] \
   && pass "indent-tabs-mode is nil in a .java buffer" \
   || fail "indent-tabs-mode is nil in a .java buffer -- got $(get indent-tabs-mode)"
+# Locality, not just value: these prove java.el actually set them per buffer
+# rather than the .java buffer silently inheriting core.el's identical global
+# default. Without these, dropping java.el's settings entirely still passes.
+[[ "$(get tab-width-local)" == "t" ]] \
+  && pass "tab-width is buffer-locally bound in a .java buffer (not inherited from the global default)" \
+  || fail "tab-width is buffer-locally bound in a .java buffer -- got $(get tab-width-local)"
+[[ "$(get indent-tabs-mode-local)" == "t" ]] \
+  && pass "indent-tabs-mode is buffer-locally bound in a .java buffer (not inherited from the global default)" \
+  || fail "indent-tabs-mode is buffer-locally bound in a .java buffer -- got $(get indent-tabs-mode-local)"
 
 [[ "$(get mvn-loaded)" == "t" ]] \
   && pass "mvn.el loads (and its , m keybindings install) from a plain .java visit alone" \
