@@ -49,6 +49,10 @@
 
 (use-package evil-collection
   :after evil
+  :init
+  ;; evil-collection binds SPC (e.g. dired-next-line) and , in some modes,
+  ;; which shadows every SPC/, prefix defined outside the override map.
+  (setq evil-collection-key-blacklist '("SPC" ","))
   :config
   (evil-collection-init))
 
