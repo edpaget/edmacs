@@ -82,6 +82,13 @@
   "Face for an open tab whose worktree directory no longer exists."
   :group 'edmacs-sidebar)
 
+(defface edmacs-sidebar-missing-repo-face
+  '((t :inherit warning :weight bold))
+  "Face for the warning row shown when FRAME's whole repo is gone.
+See `edmacs-repo-missing', set by `modules/sessions.el's frameset
+restore bridge."
+  :group 'edmacs-sidebar)
+
 ;; ============================================================================
 ;; Major mode
 ;; ============================================================================
@@ -241,6 +248,14 @@ with a warning face."
             (unless (member root roots)
               (edmacs-sidebar--insert-tab-row tab tabs frame root t))))))))
 
+(defun edmacs-sidebar--insert-missing-repo-warning ()
+  "Insert a warning heading for a frame whose whole repo is gone.
+Only ever shown when `edmacs-sessions--regenerate-frame-title' has set
+FRAME's `edmacs-repo-missing' parameter -- see AC3."
+  (magit-insert-section (edmacs-sidebar-warning)
+    (magit-insert-heading
+      (propertize "repo missing" 'face 'edmacs-sidebar-missing-repo-face))))
+
 (defun edmacs-sidebar--redraw (frame)
   "Redraw FRAME's sidebar buffer from its current `tab-bar-tabs'.
 No-ops when FRAME has no live sidebar buffer -- callers such as the
@@ -248,7 +263,9 @@ tab-bar hooks below fire for every frame regardless of whether that
 frame's sidebar has ever been shown. Point is preserved on the same
 row when possible; falls back to `point-min' otherwise. Branches on
 FRAME's `edmacs-repo' parameter: a repo frame gets the worktree-aware
-render, everything else keeps the original flat tab list."
+render, everything else keeps the original flat tab list. A frame
+carrying `edmacs-repo-missing' (its repo directory vanished since it
+was saved) gets a warning section ahead of everything else."
   (let ((buf (edmacs-sidebar--buffer frame)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
@@ -257,6 +274,8 @@ render, everything else keeps the original flat tab list."
                (point-tab-name (edmacs-sidebar--point-tab-name)))
           (erase-buffer)
           (magit-insert-section (edmacs-sidebar-root)
+            (when (frame-parameter frame 'edmacs-repo-missing)
+              (edmacs-sidebar--insert-missing-repo-warning))
             (if common
                 (edmacs-sidebar--redraw-worktrees frame common)
               (edmacs-sidebar--redraw-tabs frame)))

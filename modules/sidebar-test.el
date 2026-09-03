@@ -830,6 +830,58 @@ non-graphical batch frame."
             (ignore-errors (tab-bar-rename-tab ""))
             (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
 
+    ;; ==========================================================================
+    ;; Frameset restore (edmacs-sidebar roadmap phase 4) -- AC2/AC3
+    ;; ==========================================================================
+    ;; sessions.el is not loaded here (see this file's own module-boundary
+    ;; convention); the `edmacs-repo-missing' frame parameter it sets is
+    ;; poked directly.
+
+    (ert-deftest edmacs-sidebar-test-redraw-shows-missing-repo-warning-row ()
+      (unwind-protect
+          (progn
+            (set-frame-parameter (selected-frame) 'edmacs-repo-missing t)
+            (edmacs-sidebar-show (selected-frame))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (should (string-match-p "repo missing" (buffer-string)))))
+        (set-frame-parameter (selected-frame) 'edmacs-repo-missing nil)
+        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
+
+    (ert-deftest edmacs-sidebar-test-redraw-omits-missing-repo-warning-row-when-unset ()
+      (unwind-protect
+          (progn
+            (set-frame-parameter (selected-frame) 'edmacs-repo-missing nil)
+            (edmacs-sidebar-show (selected-frame))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (should-not (string-match-p "repo missing" (buffer-string)))))
+        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
+
+    (ert-deftest edmacs-sidebar-test-show-replaces-scratch-in-existing-side-window ()
+      "Regression: a restored tab whose window-state names a dead sidebar
+buffer leaves its side window showing some substitute buffer (a
+placeholder such as `*scratch*' stands in for whatever
+`window-state-put' actually leaves there). `edmacs-sidebar-show' must
+reuse that window -- never open a second side window -- and end up
+showing the frame's live sidebar buffer, never `*scratch*'."
+      (let* ((frame (selected-frame))
+             (placeholder-window
+              (display-buffer (get-buffer-create "*scratch*")
+                               '((display-buffer-in-side-window)
+                                 (side . left) (slot . 0) (window-width . 32)))))
+        (unwind-protect
+            (progn
+              (should (window-live-p placeholder-window))
+              (should (eq (window-buffer placeholder-window) (get-buffer "*scratch*")))
+              (edmacs-sidebar-show frame)
+              (let ((side-windows
+                     (seq-filter (lambda (w) (eq (window-parameter w 'window-side) 'left))
+                                 (window-list frame 'never))))
+                (should (= 1 (length side-windows)))
+                (should (eq (window-buffer (car side-windows))
+                            (edmacs-sidebar--buffer frame)))
+                (should-not (eq (window-buffer (car side-windows)) (get-buffer "*scratch*")))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-test.el ends here

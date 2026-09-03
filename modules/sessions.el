@@ -42,6 +42,10 @@
 (declare-function edmacs-stack-sweep-stale-panes "windows")
 (declare-function edmacs-git-common-dir-repo-name "git-common-dir")
 (declare-function edmacs-frames-tab-in-own-repo-p "frames")
+(declare-function edmacs-frames--tab-root "frames")
+(declare-function edmacs-frames--repo-of "frames")
+(declare-function edmacs-sidebar-show "sidebar")
+(declare-function edmacs-sidebar--window "sidebar")
 
 (defun edmacs-sessions--tab-name ()
   "Name the current tab after its project/worktree, falling back sanely.
@@ -130,6 +134,12 @@ stray-visit relocator should make rare -- still gets the prefix."
 (dolist (param '(background-color foreground-color cursor-color mouse-color))
   (push (cons param :never) frameset-filter-alist))
 
+;; `edmacs-repo' (frames.el) already round-trips with the default
+;; pass-through action -- it is simply absent from this alist. Pinned
+;; explicitly, alongside the colour filters above, so the contract is
+;; visible in source rather than an accident of frameset.el's default.
+(push (cons 'edmacs-repo nil) frameset-filter-alist)
+
 (desktop-save-mode 1)
 
 ;; ----------------------------------------------------------------------------
@@ -159,6 +169,89 @@ loaded but before `desktop-read' unconditionally nils it back out."
 
 (add-hook 'desktop-after-read-hook #'edmacs-sessions--stash-frameset-for-daemon)
 
+;; ----------------------------------------------------------------------------
+;; Multi-frame finish-up after `frameset-restore': `frameset-restore' (via
+;; `desktop-restore-frameset') only reuses/creates frames and replays their
+;; window/tab layout -- it knows nothing about `edmacs-repo', frame titles,
+;; or sidebars, all of which `edmacs-frames-open' would normally set up for
+;; a freshly opened repo frame. This walks every live frame afterward and
+;; back-fills each.
+
+(defun edmacs-sessions--frame-tab-roots (frame)
+  "Return the list of repos every tab in FRAME resolves to, or nil.
+Nil both when FRAME has no tabs and when any tab's root fails to
+resolve to a repo -- callers must not treat either case as \"every tab
+agrees\"."
+  (let (roots)
+    (catch 'edmacs-sessions--unresolved
+      (dolist (tab (tab-bar-tabs frame))
+        (let* ((root (edmacs-frames--tab-root tab))
+               (repo (and root (edmacs-frames--repo-of root))))
+          (unless repo (throw 'edmacs-sessions--unresolved nil))
+          (push repo roots)))
+      (nreverse roots))))
+
+(defun edmacs-sessions--backfill-repo-param (frame)
+  "Set FRAME's `edmacs-repo' from its tabs when it has none yet.
+Only when every tab's own resolved repo agrees -- a frame with no tabs,
+or whose tabs point at different repos, is left alone rather than
+guessed at."
+  (unless (frame-parameter frame 'edmacs-repo)
+    (when-let* ((roots (edmacs-sessions--frame-tab-roots frame))
+                (first (car roots)))
+      (when (seq-every-p (lambda (r) (equal r first)) roots)
+        (set-frame-parameter frame 'edmacs-repo first)))))
+
+(defun edmacs-sessions--regenerate-frame-title (frame)
+  "Regenerate FRAME's title from its `edmacs-repo' parameter.
+`frameset-filter-alist' marks `name' `:never' (frameset.el's own
+`frame-internal-parameters' list), so a saved title is never restored
+and must be recomputed here, the same way `edmacs-frames-open' sets it
+on first creation. When COMMON's directory is gone, marks the frame
+`edmacs-repo-missing' and warns instead of erroring -- see AC3.
+
+Also re-derives the current tab's own label via `edmacs-sessions--tab-name'
+-- never hardcoded to the bare repo label, which would be correct only
+for a tab on the repo's main worktree and would clobber any other
+worktree tab's disambiguating name -- so a tab named before this
+frame's `edmacs-repo' was backfilled (and thus still carrying a
+now-redundant prefix) gets relabeled consistently with every tab
+`frames.el' creates going forward."
+  (when-let* ((common (frame-parameter frame 'edmacs-repo)))
+    (if (file-directory-p common)
+        (progn
+          (set-frame-parameter frame 'edmacs-repo-missing nil)
+          (set-frame-parameter frame 'name (edmacs-git-common-dir-repo-name common))
+          (with-selected-frame frame
+            (ignore-errors (tab-bar-rename-tab (edmacs-sessions--tab-name)))))
+      (set-frame-parameter frame 'edmacs-repo-missing t)
+      (set-frame-parameter
+       frame 'name (format "MISSING: %s" (edmacs-git-common-dir-repo-name common)))
+      (display-warning
+       'edmacs-sessions
+       (format "Restored frame's repo no longer exists: %s" common)
+       :warning))))
+
+(defun edmacs-sessions--ensure-sidebar (frame)
+  "Show FRAME's sidebar if it doesn't already have a visible one.
+Defense-in-depth alongside sidebar.el's own `after-make-frame-functions'
+hook: their relative ordering rests on same-tick `run-at-time 0'
+registration order, not a documented guarantee."
+  (unless (edmacs-sidebar--window frame)
+    (edmacs-sidebar-show frame)))
+
+(defun edmacs-sessions--finish-frameset-restore ()
+  "Back-fill `edmacs-repo', title, and sidebar on every live frame.
+Runs synchronously right after `desktop-restore-frameset', by which
+point `frameset-restore''s own `:reuse-frames t' (the default) has
+already reused/created every saved frame -- this never itself creates
+or deletes a frame."
+  (dolist (frame (frame-list))
+    (when (frame-live-p frame)
+      (edmacs-sessions--backfill-repo-param frame)
+      (edmacs-sessions--regenerate-frame-title frame)
+      (edmacs-sessions--ensure-sidebar frame))))
+
 (defun edmacs-sessions--restore-pending-frameset (frame)
   "Restore a daemon-boot-stashed frameset onto FRAME, the first GUI frame.
 Runs from `after-make-frame-functions' so it covers the boot frame,
@@ -178,7 +271,8 @@ timer so the frame is fully created before frameset-restore touches it."
                            ;; restart and a popup's buffer may not have
                            ;; been saved at all; sweep those stale right
                            ;; stack windows rather than show them.
-                           (edmacs-stack-sweep-stale-panes frame)))))))))
+                           (edmacs-stack-sweep-stale-panes frame)))
+                       (edmacs-sessions--finish-frameset-restore)))))))
 
 (add-hook 'after-make-frame-functions #'edmacs-sessions--restore-pending-frameset)
 
