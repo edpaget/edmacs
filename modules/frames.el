@@ -178,7 +178,7 @@ Returns the frame."
           ;; Populate the worktree cache and arm its watch before the
           ;; sidebar's first redraw, so `edmacs-worktrees-for-repo' never
           ;; has to render off a cold cache for this repo's own frame.
-          (edmacs-frames--worktrees-refresh common)
+          (edmacs-frames--worktrees-refresh-safe common)
           (edmacs-frames--ensure-worktrees-watch common))
         (edmacs-frames--without-display-override
           (with-selected-frame frame
@@ -343,6 +343,26 @@ tab-switch."
   (dolist (frame (edmacs-frames--frames-for-repo-common common))
     (edmacs-sidebar--redraw frame)))
 
+(defun edmacs-frames--worktrees-refresh-safe (common)
+  "Call `edmacs-frames--worktrees-refresh' for COMMON, catching any error.
+`edmacs-frames--worktrees-compute' shells out via
+`vc-git-known-other-working-trees', which can signal on a transient git
+failure, an unusual `--separate-git-dir'/bare layout, or a directory
+that goes unreadable mid-call. Every other call site touching this
+feature (the file-notify watch callbacks below) is already defensive
+about that same call; this is the same protection for the refresh
+itself, including its use inside `edmacs-frames-open', where an
+uncaught signal here would otherwise abort frame setup after
+`edmacs-repo' is already stamped and leave a half-built frame that
+`edmacs-frames-for-repo' keeps finding on every later lookup. On error
+the cache is simply left at its previous value -- nil renders as an
+empty worktree list via `edmacs-worktrees-for-repo', never a raw
+backtrace."
+  (condition-case err
+      (edmacs-frames--worktrees-refresh common)
+    (error (message "edmacs-frames: worktree refresh failed for %s: %s"
+                     common err))))
+
 (defun edmacs-frames--schedule-worktrees-refresh (common)
   "Debounce a worktree refresh for COMMON by 0.5s.
 Collapses a burst of file-notify events (e.g. `git worktree add' or
@@ -356,7 +376,7 @@ is no polling."
             0.5 nil
             (lambda ()
               (remhash common edmacs-frames--worktree-refresh-timers)
-              (edmacs-frames--worktrees-refresh common)))
+              (edmacs-frames--worktrees-refresh-safe common)))
            edmacs-frames--worktree-refresh-timers))
 
 (defun edmacs-frames--worktree-watch-callback (common _event)
@@ -392,7 +412,7 @@ happen. Upgrades to a direct watch and refreshes immediately once
                    (equal (file-name-nondirectory (directory-file-name file))
                           "worktrees"))
           (edmacs-frames--upgrade-to-worktrees-watch common)
-          (edmacs-frames--worktrees-refresh common)))
+          (edmacs-frames--worktrees-refresh-safe common)))
     (error (message "edmacs-frames: worktree parent-watch callback error for %s: %s"
                      common err))))
 

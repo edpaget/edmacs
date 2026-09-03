@@ -299,6 +299,27 @@ covering the two-frames-same-repo edge case via `edmacs-frames--frames-for-repo-
         (should (equal (sort (mapcar #'symbol-name redrawn) #'string<)
                        '("fa" "fc")))))))
 
+(ert-deftest edmacs-frames-test-worktrees-refresh-safe-catches-and-preserves-cache ()
+  "A signal from `edmacs-frames--worktrees-refresh' (e.g. the underlying
+`vc-git-known-other-working-trees' subprocess call failing) is caught
+rather than propagated, and leaves the cache exactly as it was --
+covering the blocking finding that an uncaught error here would abort
+`edmacs-frames-open' mid frame-setup with `edmacs-repo' already stamped."
+  (let ((edmacs-frames--worktrees-cache (make-hash-table :test #'equal))
+        (messages nil))
+    (puthash "/repo/.git" '(("repo" . "/repo/")) edmacs-frames--worktrees-cache)
+    (cl-letf (((symbol-function 'edmacs-frames--worktrees-compute)
+               (lambda (_common) (error "transient git failure")))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (should-not (condition-case err
+                      (progn (edmacs-frames--worktrees-refresh-safe "/repo/.git") nil)
+                    (error err)))
+      (should (equal (gethash "/repo/.git" edmacs-frames--worktrees-cache)
+                     '(("repo" . "/repo/"))))
+      (should (= 1 (length messages)))
+      (should (string-match-p "worktree refresh failed for /repo/\\.git" (car messages))))))
+
 ;; ============================================================================
 ;; AC3 -- debounce and lazy watch creation
 ;; ============================================================================
@@ -474,6 +495,44 @@ are themselves stubbed out, so nothing here needs a second real frame."
           (edmacs-frames-open "/repo/")
           (should (= 1 refresh-calls))
           (should (= 1 watch-calls)))
+      (set-frame-parameter frame 'edmacs-repo nil)
+      (set-frame-parameter frame 'name nil))))
+
+(ert-deftest edmacs-frames-test-open-first-frame-survives-worktrees-compute-error ()
+  "A raw signal out of `edmacs-frames--worktrees-compute' (the underlying
+`vc-git-known-other-working-trees' subprocess call) must not abort
+`edmacs-frames-open' partway through: the dired visit, tab stamping,
+rename, and sidebar display that follow the refresh call all still run.
+Without `edmacs-frames--worktrees-refresh-safe' this signal propagates
+out of `edmacs-frames-open' with `edmacs-repo' already stamped, leaving
+a half-built frame that `edmacs-frames-for-repo' would keep re-selecting
+forever."
+  (let ((frame (selected-frame))
+        (edmacs-frames--worktrees-cache (make-hash-table :test #'equal))
+        (visited nil) (shown nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'edmacs-frames--repo-of) (lambda (_dir) "/repo/.git"))
+                  ((symbol-function 'edmacs-frames-for-repo) (lambda (_common) nil))
+                  ((symbol-function 'edmacs-frames--spare-frame) (lambda () frame))
+                  ((symbol-function 'edmacs-git-common-dir-main-worktree)
+                   (lambda (_common) "/repo/"))
+                  ((symbol-function 'edmacs-git-common-dir-repo-name)
+                   (lambda (_common) "repo"))
+                  ((symbol-function 'edmacs-frames--worktrees-compute)
+                   (lambda (_common) (error "transient git failure")))
+                  ((symbol-function 'edmacs-frames--ensure-worktrees-watch) #'ignore)
+                  ((symbol-function 'edmacs-frames--visit-root)
+                   (lambda (_dir) (setq visited t)))
+                  ((symbol-function 'edmacs-frames--stamp-current-tab-root) #'ignore)
+                  ((symbol-function 'tab-bar-rename-tab) #'ignore)
+                  ((symbol-function 'edmacs-sidebar-show)
+                   (lambda (_frame) (setq shown t)))
+                  ((symbol-function 'select-frame-set-input-focus) #'ignore)
+                  ((symbol-function 'delete-other-windows) #'ignore))
+          (should (eq frame (edmacs-frames-open "/repo/")))
+          (should visited)
+          (should shown)
+          (should-not (edmacs-worktrees-for-repo "/repo/.git")))
       (set-frame-parameter frame 'edmacs-repo nil)
       (set-frame-parameter frame 'name nil))))
 
