@@ -12,6 +12,12 @@
 ;; `edmacs-agents--upsert', the one function that actually mutates the
 ;; table and fires `edmacs-agents-changed-hook' -- that hook fires
 ;; exactly once per external call, never once per struct field touched.
+;; The unread/done semantics themselves ("done is UNREAD until visited")
+;; have exactly one definition, `edmacs-agents--compute-unread', called
+;; from every place a row's status changes -- `edmacs-agents-set-status',
+;; the workmux adapter's `edmacs-agents--apply-workmux-row', and a fresh
+;; row's own `edmacs-agents--row-from-workmux-json' -- so the rule cannot
+;; drift between call sites.
 ;;
 ;; The workmux adapter reads `edmacs-agents-workmux-dir'
 ;; (`~/.local/state/workmux/agents/*.json', one file per tmux pane) at
@@ -125,6 +131,25 @@ per external call."
   (remhash key edmacs-agents--table)
   (run-hook-with-args 'edmacs-agents-changed-hook (list key)))
 
+(defun edmacs-agents--compute-unread (old-status new-status old-unread)
+  "Return the UNREAD value for a transition from OLD-STATUS to NEW-STATUS.
+The single, shared definition of this table's central semantic rule
+\(see this file's Commentary and the phase body it implements\): a
+transition into `done' sets UNREAD; a transition into `working' or
+`waiting' clears it \(this doubles as the workmux \"visited in tmux\"
+signal\); any other transition -- including a `done'-to-`done'
+timestamp-only refresh -- preserves OLD-UNREAD unchanged. OLD-STATUS is
+nil for a fresh row with no prior state, which behaves like any other
+non-`done' predecessor: fresh-into-`done' sets UNREAD, fresh-into-anything-else
+does not. Every writer -- `edmacs-agents-set-status', the workmux
+adapter's `edmacs-agents--apply-workmux-row', and a brand new row's own
+`edmacs-agents--row-from-workmux-json' -- calls this instead of
+re-encoding the rule."
+  (cond
+   ((memq new-status '(working waiting)) nil)
+   ((and (eq new-status 'done) (not (eq old-status 'done))) t)
+   (t old-unread)))
+
 ;; ============================================================================
 ;; Single writer API
 ;; ============================================================================
@@ -136,10 +161,8 @@ only row already under that root, if exactly one exists; a fresh row
 with a default instance if none exist; or a `user-error' if more than
 one already exists, rather than guessing which one the caller means.
 
-A transition into `done' sets `unread'; a transition into `working' or
-`waiting' clears it (this doubles as the workmux \"visited in tmux\"
-signal from this file's Commentary); any other transition leaves it as
-it was."
+UNREAD is recomputed by `edmacs-agents--compute-unread', the single
+shared definition of that rule."
   (let* ((root (condition-case nil (file-truename cwd) (error cwd)))
          (matches (edmacs-agents--rows-for-root root))
          (resolved-instance
@@ -153,11 +176,8 @@ it was."
          (existing (gethash key edmacs-agents--table))
          (old-status (and existing (edmacs-agent-status existing)))
          (now (float-time))
-         (unread (cond
-                  ((memq status '(working waiting)) nil)
-                  ((and (eq status 'done) (not (eq old-status 'done))) t)
-                  (existing (edmacs-agent-unread existing))
-                  (t nil)))
+         (unread (edmacs-agents--compute-unread
+                  old-status status (and existing (edmacs-agent-unread existing))))
          (row (if existing
                   (progn
                     (setf (edmacs-agent-status existing) status
@@ -257,11 +277,10 @@ by every caller."
        :locator (list :pane-id pane-id
                        :session (alist-get 'session_name json)
                        :window (alist-get 'window_name json))
-       ;; A fresh row (no prior state in the table) is unread iff it is
-       ;; already `done' -- `edmacs-agents--apply-workmux-row' overrides
-       ;; this once an existing row is in play, per its own transition
-       ;; rules.
-       :unread (eq status 'done)))))
+       ;; A fresh row has no prior state -- OLD-STATUS/OLD-UNREAD are nil;
+       ;; `edmacs-agents--apply-workmux-row' recomputes this against the
+       ;; same shared rule once an existing row is in play.
+       :unread (edmacs-agents--compute-unread nil status nil)))))
 
 (defun edmacs-agents--apply-workmux-row (new-row)
   "Apply NEW-ROW to the table, honoring `status_ts' ordering.
@@ -270,10 +289,10 @@ under NEW-ROW's key with a strictly newer `status_ts' -- a stale
 update, e.g. from a burst of file-notify events landing out of order.
 An exactly-equal `status_ts' is treated as fresh enough to apply, since
 workmux's own write is otherwise indistinguishable from a no-op
-refresh. Otherwise recomputes `unread' against the transition rules
-documented on `edmacs-agent-unread' and `edmacs-agents-set-status', then
-delegates to `edmacs-agents--upsert'. Returns the applied key, or nil
-if ignored as stale."
+refresh. Otherwise recomputes `unread' via `edmacs-agents--compute-unread',
+the single shared definition of that rule, then delegates to
+`edmacs-agents--upsert'. Returns the applied key, or nil if ignored as
+stale."
   (let* ((key (edmacs-agent-key new-row))
          (existing (gethash key edmacs-agents--table))
          (new-status (edmacs-agent-status new-row))
@@ -284,11 +303,10 @@ if ignored as stale."
               (< new-ts (edmacs-agent-status-ts existing)))
         nil
       (setf (edmacs-agent-unread new-row)
-            (cond
-             ((null existing) (eq new-status 'done))
-             ((memq new-status '(working waiting)) nil)
-             ((and (eq new-status 'done) (not (eq (edmacs-agent-status existing) 'done))) t)
-             (t (edmacs-agent-unread existing))))
+            (edmacs-agents--compute-unread
+             (and existing (edmacs-agent-status existing))
+             new-status
+             (and existing (edmacs-agent-unread existing))))
       (edmacs-agents--upsert new-row)
       key)))
 
