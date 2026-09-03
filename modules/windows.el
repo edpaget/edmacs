@@ -320,16 +320,31 @@ stack via `display-buffer-base-action'."
 function runs inside the triggering command, so `this-command' is bound."
   (memq this-command edmacs-windows-center-reuse-commands))
 
+(defun edmacs-windows--reuse-main-window (buffer alist)
+  "Display BUFFER in `edmacs-main-window', regardless of the selected window.
+`display-buffer-same-window' checks `window-dedicated-p' on the *selected*
+window, which fails whenever a stack window happens to be selected -- every
+side window is dedicated to `side'. Targeting `edmacs-main-window' by
+identity instead keeps the allow-list correct no matter which window was
+selected when the triggering command ran."
+  (let ((main (edmacs-main-window)))
+    (when (and main (not (window-dedicated-p main)))
+      (window--display-buffer buffer main 'reuse alist))))
+
+(defconst edmacs-windows--center-reuse-action
+  '((display-buffer-reuse-window edmacs-windows--reuse-main-window))
+  "Action alist shared by every center-reuse `display-buffer-alist' entry.")
+
 (add-to-list 'display-buffer-alist
              (cons #'edmacs-windows--center-reuse-p
-                   '((display-buffer-reuse-window display-buffer-same-window))))
+                   edmacs-windows--center-reuse-action))
 
 ;; Belt-and-braces: dired and magit-status are already same-window by their
 ;; own display functions, but route them explicitly too.
 (dolist (mode '(dired-mode magit-status-mode))
   (add-to-list 'display-buffer-alist
                (cons (cons 'major-mode mode)
-                     '((display-buffer-reuse-window display-buffer-same-window)))))
+                     edmacs-windows--center-reuse-action)))
 
 ;; cider's REPL and the shell buffers get a fixed stack slot of their own so
 ;; a generic popup at slot -1 can never evict them.

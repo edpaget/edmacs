@@ -1181,6 +1181,64 @@ kill-buffer call."
             (should-not (window-parameter (display-buffer buf) 'window-side)))
         (kill-buffer buf)))))
 
+(ert-deftest edmacs-windows-test-this-command-gated-file-open-stays-center ()
+  ;; End-to-end coverage of the third allow-listed condition (AC5): binds
+  ;; `this-command' and drives a real `display-buffer' call through
+  ;; `display-buffer-alist', not just the bare predicate's return value.
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "*ewt-plain-file-open*"))
+          (this-command 'find-file))
+      (unwind-protect
+          (should-not (window-parameter (display-buffer buf) 'window-side))
+        (kill-buffer buf)))))
+
+(defun edmacs-windows-test--with-stack-window-selected (thunk)
+  "Select a fresh right-column stack window, then call THUNK.
+Used to reproduce the allow-list's dedicated-window fallthrough: every side
+window is dedicated to `side', so an action relying on the selected window
+(e.g. `display-buffer-same-window') fails whenever a stack window --
+reachable in real use via `SPC w j' -- is selected when the command runs."
+  (delete-other-windows)
+  (let ((stack-buf (generate-new-buffer "*ewt-stack-selected*")))
+    (unwind-protect
+        (let ((stack-win (display-buffer stack-buf)))
+          (select-window stack-win)
+          (funcall thunk))
+      (kill-buffer stack-buf))))
+
+(ert-deftest edmacs-windows-test-this-command-gated-file-open-stays-center-from-stack-window ()
+  (save-window-excursion
+    (edmacs-windows-test--with-stack-window-selected
+     (lambda ()
+       (let ((buf (generate-new-buffer "*ewt-plain-file-open-from-stack*"))
+             (this-command 'find-file))
+         (unwind-protect
+             (should-not (window-parameter (display-buffer buf) 'window-side))
+           (kill-buffer buf)))))))
+
+(ert-deftest edmacs-windows-test-dired-mode-buffer-stays-center-from-stack-window ()
+  (save-window-excursion
+    (edmacs-windows-test--with-stack-window-selected
+     (lambda ()
+       (let ((buf (generate-new-buffer "*ewt-dired-stand-in-from-stack*")))
+         (unwind-protect
+             (progn
+               (with-current-buffer buf (setq major-mode 'dired-mode))
+               (should-not (window-parameter (display-buffer buf) 'window-side)))
+           (kill-buffer buf)))))))
+
+(ert-deftest edmacs-windows-test-magit-status-mode-buffer-stays-center-from-stack-window ()
+  (save-window-excursion
+    (edmacs-windows-test--with-stack-window-selected
+     (lambda ()
+       (let ((buf (generate-new-buffer "*ewt-magit-status-stand-in-from-stack*")))
+         (unwind-protect
+             (progn
+               (with-current-buffer buf (setq major-mode 'magit-status-mode))
+               (should-not (window-parameter (display-buffer buf) 'window-side)))
+           (kill-buffer buf)))))))
+
 (ert-deftest edmacs-windows-test-shell-buffer-gets-fixed-slot-and-resists-eviction ()
   (save-window-excursion
     (delete-other-windows)
