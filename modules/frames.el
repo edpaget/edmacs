@@ -448,7 +448,7 @@ Idempotent: refreshing again is harmless, and
 `edmacs-frames--ensure-worktrees-watch' is already a no-op once a watch
 exists. Shared by `edmacs-frames-open' (a freshly created repo frame,
 whose caches start cold the first time any frame names COMMON) and
-`edmacs-sessions--finish-frameset-restore' (every repo frame a
+`edmacs-sessions--finish-frame-restore' (every repo frame a
 daemon-boot frameset restore hands back, whose caches also start cold
 -- the daemon's own restart empties both hash tables) -- one function
 so the two initialization paths cannot drift apart on what a repo
