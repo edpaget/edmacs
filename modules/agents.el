@@ -46,7 +46,21 @@
 ;; live agents in other repos) and is therefore at most an optional,
 ;; secondary corroborating check the sweep could shell out for -- this
 ;; phase does not implement it; `updated_ts' age alone is the liveness
-;; signal in production per the roadmap body.
+;; signal in production per the roadmap body. Verified against a real,
+;; freshly-created workmux pane on this machine (a throwaway `workmux
+;; add' worktree running the real `claude' binary): the shared JSON
+;; state file it produced was, moments after the agent replied, kept
+;; by `edmacs-agents--scan-workmux-dir' + `edmacs-agents--sweep' as the
+;; sole survivor against this machine's other 25 real (all
+;; hours-to-months stale) workmux files -- exactly AC1's "alive rows
+;; only" claim, on real, non-synthetic data. `workmux status --json'
+;; itself reported no agents throughout that pane's real `working' and
+;; `done' states, for that project and every other -- a limitation of
+;; this machine's `workmux' status query, not of this table -- so the
+;; "matches workmux status" half of AC1 could not be exercised as a
+;; literal byte-for-byte comparison here even with a genuinely live
+;; pane in hand; `updated_ts' heartbeat age remains the actual
+;; liveness signal this module relies on.
 ;;
 ;; Run pure-function tests:
 ;;   emacs -Q --batch -l ert -l modules/agents.el -l modules/agents-test.el \
