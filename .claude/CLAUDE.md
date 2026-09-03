@@ -63,13 +63,14 @@ you have not yet obtained: read the skip message (it names what is
 missing), add that `-l modules/<dep>.el`, and re-run until the skip count
 is zero or you can say why the skip is legitimate.
 
-A file's own header invocation is not automatically the complete one. The
-worked example: `modules/windows-test.el`'s header omits
-`-l modules/claude-term.el`, and two of its tests skip without it -- one
-of which fails once the module *is* loaded. Cross-module tests generally
-need every module they touch on the command line, and the exhaustive
-invocation may live in a comment further down the file rather than in the
-header.
+A file's own header invocation is not automatically the complete one.
+Worked example (fixed): `modules/windows-test.el`'s header once omitted
+`-l modules/claude-term.el`, and two of its tests silently skipped under
+it -- one of which failed once the module *was* loaded, a regression a
+green landing run missed entirely. The header now includes that `-l`.
+Cross-module tests generally need every module they touch on the command
+line, and until a header is corrected the exhaustive invocation may live
+in a comment further down the file rather than in the header itself.
 
 This matters most before landing. Skips are also environment-dependent:
 tests that load real packages out of `straight/` skip in a worktree, which

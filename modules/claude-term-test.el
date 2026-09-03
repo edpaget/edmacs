@@ -255,6 +255,29 @@ cache and opening a second one."
             (should (equal slot1 slot2)))
         (kill-buffer buf)))))
 
+(ert-deftest claude-term-test-redisplay-tracks-live-stack-width ()
+  "Redisplaying the SAME buffer/window after `edmacs-stack-width' changes
+must resize it, not just leave it at whatever width it was created
+with -- the bug this test guards against let a popup pane (torn down
+and recreated by `delete-other-windows') track a rebound width while an
+already-live agent pane (excluded from `delete-other-windows' via
+`no-delete-other-windows') silently kept its stale one. 0.4 vs 0.6 in a
+default-size batch frame is far enough apart that the resulting integer
+widths differ despite `window-resize''s 'safe clamp."
+  (claude-term-test--with-fresh-slots
+    (let ((window-sides-slots '(nil nil 3 nil))
+          (buf (generate-new-buffer "claude-term-test-width-tracks")))
+      (unwind-protect
+          (let* ((win1 (let ((edmacs-stack-width 0.4))
+                         (claude-term--display-buffer buf)))
+                 (width1 (window-total-width win1))
+                 (win2 (let ((edmacs-stack-width 0.6))
+                         (claude-term--display-buffer buf)))
+                 (width2 (window-total-width win2)))
+            (should (eq win1 win2))
+            (should (> width2 width1)))
+        (kill-buffer buf)))))
+
 (ert-deftest claude-term-test-delete-other-windows-preserves-side-window ()
   (claude-term-test--with-fresh-slots
     (let ((window-sides-slots '(nil nil 3 nil))

@@ -5,8 +5,17 @@
 ;; live subprocess.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/windows-test.el \
-;;         -f ert-run-tests-batch-and-exit
+;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/claude-term.el \
+;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
+;;
+;; `modules/claude-term.el' is on the invocation line above because the
+;; AC5 width test and the "Persistence" section's lowest-free-slot test
+;; both exercise `claude-term--display-buffer' directly; each still
+;; carries a defensive `ert-skip' guard for anyone running a narrower ad
+;; hoc command without it. Loading it under `-Q' prints a benign
+;; "Unrecognized keyword: :straight" notice from the `use-package
+;; ghostel'/`use-package evil-ghostel' forms -- see claude-term-test.el's
+;; own Commentary for why that is harmless here.
 ;;
 ;; The load-order test near the bottom of this file (AC4) loads
 ;; `modules/sidebar.el' itself, fixing up `load-path' against the straight
@@ -17,20 +26,11 @@
 ;; has sidebar.el left to load internally. See that test's own comments for
 ;; the straight-bootstrap skip condition.
 ;;
-;; The width test near the popup-routing section (AC5) skips unless
-;; `modules/claude-term.el' is also passed on the command line -- see that
-;; test's own Commentary note for the exact invocation.
-;;
 ;; The "SPC w binding surface" section near the bottom loads
 ;; `modules/keybindings.el' itself, fixing up `load-path' against the
 ;; straight source tree first -- it is deliberately NOT passed on the
 ;; invocation line above, the same treatment AC4 gives `modules/sidebar.el'.
 ;; See that section's own comments for the straight-bootstrap skip condition.
-;;
-;; The "Persistence" section's lowest-free-slot test, like the AC5 width
-;; test above, skips unless `modules/claude-term.el' is also passed on the
-;; command line -- see that test's own Commentary note for the exact
-;; invocation.
 
 ;;; Code:
 
@@ -504,13 +504,10 @@ multiple windows for the same buffer."
 ;; ---------------------------------------------------------------------------
 ;; The agent-pane half of this test needs `modules/claude-term.el' loaded
 ;; (its own `display-buffer' path is what proves the agent-pane side of
-;; this AC already worked before this phase). Loading it under `-Q' prints
-;; a benign "Unrecognized keyword: :straight" notice from the
-;; `use-package ghostel'/`use-package evil-ghostel' forms -- see
-;; claude-term-test.el's own Commentary for why that is harmless here.
-;; Run this one test (or the whole file) with:
-;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/claude-term.el \
-;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
+;; this AC already worked before this phase) -- it is part of this file's
+;; default invocation at the top of the Commentary above. The `ert-skip'
+;; guard below is defensive fallback for anyone running a narrower ad hoc
+;; command without it.
 
 (ert-deftest edmacs-windows-test-width-tracks-live-variable-for-agent-and-popup ()
   (if (not (fboundp 'claude-term--display-buffer))
@@ -1077,10 +1074,10 @@ kill-buffer call."
 ;; ---------------------------------------------------------------------------
 ;; AC4 -- claude-term--allocate-slot reuses the lowest free slot
 ;; ---------------------------------------------------------------------------
-;; Guarded like AC5's width test above: skips unless `modules/claude-term.el'
-;; is also on the command line. Run this one test (or the whole file) with:
-;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/claude-term.el \
-;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
+;; Guarded like AC5's width test above: `modules/claude-term.el' is part of
+;; this file's default invocation (see the Commentary above); the
+;; `ert-skip' guard below is defensive fallback for anyone running a
+;; narrower ad hoc command without it.
 
 (ert-deftest edmacs-windows-test-allocate-slot-reuses-lowest-free-slot ()
   (if (not (fboundp 'claude-term--display-buffer))

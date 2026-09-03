@@ -652,6 +652,18 @@ reclaimed by the next agent pane instead of the column growing forever."
         claude-term--slot
       (setq claude-term--slot (claude-term--lowest-free-slot)))))
 
+(defun claude-term--resize-to-stack-width (window)
+  "Resize WINDOW's total width to the live value of `edmacs-stack-width'.
+Deliberately duplicated from windows.el's `edmacs-stack--resize-width'
+rather than calling it: claude-term-test.el's own documented invocation
+never loads windows.el, mirroring this file's existing standalone
+fallbacks (`claude-term--occupied-slots', the local `edmacs-stack-width'
+defvar)."
+  (let ((new-width (round (* edmacs-stack-width
+                              (window-total-width (frame-root-window window))))))
+    (ignore-errors
+      (window-resize window (- new-width (window-total-width window)) t 'safe))))
+
 (defun claude-term--display-buffer (buffer)
   "Display BUFFER in a stacked right-side window and return that window.
 Builds this phase's verified target shape: a right side window sized by
@@ -670,8 +682,15 @@ cached slot to a number that happens to be free back on this frame.
 Trusting that stale-but-free number here would draw a second window
 for a buffer that already has one on this frame; reusing the existing
 window instead keeps one buffer to one window per frame regardless of
-what the cache says."
-  (or (get-buffer-window buffer (selected-frame))
+what the cache says. A reused window is also resized to the live
+`edmacs-stack-width' via `claude-term--resize-to-stack-width' before
+being returned, so redisplaying an already-visible agent pane tracks a
+rebound width exactly as a freshly created pane or popup would."
+  (let ((existing (get-buffer-window buffer (selected-frame))))
+    (if existing
+        (progn
+          (claude-term--resize-to-stack-width existing)
+          existing)
       (display-buffer
        buffer
        `((display-buffer-in-side-window)
@@ -681,7 +700,7 @@ what the cache says."
          (preserve-size . (t . nil))
          (window-parameters . ((no-delete-other-windows . t)
                                 (no-other-window . t)
-                                (edmacs-windmove-reachable . t)))))))
+                                (edmacs-windmove-reachable . t))))))))
 
 (defun claude-term--pop-to-side-window (buffer)
   "Display BUFFER in a side window via `claude-term--display-buffer' and select it.
