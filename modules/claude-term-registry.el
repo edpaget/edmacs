@@ -657,7 +657,8 @@ was asked to die (see the phase body's own edge case)."
    "x" '(claude-term-kill :which-key "kill session")
    "X" '(claude-term-kill-all :which-key "kill all sessions")
    "r" '(claude-term-rename :which-key "rename session")
-   "TAB" '(edmacs-sidebar-agents-goto-attention :which-key "next agent wanting attention")))
+   "TAB" '(edmacs-sidebar-agents-goto-attention :which-key "next agent wanting attention")
+   "u" '(claude-usage :which-key "usage")))
 
 (provide 'claude-term-registry)
 ;;; claude-term-registry.el ends here

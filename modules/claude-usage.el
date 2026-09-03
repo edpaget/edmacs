@@ -20,6 +20,26 @@
 
 (require 'json)
 
+;; `modules/git.el's `use-package magit :commands (...)' only activates
+;; magit's autoloads file, which does not autoload `magit-section-mode',
+;; `magit-insert-section', or `magit-insert-heading' (see sidebar.el's
+;; identical require and its longer comment for the verification). This
+;; require resolves cleanly at real init.el load time because straight
+;; already puts a built package's directory (and its transitive deps:
+;; compat, cond-let, llama, transient, seq) on `load-path' at
+;; build/registration time. Under `-Q --batch', claude-usage-test.el fixes
+;; `load-path' against the straight build tree before loading this file.
+(require 'magit-section)
+
+;; `evil' loads only in a real init.el session; declared here so the
+;; byte-compiler doesn't warn about the forward references inside
+;; `claude-usage-mode' and the `with-eval-after-load' block below --
+;; sidebar.el omits this pair and a load-path-fixed compile of it emits
+;; "the function `evil-define-key' is not known to be defined" as a
+;; result; this file does not repeat that gap.
+(declare-function evil-define-key "evil-core")
+(declare-function evil-set-initial-state "evil-core")
+
 (defgroup claude-usage nil
   "Claude usage metrics and cache integration."
   :group 'claude
@@ -277,6 +297,143 @@ For fallback, reads `utilization' (already 0-100). Preserves
 
     ;; Return in reverse order (since we pushed)
     (nreverse meters)))
+
+;; ============================================================================
+;; Major mode
+;; ============================================================================
+
+(defconst claude-usage--em-dash "—"
+  "Placeholder for a meter field whose source value is missing.")
+
+(defconst claude-usage--stale-marker "STALE "
+  "Prefix applied to the cache-age string when the cache is stale.")
+
+(define-derived-mode claude-usage-mode magit-section-mode "Claude-Usage"
+  "Major mode for the `*claude-usage*' buffer, showing Claude CLI usage meters."
+  (setq revert-buffer-function #'claude-usage--revert)
+  (when (fboundp 'evil-set-initial-state)
+    (evil-set-initial-state 'claude-usage-mode 'motion)))
+
+;; `magit-section-mode's parent is `special-mode', which already binds
+;; g -> `revert-buffer', q -> `quit-window', and leaves TAB unbound (see
+;; straight/repos/magit/lisp/magit-section.el) -- only q needs a plain
+;; override here, to `bury-buffer' instead of `quit-window'.
+(define-key claude-usage-mode-map (kbd "q") #'bury-buffer)
+
+;; A plain `define-key' on `claude-usage-mode-map' alone is invisible to
+;; real key lookup in motion state: evil installs its state keymaps via
+;; `emulation-mode-map-alists', consulted BEFORE the buffer's local map --
+;; `evil-motion-state-map's `g' is itself a full prefix keymap (gg, gt,
+;; ...), so it shadows a plain `g' binding exactly the way sidebar.el's
+;; RET was shadowed by `evil-motion-state-map's RET. `q' is unbound in
+;; motion state today, so a plain binding would "happen to work" -- bound
+;; the same defended way anyway, per sidebar.el's own stated policy
+;; against relying on that coincidence.
+(with-eval-after-load 'evil
+  (evil-define-key 'motion claude-usage-mode-map
+    (kbd "g") #'revert-buffer
+    (kbd "q") #'bury-buffer))
+
+;; ============================================================================
+;; Rendering
+;; ============================================================================
+
+(defun claude-usage--insert-meter-row (meter now)
+  "Insert one row for METER into the current buffer.
+
+NOW is threaded through to `claude-usage--format-reset' for deterministic
+rendering in tests. Never calls `claude-usage--severity-face' with a nil
+percent -- that fallback path does `(>= percent 90)' and would error --
+falling back to `claude-usage--em-dash' and a neutral face for the bar,
+percent, and (when `:resets-at' is missing) reset columns instead."
+  (let* ((label (plist-get meter :label))
+         (percent (plist-get meter :percent))
+         (severity (plist-get meter :severity))
+         (resets-at (plist-get meter :resets-at))
+         (face (if percent (claude-usage--severity-face severity percent) 'default))
+         (bar (if percent (claude-usage--bar percent 12) claude-usage--em-dash))
+         (percent-str (if percent (format "%d%%" percent) claude-usage--em-dash))
+         (reset-str (if resets-at
+                        (claude-usage--format-reset resets-at now)
+                      claude-usage--em-dash)))
+    (magit-insert-section (claude-usage-meter)
+      (insert (format "  %-20s %s %5s  %s\n"
+                       label
+                       (propertize bar 'face face)
+                       (propertize percent-str 'face face)
+                       reset-str)))))
+
+(defun claude-usage--redraw (cached-util &optional now)
+  "Erase the current buffer and redraw it from CACHED-UTIL.
+
+CACHED-UTIL is a `cachedUsageUtilization' alist as returned by
+`claude-usage--read-cache', or nil when the cache is absent entirely.
+NOW, if given, is threaded through to `claude-usage--format-age' and
+`claude-usage--format-reset' for deterministic rendering in tests --
+`claude-usage-stale-p' has no such parameter and always reads the real
+clock.
+
+Inserts a header section (title plus cache age, or a plain \"No usage
+data\" line when CACHED-UTIL is nil) and, when CACHED-UTIL is non-nil, a
+Limits section with one row per `claude-usage-meters' entry. When the
+cache is stale, the age is prefixed with `claude-usage--stale-marker' and
+the whole Limits section is dimmed with the `shadow' face, so an aged
+number can never be mistaken for a live one."
+  (let ((inhibit-read-only t)
+        (fetched-at-ms (and cached-util (alist-get 'fetchedAtMs cached-util))))
+    (erase-buffer)
+    (let ((stale (and fetched-at-ms (claude-usage-stale-p fetched-at-ms))))
+      (magit-insert-section (claude-usage-root)
+        (magit-insert-section (claude-usage-header)
+          (if (null cached-util)
+              (insert "No usage data\n")
+            (magit-insert-heading
+              (format "Claude Usage (%s%s)"
+                      (if stale claude-usage--stale-marker "")
+                      (claude-usage--format-age fetched-at-ms now)))))
+        (when cached-util
+          (magit-insert-section (claude-usage-limits)
+            (let ((section-start (point)))
+              (magit-insert-heading "Limits")
+              (let ((meters (claude-usage-meters cached-util)))
+                (if meters
+                    (dolist (m meters)
+                      (claude-usage--insert-meter-row m now))
+                  (insert "  no meters\n")))
+              (when stale
+                (add-face-text-property section-start (point) 'shadow)))))))))
+
+(defun claude-usage--render-to-string (cached-util &optional now)
+  "Render CACHED-UTIL as `claude-usage--redraw' would, returning a string.
+NOW is passed through unchanged. Runs in a temp buffer, so tests need
+neither a display nor the real `claude-usage-cache-file'."
+  (with-temp-buffer
+    (claude-usage-mode)
+    (claude-usage--redraw cached-util now)
+    (buffer-string)))
+
+;; ============================================================================
+;; Buffer management and commands
+;; ============================================================================
+
+(defun claude-usage--ensure-buffer ()
+  "Return the `*claude-usage*' buffer, creating and (re)populating it."
+  (let ((buf (get-buffer-create "*claude-usage*")))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'claude-usage-mode)
+        (claude-usage-mode))
+      (claude-usage--redraw (claude-usage--read-cache)))
+    buf))
+
+(defun claude-usage--revert (&rest _ignore)
+  "`revert-buffer-function' for `claude-usage-mode': re-read and redraw."
+  (claude-usage--redraw (claude-usage--read-cache)))
+
+;;;###autoload
+(defun claude-usage ()
+  "Show the `*claude-usage*' buffer, creating or reverting it first."
+  (interactive)
+  (pop-to-buffer (claude-usage--ensure-buffer)))
 
 (provide 'claude-usage)
 

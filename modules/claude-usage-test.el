@@ -7,18 +7,139 @@
 
 ;;; Commentary:
 
-;; ERT test suite for claude-usage.el. Run in batch from the repository root:
+;; claude-usage.el now `(require 'magit-section)' for `claude-usage-mode',
+;; so this file follows modules/sidebar-test.el's model exactly: it fixes
+;; `load-path' against the straight build tree and loads claude-usage.el
+;; itself, below, rather than taking it on the command line. Run in batch
+;; from the repository root:
 ;;
-;;   emacs -Q --batch -l ert -l modules/claude-usage.el -l modules/claude-usage-test.el -f ert-run-tests-batch-and-exit
+;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/claude-usage-test.el -f ert-run-tests-batch-and-exit
+;;
+;; Note claude-usage.el is NOT passed on the command line -- this file
+;; fixes `load-path' against the straight build tree and loads
+;; claude-usage.el itself, below, so its own `(require 'magit-section)'
+;; succeeds. If neither this checkout nor its sibling main `edmacs'
+;; checkout has ever bootstrapped straight, the whole suite reports a
+;; single skip rather than erroring out on file load.
 ;;
 ;; Tests cover: full payload with limits array, fallback to legacy keys,
-;; null value handling, missing files, malformed JSON, and fixed-timestamp
-;; format functions with no reliance on current-time.
+;; null value handling, missing files, malformed JSON, fixed-timestamp
+;; format functions with no reliance on current-time, the `*claude-usage*'
+;; buffer/mode, batch-rendered fixture text (full/stale/missing-field/
+;; absent-cache), and g/q keybinding resolution through the real evil
+;; keymaps.
 
 ;;; Code:
 
 (require 'ert)
-(require 'claude-usage)
+(require 'subr-x)
+(require 'cl-lib)
+
+;; See sidebar-test.el's identical setting for why: on a natively-compiled
+;; Emacs, `advice-add' on a primitive subr makes Emacs spawn a second
+;; `emacs -Q --batch' subprocess to compile a native trampoline for it,
+;; misattributing that work to this suite. Disabled before anything below
+;; loads magit-section or evil.
+(setq native-comp-enable-subr-trampolines nil)
+
+(defun claude-usage-test--locate-straight-build-root ()
+  "Return this checkout's `straight/build' directory, or nil.
+Tries this checkout's own `straight/build' first, then falls back to the
+sibling main `edmacs' checkout's `straight/build' -- see
+`edmacs-sidebar-test--locate-straight-build-root' for the identical
+worktree-vs-sibling-main-checkout rationale."
+  (or
+   (let ((here (expand-file-name "straight/build" default-directory)))
+     (and (file-directory-p here) here))
+   (let* ((root (directory-file-name (expand-file-name default-directory)))
+          (worktrees-dir (directory-file-name (file-name-directory root))))
+     (when (string-suffix-p "__worktrees" worktrees-dir)
+       (let* ((projects-dir (file-name-directory worktrees-dir))
+              (repo-name (string-remove-suffix
+                          "__worktrees" (file-name-nondirectory worktrees-dir)))
+              (main-build (expand-file-name
+                           (concat repo-name "/straight/build") projects-dir)))
+         (and (file-directory-p main-build) main-build))))))
+
+(defun claude-usage-test--add-magit-section-deps (build-root)
+  "Add `magit-section' and its transitive deps under BUILD-ROOT to `load-path'.
+cl-lib, eieio, subr-x, format-spec, and cursor-sensor ship with Emacs core
+and need no straight resolution; only these do."
+  (dolist (dep '("compat" "cond-let" "llama" "transient" "seq" "magit-section"))
+    (let ((dir (expand-file-name dep build-root)))
+      (when (file-directory-p dir)
+        (add-to-list 'load-path dir)))))
+
+(defvar claude-usage-test--build-root
+  (claude-usage-test--locate-straight-build-root)
+  "This checkout's (or its sibling main checkout's) `straight/build' root.
+Also reused by the evil lookup below -- a second, independent optional
+straight dependency.")
+
+(if (null claude-usage-test--build-root)
+
+    (ert-deftest claude-usage-test-magit-section-unavailable ()
+      (ert-skip "magit-section's straight build was not found in this checkout \
+or its sibling main checkout; bootstrap straight once (open this worktree in \
+a real Emacs session) to enable this suite"))
+
+  (progn
+
+    (claude-usage-test--add-magit-section-deps claude-usage-test--build-root)
+    (load (expand-file-name "modules/claude-usage.el" default-directory) nil t)
+
+    ;; ==========================================================================
+    ;; Test helpers -- real evil, for the keybinding-resolution tests
+    ;; ==========================================================================
+
+    (defun claude-usage-test--locate-straight-repos-root ()
+      "Return this checkout's `straight/repos' directory, or its sibling
+main checkout's -- the same fallback `claude-usage-test--locate-straight-build-root'
+uses for `straight/build'."
+      (or
+       (let ((here (expand-file-name "straight/repos" default-directory)))
+         (and (file-directory-p here) here))
+       (let* ((root (directory-file-name (expand-file-name default-directory)))
+              (worktrees-dir (directory-file-name (file-name-directory root))))
+         (when (string-suffix-p "__worktrees" worktrees-dir)
+           (let* ((projects-dir (file-name-directory worktrees-dir))
+                  (repo-name (string-remove-suffix
+                              "__worktrees" (file-name-nondirectory worktrees-dir)))
+                  (main-repos (expand-file-name
+                               (concat repo-name "/straight/repos") projects-dir)))
+             (and (file-directory-p main-repos) main-repos))))))
+
+    (defun claude-usage-test--locate-real-evil ()
+      "Return the directory holding the real `evil.el', or nil.
+Tries `straight/build/evil' first (file-exists-p follows a working
+symlink); falls back to `straight/repos/evil' when that symlink is
+broken or the build tree was never generated."
+      (or
+       (let* ((root (or claude-usage-test--build-root
+                         (claude-usage-test--locate-straight-build-root)))
+              (path (and root (expand-file-name "evil/evil.el" root))))
+         (and path (file-exists-p path) (file-name-directory path)))
+       (let* ((root (claude-usage-test--locate-straight-repos-root))
+              (path (and root (expand-file-name "evil/evil.el" root))))
+         (and path (file-exists-p path) (file-name-directory path)))))
+
+    (defun claude-usage-test--ensure-real-evil ()
+      "Load the real `evil', skipping the calling test if unavailable."
+      (unless (featurep 'evil)
+        (let ((dir (claude-usage-test--locate-real-evil)))
+          (unless dir
+            (ert-skip "evil's straight build was not found in this checkout \
+or its sibling main checkout; bootstrap straight once (open this worktree in \
+a real Emacs session) to enable this test"))
+          (let ((load-path (cons dir load-path)))
+            (require 'evil)))))
+
+    ;; ==========================================================================
+    ;; Fixtures and tests (below) run inside this branch, once
+    ;; claude-usage.el is loaded with a working `magit-section'.
+    ;; ==========================================================================
+
 
 ;;; Fixtures
 
@@ -302,10 +423,142 @@
 
 (ert-deftest claude-usage-test-stale-p-old ()
   "Very old data is stale."
-  (let ((old-ms (- (* (float-time (current-time)) 1000) 
+  (let ((old-ms (- (* (float-time (current-time)) 1000)
                    ;; 2 hours in milliseconds
                    (* 2 3600 1000))))
     (should (claude-usage-stale-p old-ms))))
+
+    ;; ==========================================================================
+    ;; AC1 -- buffer/mode: command shows it, g reverts, q buries
+    ;; ==========================================================================
+
+    (defconst claude-usage-test--fixture-missing-field-payload
+      '((fetchedAtMs . 1725274680000)
+        (accountUuid . "test-uuid-321")
+        (utilization
+         (limits .
+                 (((kind . "session")
+                   (percent . 45)
+                   (severity . "normal")
+                   (resets_at . nil)
+                   (limit_dollars . 10.0)
+                   (used_dollars . 4.5)
+                   (remaining_dollars . 5.5)))))
+       )
+      "Full-shaped payload with one limits entry whose `resets_at' is nil.
+`percent' is present, so this entry survives `claude-usage-meters's own
+null-percent filter and reaches the render layer -- unlike a null
+`percent', which `claude-usage-meters' drops before it ever becomes a
+meter plist.")
+
+    (defun claude-usage-test--fresh-and-stale-fixtures ()
+      "Return (FRESH . STALE), two fixtures identical except `fetchedAtMs'.
+FRESH uses the real current time; STALE is computed relative to it (2
+real hours in the past) at call time -- `claude-usage-stale-p' has no
+injectable current-time parameter, so a fixed historical constant would
+eventually go stale/wrong as real time passes."
+      (let* ((now-ms (round (* 1000 (float-time (current-time)))))
+             (stale-ms (round (* 1000 (- (float-time (current-time)) 7200))))
+             (limits '(((kind . "session")
+                        (percent . 45)
+                        (severity . "normal")
+                        (resets_at . "2026-09-03T20:00:00Z")))))
+        (cons
+         `((fetchedAtMs . ,now-ms) (utilization (limits . ,limits)))
+         `((fetchedAtMs . ,stale-ms) (utilization (limits . ,limits))))))
+
+    (ert-deftest claude-usage-test-command-shows-buffer-with-limits ()
+      "`claude-usage' creates/shows `*claude-usage*' with a populated Limits section."
+      (cl-letf (((symbol-function 'claude-usage--read-cache)
+                 (lambda () claude-usage-test--fixture-full-payload)))
+        (unwind-protect
+            (progn
+              (claude-usage)
+              (let ((buf (get-buffer "*claude-usage*")))
+                (should (buffer-live-p buf))
+                (with-current-buffer buf
+                  (should (derived-mode-p 'claude-usage-mode))
+                  (let ((text (buffer-string)))
+                    (should (string-match-p "Limits" text))
+                    (should (string-match-p "Session (5h)" text))
+                    (should (string-match-p "Week (all)" text))
+                    (should (string-match-p "Claude 3.5 Opus" text))))))
+          (let ((buf (get-buffer "*claude-usage*")))
+            (when (buffer-live-p buf) (kill-buffer buf))))))
+
+    (ert-deftest claude-usage-test-revert-buffer-function-is-set ()
+      "A fresh `claude-usage-mode' buffer's `revert-buffer-function' is ours."
+      (with-temp-buffer
+        (claude-usage-mode)
+        (should (eq revert-buffer-function #'claude-usage--revert))))
+
+    (ert-deftest claude-usage-test-g-and-q-resolve-through-real-evil-keymaps ()
+      "Regression test for the g/q-shadowed-by-evil-motion-state fix.
+A plain `define-key' on `claude-usage-mode-map' alone is invisible to
+real key lookup in motion state -- see the identical rationale on
+`edmacs-sidebar-test-ret-and-q-resolve-through-real-evil-keymaps'."
+      (claude-usage-test--ensure-real-evil)
+      (unwind-protect
+          (progn
+            (evil-mode 1)
+            (with-temp-buffer
+              (claude-usage-mode)
+              (evil-motion-state)
+              (should (eq evil-state 'motion))
+              (should (eq (key-binding (kbd "g")) #'revert-buffer))
+              (should (eq (key-binding (kbd "q")) #'bury-buffer))))
+        (evil-mode -1)))
+
+    ;; ==========================================================================
+    ;; AC4 -- render-to-string against fixture payloads
+    ;; ==========================================================================
+
+    (ert-deftest claude-usage-test-render-full-payload ()
+      (let ((text (claude-usage--render-to-string claude-usage-test--fixture-full-payload)))
+        (should (string-match-p "Limits" text))
+        (should (string-match-p "Session (5h)" text))
+        (should (string-match-p "Week (all)" text))
+        (should (string-match-p "Claude 3.5 Opus" text))
+        (should (string-match-p "45%" text))
+        (should (string-match-p "█\\|░" text)))) ; bar block chars
+
+    (ert-deftest claude-usage-test-render-missing-field-shows-em-dash-for-reset-only ()
+      (let ((text (claude-usage--render-to-string
+                   claude-usage-test--fixture-missing-field-payload)))
+        (should (string-match-p "45%" text))
+        (should-not (string-match-p "45%—" text))
+        ;; The reset column (last field on the row) is an em dash; the
+        ;; percent column (present in the fixture) is not.
+        (should (string-match-p "—\n" text))))
+
+    (ert-deftest claude-usage-test-render-absent-cache ()
+      (let ((text (claude-usage--render-to-string nil)))
+        (should (string-match-p "No usage data" text))
+        (should-not (string-match-p "Limits" text))))
+
+    ;; ==========================================================================
+    ;; AC5 -- stale rendering differs visibly from fresh
+    ;; ==========================================================================
+
+    (ert-deftest claude-usage-test-stale-differs-visibly-from-fresh ()
+      (let* ((fixtures (claude-usage-test--fresh-and-stale-fixtures))
+             (fresh (claude-usage--render-to-string (car fixtures)))
+             (stale (claude-usage--render-to-string (cdr fixtures))))
+        (should-not (string= fresh stale))
+        (should (string-match-p (regexp-quote claude-usage--stale-marker) stale))
+        (should-not (string-match-p (regexp-quote claude-usage--stale-marker) fresh))
+        (should (cl-some (lambda (pos)
+                            (let ((face (get-text-property pos 'face stale)))
+                              (or (eq face 'shadow)
+                                  (and (listp face) (memq 'shadow face)))))
+                          (number-sequence 0 (1- (length stale)))))
+        (should-not (cl-some (lambda (pos)
+                               (let ((face (get-text-property pos 'face fresh)))
+                                 (or (eq face 'shadow)
+                                     (and (listp face) (memq 'shadow face)))))
+                             (number-sequence 0 (1- (length fresh)))))))
+
+    )) ; end of build-root-found branch
 
 (provide 'claude-usage-test)
 

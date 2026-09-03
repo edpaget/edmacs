@@ -122,6 +122,9 @@ LANGUAGE should be the name without the .el extension."
 ;; claude-term-registry.el's create/remove hook vars (loaded near the
 ;; top) and agents.el's row API (loaded just above) to exist.
 (load-module "claude-term-agents")
+;; After git.el: straight only puts `magit-section' on `load-path' once
+;; `use-package magit' (in git.el) has registered it, same as sidebar.el.
+(load-module "claude-usage")
 
 ;; ============================================================================
 ;; Language-specific configurations
