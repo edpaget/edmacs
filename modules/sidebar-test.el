@@ -1552,8 +1552,13 @@ plain fallback."
       "A label exactly as wide as the window is left untouched; one
 character over gets truncated with a trailing … so the result is still
 exactly WIDTH characters wide; no live sidebar window falls back to the
-frame's remembered width, then `edmacs-sidebar-width'."
-      (let ((frame (selected-frame)))
+frame's remembered width run through `edmacs-sidebar--clamp-width', then
+`edmacs-sidebar-width' likewise clamped. `edmacs-sidebar--min-width' is
+lowered here so the small widths this test drives (5, 10) exercise the
+truncation math itself rather than the floor -- the floor's own
+interaction with the fallback is covered separately below."
+      (let ((frame (selected-frame))
+            (edmacs-sidebar--min-width 1))
         (should-not (edmacs-sidebar--window frame))
         (unwind-protect
             (let ((edmacs-sidebar-width 10))
@@ -1563,6 +1568,25 @@ frame's remembered width, then `edmacs-sidebar-width'."
               (should (= 10 (length (edmacs-sidebar--truncate-label "0123456789X" frame))))
               (set-frame-parameter frame 'edmacs-sidebar-remembered-width 5)
               (should (equal "0123…" (edmacs-sidebar--truncate-label "0123456789" frame))))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil))))
+
+    (ert-deftest edmacs-sidebar-test-truncate-label-fallback-clamps-poisoned-width ()
+      "The no-live-window fallback in `edmacs-sidebar--truncate-label' must
+run the remembered width through `edmacs-sidebar--clamp-width', exactly
+like `edmacs-sidebar-show' and `edmacs-sidebar--remember-width' already
+do for the same frame parameter. Without that, a poisoned remembered
+width (the reported ~50%-of-frame bug) renders a full, untruncated
+label on the very first pre-window redraw -- self-healing only once a
+live, clamped window exists on the next redraw."
+      (let ((frame (selected-frame)))
+        (should-not (edmacs-sidebar--window frame))
+        (unwind-protect
+            (let* ((edmacs-sidebar--min-width 5)
+                   (edmacs-sidebar-max-width-fraction 0.33)
+                   (clamped (edmacs-sidebar--clamp-width most-positive-fixnum frame))
+                   (long (make-string (+ clamped 20) ?x)))
+              (set-frame-parameter frame 'edmacs-sidebar-remembered-width most-positive-fixnum)
+              (should (= clamped (length (edmacs-sidebar--truncate-label long frame)))))
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil))))
 
     (ert-deftest edmacs-sidebar-test-truncate-label-uses-live-window-width ()

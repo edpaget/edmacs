@@ -47,6 +47,36 @@
 ;; this codebase's substitute, per the same "automate the underlying
 ;; property, not the literal manual step" approach `agents.el's own
 ;; Commentary already documents for its workmux-status-parity AC.
+;;
+;; Two more of phase 8's ACs are met only partially, deliberately, and by
+;; design (not oversight):
+;;
+;; - The design's key table describes `r' on an agent row as "Rename
+;;   instance" with no source qualifier. `edmacs-sidebar-agents-rename'
+;;   (sidebar-agents.el) can only push a rename through a `claude-term'-
+;;   sourced row's own registry/buffer-rename path; a `workmux' row's
+;;   title comes from the tmux pane itself, with no channel this UI can
+;;   write through, so it `user-error's instead -- and `workmux' is the
+;;   only agent source with real rows before edmacs-sidebar roadmap phase
+;;   9 (the claude-term adapter) lands. So today `r' on every agent row
+;;   that actually exists errors rather than renaming. This traces
+;;   directly to phase 8's own body ("... or an in-Emacs agent
+;;   instance") and phase 9's cross-dependency, not a bug here; the
+;;   `claude-term' branch is covered against a synthetic `edmacs-agent'
+;;   struct (sidebar-agents-test.el), and the `workmux' `user-error' is
+;;   covered against a real one -- there is no way to exercise a real
+;;   end-to-end claude-term rename until phase 9 supplies real rows.
+;;
+;; - "Faces ... text fallback renders sensibly in a terminal frame" has
+;;   two halves. Which glyph table gets SELECTED (nerd-icons vs. plain
+;;   Unicode, including the force-text override and the nerd-icons-
+;;   errors-at-runtime fallback) is fully unit-tested. Whether the
+;;   plain-Unicode glyphs (currently ● ○ ⋯ etc.) read as sensible once
+;;   actually painted in a real tty is a rendered-appearance judgment no
+;;   `-Q --batch' ERT run can make; unlike the no-shellout AC above,
+;;   there is no automatable substitute for it, so it stays a plausible-
+;;   but-manually-unverified half of this AC pending an actual terminal
+;;   spot-check.
 
 ;;; Code:
 
@@ -471,13 +501,21 @@ remembered width, or `edmacs-sidebar-width', when the sidebar has no
 live window yet (e.g. the very first redraw of a freshly created
 buffer, before `display-buffer' has shown it) -- there is no live width
 to measure against yet, but this is still a reasonable estimate,
-consistent with what `edmacs-sidebar-show' is about to use."
+consistent with what `edmacs-sidebar-show' is about to use. That
+fallback is run through `edmacs-sidebar--clamp-width' just like every
+other read of the same frame parameter (`edmacs-sidebar-show',
+`edmacs-sidebar--remember-width'): otherwise a poisoned or merely
+larger-than-clamp remembered width would render an untruncated label on
+this first pass, only to be truncated correctly from the next redraw on
+once a live, clamped window exists to measure."
   (let* ((frame (or frame (selected-frame)))
          (window (edmacs-sidebar--window frame))
          (width (if (window-live-p window)
                     (window-width window)
-                  (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
-                      edmacs-sidebar-width))))
+                  (edmacs-sidebar--clamp-width
+                   (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
+                       edmacs-sidebar-width)
+                   frame))))
     (if (> (length label) width)
         (concat (substring label 0 (max 0 (1- width))) "…")
       label)))
