@@ -1014,7 +1014,9 @@ unclaimed, this live check found `evil-motion-state-map' still binding
 `evil-jump-forward' regardless of that variable, shadowing
 `magit-section-mode-map's own binding -- so TAB got the same
 dual-binding override as RET/q/K/? (see sidebar.el's own comment at
-its `TAB' binding)."
+its `TAB' binding). Resolves to `edmacs-sidebar-toggle-at-point', the
+fold-dispatch wrapper, not bare `magit-section-toggle' -- see the
+dedicated fold-dispatch tests below for its enclosing-group behavior."
       (edmacs-sidebar-test--ensure-real-evil)
       (unwind-protect
           (progn
@@ -1028,7 +1030,7 @@ its `TAB' binding)."
               (should (eq (key-binding (kbd "r")) #'edmacs-sidebar-rename-at-point))
               (should (eq (key-binding (kbd "g r")) #'edmacs-sidebar-redraw))
               (should (eq (key-binding (kbd "?")) #'edmacs-sidebar-help))
-              (should (eq (key-binding (kbd "TAB")) #'magit-section-toggle))))
+              (should (eq (key-binding (kbd "TAB")) #'edmacs-sidebar-toggle-at-point))))
         (evil-mode -1)))
 
     (ert-deftest edmacs-sidebar-test-help-falls-back-to-describe-keymap-for-real ()
@@ -1058,6 +1060,76 @@ for."
           (when which-key-was-bound
             (fset 'which-key-show-full-keymap which-key-def))
           (when (get-buffer "*Help*") (kill-buffer "*Help*")))))
+
+    (ert-deftest edmacs-sidebar-test-toggle-at-point-folds-self-when-has-children ()
+      "TAB (`edmacs-sidebar-toggle-at-point') on a row with its own
+children -- a tab row with an agents group nested underneath -- folds
+its own body, per the design table's `On a tab' -> `Fold / unfold' cell."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let (tab-section)
+          (let ((inhibit-read-only t))
+            (magit-insert-section (edmacs-sidebar-root)
+              (setq tab-section
+                    (magit-insert-section (edmacs-sidebar-tab 1)
+                      (magit-insert-heading "tab row")
+                      (magit-insert-section (edmacs-sidebar-agents-group nil)
+                        (magit-insert-heading "  agents group"))))))
+          (goto-char (point-min))
+          (should (eq (magit-current-section) tab-section))
+          (should (eq nil (oref tab-section hidden)))
+          (edmacs-sidebar-toggle-at-point)
+          (should (eq t (oref tab-section hidden)))
+          (edmacs-sidebar-toggle-at-point)
+          (should (eq nil (oref tab-section hidden))))))
+
+    (ert-deftest edmacs-sidebar-test-toggle-at-point-folds-enclosing-group-for-agent-leaf ()
+      "TAB on an agent leaf row folds its enclosing group (the agents
+group heading above it) instead of the leaf itself -- an agent section
+has no body of its own, so toggling it directly would be an invisible
+no-op. Matches the design table's colspan cell for `On an agent'/`On a
+buffer': \"Fold / unfold the enclosing group\"."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let (group-section agent-section)
+          (let ((inhibit-read-only t))
+            (magit-insert-section (edmacs-sidebar-root)
+              (magit-insert-section (edmacs-sidebar-tab 1)
+                (magit-insert-heading "tab row")
+                (setq group-section
+                      (magit-insert-section (edmacs-sidebar-agents-group nil)
+                        (magit-insert-heading "  agents group")
+                        (setq agent-section
+                              (magit-insert-section (edmacs-sidebar-agent "fake-agent")
+                                (magit-insert-heading "    an agent row"))))))))
+          (goto-char (point-max))
+          (forward-line -1)
+          (should (eq (magit-current-section) agent-section))
+          (should (eq nil (oref group-section hidden)))
+          (should (eq nil (oref agent-section hidden)))
+          (edmacs-sidebar-toggle-at-point)
+          (should (eq t (oref group-section hidden)))
+          (should (eq nil (oref agent-section hidden))))))
+
+    (ert-deftest edmacs-sidebar-test-toggle-at-point-folds-self-with-no-parent-group ()
+      "A leaf row directly under the root wrapper (no intervening group
+section -- e.g. a scratch frame's flat agent-less layout) has no
+non-root parent to defer to, so TAB falls back to toggling itself,
+exactly like plain `magit-section-toggle' would (a no-op here, since
+the leaf has no body, but never an error)."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let (agent-section)
+          (let ((inhibit-read-only t))
+            (magit-insert-section (edmacs-sidebar-root)
+              (setq agent-section
+                    (magit-insert-section (edmacs-sidebar-agent "fake-agent")
+                      (magit-insert-heading "an agent row")))))
+          (goto-char (point-min))
+          (should (eq (magit-current-section) agent-section))
+          (should (eq nil (oref agent-section hidden)))
+          (edmacs-sidebar-toggle-at-point)
+          (should (eq t (oref agent-section hidden))))))
 
     (ert-deftest edmacs-sidebar-test-visit-at-point-user-errors-with-no-section ()
       "No section at all (an `edmacs-sidebar-mode' buffer with nothing

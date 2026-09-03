@@ -71,12 +71,21 @@
 ;;   two halves. Which glyph table gets SELECTED (nerd-icons vs. plain
 ;;   Unicode, including the force-text override and the nerd-icons-
 ;;   errors-at-runtime fallback) is fully unit-tested. Whether the
-;;   plain-Unicode glyphs (currently ● ○ ⋯ etc.) read as sensible once
-;;   actually painted in a real tty is a rendered-appearance judgment no
-;;   `-Q --batch' ERT run can make; unlike the no-shellout AC above,
-;;   there is no automatable substitute for it, so it stays a plausible-
-;;   but-manually-unverified half of this AC pending an actual terminal
-;;   spot-check.
+;;   plain-Unicode glyphs (● ○ ⋯ for tabs; * ? v o for agent status)
+;;   read as sensible once actually painted in a real tty is a
+;;   rendered-appearance judgment no `-Q --batch' ERT run can make on
+;;   its own -- but it has now had an actual terminal spot-check: a real
+;;   `emacs -Q -nw' tty frame, attached to a `tmux' pane under this
+;;   machine's normal `en_US.UTF-8' locale, rendered every fallback
+;;   glyph from both `edmacs-sidebar--fallback-glyphs' and
+;;   `edmacs-sidebar-agents--fallback-glyphs' captured via
+;;   `tmux capture-pane' -- every glyph came through as its intended
+;;   character (no tofu boxes, no terminal-coding-system mangling to
+;;   `?'). That check is manual/interactive by nature (a `-Q --batch'
+;;   run has no tty to paint into at all), so it is not wired into the
+;;   ERT suite and must be re-run by hand if these glyph tables change;
+;;   it is otherwise the same "spot-check once, document the result"
+;;   treatment the no-shellout AC's literal-profiler attempt above got.
 
 ;;; Code:
 
@@ -311,8 +320,12 @@ where nerd-icons's private-use-area glyphs render as unreadable boxes."
 ;; claims plain `TAB' too under a GUI frame, where the two differ) -- so
 ;; TAB needs the same dual-binding override as RET/q/K/? once measured
 ;; live, even though `magit-section-mode-map' already binds it and a
-;; GUI frame alone would not have shown the shadow.
-(define-key edmacs-sidebar-mode-map (kbd "TAB") #'magit-section-toggle)
+;; GUI frame alone would not have shown the shadow. Bound to
+;; `edmacs-sidebar-toggle-at-point', not plain `magit-section-toggle',
+;; so a leaf row (agent/buffer) folds its enclosing group instead of
+;; toggling its own bodyless heading as a no-op -- see the design
+;; table's `TAB' row and that command's docstring.
+(define-key edmacs-sidebar-mode-map (kbd "TAB") #'edmacs-sidebar-toggle-at-point)
 
 (with-eval-after-load 'evil
   (evil-define-key 'motion edmacs-sidebar-mode-map
@@ -328,7 +341,7 @@ where nerd-icons's private-use-area glyphs render as unreadable boxes."
     (kbd "r") #'edmacs-sidebar-rename-at-point
     (kbd "g r") #'edmacs-sidebar-redraw
     (kbd "?") #'edmacs-sidebar-help
-    (kbd "TAB") #'magit-section-toggle))
+    (kbd "TAB") #'edmacs-sidebar-toggle-at-point))
 
 ;; ============================================================================
 ;; Per-frame buffer management
@@ -775,6 +788,28 @@ tab-number through explicitly instead of using `call-interactively'."
      ((and section (eq (oref section type) 'edmacs-sidebar-agent) (slot-boundp section 'value))
       (edmacs-sidebar-agents-rename (oref section value)))
      (t (user-error "Nothing to rename here")))))
+
+;;;###autoload
+(defun edmacs-sidebar-toggle-at-point ()
+  "Fold/unfold the section at point, matching the design table's `TAB'
+row: a section with its own children (a tab row, an agents/buffers
+group heading) folds itself via `magit-section-toggle'; a leaf row
+(an agent, or a buffer file/special row) has no body of its own to
+fold, so this folds its enclosing group instead -- the parent section
+-- exactly as the table's colspan cell for `On an agent'/`On a buffer'
+specifies. Falls back to toggling SECTION itself when it has neither
+children nor a non-root parent, matching plain `magit-section-toggle's
+own no-op/error behavior for the root and unparented sections."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (cond
+     ((or (null section) (eq section magit-root-section))
+      (magit-section-toggle section))
+     ((oref section children) (magit-section-toggle section))
+     ((let ((parent (oref section parent)))
+        (and parent (not (eq parent magit-root-section))))
+      (magit-section-toggle (oref section parent)))
+     (t (magit-section-toggle section)))))
 
 ;;;###autoload
 (defun edmacs-sidebar-redraw ()
