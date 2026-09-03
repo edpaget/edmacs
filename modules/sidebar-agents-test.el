@@ -623,24 +623,84 @@ stubbed one, matching agents.el's own real-timer test convention."
     ;; edmacs-sidebar-agents-rename (phase 8)
     ;; ==========================================================================
     ;; The `claude-term' branch is necessarily exercised against a synthetic
-    ;; `edmacs-agent' struct and a mocked `claude-term-registry-rename', not
-    ;; a real registry -- end-to-end coverage needs edmacs-claude-terminal's
+    ;; `edmacs-agent' struct and mocked registry/rename functions, not a real
+    ;; registry -- end-to-end coverage needs edmacs-claude-terminal's
     ;; claude-term rows, which land in this table only once phase 9 does.
 
-    (ert-deftest edmacs-sidebar-agents-test-rename-claude-term-calls-registry-rename ()
+    (ert-deftest edmacs-sidebar-agents-test-rename-claude-term-delegates-to-claude-term-rename ()
+      "Delegates to `claude-term-rename' on the session's buffer -- not just
+`claude-term-registry-rename' -- so the buffer-local `claude-term--instance'
+and the buffer's own name stay in sync with the registry (see
+`edmacs-sidebar-agents-rename's docstring for why a registry-only update
+would desync `claude-term--on-exit's deregistration lookup)."
       (let ((agent (edmacs-sidebar-agents-test--make-agent
                     :root "/repo/wt/" :instance "%1" :source 'claude-term))
-            (calls nil))
-        (cl-letf (((symbol-function 'claude-term-registry-rename)
-                   (lambda (root old new) (push (list root old new) calls)))
-                  ((symbol-function 'read-string) (lambda (&rest _) "new-label"))
+            (fake-session 'sidebar-agents-test-fake-session)
+            (get-calls nil)
+            (rename-calls nil))
+        (cl-letf (((symbol-function 'claude-term-registry-get)
+                   (lambda (root instance) (push (cons root instance) get-calls) fake-session))
+                  ((symbol-function 'claude-term-session-buffer)
+                   (lambda (session) (should (eq session fake-session)) 'sidebar-agents-test-fake-buffer))
+                  ((symbol-function 'claude-term-rename)
+                   (lambda (buffer) (push buffer rename-calls)))
                   ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
           (edmacs-sidebar-agents-rename agent)
-          (should (equal calls (list (list "/repo/wt/" "%1" "new-label")))))))
+          (should (equal get-calls '(("/repo/wt/" . "%1"))))
+          (should (equal rename-calls '(sidebar-agents-test-fake-buffer))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-rename-claude-term-no-session-user-errors ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent :source 'claude-term)))
+        (cl-letf (((symbol-function 'claude-term-registry-get) (lambda (&rest _) nil)))
+          (should-error (edmacs-sidebar-agents-rename agent) :type 'user-error))))
 
     (ert-deftest edmacs-sidebar-agents-test-rename-workmux-user-errors ()
       (let ((agent (edmacs-sidebar-agents-test--make-agent :source 'workmux)))
         (should-error (edmacs-sidebar-agents-rename agent) :type 'user-error)))
+
+    ;; ==========================================================================
+    ;; edmacs-sidebar-agents-kill (phase 8)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-agents-test-kill-claude-term-calls-claude-term-kill ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent
+                    :root "/repo/wt/" :instance "%1" :source 'claude-term))
+            (fake-session 'sidebar-agents-test-fake-session)
+            (kill-calls nil))
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                  ((symbol-function 'claude-term-registry-get)
+                   (lambda (_root _instance) fake-session))
+                  ((symbol-function 'claude-term-session-buffer)
+                   (lambda (_session) 'sidebar-agents-test-fake-buffer))
+                  ((symbol-function 'claude-term-kill)
+                   (lambda (buffer) (push buffer kill-calls)))
+                  ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
+          (edmacs-sidebar-agents-kill agent)
+          (should (equal kill-calls '(sidebar-agents-test-fake-buffer))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-kill-declines-confirmation-does-nothing ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent :source 'claude-term))
+            (called nil))
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil))
+                  ((symbol-function 'claude-term-registry-get) (lambda (&rest _) (setq called t) nil)))
+          (edmacs-sidebar-agents-kill agent)
+          (should-not called))))
+
+    (ert-deftest edmacs-sidebar-agents-test-kill-workmux-kills-pane-via-start-process ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent
+                    :source 'workmux :locator (list :pane-id "%7" :session "s1" :window "w1")))
+            (calls nil))
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                  ((symbol-function 'start-process)
+                   (lambda (_name _buf &rest args) (push args calls)))
+                  ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
+          (edmacs-sidebar-agents-kill agent)
+          (should (equal calls '(("tmux" "kill-pane" "-t" "%7")))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-kill-workmux-no-pane-user-errors ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent :source 'workmux :locator nil)))
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+          (should-error (edmacs-sidebar-agents-kill agent) :type 'user-error))))
 
     ;; ==========================================================================
     ;; Header-line roll-up (phase 8)

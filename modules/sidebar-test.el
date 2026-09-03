@@ -1070,6 +1070,25 @@ change needed for this phase."
                   (should closed))
               (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
 
+    (ert-deftest edmacs-sidebar-test-kill-at-point-dispatches-to-agents-kill ()
+      "`d' on an `edmacs-sidebar-agent' row calls
+`edmacs-sidebar-agents-kill' (sidebar-agents.el) with the section's
+agent value, per the design's key table (\"Kill the agent session
+[confirm]\"), instead of falling through to
+`edmacs-sidebar-close-worktree'."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)
+            (magit-insert-section (edmacs-sidebar-agent 'fake-agent-value)
+              (magit-insert-heading "agent row"))))
+        (goto-char (point-min))
+        (let ((kill-calls nil))
+          (cl-letf (((symbol-function 'edmacs-sidebar-agents-kill)
+                     (lambda (agent) (push agent kill-calls))))
+            (edmacs-sidebar-kill-at-point))
+          (should (equal kill-calls '(fake-agent-value))))))
+
     (ert-deftest edmacs-sidebar-test-move-to-worktree-top-level-only ()
       "J/K move only among top-level (direct root children) rows, skipping
 over a nested child section entirely, and no-op past either end."

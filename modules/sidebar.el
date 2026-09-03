@@ -97,6 +97,7 @@
 (declare-function edmacs-sidebar-agents-visit "sidebar-agents")
 (declare-function edmacs-sidebar-agents-toggle-all "sidebar-agents")
 (declare-function edmacs-sidebar-agents-rename "sidebar-agents")
+(declare-function edmacs-sidebar-agents-kill "sidebar-agents")
 
 ;; Autoloaded by Emacs 29+ core (`describe-keymap.el'); declared here so
 ;; the byte-compiler has no forward-reference warning on a build whose
@@ -737,12 +738,16 @@ with workmux/rdm, never this key (phase body Steps item 5)."
 
 (defun edmacs-sidebar-kill-at-point ()
   "Act on the section at point: kill a buffer row (sidebar-buffers.el,
-phase 7), else close the worktree row's tab exactly as before."
+phase 7), kill an agent session (sidebar-agents.el, phase 8, after
+confirming), else close the worktree row's tab exactly as before."
   (interactive)
   (let ((section (magit-current-section)))
-    (if (and section (memq (oref section type) '(edmacs-sidebar-buffers-file edmacs-sidebar-buffers-special)))
-        (edmacs-sidebar-buffers-kill)
-      (edmacs-sidebar-close-worktree))))
+    (cond
+     ((and section (memq (oref section type) '(edmacs-sidebar-buffers-file edmacs-sidebar-buffers-special)))
+      (edmacs-sidebar-buffers-kill))
+     ((and section (eq (oref section type) 'edmacs-sidebar-agent) (slot-boundp section 'value))
+      (edmacs-sidebar-agents-kill (oref section value)))
+     (t (edmacs-sidebar-close-worktree)))))
 
 (defun edmacs-sidebar--window (frame)
   "Return FRAME's visible sidebar window, or nil."

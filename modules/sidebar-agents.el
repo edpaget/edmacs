@@ -74,7 +74,10 @@
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar-hide "sidebar")
 (declare-function claude-term--pop-to-side-window "claude-term")
-(declare-function claude-term-registry-rename "claude-term-registry")
+(declare-function claude-term-registry-get "claude-term-registry")
+(declare-function claude-term-session-buffer "claude-term-registry")
+(declare-function claude-term-rename "claude-term-registry")
+(declare-function claude-term-kill "claude-term")
 (defvar edmacs-sidebar-worktree-label-suffix-function)
 (defvar edmacs-sidebar-worktree-section-functions)
 (defvar edmacs-sidebar-extra-section-functions)
@@ -440,16 +443,23 @@ Pulls the `edmacs-agent' struct straight off the section's own VALUE
 ;;;###autoload
 (defun edmacs-sidebar-agents-rename (agent)
   "Rename AGENT's title, called by sidebar.el's `edmacs-sidebar-rename-at-point'.
-Only a `claude-term'-sourced row can be renamed here: its instance
-label lives in `claude-term-registry.el's own table, migrated via
-`claude-term-registry-rename'. Every other source (`workmux', and any
-future one) signals `user-error' -- its title comes from the pane
-itself, with no channel this UI can push a rename through.
+Only a `claude-term'-sourced row can be renamed here: resolves AGENT's
+live session via `claude-term-registry-get' and delegates entirely to
+`claude-term-rename' on that session's buffer, rather than calling
+`claude-term-registry-rename' directly -- `claude-term-rename' also
+updates the buffer-local `claude-term--instance' and renames the
+buffer itself, both of which `claude-term--on-exit' (claude-term.el)
+reads to deregister the session on kill; skipping them here would
+leave the registry keyed under the OLD instance for that lookup while
+this file's own row model already reflects the new one. Every other
+source (`workmux', and any future one) signals `user-error' -- its
+title comes from the pane itself, with no channel this UI can push a
+rename through.
 Not end-to-end exercisable until edmacs-claude-terminal's claude-term
 rows actually appear in this table (edmacs-sidebar roadmap phase 9);
 this file's own test coverage of the `claude-term' branch is
-necessarily against a synthetic `edmacs-agent' struct and a mocked
-`claude-term-registry-rename', not a real registry.
+necessarily against a synthetic `edmacs-agent' struct and mocked
+registry/rename functions, not a real registry.
 The design's key table describes `r' on an agent row plainly as
 \"Rename instance\", with no source qualifier; `workmux' is the only
 source with real rows before phase 9 lands, so until then `r' on
@@ -459,12 +469,49 @@ pane, not this UI -- and traces to this phase's own body (\"an
 in-Emacs agent instance\"), not a bug here; the design table itself
 should be updated to say so explicitly."
   (if (eq (edmacs-agent-source agent) 'claude-term)
-      (let ((new-instance (read-string "New instance label: ")))
-        (claude-term-registry-rename (edmacs-agent-root agent)
-                                      (edmacs-agent-instance agent)
-                                      new-instance)
+      (let ((session (claude-term-registry-get (edmacs-agent-root agent)
+                                                 (edmacs-agent-instance agent))))
+        (unless session
+          (user-error "Claude-term: no session registered for instance %s"
+                      (edmacs-agent-instance agent)))
+        (claude-term-rename (claude-term-session-buffer session))
         (edmacs-sidebar-agents--redraw-all))
     (user-error "Cannot rename a %s agent" (edmacs-agent-source agent))))
+
+;; ============================================================================
+;; d -- kill an agent session (sidebar.el's `edmacs-sidebar-kill-at-point')
+;; ============================================================================
+
+;;;###autoload
+(defun edmacs-sidebar-agents-kill (agent)
+  "Kill AGENT's underlying session, after confirming with `yes-or-no-p'.
+A `claude-term' row resolves its live session via
+`claude-term-registry-get' and calls `claude-term-kill' on its buffer
+-- teardown then runs through claude-term.el's own async
+sentinel/`claude-term--on-exit' path exactly as it does for the direct
+command, so the registry and buffer stay in sync. A `workmux' row asks
+tmux to kill the pane via an async `start-process' -- never
+`call-process' -- mirroring `edmacs-sidebar-agents--visit-source-extra's
+tmux jump: this only ever runs from an explicit `d' keypress, never
+from a redraw, so it is exempt from the render-path no-subprocess rule
+the same way that jump already is. Any other source signals
+`user-error'."
+  (when (yes-or-no-p (format "Kill agent session %s? " (edmacs-agent-title agent)))
+    (pcase (edmacs-agent-source agent)
+      ('claude-term
+       (let ((session (claude-term-registry-get (edmacs-agent-root agent)
+                                                  (edmacs-agent-instance agent))))
+         (unless session
+           (user-error "Claude-term: no session registered for instance %s"
+                       (edmacs-agent-instance agent)))
+         (claude-term-kill (claude-term-session-buffer session))))
+      ('workmux
+       (let ((pane-id (plist-get (edmacs-agent-locator agent) :pane-id)))
+         (unless pane-id
+           (user-error "Workmux agent has no pane to kill"))
+         (start-process "edmacs-sidebar-agents-tmux-kill" nil "tmux" "kill-pane" "-t" pane-id)))
+      (source (user-error "Cannot kill a %s agent" source)))
+    (edmacs-sidebar-agents--redraw-all)))
 
 ;; ============================================================================
 ;; SPC a TAB -- attention cycling
