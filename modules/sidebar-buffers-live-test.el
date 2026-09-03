@@ -382,6 +382,37 @@ but is entirely invisible until expanded."
               (should-not (string-match-p "x.el" visible))
               (should (string-match-p "z.el" visible)))))))
 
+    (ert-deftest edmacs-sidebar-buffers-live-test-ac1-non-current-tab-recency-order ()
+      "A background tab's own ordering comes from its serialized `ws'
+tree's `prev-buffers', not alphabetical fallback: opening d/a.el, then
+d/z.el, then d/m.el (leaving m.el as the tab's own selected buffer)
+before switching away must render z.el ahead of a.el ahead of m.el --
+alphabetical order (a, m, z) would mean `--main-window-prev-names' fed
+`--ws-main-prev-buffers' the wrong (unwrapped) shape and silently lost
+every rank, exactly the regression this test guards against."
+      (let ((r1 (edmacs-sidebar-buffers-live-test--make-root))
+            (r2 (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list r1 r2)
+          (let ((w (edmacs-sidebar-buffers-live-test--write-file r1 "w.el"))
+                (a (edmacs-sidebar-buffers-live-test--write-file r2 "d/a.el"))
+                (m (edmacs-sidebar-buffers-live-test--write-file r2 "d/m.el"))
+                (z (edmacs-sidebar-buffers-live-test--write-file r2 "d/z.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "r1" r1) (cons "r2" r2)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
+            (find-file w)
+            (let ((tab-bar-new-tab-choice "*scratch*"))
+              (tab-bar-new-tab))
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r2)
+            (find-file a) (find-file z) (find-file m)
+            (tab-bar-select-tab 1)
+            (edmacs-sidebar-show (selected-frame))
+            (let ((text (edmacs-sidebar-buffers-live-test--subsection-text (selected-frame) r2)))
+              (should (string-match-p
+                       (rx "z.el" (* anychar) "a.el" (* anychar) "m.el")
+                       text)))))))
+
     ;; ==========================================================================
     ;; AC2 -- RET visit, [ / ] parity with previous-buffer/next-buffer, markers
     ;; ==========================================================================
@@ -568,7 +599,14 @@ add another contender either."
     (ert-deftest edmacs-sidebar-buffers-live-test-tab-switch-with-30-buffers-is-fast ()
       "Opening 30 nested file buffers in one tab keeps a later tab switch
 fast: the redraw this triggers (`edmacs-sidebar--on-tab-select') is pure
-in-memory work, never a subprocess."
+in-memory work, never a subprocess. Measured with `elp' (the Emacs Lisp
+Profiler, not wall-clock `benchmark-run') directly around
+`edmacs-sidebar--redraw' itself -- isolating this module's own cost
+from `tab-bar-select-tab's unrelated bookkeeping -- against the AC's
+literal 50ms bound; `benchmark-run' still wraps the whole
+`tab-bar-select-tab' call as a coarser, generously-bounded sanity
+check on top."
+      (require 'elp)
       (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
         (edmacs-sidebar-buffers-live-test--with-scenario (list root)
           (edmacs-sidebar-buffers-live-test--register-worktrees
@@ -581,8 +619,20 @@ in-memory work, never a subprocess."
           (edmacs-sidebar-show (selected-frame))
           (let ((tab-bar-new-tab-choice "*scratch*"))
             (tab-bar-new-tab))
-          (let ((elapsed (car (benchmark-run 1 (tab-bar-select-tab 1)))))
-            (should (< elapsed 0.2)))))) ; generous, machine-independent bound
+          (unwind-protect
+              (progn
+                (elp-instrument-function 'edmacs-sidebar--redraw)
+                (elp-reset-function 'edmacs-sidebar--redraw)
+                (let ((elapsed (car (benchmark-run 1 (tab-bar-select-tab 1)))))
+                  (should (< elapsed 0.2))) ; generous, machine-independent sanity bound
+                (let* ((info (get 'edmacs-sidebar--redraw elp-timer-info-property))
+                       (calls (aref info 0))
+                       (average (and (> calls 0) (/ (aref info 1) calls))))
+                  (should (= calls 1))
+                  ;; The AC's own literal bound, checked with a real profiler
+                  ;; rather than a wall-clock proxy.
+                  (should (< average 0.05))))
+            (elp-restore-function 'edmacs-sidebar--redraw)))))
 
     ;; ==========================================================================
     ;; AC5 -- isolation: per-tab and per-frame

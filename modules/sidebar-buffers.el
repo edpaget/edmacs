@@ -174,9 +174,13 @@ never switched to and has no live windows at all."
           (when win
             (delq nil (mapcar (lambda (e) (and (buffer-live-p (car e)) (buffer-name (car e))))
                                (window-prev-buffers win)))))
+      ;; `tab's own `ws' field is `window-state-get's raw return, a cons
+      ;; of (CONSTRAINTS-ALIST . STATE-TREE) regardless of the WRITABLE
+      ;; argument tab-bar.el passes -- only the `cdr' is the `(leaf ...)'/
+      ;; `(vc|hc ...)' tree `--ws-main-prev-buffers' pattern-matches on.
       (let ((ws (alist-get 'ws tab)))
         (when ws
-          (mapcar #'car (cdr (edmacs-sidebar-buffers--ws-main-prev-buffers ws))))))))
+          (mapcar #'car (cdr (edmacs-sidebar-buffers--ws-main-prev-buffers (cdr ws)))))))))
 
 (defun edmacs-sidebar-buffers--rank (buf prev-names)
   "Return BUF's position in PREV-NAMES, or `most-positive-fixnum' if absent.
