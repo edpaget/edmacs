@@ -60,8 +60,9 @@ Returns a time value suitable for use with `float-time' and
 (defun claude-usage--read-cache ()
   "Read the Claude CLI's usage cache from `claude-usage-cache-file'.
 
-Returns the parsed `utilization' object (nested in cachedUsageUtilization)
-as an alist, or nil if the file is missing, unreadable, or malformed.
+Returns the parsed `cachedUsageUtilization' object as an alist,
+containing fetchedAtMs, accountUuid, and utilization fields.
+Returns nil if the file is missing, unreadable, or malformed.
 Never signals an error."
   (let* ((cache-file (expand-file-name claude-usage-cache-file))
          (inhibit-message t))
@@ -75,8 +76,7 @@ Never signals an error."
               (let ((parsed (json-parse-buffer :object-type 'alist
                                                :array-type 'list
                                                :null-object nil)))
-                (let ((cached-util (alist-get 'cachedUsageUtilization parsed)))
-                  (alist-get 'utilization cached-util))))
+                (alist-get 'cachedUsageUtilization parsed)))
           (error nil))))))
 
 (defun claude-usage--severity-face (severity percent)
@@ -181,10 +181,11 @@ nil otherwise."
         (> age-secs claude-usage-stale-threshold))
     (error nil)))
 
-(defun claude-usage-meters (utilization)
-  "Transform a parsed utilization object into an ordered list of meter plists.
+(defun claude-usage-meters (cached-util)
+  "Transform parsed cachedUsageUtilization into an ordered list of meter plists.
 
-UTILIZATION is the parsed `utilization' object from `claude-usage--read-cache'.
+CACHED-UTIL is the full `cachedUsageUtilization' object from
+`claude-usage--read-cache', containing fetchedAtMs, accountUuid, and utilization.
 
 Returns a list of plists, one per limit entry.
 Each plist contains: :id KIND :label LABEL :percent PERCENT
@@ -202,8 +203,9 @@ For limits[], reads `percent' (already 0-100) directly.
 For five_hour/seven_day fallback, reads `utilization' (already 0-100).
 Preserves `severity' string, and extracts model name from
 `scope.model.display_name' when present."
-  (let ((meters '())
-        (limits (alist-get 'limits utilization)))
+  (let* ((meters '())
+         (utilization (alist-get 'utilization cached-util))
+         (limits (alist-get 'limits utilization)))
 
     ;; Primary path: use limits array if present
     (when limits

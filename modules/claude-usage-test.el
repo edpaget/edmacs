@@ -23,96 +23,125 @@
 ;;; Fixtures
 
 ;; Full payload with limits array containing 3 entries: session, weekly_all, weekly_scoped
-;; This is the utilization object structure returned by claude-usage--read-cache
+;; This is the cachedUsageUtilization object structure returned by claude-usage--read-cache
 (defconst claude-usage-test--fixture-full-payload
   '((fetchedAtMs . 1725274680000)
     (accountUuid . "test-uuid-123")
-    (limits .
-            (((kind . "session")
-              (percent . 45)
-              (severity . "normal")
-              (resets_at . "2026-09-03T20:00:00Z")
-              (limit_dollars . 10.0)
-              (used_dollars . 4.5)
-              (remaining_dollars . 5.5))
-             ((kind . "weekly_all")
-              (percent . 62)
-              (severity . "warning")
-              (resets_at . "2026-09-07T00:00:00Z")
-              (limit_dollars . 100.0)
-              (used_dollars . 62.0)
-              (remaining_dollars . 38.0))
-             ((kind . "weekly_scoped")
-              (percent . 88)
-              (severity . "critical")
-              (resets_at . "2026-09-07T00:00:00Z")
-              (limit_dollars . 50.0)
-              (used_dollars . 44.0)
-              (remaining_dollars . 6.0)
-              (scope
-               (model
-                (id . "claude-opus-4-1")
-                (display_name . "Claude 3.5 Opus"))))))
-    (extra_usage . 0.0)
-    (spend . 110.5))
-  "Utilization object with three limits entries, each using percent field.")
+    (utilization
+     (limits .
+             (((kind . "session")
+               (percent . 45)
+               (severity . "normal")
+               (resets_at . "2026-09-03T20:00:00Z")
+               (limit_dollars . 10.0)
+               (used_dollars . 4.5)
+               (remaining_dollars . 5.5))
+              ((kind . "weekly_all")
+               (percent . 62)
+               (severity . "warning")
+               (resets_at . "2026-09-07T00:00:00Z")
+               (limit_dollars . 100.0)
+               (used_dollars . 62.0)
+               (remaining_dollars . 38.0))
+              ((kind . "weekly_scoped")
+               (percent . 88)
+               (severity . "critical")
+               (resets_at . "2026-09-07T00:00:00Z")
+               (limit_dollars . 50.0)
+               (used_dollars . 44.0)
+               (remaining_dollars . 6.0)
+               (scope
+                (model
+                 (id . "claude-opus-4-1")
+                 (display_name . "Claude 3.5 Opus"))))))
+     (extra_usage . 0.0)
+     (spend . 110.5)))
+  "cachedUsageUtilization object with three limits entries, each using percent field.")
 
 ;; Fallback payload without limits key but with five_hour and seven_day
 ;; Uses utilization field for five_hour/seven_day (already 0-100)
 (defconst claude-usage-test--fixture-fallback-payload
   '((fetchedAtMs . 1725274680000)
     (accountUuid . "test-uuid-456")
-    (five_hour
-     (utilization . 30)
-     (severity . "normal")
-     (resets_at . "2026-09-03T20:00:00Z")
-     (limit_dollars . 10.0)
-     (used_dollars . 3.0)
-     (remaining_dollars . 7.0))
-    (seven_day
-     (utilization . 55)
-     (severity . "warning")
-     (resets_at . "2026-09-07T00:00:00Z")
-     (limit_dollars . 100.0)
-     (used_dollars . 55.0)
-     (remaining_dollars . 45.0))
-    (extra_usage . 0.0)
-    (spend . 58.0))
-  "Utilization object with five_hour and seven_day instead of limits.")
+    (utilization
+     (five_hour
+      (utilization . 30)
+      (severity . "normal")
+      (resets_at . "2026-09-03T20:00:00Z")
+      (limit_dollars . 10.0)
+      (used_dollars . 3.0)
+      (remaining_dollars . 7.0))
+     (seven_day
+      (utilization . 55)
+      (severity . "warning")
+      (resets_at . "2026-09-07T00:00:00Z")
+      (limit_dollars . 100.0)
+      (used_dollars . 55.0)
+      (remaining_dollars . 45.0))
+     (extra_usage . 0.0)
+     (spend . 58.0)))
+  "cachedUsageUtilization object with five_hour and seven_day instead of limits.")
 
 ;; Payload with limits array containing null percent entries
 (defconst claude-usage-test--fixture-null-percent-in-limits
   '((fetchedAtMs . 1725274680000)
     (accountUuid . "test-uuid-999")
-    (limits .
-            (((kind . "session")
-              (percent . 35)
-              (severity . "normal")
-              (resets_at . "2026-09-03T20:00:00Z")
-              (limit_dollars . 10.0)
-              (used_dollars . 3.5)
-              (remaining_dollars . 6.5))
-             ((kind . "weekly_all")
-              (percent . nil)
-              (severity . "normal")
-              (resets_at . "2026-09-07T00:00:00Z")
-              (limit_dollars . 100.0)
-              (used_dollars . 0.0)
-              (remaining_dollars . 100.0))
-             ((kind . "weekly_scoped")
-              (percent . 80)
-              (severity . "warning")
-              (resets_at . "2026-09-07T00:00:00Z")
-              (limit_dollars . 50.0)
-              (used_dollars . 40.0)
-              (remaining_dollars . 10.0)
-              (scope
-               (model
-                (id . "claude-sonnet-4")
-                (display_name . "Claude 3.5 Sonnet"))))))
-    (extra_usage . 0.0)
-    (spend . 43.5))
-  "Utilization object with limits array containing null percent entry.")
+    (utilization
+     (limits .
+             (((kind . "session")
+               (percent . 35)
+               (severity . "normal")
+               (resets_at . "2026-09-03T20:00:00Z")
+               (limit_dollars . 10.0)
+               (used_dollars . 3.5)
+               (remaining_dollars . 6.5))
+              ((kind . "weekly_all")
+               (percent . nil)
+               (severity . "normal")
+               (resets_at . "2026-09-07T00:00:00Z")
+               (limit_dollars . 100.0)
+               (used_dollars . 0.0)
+               (remaining_dollars . 100.0))
+              ((kind . "weekly_scoped")
+               (percent . 80)
+               (severity . "warning")
+               (resets_at . "2026-09-07T00:00:00Z")
+               (limit_dollars . 50.0)
+               (used_dollars . 40.0)
+               (remaining_dollars . 10.0)
+               (scope
+                (model
+                 (id . "claude-sonnet-4")
+                 (display_name . "Claude 3.5 Sonnet"))))))
+     (extra_usage . 0.0)
+     (spend . 43.5)))
+  "cachedUsageUtilization object with limits array containing null percent entry.")
+
+;; Fallback payload with null seven_day_opus (per-model field)
+;; Tests that null per-model fields don't create meters
+(defconst claude-usage-test--fixture-fallback-with-null-seven-day-opus
+  '((fetchedAtMs . 1725274680000)
+    (accountUuid . "test-uuid-789")
+    (utilization
+     (five_hour
+      (utilization . 40)
+      (severity . "normal")
+      (resets_at . "2026-09-03T20:00:00Z")
+      (limit_dollars . 10.0)
+      (used_dollars . 4.0)
+      (remaining_dollars . 6.0))
+     (seven_day
+      (utilization . 65)
+      (severity . "warning")
+      (resets_at . "2026-09-07T00:00:00Z")
+      (limit_dollars . 100.0)
+      (used_dollars . 65.0)
+      (remaining_dollars . 35.0))
+     (seven_day_opus . nil)
+     (seven_day_sonnet . nil)
+     (extra_usage . 0.0)
+     (spend . 69.0)))
+  "cachedUsageUtilization object with fallback keys and null per-model fields.")
 
 ;;; Tests
 
@@ -160,6 +189,16 @@
       (should (eq (plist-get m2 :id) 'weekly_all))
       (should (string-equal (plist-get m2 :label) "Week (all)"))
       (should (= (plist-get m2 :percent) 55)))))
+
+(ert-deftest claude-usage-test-meters-null-seven-day-opus ()
+  "Fallback with null seven_day_opus (per-model) produces meters only from five_hour and seven_day."
+  (let ((meters (claude-usage-meters claude-usage-test--fixture-fallback-with-null-seven-day-opus)))
+    ;; Should have exactly 2 meters, not creating any for null seven_day_opus/sonnet
+    (should (= (length meters) 2))
+
+    ;; Verify we get meters from five_hour and seven_day only
+    (should (eq (plist-get (nth 0 meters) :id) 'session))
+    (should (eq (plist-get (nth 1 meters) :id) 'weekly_all))))
 
 (ert-deftest claude-usage-test-meters-null-percent ()
   "Payload with null percent in limits produces only non-null entries."
