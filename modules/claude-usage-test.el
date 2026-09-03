@@ -36,8 +36,12 @@
 ;; path (buffer text, *Messages*, and any caught error payload); the
 ;; captured-response HTTP parse path feeding `claude-usage-meters'
 ;; unchanged; source precedence (`claude-usage--apply-refresh-result')
-;; across fetch-success, fallback-to-cache, and neither-available; the
-;; header's source+age label for both the live and cache cases; that
+;; across fetch-success, generic fallback-to-cache, and neither-available,
+;; plus each specific failure mode (no token, network error, non-200
+;; status, unparseable body) driven end to end through
+;; `claude-usage--refresh' and asserted to resolve to a real cached
+;; envelope rather than a stubbed-nil cache; the header's source+age label
+;; for both the live and cache cases; that
 ;; `claude-usage--ensure-buffer' never touches `call-process',
 ;; `accept-process-output', or `sit-for' before its synchronous render
 ;; completes; and single-flight/idle-timer de-duplication across a
@@ -857,6 +861,82 @@ reaching this function) falls back to the cache."
             (should (eq (cdr result) 'cache))
             (should (equal (car result) claude-usage-test--fixture-fallback-payload))
             (should (eq claude-usage--state-source 'cache))))))
+
+    ;; The four tests below each drive one *specific* failure mode all the
+    ;; way through `claude-usage--refresh' (not `claude-usage--apply-refresh-result'
+    ;; directly, and not with the cache stubbed to nil) so each one actually
+    ;; demonstrates that failure mode resolving to a real cached envelope --
+    ;; distinct from the AC2 no-leak tests above, which stub the cache to nil
+    ;; and so only prove "neither available", not "falls back to the cache".
+
+    (ert-deftest claude-usage-test-refresh-falls-back-to-cache-on-no-token ()
+      "No token at all (`claude-usage--access-token' returns nil) never even
+reaches `url-retrieve', and resolves to the real cache."
+      (let ((claude-usage--refresh-in-flight nil)
+            (claude-usage--state-envelope nil)
+            (claude-usage--state-source nil))
+        (cl-letf (((symbol-function 'claude-usage--access-token) (lambda () nil))
+                  ((symbol-function 'url-retrieve)
+                   (lambda (&rest _) (error "url-retrieve must not be called without a token")))
+                  ((symbol-function 'claude-usage--read-cache)
+                   (lambda () claude-usage-test--fixture-fallback-payload)))
+          (claude-usage--refresh)
+          (should (eq claude-usage--state-source 'cache))
+          (should (equal claude-usage--state-envelope
+                         claude-usage-test--fixture-fallback-payload)))))
+
+    (ert-deftest claude-usage-test-refresh-falls-back-to-cache-on-network-error ()
+      "A `url-retrieve' status carrying :error resolves to the real cache."
+      (let ((claude-usage--refresh-in-flight nil)
+            (claude-usage--state-envelope nil)
+            (claude-usage--state-source nil))
+        (cl-letf (((symbol-function 'claude-usage--access-token) (lambda () "tok"))
+                  ((symbol-function 'url-retrieve)
+                   (claude-usage-test--stub-url-retrieve-once
+                    (lambda () nil)
+                    (list :error '(error (http error)))))
+                  ((symbol-function 'claude-usage--read-cache)
+                   (lambda () claude-usage-test--fixture-fallback-payload)))
+          (claude-usage--refresh)
+          (should (eq claude-usage--state-source 'cache))
+          (should (equal claude-usage--state-envelope
+                         claude-usage-test--fixture-fallback-payload)))))
+
+    (ert-deftest claude-usage-test-refresh-falls-back-to-cache-on-non-200-status ()
+      "An HTTP 401 response resolves to the real cache."
+      (let ((claude-usage--refresh-in-flight nil)
+            (claude-usage--state-envelope nil)
+            (claude-usage--state-source nil))
+        (cl-letf (((symbol-function 'claude-usage--access-token) (lambda () "tok"))
+                  ((symbol-function 'url-retrieve)
+                   (claude-usage-test--stub-url-retrieve-once
+                    (lambda ()
+                      (insert "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n{\"error\":\"invalid_token\"}"))
+                    nil))
+                  ((symbol-function 'claude-usage--read-cache)
+                   (lambda () claude-usage-test--fixture-fallback-payload)))
+          (claude-usage--refresh)
+          (should (eq claude-usage--state-source 'cache))
+          (should (equal claude-usage--state-envelope
+                         claude-usage-test--fixture-fallback-payload)))))
+
+    (ert-deftest claude-usage-test-refresh-falls-back-to-cache-on-unparseable-body ()
+      "An HTTP 200 with an unparseable body resolves to the real cache."
+      (let ((claude-usage--refresh-in-flight nil)
+            (claude-usage--state-envelope nil)
+            (claude-usage--state-source nil))
+        (cl-letf (((symbol-function 'claude-usage--access-token) (lambda () "tok"))
+                  ((symbol-function 'url-retrieve)
+                   (claude-usage-test--stub-url-retrieve-once
+                    (lambda ()
+                      (insert "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nnot json at all"))
+                    nil))
+                  ((symbol-function 'claude-usage--read-cache)
+                   (lambda () claude-usage-test--fixture-fallback-payload)))
+          (claude-usage--refresh)
+          (should (eq claude-usage--state-source 'cache))
+          (should (equal claude-usage--state-envelope
+                         claude-usage-test--fixture-fallback-payload)))))
 
     (ert-deftest claude-usage-test-apply-refresh-result-neither-available ()
       "With neither a fetch nor a cache, state resolves to nil/nil and the
