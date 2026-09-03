@@ -175,11 +175,9 @@ Returns the frame."
         (set-frame-parameter frame 'edmacs-repo common)
         (set-frame-parameter frame 'name label)
         (when common
-          ;; Populate the worktree cache and arm its watch before the
-          ;; sidebar's first redraw, so `edmacs-worktrees-for-repo' never
-          ;; has to render off a cold cache for this repo's own frame.
-          (edmacs-frames--worktrees-refresh-safe common)
-          (edmacs-frames--ensure-worktrees-watch common))
+          ;; Before the sidebar's first redraw, so `edmacs-worktrees-for-repo'
+          ;; never has to render off a cold cache for this repo's own frame.
+          (edmacs-frames--ensure-repo-tracking common))
         (edmacs-frames--without-display-override
           (with-selected-frame frame
             (delete-other-windows)
@@ -443,6 +441,20 @@ frame-creation events alone."
                      edmacs-frames--worktree-watches)))
       (file-notify-error
        (message "edmacs-frames: could not watch worktrees for %s: %s" common err)))))
+
+(defun edmacs-frames--ensure-repo-tracking (common)
+  "Warm COMMON's worktree cache and arm its file-notify watch.
+Idempotent: refreshing again is harmless, and
+`edmacs-frames--ensure-worktrees-watch' is already a no-op once a watch
+exists. Shared by `edmacs-frames-open' (a freshly created repo frame,
+whose caches start cold the first time any frame names COMMON) and
+`edmacs-sessions--finish-frameset-restore' (every repo frame a
+daemon-boot frameset restore hands back, whose caches also start cold
+-- the daemon's own restart empties both hash tables) -- one function
+so the two initialization paths cannot drift apart on what a repo
+frame needs before its first sidebar redraw."
+  (edmacs-frames--worktrees-refresh-safe common)
+  (edmacs-frames--ensure-worktrees-watch common))
 
 (defun edmacs-frames--teardown-worktrees-watch (common)
   "Cancel COMMON's pending debounce timer and remove its file-notify watch.

@@ -148,9 +148,53 @@ emacs ...' to exercise this test): %s" e)))))
         (should (equal (edmacs-sessions--frame-tab-roots (selected-frame))
                         '("/repo/.git" "/repo/.git")))))
 
+    (ert-deftest edmacs-sessions-test-frame-tab-roots-selects-target-frame ()
+      "`edmacs-frames--tab-root''s fallback for a tab this module never
+stamped resolves via the globally selected window (frames.el's
+`edmacs-frames--tab-window-buffer'), so deriving a background FRAME's
+tab roots must select FRAME first -- otherwise it would silently read
+whatever frame the caller happens to have selected instead, exactly
+the cross-frame mix-up a daemon-boot multi-frame restore hits for
+every frame but whichever one is globally selected at the time."
+      (let* ((f1 (selected-frame))
+             (f2 (edmacs-sessions-test--make-second-frame-or-skip)))
+        (unwind-protect
+            (with-selected-frame f1
+              (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) '(tab1)))
+                        ((symbol-function 'edmacs-frames--tab-root)
+                         (lambda (_) (if (eq (selected-frame) f2)
+                                         "/f2/root/" "/wrong-frame/")))
+                        ((symbol-function 'edmacs-frames--repo-of) (lambda (root) root)))
+                (should (equal (edmacs-sessions--frame-tab-roots f2) '("/f2/root/")))
+                (should (eq (selected-frame) f1))))
+          (when (frame-live-p f2) (delete-frame f2)))))
+
     ;; ==========================================================================
     ;; AC1 -- edmacs-sessions--backfill-repo-param
     ;; ==========================================================================
+
+    (ert-deftest edmacs-sessions-test-backfill-repo-param-uses-non-selected-frames-own-tabs ()
+      "The same cross-frame mix-up, one level up: backfilling a background
+frame's `edmacs-repo' must resolve from ITS OWN tabs, not whichever
+frame the caller happens to have globally selected -- the exact defect
+`edmacs-sessions--finish-frameset-restore' would otherwise hit for
+every restored frame but the one already selected."
+      (let* ((f1 (selected-frame))
+             (f2 (edmacs-sessions-test--make-second-frame-or-skip)))
+        (unwind-protect
+            (edmacs-sessions-test--with-clean-frame-params f2 '(edmacs-repo)
+              (set-frame-parameter f2 'edmacs-repo nil)
+              (with-selected-frame f1
+                (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) '(tab1)))
+                          ((symbol-function 'edmacs-frames--tab-root)
+                           (lambda (_) (if (eq (selected-frame) f2)
+                                           "/f2/root/" "/f1/root/")))
+                          ((symbol-function 'edmacs-frames--repo-of)
+                           (lambda (root) (if (equal root "/f2/root/")
+                                               "/f2/repo/.git" "/f1/repo/.git"))))
+                  (edmacs-sessions--backfill-repo-param f2)
+                  (should (equal (frame-parameter f2 'edmacs-repo) "/f2/repo/.git")))))
+          (when (frame-live-p f2) (delete-frame f2)))))
 
     (ert-deftest edmacs-sessions-test-backfill-repo-param-when-all-tabs-agree ()
       (let ((frame (selected-frame)))
@@ -231,6 +275,66 @@ emacs ...' to exercise this test): %s" e)))))
           (should (eq (nth 2 (car warnings)) :warning)))))
 
     ;; ==========================================================================
+    ;; AC1 -- edmacs-sessions--ensure-worktree-tracking
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sessions-test-ensure-worktree-tracking-warms-cache-for-existing-repo ()
+      "A daemon restart starts frames.el's worktree cache and watch table
+empty, so a restored repo frame must have both warmed here -- unlike a
+frame `edmacs-frames-open' creates itself, which always does this as
+part of opening."
+      (let* ((frame (selected-frame))
+             (dir (file-name-as-directory (make-temp-file "edmacs-sessions-test-" t)))
+             (tracked nil))
+        (unwind-protect
+            (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
+              (set-frame-parameter frame 'edmacs-repo dir)
+              (cl-letf (((symbol-function 'edmacs-frames--ensure-repo-tracking)
+                         (lambda (common) (push common tracked))))
+                (edmacs-sessions--ensure-worktree-tracking frame)
+                (should (equal tracked (list dir)))))
+          (delete-directory dir t))))
+
+    (ert-deftest edmacs-sessions-test-ensure-worktree-tracking-skips-missing-repo ()
+      "AC3: nothing in the restore path may shell out for a repo whose
+directory no longer exists."
+      (let ((frame (selected-frame))
+            (tracked nil))
+        (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
+          (set-frame-parameter frame 'edmacs-repo "/no/such/edmacs-sessions-test/path/.git/")
+          (cl-letf (((symbol-function 'edmacs-frames--ensure-repo-tracking)
+                     (lambda (common) (push common tracked))))
+            (edmacs-sessions--ensure-worktree-tracking frame)
+            (should-not tracked)))))
+
+    (ert-deftest edmacs-sessions-test-ensure-worktree-tracking-noop-without-edmacs-repo ()
+      (let ((frame (selected-frame))
+            (tracked nil))
+        (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
+          (set-frame-parameter frame 'edmacs-repo nil)
+          (cl-letf (((symbol-function 'edmacs-frames--ensure-repo-tracking)
+                     (lambda (common) (push common tracked))))
+            (edmacs-sessions--ensure-worktree-tracking frame)
+            (should-not tracked)))))
+
+    ;; ==========================================================================
+    ;; AC1 -- saved frame position (`left'/`top') must survive restore
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sessions-test-frameset-filter-preserves-frame-position ()
+      "AC1 requires saved window positions to be honoured on restore.
+`frameset-restore' owns that: `frameset-filter-alist''s own default
+action for `left'/`top' is `frameset-filter-shelve-param', which only
+shelves a parameter when switching a GUI frame to a tty (never a plain
+GUI-to-GUI restore, confirmed by reading its docstring) -- unlike
+`name', which frameset.el marks `:never' outright. This guards against
+a future edit to this file's own `frameset-filter-alist' pushes (the
+colour `:never's, the `edmacs-repo' pin) accidentally widening to catch
+`left'/`top' too, the way they deliberately do for frame colours."
+      (dolist (param '(left top))
+        (should-not (eq (cdr (assq param frameset-filter-alist)) :never))))
+
+    ;; ==========================================================================
     ;; AC1/AC2 -- edmacs-sessions--ensure-sidebar / --finish-frameset-restore
     ;; ==========================================================================
 
@@ -263,6 +367,31 @@ emacs ...' to exercise this test): %s" e)))))
               (edmacs-sessions--finish-frameset-restore)
               (should (member f1 show-calls))
               (should-not (member f2 show-calls)))
+          (when (frame-live-p f2) (delete-frame f2)))))
+
+    (ert-deftest edmacs-sessions-test-finish-restore-tracks-worktrees-for-every-repo-frame ()
+      "Every live frame carrying a resolvable `edmacs-repo' after backfill
+gets its worktree cache/watch warmed, not just its sidebar shown --
+otherwise a restored frame's sidebar renders an empty worktree list
+until some unrelated event happens to trigger a refresh."
+      (let* ((f1 (selected-frame))
+             (f2 (edmacs-sessions-test--make-second-frame-or-skip))
+             (dir1 (file-name-as-directory (make-temp-file "edmacs-sessions-test-f1-" t)))
+             (tracked nil))
+        (unwind-protect
+            (edmacs-sessions-test--with-clean-frame-params f1 '(edmacs-repo)
+              (set-frame-parameter f1 'edmacs-repo dir1)
+              (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
+                        ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
+                        ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
+                        ((symbol-function 'edmacs-sidebar--window) (lambda (_) t))
+                        ((symbol-function 'edmacs-sidebar-show) (lambda (_) nil))
+                        ((symbol-function 'edmacs-frames--ensure-repo-tracking)
+                         (lambda (common) (push common tracked))))
+                (edmacs-sessions--finish-frameset-restore)
+                (should (member dir1 tracked))
+                (should (= 1 (length tracked)))))
+          (delete-directory dir1 t)
           (when (frame-live-p f2) (delete-frame f2)))))
 
     (ert-deftest edmacs-sessions-test-finish-restore-never-calls-make-frame ()

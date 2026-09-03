@@ -44,6 +44,7 @@
 (declare-function edmacs-frames-tab-in-own-repo-p "frames")
 (declare-function edmacs-frames--tab-root "frames")
 (declare-function edmacs-frames--repo-of "frames")
+(declare-function edmacs-frames--ensure-repo-tracking "frames")
 (declare-function edmacs-sidebar-show "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 
@@ -181,15 +182,24 @@ loaded but before `desktop-read' unconditionally nils it back out."
   "Return the list of repos every tab in FRAME resolves to, or nil.
 Nil both when FRAME has no tabs and when any tab's root fails to
 resolve to a repo -- callers must not treat either case as \"every tab
-agrees\"."
-  (let (roots)
-    (catch 'edmacs-sessions--unresolved
-      (dolist (tab (tab-bar-tabs frame))
-        (let* ((root (edmacs-frames--tab-root tab))
-               (repo (and root (edmacs-frames--repo-of root))))
-          (unless repo (throw 'edmacs-sessions--unresolved nil))
-          (push repo roots)))
-      (nreverse roots))))
+agrees\".
+
+Wrapped in `with-selected-frame': `edmacs-frames--tab-root''s fallback
+for a tab this module never stamped (`edmacs-frames--tab-window-buffer'
+in frames.el) resolves its `current-tab' case via the *globally*
+selected window/buffer, not FRAME's own -- calling it here without
+first selecting FRAME would read whatever frame the caller happened to
+have selected instead, exactly the case this backfill exists to
+handle correctly for every frame but that one."
+  (with-selected-frame frame
+    (let (roots)
+      (catch 'edmacs-sessions--unresolved
+        (dolist (tab (tab-bar-tabs frame))
+          (let* ((root (edmacs-frames--tab-root tab))
+                 (repo (and root (edmacs-frames--repo-of root))))
+            (unless repo (throw 'edmacs-sessions--unresolved nil))
+            (push repo roots)))
+        (nreverse roots)))))
 
 (defun edmacs-sessions--backfill-repo-param (frame)
   "Set FRAME's `edmacs-repo' from its tabs when it has none yet.
@@ -240,16 +250,31 @@ registration order, not a documented guarantee."
   (unless (edmacs-sidebar--window frame)
     (edmacs-sidebar-show frame)))
 
+(defun edmacs-sessions--ensure-worktree-tracking (frame)
+  "Warm FRAME's repo worktree cache and arm its file-notify watch.
+`edmacs-frames--worktrees-cache' and `-watches' (frames.el) both start
+empty on every daemon boot, so a restored repo frame's sidebar would
+otherwise render an empty worktree list and never see a live update
+until something else happens to touch that repo -- unlike a frame
+`edmacs-frames-open' creates itself, which always warms both as part of
+opening. Skipped for a missing repo (`edmacs-repo-missing'): nothing
+in `edmacs-frames--ensure-repo-tracking' needs to shell out for a
+directory that no longer exists."
+  (when-let* ((common (frame-parameter frame 'edmacs-repo)))
+    (when (file-directory-p common)
+      (edmacs-frames--ensure-repo-tracking common))))
+
 (defun edmacs-sessions--finish-frameset-restore ()
-  "Back-fill `edmacs-repo', title, and sidebar on every live frame.
-Runs synchronously right after `desktop-restore-frameset', by which
-point `frameset-restore''s own `:reuse-frames t' (the default) has
-already reused/created every saved frame -- this never itself creates
-or deletes a frame."
+  "Back-fill `edmacs-repo', title, worktree tracking, and sidebar on every
+live frame. Runs synchronously right after `desktop-restore-frameset',
+by which point `frameset-restore''s own `:reuse-frames t' (the default)
+has already reused/created every saved frame -- this never itself
+creates or deletes a frame."
   (dolist (frame (frame-list))
     (when (frame-live-p frame)
       (edmacs-sessions--backfill-repo-param frame)
       (edmacs-sessions--regenerate-frame-title frame)
+      (edmacs-sessions--ensure-worktree-tracking frame)
       (edmacs-sessions--ensure-sidebar frame))))
 
 (defun edmacs-sessions--restore-pending-frameset (frame)
