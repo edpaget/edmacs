@@ -2,18 +2,22 @@
 
 ;;; Commentary:
 ;; Phase 9 of the edmacs-sidebar roadmap: mirrors claude-term-registry.el's
-;; create/remove events into the shared `edmacs-agents--table' (agents.el,
-;; edmacs-sidebar phase 5) as source `claude-term' rows, so a
+;; create/remove/rename events into the shared `edmacs-agents--table'
+;; (agents.el, edmacs-sidebar phase 5) as source `claude-term' rows, so a
 ;; ghostel-hosted session shows up in the sidebar's ALL AGENTS list and
 ;; `SPC a TAB' attention cycling exactly like a workmux-sourced tmux pane.
 ;;
-;; Wires into two swappable extension points added to
+;; Wires into three swappable extension points added to
 ;; claude-term-registry.el for this purpose:
 ;; `claude-term-registry-create-functions' (fired at the end of
-;; `claude-term-registry-put', with ROOT INSTANCE BUFFER) and
+;; `claude-term-registry-put', with ROOT INSTANCE BUFFER),
 ;; `claude-term-registry-remove-functions' (fired at the end of
-;; `claude-term-registry-remove', with ROOT INSTANCE) -- mirroring the
-;; same swappable-seam convention as that file's own
+;; `claude-term-registry-remove', with ROOT INSTANCE), and
+;; `claude-term-registry-rename-functions' (fired at the end of
+;; `claude-term-registry-rename', with ROOT OLD-INSTANCE NEW-INSTANCE --
+;; that function moves a session between two keys by direct
+;; `remhash'/`puthash', so neither of the other two hooks fires for it) --
+;; mirroring the same swappable-seam convention as that file's own
 ;; `claude-term-registry-state-accessor' and `claude-term-registry-sort-function'.
 ;;
 ;; The key SHAPE matches agents.el's own: `(edmacs-agents--key root
@@ -75,10 +79,14 @@
 (declare-function make-edmacs-agent "agents")
 (declare-function edmacs-agent-title "agents")
 (declare-function edmacs-agent-status "agents")
+(declare-function edmacs-agent-instance "agents")
+(declare-function edmacs-agent-key "agents")
 (defvar edmacs-agents--table)
 
 (defvar claude-term-registry-create-functions)
 (defvar claude-term-registry-remove-functions)
+(defvar claude-term-registry-rename-functions)
+(defvar claude-term-registry--default-instance-label)
 
 ;; Buffer-local session state, defined in claude-term.el; this file
 ;; loads strictly after it in the real init order (see init.el), but a
@@ -103,7 +111,15 @@ Fires on every `claude-term-registry-put' call, including a restart's
 re-exec of an already-registered session -- `edmacs-agents--upsert' is
 a plain `puthash' on the identical key in that case, a harmless
 overwrite rather than a duplicate row. STATUS starts `idle': a freshly
-spawned session has had no prompt sent to it yet."
+spawned session has had no prompt sent to it yet. TITLE falls back to
+`claude-term-registry--default-instance-label' when INSTANCE is nil
+\(the default, non-multi-instance session\) -- matching the registry's
+own picker/rename/list-mode display convention -- rather than storing
+a bare nil title: `claude-term-agents--strip-progress-suffix' calls
+`string-match' on it, which signals on nil, and other title-consuming
+sites would render the literal string \"nil\". The KEY/INSTANCE fields
+themselves stay nil, exactly like the registry's own session record,
+since key equality via `equal' treats nil as an ordinary key component."
   (let ((truename-root (condition-case nil (file-truename root) (error root)))
         (now (float-time)))
     (edmacs-agents--upsert
@@ -114,7 +130,7 @@ spawned session has had no prompt sent to it yet."
       :status 'idle
       :status-ts now
       :updated-ts now
-      :title instance
+      :title (or instance claude-term-registry--default-instance-label)
       :source 'claude-term
       :locator buffer
       :unread nil))))
@@ -126,8 +142,35 @@ idempotent on a missing key, e.g. a session killed while a status
 update against the same row is in flight."
   (edmacs-agents--remove (edmacs-agents--key root instance)))
 
+(defun claude-term-agents--on-rename (root old-instance new-instance)
+  "Move ROOT/OLD-INSTANCE's row to ROOT/NEW-INSTANCE after a claude-term rename.
+Fires on `claude-term-registry-rename-functions', the registry's third
+lifecycle-mutating entry point: `claude-term-registry-rename' moves a
+session between two keys by direct `remhash'/`puthash', so neither
+`claude-term-registry-create-functions' nor
+`claude-term-registry-remove-functions' fires for it -- without this
+listener, the mirrored row would stay keyed under OLD-INSTANCE forever,
+pointing sidebar actions at a registry key the rename already vacated.
+Re-keys the EXISTING row in place (preserving its STATUS/UNREAD/etc, the
+same way the registry's own session survives the rename) rather than
+discarding and recreating it -- a rename mid-`working' should not
+silently reset the row to `idle'. A no-op if no row was registered
+under OLD-INSTANCE (e.g. a rename racing ahead of this file's own
+create listener)."
+  (let* ((truename-root (condition-case nil (file-truename root) (error root)))
+         (old-key (edmacs-agents--key truename-root old-instance))
+         (row (gethash old-key edmacs-agents--table)))
+    (when row
+      (edmacs-agents--remove old-key)
+      (setf (edmacs-agent-instance row) new-instance
+            (edmacs-agent-key row) (edmacs-agents--key truename-root new-instance)
+            (edmacs-agent-title row)
+            (or new-instance claude-term-registry--default-instance-label))
+      (edmacs-agents--upsert row))))
+
 (add-hook 'claude-term-registry-create-functions #'claude-term-agents--on-create)
 (add-hook 'claude-term-registry-remove-functions #'claude-term-agents--on-remove)
+(add-hook 'claude-term-registry-rename-functions #'claude-term-agents--on-rename)
 
 ;; ============================================================================
 ;; Ghostel OSC 9;4 progress -> row title suffix
@@ -155,21 +198,26 @@ No-op for a buffer that is not a claude-term session -- `claude-term--root'
 is buffer-local and nil for any other ghostel buffer, so this guards
 itself without a separate buffer-name check -- or one with no row
 registered yet (e.g. a progress report racing ahead of the registry
-`put'). Only a `set' report against a row currently `working' renders
-a suffix; every other STATE (or a non-`working' row) strips any
-existing suffix back to the bare title instead. Pure hash lookups and
-one `setf' -- no redraw, no subprocess -- since this runs synchronously
-on ghostel's VT-parser callpath."
-  (when-let* ((root claude-term--root)
-              (instance claude-term--instance)
-              (row (gethash (edmacs-agents--key root instance) edmacs-agents--table)))
-    (let ((base (claude-term-agents--strip-progress-suffix (edmacs-agent-title row))))
-      (setf (edmacs-agent-title row)
-            (if (and (eq state 'set)
-                     (integerp progress)
-                     (eq (edmacs-agent-status row) 'working))
-                (format "%s %d%%" base progress)
-              base)))))
+`put'). INSTANCE may legitimately be nil (the default, non-multi-instance
+session), so it is bound with a plain `let', not folded into the
+`when-let*' chain -- `when-let*' would otherwise treat that nil the
+same as a genuinely absent binding and silently drop this whole
+feature for the common single-session case. Only a `set' report against
+a row currently `working' renders a suffix; every other STATE (or a
+non-`working' row) strips any existing suffix back to the bare title
+instead. Pure hash lookups and one `setf' -- no redraw, no subprocess --
+since this runs synchronously on ghostel's VT-parser callpath."
+  (when-let* ((root claude-term--root))
+    (let* ((instance claude-term--instance)
+           (row (gethash (edmacs-agents--key root instance) edmacs-agents--table)))
+      (when row
+        (let ((base (claude-term-agents--strip-progress-suffix (edmacs-agent-title row))))
+          (setf (edmacs-agent-title row)
+                (if (and (eq state 'set)
+                         (integerp progress)
+                         (eq (edmacs-agent-status row) 'working))
+                    (format "%s %d%%" base progress)
+                  base)))))))
 
 (defun claude-term-agents--progress-handler (state progress)
   "Chain to the previously-installed progress handler, then update the row.

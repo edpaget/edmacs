@@ -96,6 +96,64 @@ not by depending on any real listener being installed."
           (should (equal remove-calls (list (list root "x") (list root "x")))))
       (kill-buffer buf))))
 
+(ert-deftest claude-term-registry-test-rename-fires-rename-hook-not-create-or-remove ()
+  "`claude-term-registry-rename' invokes `claude-term-registry-rename-functions'
+with ROOT OLD-INSTANCE NEW-INSTANCE -- the registry's third
+lifecycle-mutating entry point, which moves a session between two keys
+by direct `remhash'/`puthash' and therefore must NOT also fire
+`claude-term-registry-create-functions' or `-remove-functions' for the
+same event (a listener double-counting a rename as a remove-then-create
+would be as broken as one that never hears about the rename at all)."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (claude-term-registry-create-functions nil)
+        (claude-term-registry-remove-functions nil)
+        (claude-term-registry-rename-functions nil)
+        (buf (generate-new-buffer "claude-term-registry-test-rename-hook"))
+        (root "/tmp/claude-term-registry-test-rename-hook-root/")
+        (create-calls nil)
+        (remove-calls nil)
+        (rename-calls nil))
+    (unwind-protect
+        (progn
+          (claude-term-registry-put root "old" buf)
+          (add-hook 'claude-term-registry-create-functions
+                    (lambda (root instance buffer)
+                      (push (list root instance buffer) create-calls)))
+          (add-hook 'claude-term-registry-remove-functions
+                    (lambda (root instance)
+                      (push (list root instance) remove-calls)))
+          (add-hook 'claude-term-registry-rename-functions
+                    (lambda (root old-instance new-instance)
+                      (push (list root old-instance new-instance) rename-calls)))
+          (claude-term-registry-rename root "old" "new")
+          (should (equal rename-calls (list (list root "old" "new"))))
+          (should (null create-calls))
+          (should (null remove-calls)))
+      (kill-buffer buf))))
+
+(ert-deftest claude-term-registry-test-rename-rejected-collision-fires-no-rename-hook ()
+  "A rename rejected for colliding with a live sibling instance signals
+`user-error' before touching the table -- and must not fire
+`claude-term-registry-rename-functions' either, since nothing actually
+moved."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (claude-term-registry-rename-functions nil)
+        (buf-a (generate-new-buffer "claude-term-registry-test-rename-hook-a"))
+        (buf-b (generate-new-buffer "claude-term-registry-test-rename-hook-b"))
+        (root "/tmp/claude-term-registry-test-rename-hook-collision/")
+        (rename-calls nil))
+    (unwind-protect
+        (progn
+          (claude-term-registry-put root "a" buf-a)
+          (claude-term-registry-put root "b" buf-b)
+          (add-hook 'claude-term-registry-rename-functions
+                    (lambda (root old-instance new-instance)
+                      (push (list root old-instance new-instance) rename-calls)))
+          (should-error (claude-term-registry-rename root "a" "b") :type 'user-error)
+          (should (null rename-calls)))
+      (kill-buffer buf-a)
+      (kill-buffer buf-b))))
+
 (ert-deftest claude-term-registry-test-put-populates-process-field ()
   "The registry's struct literally holds a PROCESS field (per the phase
 body's own \"buffer, process, instance name, and last-used time\" data

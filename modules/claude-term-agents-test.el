@@ -148,6 +148,84 @@ session killed while a status update against the same row races."
     (should-not (claude-term-agents--on-remove "/no/such/root/" "ghost"))))
 
 ;; ============================================================================
+;; Row lifecycle: rename hook (the registry's third mutating entry point,
+;; alongside put/remove -- see `claude-term-registry-rename-functions')
+;; ============================================================================
+
+(ert-deftest claude-term-agents-test-on-rename-re-keys-preserving-status ()
+  "The rename-functions handler moves the row from the old key to the new
+one, preserving its STATUS/UNREAD rather than resetting to `idle' -- a
+rename mid-`working' must not silently discard that state."
+  (claude-term-agents-test--with-clean-state
+    (let* ((root "/repo/wt/")
+           (buf (generate-new-buffer "claude-term-agents-test-buf")))
+      (unwind-protect
+          (progn
+            (claude-term-agents--on-create root "old" buf)
+            (let ((row (gethash (edmacs-agents--key root "old") edmacs-agents--table)))
+              (setf (edmacs-agent-status row) 'waiting
+                    (edmacs-agent-unread row) t))
+            (claude-term-agents--on-rename root "old" "new")
+            (should-not (gethash (edmacs-agents--key root "old") edmacs-agents--table))
+            (let ((row (gethash (edmacs-agents--key root "new") edmacs-agents--table)))
+              (should row)
+              (should (equal (edmacs-agent-key row) (edmacs-agents--key root "new")))
+              (should (equal (edmacs-agent-instance row) "new"))
+              (should (equal (edmacs-agent-title row) "new"))
+              (should (eq (edmacs-agent-status row) 'waiting))
+              (should (edmacs-agent-unread row))
+              (should (eq (edmacs-agent-locator row) buf))))
+        (kill-buffer buf)))))
+
+(ert-deftest claude-term-agents-test-on-rename-unknown-old-key-is-a-no-op ()
+  "Renaming a ROOT/OLD-INSTANCE with no matching row does not error and
+does not fabricate a new row -- e.g. a rename racing ahead of this
+file's own create listener."
+  (claude-term-agents-test--with-clean-state
+    (should-not (claude-term-agents--on-rename "/no/such/root/" "old" "new"))
+    (should (zerop (hash-table-count edmacs-agents--table)))))
+
+(ert-deftest claude-term-agents-test-on-rename-leaves-other-rows-untouched ()
+  "Renaming one claude-term row does not disturb a stubbed workmux row
+under the same root."
+  (claude-term-agents-test--with-clean-state
+    (let* ((root "/repo/wt/")
+           (buf (generate-new-buffer "claude-term-agents-test-buf"))
+           (workmux-row (claude-term-agents-test--seed-workmux-row :root root)))
+      (unwind-protect
+          (progn
+            (claude-term-agents--on-create root "old" buf)
+            (claude-term-agents--on-rename root "old" "new")
+            (should (equal workmux-row (gethash (edmacs-agent-key workmux-row)
+                                                 edmacs-agents--table))))
+        (kill-buffer buf)))))
+
+(ert-deftest claude-term-agents-test-registry-rename-fires-through-real-hook-chain ()
+  "Not just the handler called directly: `claude-term-registry-rename'
+itself, through the real `claude-term-registry-rename-functions' hook
+this file's `add-hook' registers at load time, moves the mirrored row --
+closing the gap where the registry's rename entry point bypassed both
+of the other two hooks by direct `remhash'/`puthash'."
+  (claude-term-agents-test--with-clean-state
+    (let ((claude-term-registry--table (make-hash-table :test #'equal))
+          (root (make-temp-file "claude-term-agents-test-rename-root-" t))
+          (buf (generate-new-buffer "claude-term-agents-test-rename-buf")))
+      (unwind-protect
+          (progn
+            (claude-term-registry-put root "old" buf)
+            (let ((row (gethash (edmacs-agents--key root "old") edmacs-agents--table)))
+              (should row)
+              (setf (edmacs-agent-status row) 'working))
+            (claude-term-registry-rename root "old" "new")
+            (should-not (gethash (edmacs-agents--key root "old") edmacs-agents--table))
+            (let ((row (gethash (edmacs-agents--key root "new") edmacs-agents--table)))
+              (should row)
+              (should (equal (edmacs-agent-instance row) "new"))
+              (should (eq (edmacs-agent-status row) 'working))))
+        (kill-buffer buf)
+        (ignore-errors (delete-directory root t))))))
+
+;; ============================================================================
 ;; edmacs-agents-set-status: `remove' status, and instance targeting
 ;; ============================================================================
 
@@ -236,6 +314,23 @@ let-bound) `edmacs-agents--table'."
       (claude-term-agents--update-progress-title 'set 42)
       (should (equal "i1 42%"
                       (edmacs-agent-title (gethash (edmacs-agents--key "/repo/wt/" "i1")
+                                                    edmacs-agents--table)))))))
+
+(ert-deftest claude-term-agents-test-progress-set-with-nil-instance-still-renders ()
+  "A legitimately nil INSTANCE (the default, non-multi-instance session)
+must not be treated as an absent binding: the progress suffix still
+renders for it, the same as for a named instance. `when-let*' folding
+INSTANCE itself into its binding chain would silently drop this whole
+feature for the ordinary single-session case, and the row's TITLE must
+already have been defaulted away from a bare nil at create time (see
+`claude-term-agents--on-create'), or `string-match' inside
+`claude-term-agents--strip-progress-suffix' signals instead of
+rendering anything at all."
+  (claude-term-agents-test--with-clean-state
+    (claude-term-agents-test--with-fake-session "/repo/wt/" nil 'working
+      (claude-term-agents--update-progress-title 'set 42)
+      (should (equal (format "%s 42%%" claude-term-registry--default-instance-label)
+                      (edmacs-agent-title (gethash (edmacs-agents--key "/repo/wt/" nil)
                                                     edmacs-agents--table)))))))
 
 (ert-deftest claude-term-agents-test-progress-repeated-set-replaces-not-accumulates ()

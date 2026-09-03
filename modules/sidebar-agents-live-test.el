@@ -306,7 +306,7 @@ shows the row no longer bold."
             (ignore-errors (delete-directory (car shim) t))))))
 
     (ert-deftest edmacs-sidebar-agents-live-test-visit-claude-term-source-pops-to-its-window ()
-      "An in-Emacs (phase 9) agent row selects its side window instead of
+      "An in-Emacs (phase 9) agent row pops to its own window instead of
 touching tmux at all."
       (edmacs-sidebar-agents-live-test--with-clean-state
         (let* ((agent (edmacs-sidebar-agents-live-test--make-agent

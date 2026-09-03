@@ -144,6 +144,19 @@ See `claude-term-registry-create-functions'; fires unconditionally, even
 when ROOT/INSTANCE named no registered session, so listeners must
 tolerate removing an already-absent row.")
 
+(defvar claude-term-registry-rename-functions nil
+  "Hook run at the end of `claude-term-registry-rename', with ROOT
+OLD-INSTANCE NEW-INSTANCE. See `claude-term-registry-create-functions';
+`claude-term-registry-rename'
+moves a session between two keys by direct `remhash'/`puthash', so
+neither `claude-term-registry-create-functions' nor
+`claude-term-registry-remove-functions' fires for a rename -- listeners
+that mirror this table (e.g. edmacs-sidebar phase 9's
+`claude-term-agents.el') need this third hook to follow a rename
+instead of desyncing. Only fires once the rename has actually
+succeeded -- never for a rejected, colliding rename that signaled a
+`user-error' first.")
+
 (defun claude-term-registry-put (root instance buffer)
   "Register BUFFER as the live session for ROOT/INSTANCE.
 Stamps LAST-USED to now -- a freshly spawned session should sort as
@@ -423,7 +436,11 @@ to reject, not a merge request to honor. A ROOT/NEW-INSTANCE entry whose
 buffer was killed directly (bypassing `claude-term--on-exit') is reaped
 via `claude-term-registry--live-get' and does not block the rename --
 see that function's docstring. Renaming to an instance label already
-used under a DIFFERENT root is unaffected, since the key includes root."
+used under a DIFFERENT root is unaffected, since the key includes root.
+Runs `claude-term-registry-rename-functions' last, after the table is
+updated, so a listener reading the table back sees the new key -- and
+not at all when a collision or missing-session check above signals a
+`user-error' first."
   (let ((session (claude-term-registry-get root old-instance)))
     (unless session
       (user-error "Claude-term: no session registered for instance %s"
@@ -434,7 +451,8 @@ used under a DIFFERENT root is unaffected, since the key includes root."
                   (or new-instance claude-term-registry--default-instance-label)))
     (remhash (claude-term-registry--key root old-instance) claude-term-registry--table)
     (setf (claude-term-session-instance session) new-instance)
-    (puthash (claude-term-registry--key root new-instance) session claude-term-registry--table)))
+    (puthash (claude-term-registry--key root new-instance) session claude-term-registry--table)
+    (run-hook-with-args 'claude-term-registry-rename-functions root old-instance new-instance)))
 
 (defun claude-term-rename (&optional buffer)
   "Rename claude-term BUFFER's instance label, prompting for a new one.
