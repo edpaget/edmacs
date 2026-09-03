@@ -76,6 +76,15 @@
 ;; than its rendered (and frequently-changing) label text.
 (declare-function edmacs-agent-key "agents")
 
+;; sidebar-buffers.el (phase 7) loads AFTER this file; these three
+;; commands are only ever reached through the keymap below or the RET/d
+;; dispatch, resolved at keypress time.
+(declare-function edmacs-sidebar-buffers-visit "sidebar-buffers")
+(declare-function edmacs-sidebar-buffers-kill "sidebar-buffers")
+(declare-function edmacs-sidebar-buffers-next "sidebar-buffers")
+(declare-function edmacs-sidebar-buffers-prev "sidebar-buffers")
+(declare-function edmacs-sidebar-buffers-toggle-flat "sidebar-buffers")
+
 ;; ============================================================================
 ;; Extension points for sidebar-agents.el (phase 6)
 ;; ============================================================================
@@ -91,12 +100,15 @@ sidebar-agents.el reassigns this to append its per-worktree agent
 count.")
 
 (defvar edmacs-sidebar-worktree-section-functions nil
-  "Hook run with (ROOT HAS-TAB) right after each worktree row is
-inserted in `edmacs-sidebar--redraw-worktrees' -- ROOT is that
+  "Hook run with (ROOT HAS-TAB FRAME TAB-NUMBER) right after each worktree
+row is inserted in `edmacs-sidebar--redraw-worktrees' -- ROOT is that
 worktree's truename, HAS-TAB is non-nil when an open tab row was
-inserted (nil for a tab-less row). Lets sidebar-agents.el append its
-own `agents' child section immediately after the row, without this
-file needing to know anything about agents.")
+inserted (nil for a tab-less row), FRAME is the frame being redrawn,
+and TAB-NUMBER is that tab's 1-based `tab-bar-tabs' index (nil when
+HAS-TAB is nil). Lets sidebar-agents.el append its own `agents' child
+section, and sidebar-buffers.el its own `buffers' child section,
+immediately after the row, without this file needing to know anything
+about agents or buffers.")
 
 (defvar edmacs-sidebar-extra-section-functions nil
   "Hook run with FRAME at the end of `edmacs-sidebar--redraw', after
@@ -159,15 +171,21 @@ restore bridge."
 ;; scoped to sidebar buffers only.
 (define-key edmacs-sidebar-mode-map (kbd "RET") #'edmacs-sidebar-visit-at-point)
 (define-key edmacs-sidebar-mode-map (kbd "q") #'edmacs-sidebar-hide)
-(define-key edmacs-sidebar-mode-map (kbd "d") #'edmacs-sidebar-close-worktree)
+(define-key edmacs-sidebar-mode-map (kbd "d") #'edmacs-sidebar-kill-at-point)
 (define-key edmacs-sidebar-mode-map (kbd "a") #'edmacs-sidebar-agents-toggle-all)
+(define-key edmacs-sidebar-mode-map (kbd "[") #'edmacs-sidebar-buffers-prev)
+(define-key edmacs-sidebar-mode-map (kbd "]") #'edmacs-sidebar-buffers-next)
+(define-key edmacs-sidebar-mode-map (kbd "s") #'edmacs-sidebar-buffers-toggle-flat)
 
 (with-eval-after-load 'evil
   (evil-define-key 'motion edmacs-sidebar-mode-map
     (kbd "RET") #'edmacs-sidebar-visit-at-point
     (kbd "q") #'edmacs-sidebar-hide
-    (kbd "d") #'edmacs-sidebar-close-worktree
-    (kbd "a") #'edmacs-sidebar-agents-toggle-all))
+    (kbd "d") #'edmacs-sidebar-kill-at-point
+    (kbd "a") #'edmacs-sidebar-agents-toggle-all
+    (kbd "[") #'edmacs-sidebar-buffers-prev
+    (kbd "]") #'edmacs-sidebar-buffers-next
+    (kbd "s") #'edmacs-sidebar-buffers-toggle-flat))
 
 ;; ============================================================================
 ;; Per-frame buffer management
@@ -237,6 +255,20 @@ buffer's section tree) whose agent's KEY matches, or nil."
          (throw 'edmacs-sidebar--found-agent-section section))))
     nil))
 
+(defun edmacs-sidebar--find-buffer-section (name)
+  "Return the `edmacs-sidebar-buffers-file'/`-special' section (anywhere
+in the current buffer's section tree) whose buffer's name is NAME, or nil."
+  (catch 'edmacs-sidebar--found-buffer-section
+    (edmacs-sidebar--map-sections
+     magit-root-section
+     (lambda (section)
+       (when (and (memq (oref section type) '(edmacs-sidebar-buffers-file edmacs-sidebar-buffers-special))
+                  (slot-boundp section 'value)
+                  (buffer-live-p (oref section value))
+                  (equal (buffer-name (oref section value)) name))
+         (throw 'edmacs-sidebar--found-buffer-section section))))
+    nil))
+
 (defun edmacs-sidebar--point-identity ()
   "Return an identity for the row at point, preserved across a redraw.
 An `edmacs-sidebar-agent' row is identified by its agent's own stable
@@ -244,16 +276,25 @@ KEY field rather than its rendered label: unlike a tab row, an agent
 row's label text (elapsed-time string, title on a heartbeat refresh)
 routinely changes between one redraw and the next even though it is
 still \"the same row\" as far as the user sitting on it is concerned.
+A `edmacs-sidebar-buffers-file'/`-special' row (sidebar-buffers.el,
+phase 7) is likewise identified by its buffer's own name rather than
+its rendered label, which changes with recency-based reordering.
 Every other row keeps the original rendered-label identity. Returns
 nil when point is on no recognized row."
   (let ((section (magit-current-section)))
-    (if (and section (eq (oref section type) 'edmacs-sidebar-agent)
-             (slot-boundp section 'value))
-        (cons 'agent (edmacs-agent-key (oref section value)))
-      (save-excursion
-        (goto-char (line-beginning-position))
-        (when (looking-at "[●○⋯] \\(.*\\)$")
-          (cons 'tab (match-string 1)))))))
+    (cond
+     ((and section (eq (oref section type) 'edmacs-sidebar-agent)
+           (slot-boundp section 'value))
+      (cons 'agent (edmacs-agent-key (oref section value))))
+     ((and section
+           (memq (oref section type) '(edmacs-sidebar-buffers-file edmacs-sidebar-buffers-special))
+           (slot-boundp section 'value)
+           (buffer-live-p (oref section value)))
+      (cons 'buffer (buffer-name (oref section value))))
+     (t (save-excursion
+          (goto-char (line-beginning-position))
+          (when (looking-at "[●○⋯] \\(.*\\)$")
+            (cons 'tab (match-string 1))))))))
 
 (defun edmacs-sidebar--goto-identity (identity)
   "Move point to the row named by IDENTITY (from `--point-identity'),
@@ -262,6 +303,10 @@ or `point-min' if it can no longer be found."
   (pcase identity
     (`(agent . ,key)
      (let ((section (edmacs-sidebar--find-agent-section key)))
+       (when section
+         (goto-char (oref section start)))))
+    (`(buffer . ,name)
+     (let ((section (edmacs-sidebar--find-buffer-section name)))
        (when section
          (goto-char (oref section start)))))
     (`(tab . ,name)
@@ -326,11 +371,13 @@ with a warning face."
             (tabs (tab-bar-tabs frame)))
         (dolist (entry worktrees)
           (let* ((root (cdr entry))
-                 (tab (edmacs-frames--tab-for-root root frame)))
+                 (tab (edmacs-frames--tab-for-root root frame))
+                 (tab-number (and tab (1+ (tab-bar--tab-index tab tabs frame)))))
             (if tab
                 (edmacs-sidebar--insert-tab-row tab tabs frame root nil)
               (edmacs-sidebar--insert-no-tab-row entry))
-            (run-hook-with-args 'edmacs-sidebar-worktree-section-functions root (and tab t))))
+            (run-hook-with-args 'edmacs-sidebar-worktree-section-functions
+                                 root (and tab t) frame tab-number)))
         (dolist (tab tabs)
           (let ((root (edmacs-frames--tab-root tab)))
             (unless (member root roots)
@@ -398,14 +445,19 @@ reselects, never duplicating."
 (defun edmacs-sidebar-visit-at-point ()
   "Act on the section at point, dispatched by its magit-section TYPE.
 An `edmacs-sidebar-agent' row (sidebar-agents.el, phase 6) is visited
-via `edmacs-sidebar-agents-visit'; every other section type (tab,
+via `edmacs-sidebar-agents-visit'; a `edmacs-sidebar-buffers-file'/
+`-special' row (sidebar-buffers.el, phase 7) via
+`edmacs-sidebar-buffers-visit'; every other section type (tab,
 worktree, root, warning, agents-group) keeps the original
 `edmacs-sidebar-activate' behavior unchanged."
   (interactive)
   (let ((section (magit-current-section)))
-    (if (and section (eq (oref section type) 'edmacs-sidebar-agent))
-        (edmacs-sidebar-agents-visit)
-      (edmacs-sidebar-activate))))
+    (cond
+     ((and section (eq (oref section type) 'edmacs-sidebar-agent))
+      (edmacs-sidebar-agents-visit))
+     ((and section (memq (oref section type) '(edmacs-sidebar-buffers-file edmacs-sidebar-buffers-special)))
+      (edmacs-sidebar-buffers-visit))
+     (t (edmacs-sidebar-activate)))))
 
 (defun edmacs-sidebar-close-worktree ()
   "Close the open tab represented by the section at point.
@@ -418,6 +470,15 @@ with workmux/rdm, never this key (phase body Steps item 5)."
                              ((consp value) (cdr value)))))
       (when tab-number
         (tab-bar-close-tab tab-number)))))
+
+(defun edmacs-sidebar-kill-at-point ()
+  "Act on the section at point: kill a buffer row (sidebar-buffers.el,
+phase 7), else close the worktree row's tab exactly as before."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (if (and section (memq (oref section type) '(edmacs-sidebar-buffers-file edmacs-sidebar-buffers-special)))
+        (edmacs-sidebar-buffers-kill)
+      (edmacs-sidebar-close-worktree))))
 
 (defun edmacs-sidebar--window (frame)
   "Return FRAME's visible sidebar window, or nil."

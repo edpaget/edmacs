@@ -1,0 +1,702 @@
+;;; sidebar-buffers-live-test.el --- Live tests for sidebar-buffers.el -*- lexical-binding: t -*-
+
+;;; Commentary:
+;; Real frames, real tabs, real `bufferlo' (loaded straight from the
+;; straight build tree), and real file buffers under a fresh temp
+;; directory per test -- the genuinely environment-dependent half of
+;; this phase's acceptance criteria that sidebar-buffers-test.el's pure
+;; suite cannot exercise: `window-prev-buffers' ordering off a live
+;; window, `bufferlo-buffer-list' per-tab/per-frame isolation, RET/[/]/d/s
+;; driving real `tab-bar'/`windows.el' state, and the debounce timer.
+;;
+;; sidebar.el and windows.el ARE loaded for real (unlike the pure
+;; suite); frames.el is NOT -- this file stubs only the handful of its
+;; functions sidebar.el's own worktree redraw path calls
+;; (`edmacs-worktrees-for-repo', `edmacs-frames--tab-for-root',
+;; `edmacs-frames--tab-root'), the same convention
+;; sidebar-agents-live-test.el already uses for the same seam.
+;;
+;; A second real frame needs a controlling terminal -- absent under
+;; plain `-Q --batch', present under `script -q /dev/null emacs -Q
+;; --batch ...' -- so the two tests needing one (`per-frame-isolation',
+;; `toggle-is-frame-local') skip cleanly under the plain invocation,
+;; following sidebar-test.el's own documented convention; that plain
+;; invocation is this file's primary, CI-equivalent check.
+;; `script -q /dev/null' remains genuinely useful for developing the
+;; per-frame paths interactively, but two real tty frames sharing one
+;; pty inside `script' is its own source of flakiness independent of
+;; this module (observed: `edmacs-sidebar-hide' can hit "Attempt to
+;; delete minibuffer or sole ordinary window" on such a frame, and
+;; `make-frame'/`delete-frame' lifecycle under `script' is not always
+;; reliable across a 14-test run) -- so an occasional failure under
+;; `script' alone, with the plain invocation clean, is not evidence of
+;; a regression in this module's own logic.
+;;
+;; Run with:
+;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/sidebar-buffers-live-test.el -f ert-run-tests-batch-and-exit
+;;
+;; To also exercise the second-frame test:
+;;   script -q /dev/null emacs -Q --batch -l ert \
+;;         -l modules/git-common-dir.el -l modules/sidebar-buffers-live-test.el \
+;;         -f ert-run-tests-batch-and-exit
+
+;;; Code:
+
+(require 'ert)
+(require 'subr-x)
+(require 'cl-lib)
+(require 'dired)
+(require 'thingatpt)
+
+(setq native-comp-enable-subr-trampolines nil)
+
+;; ==========================================================================
+;; Loading bufferlo + windows.el + sidebar.el + sidebar-buffers.el for real
+;; ==========================================================================
+
+(defun edmacs-sidebar-buffers-live-test--locate-straight-build-root ()
+  "Same logic as sidebar-agents-live-test.el's own helper of the same shape."
+  (or
+   (let ((here (expand-file-name "straight/build" default-directory)))
+     (and (file-directory-p here) here))
+   (let* ((root (directory-file-name (expand-file-name default-directory)))
+          (worktrees-dir (directory-file-name (file-name-directory root))))
+     (when (string-suffix-p "__worktrees" worktrees-dir)
+       (let* ((projects-dir (file-name-directory worktrees-dir))
+              (repo-name (string-remove-suffix
+                          "__worktrees" (file-name-nondirectory worktrees-dir)))
+              (main-build (expand-file-name
+                           (concat repo-name "/straight/build") projects-dir)))
+         (and (file-directory-p main-build) main-build))))))
+
+(defvar edmacs-sidebar-buffers-live-test--build-root
+  (edmacs-sidebar-buffers-live-test--locate-straight-build-root))
+
+(if (or (null edmacs-sidebar-buffers-live-test--build-root)
+        (not (file-directory-p (expand-file-name
+                                 "bufferlo" edmacs-sidebar-buffers-live-test--build-root))))
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-deps-unavailable ()
+      (ert-skip "magit-section's or bufferlo's straight build was not found in \
+this checkout or its sibling main checkout; bootstrap straight once (open this \
+worktree in a real Emacs session) to enable this suite"))
+
+  (progn
+
+    (dolist (dep '("compat" "cond-let" "llama" "transient" "seq" "magit-section" "bufferlo"))
+      (let ((dir (expand-file-name dep edmacs-sidebar-buffers-live-test--build-root)))
+        (when (file-directory-p dir)
+          (add-to-list 'load-path dir))))
+
+    (require 'bufferlo)
+    (bufferlo-mode 1)
+    (require 'magit-section)
+
+    ;; frames.el is not loaded (see this file's own Commentary); its
+    ;; worktree-list/tab-root seam is stood in for the same way
+    ;; sidebar-test.el/sidebar-agents-live-test.el do for their own
+    ;; suites -- a plain alist cache and `edmacs-root' tab-parameter
+    ;; lookups, no subprocess/git involved.
+    (defvar edmacs-sidebar-buffers-live-test--worktrees-cache (make-hash-table :test #'equal))
+    (defun edmacs-worktrees-for-repo (common)
+      (gethash common edmacs-sidebar-buffers-live-test--worktrees-cache))
+    (defun edmacs-frames--tab-for-root (root &optional frame)
+      (seq-find (lambda (tab) (equal (alist-get 'edmacs-root tab) root)) (tab-bar-tabs frame)))
+    (defun edmacs-frames--tab-root (tab) (alist-get 'edmacs-root tab))
+    (defun edmacs-frames-open-worktree-tab (_dir) nil)
+
+    (load (expand-file-name "modules/windows.el" default-directory) nil t)
+    (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
+    (load (expand-file-name "modules/sidebar-buffers.el" default-directory) nil t)
+
+    ;; ==========================================================================
+    ;; Shared helpers
+    ;; ==========================================================================
+
+    (defun edmacs-sidebar-buffers-live-test--make-root ()
+      "Return the truename of a fresh, empty temp directory."
+      (file-truename (make-temp-file "edmacs-sb-live-test-" t)))
+
+    (defun edmacs-sidebar-buffers-live-test--write-file (root relpath &optional content)
+      "Create ROOT/RELPATH (and its parent directories), return the full path."
+      (let ((full (expand-file-name relpath root)))
+        (make-directory (file-name-directory full) t)
+        (with-temp-file full (insert (or content relpath)))
+        full))
+
+    (defun edmacs-sidebar-buffers-live-test--register-worktrees (common worktrees)
+      "WORKTREES is an alist of (NAME . ROOT), as `edmacs-worktrees-for-repo' returns."
+      (puthash common worktrees edmacs-sidebar-buffers-live-test--worktrees-cache))
+
+    (defun edmacs-sidebar-buffers-live-test--stamp-current-tab-root (root)
+      "Stamp ROOT as the selected frame's current tab's `edmacs-root', and
+mark the selected window as that tab's main window."
+      (push (cons 'edmacs-root root) (cdr (tab-bar--current-tab-find)))
+      (edmacs-window-set-main (selected-window)))
+
+    (defun edmacs-sidebar-buffers-live-test--close-extra-tabs (n)
+      "Close tabs beyond the first N in the selected frame."
+      (while (> (length (tab-bar-tabs)) n)
+        (tab-bar-close-tab (length (tab-bar-tabs)))))
+
+    (defun edmacs-sidebar-buffers-live-test--kill-buffers-under (root)
+      "Kill every live buffer whose file or `default-directory' is under ROOT."
+      (dolist (buf (buffer-list))
+        (when (buffer-live-p buf)
+          (let ((path (or (buffer-local-value 'buffer-file-name buf)
+                           (buffer-local-value 'default-directory buf))))
+            (when (and path (string-prefix-p root (file-truename path)))
+              (kill-buffer buf))))))
+
+    (defun edmacs-sidebar-buffers-live-test--reset-frame (frame)
+      "Undo every frame-level trace this suite's scenarios leave behind.
+`edmacs-sidebar-hide' is best-effort: on a real (non-batch-skip) second
+frame whose sidebar is its only ordinary window, `delete-window'
+refuses (\"Attempt to delete minibuffer or sole ordinary window\") --
+harmless here, since every caller either reuses this same frame for a
+fresh scenario next (a redraw replaces the buffer anyway) or is about
+to `delete-frame' it outright."
+      (ignore-errors (edmacs-sidebar-hide frame))
+      (let ((buf (edmacs-sidebar--buffer frame)))
+        (when (buffer-live-p buf) (kill-buffer buf))
+        (set-frame-parameter frame 'edmacs-sidebar-buffer nil))
+      (set-frame-parameter frame 'edmacs-repo nil)
+      (set-frame-parameter frame 'edmacs-sidebar-buffers-flat nil)
+      (clrhash edmacs-sidebar-buffers-live-test--worktrees-cache))
+
+    (defmacro edmacs-sidebar-buffers-live-test--with-scenario (roots &rest body)
+      "Run BODY with a clean single-tab frame, then unwind: close any
+extra tabs, kill every buffer under any of ROOTS (a list of root
+directories), delete those directories, and reset frame-level state."
+      (declare (indent 1))
+      `(let ((edmacs-sidebar-buffers-live-test--roots ,roots))
+         (unwind-protect
+             (progn ,@body)
+           (edmacs-sidebar-buffers-live-test--close-extra-tabs 1)
+           (dolist (root edmacs-sidebar-buffers-live-test--roots)
+             (edmacs-sidebar-buffers-live-test--kill-buffers-under root)
+             (ignore-errors (delete-directory root t)))
+           (edmacs-sidebar-buffers-live-test--reset-frame (selected-frame))
+           (unless (get-buffer "*scratch*")
+             (get-scratch-buffer-create))
+           (switch-to-buffer (get-buffer-create "*scratch*")))))
+
+    (defconst edmacs-sidebar-buffers-live-test--tab-row-regexp "^[●○⋯] "
+      "sidebar.el's own tab-row marker prefix (see `edmacs-sidebar--tab-label').
+A tab row's label tracks whatever buffer that tab last showed, so its
+text can coincidentally collide with a file name this module renders
+lower down -- every row THIS module inserts is indented instead (never
+starts with one of these markers), so filtering lines matching this
+out keeps assertions from false-matching a tab row.")
+
+    (defun edmacs-sidebar-buffers-live-test--sidebar-text (frame)
+      "Return FRAME's sidebar buffer's text, with every tab-row line removed."
+      (with-current-buffer (edmacs-sidebar--buffer frame)
+        (mapconcat #'identity
+                   (seq-remove (lambda (line)
+                                 (string-match-p edmacs-sidebar-buffers-live-test--tab-row-regexp line))
+                               (split-string (buffer-string) "\n"))
+                   "\n")))
+
+    (defun edmacs-sidebar-buffers-live-test--goto-text (frame text)
+      "Move point in FRAME's sidebar buffer to the first occurrence of TEXT
+on a row this module itself rendered (never a sidebar.el tab row)."
+      (with-current-buffer (edmacs-sidebar--buffer frame)
+        (goto-char (point-min))
+        (let (found)
+          (while (and (not found) (re-search-forward (regexp-quote text) nil t))
+            (if (save-excursion
+                  (goto-char (line-beginning-position))
+                  (looking-at-p edmacs-sidebar-buffers-live-test--tab-row-regexp))
+                (goto-char (line-end-position))
+              (setq found t)))
+          (unless found (error "edmacs-sidebar-buffers-live-test--goto-text: %S not found" text)))))
+
+    (defun edmacs-sidebar-buffers-live-test--visible-rows (frame)
+      "Return FRAME's sidebar buffer's text, tab-row lines removed and every
+`invisible' span elided -- what a human would actually see rendered,
+restricted to rows this module itself is responsible for."
+      (with-current-buffer (edmacs-sidebar--buffer frame)
+        (let ((pos (point-min)) (out nil))
+          (while (< pos (point-max))
+            (if (get-char-property pos 'invisible)
+                (setq pos (or (next-single-char-property-change pos 'invisible)
+                              (point-max)))
+              (push (buffer-substring pos (1+ pos)) out)
+              (setq pos (1+ pos))))
+          (mapconcat #'identity
+                     (seq-remove (lambda (line)
+                                   (string-match-p edmacs-sidebar-buffers-live-test--tab-row-regexp line))
+                                 (split-string (apply #'concat (nreverse out)) "\n"))
+                     "\n"))))
+
+    (defun edmacs-sidebar-buffers-live-test--find-buffers-root-section (root)
+      "Return the `edmacs-sidebar-buffers-root' section for ROOT, in the
+current buffer, or nil. sidebar.el renders EVERY worktree's row (and its
+buffers subsection) on every redraw regardless of which tab is current
+\(folded, never omitted) -- so isolation between two worktrees' own
+subsections must be checked by SCOPING to each one's own section span,
+never by a whole-buffer text search, which would always see both."
+      (catch 'found
+        (edmacs-sidebar--map-sections
+         magit-root-section
+         (lambda (section)
+           (when (and (eq (oref section type) 'edmacs-sidebar-buffers-root)
+                      (slot-boundp section 'value)
+                      (equal (car (oref section value)) root))
+             (throw 'found section))))
+        nil))
+
+    (defun edmacs-sidebar-buffers-live-test--subsection-text (frame root)
+      "Return the raw text (including any currently-folded/invisible spans)
+of ROOT's own buffers subsection in FRAME's sidebar buffer."
+      (with-current-buffer (edmacs-sidebar--buffer frame)
+        (let ((section (edmacs-sidebar-buffers-live-test--find-buffers-root-section root)))
+          (should section)
+          (buffer-substring (oref section start) (oref section end)))))
+
+    (defun edmacs-sidebar-buffers-live-test--make-second-frame-or-skip ()
+      "Same convention as sidebar-test.el's own helper of the same shape.
+Extended to clean up after itself on the failure path: a failed tty
+`make-frame' with no real controlling terminal fires
+`before-make-frame-hook' (which bufferlo uses to set its own
+`bufferlo--tab-include-exclude-buffers-inhibit' flag) but errors before
+ever reaching `after-make-frame-functions' (which is what normally
+clears it) -- left alone, that flag stays permanently set for the rest
+of this batch process, silently disabling bufferlo's own new-tab
+buffer-list reset for every tab created afterward, in every frame
+\(observed: this broke `per-tab-isolation's `tab-bar-new-tab' call when
+it ran immediately after this test). It can also leave a half-made,
+non-functional frame behind and change the selected frame. All three
+are undone here before skipping."
+      (let ((original (selected-frame))
+            (before (frame-list)))
+        (cl-flet ((cleanup-and-skip (msg)
+                    (select-frame original 'norecord)
+                    (dolist (f (frame-list))
+                      (unless (or (memq f before) (not (frame-live-p f)))
+                        (ignore-errors (delete-frame f))))
+                    (when (boundp 'bufferlo--tab-include-exclude-buffers-inhibit)
+                      (setq bufferlo--tab-include-exclude-buffers-inhibit nil))
+                    (ert-skip msg)))
+          (condition-case e
+              (let ((frame (make-frame '((window-system . nil)
+                                          (tty . "/dev/tty")
+                                          (tty-type . "xterm")))))
+                (if (frame-live-p frame)
+                    frame
+                  (cleanup-and-skip "could not create a second frame in this batch environment")))
+            (error (cleanup-and-skip (format "could not create a second frame in this \
+batch environment (no controlling terminal? run under `script -q /dev/null \
+emacs ...' to exercise this test): %s" e)))))))
+
+    ;; ==========================================================================
+    ;; AC1 -- directory-tree grouping/ordering
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-ac1-shape ()
+      "sessions.el, ui.el, init.el opened in that order, then switch to
+*Messages* -- the buffers subsection groups modules/ (ui.el then
+sessions.el, most-recently-visited first), then init.el, then a dimmed
+*Messages*, exactly AC1's own worked example."
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (let ((sessions (edmacs-sidebar-buffers-live-test--write-file root "modules/sessions.el"))
+                (ui (edmacs-sidebar-buffers-live-test--write-file root "modules/ui.el"))
+                (init (edmacs-sidebar-buffers-live-test--write-file root "init.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "repo" root)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+            (find-file sessions)
+            (find-file ui)
+            (find-file init)
+            (switch-to-buffer (get-buffer-create "*Messages*"))
+            (edmacs-sidebar-show (selected-frame))
+            (let ((text (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))
+              (should (string-match-p
+                       (rx "modules/" (* anychar) "ui.el" (* anychar) "sessions.el"
+                           (* anychar) "init.el" (* anychar) "*Messages*")
+                       text))
+              ;; *Messages* is dimmed; ui.el/sessions.el/init.el are not.
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                (should (text-property-any
+                         (point-min) (point-max) 'face 'edmacs-sidebar-buffers-special-face))
+                (goto-char (point-min))
+                (search-forward "modules/")
+                (search-forward "init.el")
+                (should-not (get-text-property (1- (point)) 'face))))))))
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-ac1-chain-flatten-and-fold ()
+      "A directory chain ending in a lone file collapses to one row
+\(the 'claude-repl/ claude-repl-buffer.el' example); a real branch three
+levels deep is folded by default (its children invisible) while the
+first two rendered levels stay expanded."
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (let ((chain (edmacs-sidebar-buffers-live-test--write-file
+                        root "modules/claude-repl/claude-repl-buffer.el"))
+                (a (edmacs-sidebar-buffers-live-test--write-file root "p/fileA.el"))
+                (b (edmacs-sidebar-buffers-live-test--write-file root "p/q/fileB.el"))
+                (c (edmacs-sidebar-buffers-live-test--write-file root "p/q/r/fileC.el"))
+                (d (edmacs-sidebar-buffers-live-test--write-file root "p/q/r/fileD.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "repo" root)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+            (find-file chain) (find-file a) (find-file b) (find-file c) (find-file d)
+            (edmacs-sidebar-show (selected-frame))
+            (let ((text (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))
+              (should (string-match-p "claude-repl/ claude-repl-buffer.el" text))
+              (should (string-match-p "r/" text))
+              (should (string-match-p "fileC.el" text))) ; present, just invisible
+            (let ((visible (edmacs-sidebar-buffers-live-test--visible-rows (selected-frame))))
+              (should-not (string-match-p "fileC.el" visible))
+              (should-not (string-match-p "fileD.el" visible))
+              (should (string-match-p "fileB.el" visible))
+              (should (string-match-p "fileA.el" visible)))))))
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-ac1-non-current-tab-folded ()
+      "Only the frame's currently-selected tab's buffers subsection starts
+expanded; a background tab's own subsection exists (content present)
+but is entirely invisible until expanded."
+      (let ((r1 (edmacs-sidebar-buffers-live-test--make-root))
+            (r2 (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list r1 r2)
+          (let ((x (edmacs-sidebar-buffers-live-test--write-file r1 "x.el"))
+                (z (edmacs-sidebar-buffers-live-test--write-file r2 "z.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "r1" r1) (cons "r2" r2)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
+            (find-file x)
+            (let ((tab-bar-new-tab-choice "*scratch*"))
+              (tab-bar-new-tab))
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r2)
+            (find-file z)
+            (edmacs-sidebar-show (selected-frame))
+            (let ((text (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame)))
+                  (visible (edmacs-sidebar-buffers-live-test--visible-rows (selected-frame))))
+              (should (string-match-p "x.el" text))
+              (should-not (string-match-p "x.el" visible))
+              (should (string-match-p "z.el" visible)))))))
+
+    ;; ==========================================================================
+    ;; AC2 -- RET visit, [ / ] parity with previous-buffer/next-buffer, markers
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-ret-shows-buffer-in-main-window ()
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (let ((a (edmacs-sidebar-buffers-live-test--write-file root "a.el"))
+                (b (edmacs-sidebar-buffers-live-test--write-file root "b.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "repo" root)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+            (find-file a)
+            (find-file b)
+            (edmacs-sidebar-show (selected-frame))
+            (edmacs-sidebar-buffers-live-test--goto-text (selected-frame) "a.el")
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (edmacs-sidebar-buffers-visit))
+            (should (equal "a.el" (buffer-name (window-buffer (edmacs-main-window)))))))))
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-ret-on-other-tab-switches-tab ()
+      "RET on a row belonging to a DIFFERENT (non-current) tab selects
+that tab first, then shows the buffer in its main window."
+      (let ((r1 (edmacs-sidebar-buffers-live-test--make-root))
+            (r2 (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list r1 r2)
+          (let ((y (edmacs-sidebar-buffers-live-test--write-file r1 "y.el"))
+                (z (edmacs-sidebar-buffers-live-test--write-file r2 "z.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "r1" r1) (cons "r2" r2)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
+            (find-file y)
+            (let ((tab-bar-new-tab-choice "*scratch*"))
+              (tab-bar-new-tab))
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r2)
+            (find-file z)
+            ;; Back to tab 1 (r1) so r2's row is now the non-current one.
+            (tab-bar-select-tab 1)
+            (edmacs-sidebar-show (selected-frame))
+            (edmacs-sidebar-buffers-live-test--goto-text (selected-frame) "z.el")
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (edmacs-sidebar-buffers-visit))
+            (should (= 1 (tab-bar--current-tab-index))) ; 0-based: tab 2
+            (should (equal "z.el" (buffer-name (window-buffer (edmacs-main-window)))))))))
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-bracket-keys-match-next-previous-buffer ()
+      "`[' walks the exact deterministic sequence `previous-buffer' itself
+would from a known open order (a.el, b.el, c.el -- so `previous-buffer'
+from c.el goes to b.el, then to a.el), with point following to the
+resulting row each time; `]' then walks the same sequence back via
+`next-buffer'. Computed from the known open order directly, rather than
+probing with a live `previous-buffer'/`next-buffer' round-trip first --
+that would itself mutate the very `window-prev-buffers'/`-next-buffers'
+state under test."
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (let ((a (edmacs-sidebar-buffers-live-test--write-file root "a.el"))
+                (b (edmacs-sidebar-buffers-live-test--write-file root "b.el"))
+                (c (edmacs-sidebar-buffers-live-test--write-file root "c.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "repo" root)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+            (find-file a) (find-file b) (find-file c)
+            (edmacs-sidebar-show (selected-frame))
+            (edmacs-sidebar-buffers-live-test--goto-text (selected-frame) "c.el")
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (edmacs-sidebar-buffers-prev))
+            (should (equal "b.el" (buffer-name (window-buffer (edmacs-main-window)))))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (should (string-match-p "b\\.el" (thing-at-point 'line t))))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (edmacs-sidebar-buffers-prev))
+            (should (equal "a.el" (buffer-name (window-buffer (edmacs-main-window)))))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (should (string-match-p "a\\.el" (thing-at-point 'line t))))
+            ;; `]' now walks forward again, back through b.el to c.el.
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (edmacs-sidebar-buffers-next))
+            (should (equal "b.el" (buffer-name (window-buffer (edmacs-main-window)))))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (edmacs-sidebar-buffers-next))
+            (should (equal "c.el" (buffer-name (window-buffer (edmacs-main-window)))))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (should (string-match-p "c\\.el" (thing-at-point 'line t))))))))
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-markers-modified-and-selected ()
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (let ((a (edmacs-sidebar-buffers-live-test--write-file root "a.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "repo" root)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+            (find-file a)
+            (with-current-buffer (get-file-buffer a) (set-buffer-modified-p t))
+            (edmacs-sidebar-show (selected-frame))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (should (hash-table-p edmacs-sidebar-buffers--row-overlays))
+              (let ((ov (gethash (get-file-buffer a) edmacs-sidebar-buffers--row-overlays)))
+                (should ov)
+                (should (equal "*" (overlay-get ov 'after-string)))
+                (should (equal "● " (overlay-get ov 'before-string)))
+                (should (eq 'edmacs-sidebar-buffers-selected-face (overlay-get ov 'face)))))))))
+
+    ;; ==========================================================================
+    ;; AC3 -- s toggles tree vs. flat, per-frame
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-toggle-flat-and-back ()
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (let ((a (edmacs-sidebar-buffers-live-test--write-file root "modules/a.el"))
+                (b (edmacs-sidebar-buffers-live-test--write-file root "b.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "repo" root)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+            (find-file a) (find-file b)
+            (edmacs-sidebar-show (selected-frame))
+            (should (string-match-p "modules/" (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))
+            (edmacs-sidebar-buffers-toggle-flat)
+            (should (frame-parameter (selected-frame) 'edmacs-sidebar-buffers-flat))
+            (should-not (string-match-p "modules/" (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))
+            (should (string-match-p "a.el" (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))
+            (edmacs-sidebar-buffers-toggle-flat)
+            (should-not (frame-parameter (selected-frame) 'edmacs-sidebar-buffers-flat))
+            (should (string-match-p "modules/" (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))))))
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-toggle-is-frame-local ()
+      (let ((f2 (edmacs-sidebar-buffers-live-test--make-second-frame-or-skip)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-buffers-toggle-flat)
+              (should (frame-parameter (selected-frame) 'edmacs-sidebar-buffers-flat))
+              (should-not (frame-parameter f2 'edmacs-sidebar-buffers-flat))
+              (edmacs-sidebar-buffers-toggle-flat))
+          (edmacs-sidebar-buffers-live-test--reset-frame (selected-frame))
+          (edmacs-sidebar-buffers-live-test--reset-frame f2)
+          (delete-frame f2))))
+
+    ;; ==========================================================================
+    ;; AC4 -- debounce coalesces buffer-list-update-hook firings
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-debounce-coalesces-bursts ()
+      "Several firings within the debounce window collapse into exactly
+one tracked, pending redraw -- verified deterministically (cancel the
+one timer `--schedule-redraw' left behind and fire its callback
+directly) rather than via a real `sit-for' wait: this whole batch
+process shares one global `timer-list', and other tests' own
+buffer-list churn (via the real, non-removed-there hook) can leave
+their own still-pending redraw timers behind for a few milliseconds,
+which a `sit-for'-based wait here could pick up too, inflating the
+count for reasons having nothing to do with THIS test's own coalescing
+claim. The real `buffer-list-update-hook' entry is removed for the
+duration for the same reason: this test's own buffer churn must not
+add another contender either."
+      (let ((edmacs-sidebar-buffers-debounce-seconds 0.05)
+            (redraw-count 0))
+        (unwind-protect
+            (progn
+              (remove-hook 'buffer-list-update-hook #'edmacs-sidebar-buffers--schedule-redraw)
+              (setq edmacs-sidebar-buffers--redraw-timer nil)
+              (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
+                         (lambda (_frame) (setq redraw-count (1+ redraw-count)))))
+                (dotimes (_ 10) (edmacs-sidebar-buffers--schedule-redraw))
+                (should (= 0 redraw-count))
+                (should (timerp edmacs-sidebar-buffers--redraw-timer))
+                ;; Ten calls left exactly one pending timer tracked --
+                ;; fire it directly, standing in for its own eventual
+                ;; real firing.
+                (let ((tm edmacs-sidebar-buffers--redraw-timer))
+                  (cancel-timer tm)
+                  (funcall (timer--function tm)))
+                (should (= 1 redraw-count))))
+          (add-hook 'buffer-list-update-hook #'edmacs-sidebar-buffers--schedule-redraw)
+          (when (timerp edmacs-sidebar-buffers--redraw-timer)
+            (cancel-timer edmacs-sidebar-buffers--redraw-timer))
+          (setq edmacs-sidebar-buffers--redraw-timer nil))))
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-tab-switch-with-30-buffers-is-fast ()
+      "Opening 30 nested file buffers in one tab keeps a later tab switch
+fast: the redraw this triggers (`edmacs-sidebar--on-tab-select') is pure
+in-memory work, never a subprocess."
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (edmacs-sidebar-buffers-live-test--register-worktrees
+           "/repo/.git" (list (cons "repo" root)))
+          (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+          (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+          (dotimes (i 30)
+            (find-file (edmacs-sidebar-buffers-live-test--write-file
+                        root (format "d%d/d%d/f%d.el" (% i 4) (% i 3) i))))
+          (edmacs-sidebar-show (selected-frame))
+          (let ((tab-bar-new-tab-choice "*scratch*"))
+            (tab-bar-new-tab))
+          (let ((elapsed (car (benchmark-run 1 (tab-bar-select-tab 1)))))
+            (should (< elapsed 0.2)))))) ; generous, machine-independent bound
+
+    ;; ==========================================================================
+    ;; AC5 -- isolation: per-tab and per-frame
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-per-tab-isolation ()
+      "Two tabs, one frame, disjoint files: neither tab's buffers subsection
+ever lists the other's files, whichever tab is currently selected."
+      (let ((r1 (edmacs-sidebar-buffers-live-test--make-root))
+            (r2 (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list r1 r2)
+          (let ((x (edmacs-sidebar-buffers-live-test--write-file r1 "x.el"))
+                (y (edmacs-sidebar-buffers-live-test--write-file r1 "y.el"))
+                (z (edmacs-sidebar-buffers-live-test--write-file r2 "z.el"))
+                (w (edmacs-sidebar-buffers-live-test--write-file r2 "w.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "r1" r1) (cons "r2" r2)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
+            (find-file x) (find-file y)
+            (let ((tab-bar-new-tab-choice "*scratch*"))
+              (tab-bar-new-tab))
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r2)
+            (find-file z) (find-file w)
+            (edmacs-sidebar-show (selected-frame))
+            ;; r2 (tab 2) is current here. sidebar.el renders BOTH
+            ;; worktrees' rows on every redraw regardless of which tab is
+            ;; current (the other one just folded, never omitted), so
+            ;; isolation is checked by scoping to each root's OWN
+            ;; subsection span -- a whole-buffer text search would always
+            ;; see both worktrees' rows and could never fail this check.
+            (let ((r1-text (edmacs-sidebar-buffers-live-test--subsection-text (selected-frame) r1))
+                  (r2-text (edmacs-sidebar-buffers-live-test--subsection-text (selected-frame) r2)))
+              (should (string-match-p "z.el" r2-text))
+              (should (string-match-p "w.el" r2-text))
+              (should-not (string-match-p "x.el" r2-text))
+              (should-not (string-match-p "y.el" r2-text))
+              (should (string-match-p "x.el" r1-text))
+              (should (string-match-p "y.el" r1-text))
+              (should-not (string-match-p "z.el" r1-text))
+              (should-not (string-match-p "w.el" r1-text)))
+            (tab-bar-select-tab 1)
+            ;; r1 (tab 1) is current now -- re-check both scoped
+            ;; subsections again, exercising the ws-tree ordering path
+            ;; for r2 (now the non-current tab).
+            (let ((r1-text (edmacs-sidebar-buffers-live-test--subsection-text (selected-frame) r1))
+                  (r2-text (edmacs-sidebar-buffers-live-test--subsection-text (selected-frame) r2)))
+              (should (string-match-p "x.el" r1-text))
+              (should (string-match-p "y.el" r1-text))
+              (should-not (string-match-p "z.el" r1-text))
+              (should-not (string-match-p "w.el" r1-text))
+              (should (string-match-p "z.el" r2-text))
+              (should (string-match-p "w.el" r2-text))
+              (should-not (string-match-p "x.el" r2-text))
+              (should-not (string-match-p "y.el" r2-text)))))))
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-per-frame-isolation ()
+      "Two real frames, same-numbered tabs, different files: catches a
+frame-argument mixup in the `bufferlo-buffer-list' call site that a
+single-frame test cannot."
+      (let ((f2 (edmacs-sidebar-buffers-live-test--make-second-frame-or-skip))
+            (r1 (edmacs-sidebar-buffers-live-test--make-root))
+            (r2 (edmacs-sidebar-buffers-live-test--make-root)))
+        (unwind-protect
+            (let ((p (edmacs-sidebar-buffers-live-test--write-file r1 "p.el"))
+                  (q (edmacs-sidebar-buffers-live-test--write-file r2 "q.el")))
+              (edmacs-sidebar-buffers-live-test--register-worktrees
+               "/repo1/.git" (list (cons "r1" r1)))
+              (edmacs-sidebar-buffers-live-test--register-worktrees
+               "/repo2/.git" (list (cons "r2" r2)))
+              (set-frame-parameter (selected-frame) 'edmacs-repo "/repo1/.git")
+              (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
+              (find-file p)
+              (with-selected-frame f2
+                (set-frame-parameter f2 'edmacs-repo "/repo2/.git")
+                (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r2)
+                (find-file q)
+                (edmacs-sidebar-show f2))
+              (edmacs-sidebar-show (selected-frame))
+              (let ((text1 (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame)))
+                    (text2 (edmacs-sidebar-buffers-live-test--sidebar-text f2)))
+                (should (string-match-p "p.el" text1))
+                (should-not (string-match-p "q.el" text1))
+                (should (string-match-p "q.el" text2))
+                (should-not (string-match-p "p.el" text2))))
+          (edmacs-sidebar-buffers-live-test--kill-buffers-under r1)
+          (edmacs-sidebar-buffers-live-test--kill-buffers-under r2)
+          (ignore-errors (delete-directory r1 t))
+          (ignore-errors (delete-directory r2 t))
+          (edmacs-sidebar-buffers-live-test--reset-frame (selected-frame))
+          (edmacs-sidebar-buffers-live-test--reset-frame f2)
+          (delete-frame f2)
+          (switch-to-buffer (get-buffer-create "*scratch*")))))
+
+    ;; ==========================================================================
+    ;; d -- kill the buffer at point
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-kill-removes-buffer-and-row ()
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (let ((a (edmacs-sidebar-buffers-live-test--write-file root "a.el"))
+                (b (edmacs-sidebar-buffers-live-test--write-file root "b.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "repo" root)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+            (find-file a) (find-file b)
+            (edmacs-sidebar-show (selected-frame))
+            (edmacs-sidebar-buffers-live-test--goto-text (selected-frame) "a.el")
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (edmacs-sidebar-buffers-kill))
+            (should-not (get-file-buffer a))
+            (should-not (string-match-p "a\\.el"
+                                        (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))))))
+
+    ))

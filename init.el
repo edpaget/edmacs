@@ -104,6 +104,11 @@ LANGUAGE should be the name without the .el extension."
 ;; module makes into either is inside a function body, resolved at
 ;; call/keypress time, never at this module's own load time.
 (load-module "sidebar-agents")
+;; Right after sidebar-agents: needs sidebar.el's extension-point vars
+;; already defined. Its own `edmacs-frames--tab-for-root'/`bufferlo-*'
+;; calls are inside function bodies, resolved at call time, so its
+;; exact position relative to `frames' below is not load-bearing.
+(load-module "sidebar-buffers")
 ;; After sidebar (calls `edmacs-sidebar-show'), sessions (reuses its
 ;; tab-bar/desktop setup), and evil-config (its C-x chord registrar).
 (load-module "frames")

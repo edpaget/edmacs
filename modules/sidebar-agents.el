@@ -255,14 +255,17 @@ of one `edmacs-sidebar-agents-group' section, in attention order."
     (dolist (agent (sort (copy-sequence agents) #'edmacs-sidebar-agents--compare))
       (edmacs-sidebar-agents--insert-row agent))))
 
-(defun edmacs-sidebar-agents--on-worktree-section (root _has-tab)
+(defun edmacs-sidebar-agents--on-worktree-section (root _has-tab &optional _frame _tab-number)
   "Append ROOT's `agents' child section, if it has any tracked agents.
 Registered on `edmacs-sidebar-worktree-section-functions'; a worktree
 with no agents renders no extra section at all, so an ordinary
 agent-less worktree row is unchanged from before this phase. HAS-TAB is
 unused here: an agent still renders under a tab-less (dimmed) worktree
 row exactly the same as under an open one -- only the worktree row
-itself carries the dimmed face, per AC1."
+itself carries the dimmed face, per AC1. FRAME/TAB-NUMBER (added by
+sidebar-buffers.el, phase 7) are unused here too -- accepted only so
+this function's arity still matches the now-4-arg
+`run-hook-with-args' call in sidebar.el."
   (let ((agents (edmacs-sidebar-agents--for-root root)))
     (when agents
       (edmacs-sidebar-agents--insert-group agents))))
