@@ -1131,7 +1131,7 @@ kill-buffer call."
     (let ((buf (generate-new-buffer "*ewt-other-window*")))
       (unwind-protect
           (let ((win (display-buffer buf '(nil (inhibit-same-window . t)))))
-            (should (window-parameter win 'window-side)))
+            (should (eq (window-parameter win 'window-side) 'right)))
         (kill-buffer buf)))))
 
 (ert-deftest edmacs-windows-test-switch-to-buffer-obey-display-actions-stays-nil ()
