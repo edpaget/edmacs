@@ -249,6 +249,28 @@ with the removed key."
       (should (= fire-count 1))
       (should (equal fired-keys (list key))))))
 
+(ert-deftest edmacs-agents-test-sweep-exempts-non-workmux-source ()
+  "A row created through the public `edmacs-agents-set-status' writer
+\(SOURCE nil, no adapter re-heartbeating it\) survives the sweep no
+matter how old its heartbeat is -- only `workmux'-sourced rows are
+reaped on heartbeat age. Regression test for the finding that a
+`waiting' or unread-`done' row left untouched past
+`edmacs-agents-stale-seconds' was being silently discarded even though
+it might still be alive and blocking on the user."
+  (edmacs-agents-test--with-clean-state
+    (let* ((edmacs-agents-stale-seconds 5)
+           (root (file-truename (make-temp-file "edmacs-agents-test-root-" t))))
+      (edmacs-agents-set-status root 'waiting)
+      (let (key row)
+        (maphash (lambda (k r) (setq key k row r)) edmacs-agents--table)
+        (should-not (edmacs-agent-source row))
+        ;; Force the heartbeat far into the past, as if the row had sat
+        ;; quietly in `waiting' for hours with no further explicit call.
+        (setf (edmacs-agent-updated-ts row) (- (float-time) 3600))
+        (edmacs-agents--sweep)
+        (should (gethash key edmacs-agents--table))
+        (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'waiting))))))
+
 (ert-deftest edmacs-agents-test-heartbeat-reap-noop-when-fresh ()
   "A row with a fresh heartbeat survives the sweep untouched."
   (edmacs-agents-test--with-clean-state
@@ -477,6 +499,34 @@ empty once the table has none of those."
       (should (equal (edmacs-agents--mode-line-string-compute) "[2⟳ 1✓ 1💬]")))
     (clrhash edmacs-agents--table)
     (should (equal (edmacs-agents--mode-line-string-compute) ""))))
+
+(ert-deftest edmacs-agents-test-ensure-mode-line-splices-and-updates ()
+  "`edmacs-agents--ensure-mode-line' is the function that actually wires
+the roll-up into the visible mode-line, as opposed to
+`edmacs-agents-test-mode-line-string' above, which only covers the pure
+string computation. This exercises the splice itself: the symbol lands
+in `global-mode-string' exactly once even across repeated calls, and a
+subsequent `edmacs-agents-changed-hook' firing (as any `edmacs-agents--upsert'
+or `edmacs-agents--remove' does in production) recomputes the cached
+string with no direct call to the refresh function from the test."
+  (edmacs-agents-test--with-clean-state
+    (let ((global-mode-string nil)
+          (edmacs-agents--mode-line-string ""))
+      (unwind-protect
+          (progn
+            (edmacs-agents--ensure-mode-line)
+            (should (memq 'edmacs-agents--mode-line-string global-mode-string))
+            (should (equal edmacs-agents--mode-line-string ""))
+            ;; Re-arming (e.g. reloading this file interactively) must not
+            ;; insert a second copy.
+            (edmacs-agents--ensure-mode-line)
+            (should (= 1 (cl-count 'edmacs-agents--mode-line-string global-mode-string)))
+            ;; A table mutation fires the changed hook, which must recompute
+            ;; the cached string with no direct call from this test.
+            (edmacs-agents-set-status
+             (make-temp-file "edmacs-agents-test-root-" t) 'waiting)
+            (should (equal edmacs-agents--mode-line-string "[1💬]")))
+        (remove-hook 'edmacs-agents-changed-hook #'edmacs-agents--refresh-mode-line)))))
 
 ;; ============================================================================
 ;; Tabulated-list view

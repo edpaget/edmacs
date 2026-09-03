@@ -33,6 +33,18 @@
 ;; path, not a backstop -- a file-delete event is handled too, but
 ;; workmux practically never produces one.
 ;;
+;; The sweep only ever reaps rows whose SOURCE is `workmux': that is
+;; the one adapter that independently rewrites `updated_ts' on a
+;; heartbeat cadence whether or not status changed. A row created
+;; through the public `edmacs-agents-set-status' writer has no such
+;; heartbeat -- its `updated-ts' is stamped once, by that call, and
+;; never again until another explicit call -- so sweeping it on
+;; heartbeat age would silently discard a still-live `waiting' or
+;; unread `done' row well before `edmacs-agents-stale-seconds' means
+;; anything for it. A future adapter only gets sweep protection by
+;; actually re-heartbeating through `edmacs-agents-set-status' on its
+;; own cadence, not merely by existing in the table.
+;;
 ;; Load-time order is scan-then-sweep-then-watch/render, strictly:
 ;; `edmacs-agents-init' populates the table from every JSON file on
 ;; disk, THEN runs the sweep once to drop already-stale rows, and only
@@ -427,16 +439,32 @@ restart, rather than breaking module load."
 ;; ============================================================================
 
 (defun edmacs-agents--sweep ()
-  "Remove every row whose heartbeat (`updated-ts') is older than
-`edmacs-agents-stale-seconds'. The PRIMARY reap path -- see this file's
-Commentary on why workmux's own dead-pane files cannot be trusted to
-disappear. Assumes the table is already populated; never triggers a
-scan itself. Fires `edmacs-agents-changed-hook' once with every removed
-key, not once per row."
+  "Remove every `workmux'-sourced row whose heartbeat (`updated-ts') is
+older than `edmacs-agents-stale-seconds'. The PRIMARY reap path for
+that source -- see this file's Commentary on why workmux's own
+dead-pane files cannot be trusted to disappear.
+
+Scoped to SOURCE `workmux' only: that adapter alone rewrites
+`updated-ts' every few seconds regardless of whether status changed,
+which is what makes heartbeat age a liveness signal in the first
+place. A row created through the public `edmacs-agents-set-status'
+API (or, later, any adapter that does not re-heartbeat on its own) has
+its `updated-ts' stamped exactly once per explicit call and would
+otherwise be silently reaped mid-`waiting' or mid-unread-`done' just
+for sitting quiet past the threshold -- contradicting \"waiting is the
+only state that blocks on the user\" and \"done is UNREAD until
+visited\". Sweeping only rows with a genuine heartbeat contract avoids
+that; a future adapter that wants sweep protection has to actually
+heartbeat, not merely exist.
+
+Assumes the table is already populated; never triggers a scan itself.
+Fires `edmacs-agents-changed-hook' once with every removed key, not
+once per row."
   (let ((now (float-time)) stale-keys)
     (maphash
      (lambda (key row)
-       (when (and (numberp (edmacs-agent-updated-ts row))
+       (when (and (eq (edmacs-agent-source row) 'workmux)
+                  (numberp (edmacs-agent-updated-ts row))
                   (> (- now (edmacs-agent-updated-ts row)) edmacs-agents-stale-seconds))
          (push key stale-keys)))
      edmacs-agents--table)
