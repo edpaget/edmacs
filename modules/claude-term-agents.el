@@ -105,42 +105,70 @@
 ;; Row lifecycle: mirror registry create/remove into the shared table
 ;; ============================================================================
 
+(defun claude-term-agents--normalize-instance (instance)
+  "Return INSTANCE, or `claude-term-registry--default-instance-label' if nil.
+`claude-term-registry-put'/`-remove'/`-rename' pass a session's raw
+INSTANCE through unchanged, including nil for the common
+non-multi-instance case. But `claude-term-registry--set-instance-env'
+never leaves `EDMACS_AGENT_INSTANCE' unset in the child process -- it
+always resolves that same nil to this literal label before the session
+ever starts -- so the ported claude-terminal status hook this row
+exists to serve always calls `edmacs-agents-set-status' with that
+non-nil string, never with nil. Every key this file computes from a
+registry-side INSTANCE must be normalized the same way, or a
+default-instance session's adapter-created row (keyed on nil) and the
+hook's status updates (keyed on \"default\") permanently address two
+different rows in `edmacs-agents--table'."
+  (or instance claude-term-registry--default-instance-label))
+
 (defun claude-term-agents--on-create (root instance buffer)
   "Add/refresh a `claude-term'-sourced row for ROOT/INSTANCE/BUFFER.
 Fires on every `claude-term-registry-put' call, including a restart's
 re-exec of an already-registered session -- `edmacs-agents--upsert' is
 a plain `puthash' on the identical key in that case, a harmless
 overwrite rather than a duplicate row. STATUS starts `idle': a freshly
-spawned session has had no prompt sent to it yet. TITLE falls back to
-`claude-term-registry--default-instance-label' when INSTANCE is nil
-\(the default, non-multi-instance session\) -- matching the registry's
-own picker/rename/list-mode display convention -- rather than storing
-a bare nil title: `claude-term-agents--strip-progress-suffix' calls
-`string-match' on it, which signals on nil, and other title-consuming
-sites would render the literal string \"nil\". The KEY/INSTANCE fields
-themselves stay nil, exactly like the registry's own session record,
-since key equality via `equal' treats nil as an ordinary key component."
-  (let ((truename-root (condition-case nil (file-truename root) (error root)))
-        (now (float-time)))
+spawned session has had no prompt sent to it yet.
+
+The row's KEY and TITLE are built from INSTANCE run through
+`claude-term-agents--normalize-instance', so this row's key agrees with
+what `edmacs-agents-set-status' resolves to once the ported status hook
+fires for this same session (see that helper's docstring). The
+INSTANCE field itself is stored UNNORMALIZED (raw, possibly nil): it is
+also what `edmacs-sidebar-agents--claude-term-session' feeds straight
+into `claude-term-registry-get' to resolve RET/rename/kill back to the
+live session, and that registry's own key
+\(`claude-term-registry--key') is never normalized -- a session
+launched with no INSTANCE is registered, and stays registered, under a
+literal nil, never under the display label. Normalizing this field
+too would fix the status-hook lookup but break every other lookup for
+the same default-instance row."
+  (let* ((truename-root (condition-case nil (file-truename root) (error root)))
+         (resolved-instance (claude-term-agents--normalize-instance instance))
+         (now (float-time)))
     (edmacs-agents--upsert
      (make-edmacs-agent
-      :key (edmacs-agents--key root instance)
+      :key (edmacs-agents--key root resolved-instance)
       :root truename-root
       :instance instance
       :status 'idle
       :status-ts now
       :updated-ts now
-      :title (or instance claude-term-registry--default-instance-label)
+      :title resolved-instance
       :source 'claude-term
       :locator buffer
       :unread nil))))
 
 (defun claude-term-agents--on-remove (root instance)
   "Remove ROOT/INSTANCE's row from the shared agent table, if any.
-A no-op when no such row exists -- `edmacs-agents--remove' is already
-idempotent on a missing key, e.g. a session killed while a status
-update against the same row is in flight."
-  (edmacs-agents--remove (edmacs-agents--key root instance)))
+INSTANCE is normalized exactly as `claude-term-agents--on-create'
+normalizes it for the KEY (never for the stored INSTANCE field, which
+this function does not touch), so a remove for a default-instance
+session finds the row create actually stored under. A no-op when no
+such row exists -- `edmacs-agents--remove' is already idempotent on a
+missing key, e.g. a session killed while a status update against the
+same row is in flight."
+  (edmacs-agents--remove
+   (edmacs-agents--key root (claude-term-agents--normalize-instance instance))))
 
 (defun claude-term-agents--on-rename (root old-instance new-instance)
   "Move ROOT/OLD-INSTANCE's row to ROOT/NEW-INSTANCE after a claude-term rename.
@@ -151,21 +179,27 @@ session between two keys by direct `remhash'/`puthash', so neither
 `claude-term-registry-remove-functions' fires for it -- without this
 listener, the mirrored row would stay keyed under OLD-INSTANCE forever,
 pointing sidebar actions at a registry key the rename already vacated.
-Re-keys the EXISTING row in place (preserving its STATUS/UNREAD/etc, the
-same way the registry's own session survives the rename) rather than
-discarding and recreating it -- a rename mid-`working' should not
-silently reset the row to `idle'. A no-op if no row was registered
-under OLD-INSTANCE (e.g. a rename racing ahead of this file's own
-create listener)."
+OLD-INSTANCE/NEW-INSTANCE are each normalized for the KEY lookup/rebuild
+exactly as `claude-term-agents--on-create' normalizes for KEY (see that
+function's docstring for why the row's stored INSTANCE field itself
+stays raw/unnormalized, mirroring `claude-term-registry-rename' setting
+the registry's own session record's INSTANCE to the same raw
+NEW-INSTANCE it was called with). Re-keys the EXISTING row in place
+(preserving its STATUS/UNREAD/etc, the same way the registry's own
+session survives the rename) rather than discarding and recreating it
+-- a rename mid-`working' should not silently reset the row to `idle'.
+A no-op if no row was registered under OLD-INSTANCE (e.g. a rename
+racing ahead of this file's own create listener)."
   (let* ((truename-root (condition-case nil (file-truename root) (error root)))
-         (old-key (edmacs-agents--key truename-root old-instance))
+         (resolved-old (claude-term-agents--normalize-instance old-instance))
+         (resolved-new (claude-term-agents--normalize-instance new-instance))
+         (old-key (edmacs-agents--key truename-root resolved-old))
          (row (gethash old-key edmacs-agents--table)))
     (when row
       (edmacs-agents--remove old-key)
       (setf (edmacs-agent-instance row) new-instance
-            (edmacs-agent-key row) (edmacs-agents--key truename-root new-instance)
-            (edmacs-agent-title row)
-            (or new-instance claude-term-registry--default-instance-label))
+            (edmacs-agent-key row) (edmacs-agents--key truename-root resolved-new)
+            (edmacs-agent-title row) resolved-new)
       (edmacs-agents--upsert row))))
 
 (add-hook 'claude-term-registry-create-functions #'claude-term-agents--on-create)
@@ -198,17 +232,17 @@ No-op for a buffer that is not a claude-term session -- `claude-term--root'
 is buffer-local and nil for any other ghostel buffer, so this guards
 itself without a separate buffer-name check -- or one with no row
 registered yet (e.g. a progress report racing ahead of the registry
-`put'). INSTANCE may legitimately be nil (the default, non-multi-instance
-session), so it is bound with a plain `let', not folded into the
-`when-let*' chain -- `when-let*' would otherwise treat that nil the
-same as a genuinely absent binding and silently drop this whole
-feature for the common single-session case. Only a `set' report against
-a row currently `working' renders a suffix; every other STATE (or a
-non-`working' row) strips any existing suffix back to the bare title
-instead. Pure hash lookups and one `setf' -- no redraw, no subprocess --
-since this runs synchronously on ghostel's VT-parser callpath."
+`put'). `claude-term--instance' may legitimately be nil (the default,
+non-multi-instance session), so it is run through
+`claude-term-agents--normalize-instance' before the lookup -- the row
+was stored under that normalized key by `claude-term-agents--on-create',
+not under a bare nil. Only a `set' report against a row currently
+`working' renders a suffix; every other STATE (or a non-`working' row)
+strips any existing suffix back to the bare title instead. Pure hash
+lookups and one `setf' -- no redraw, no subprocess -- since this runs
+synchronously on ghostel's VT-parser callpath."
   (when-let* ((root claude-term--root))
-    (let* ((instance claude-term--instance)
+    (let* ((instance (claude-term-agents--normalize-instance claude-term--instance))
            (row (gethash (edmacs-agents--key root instance) edmacs-agents--table)))
       (when row
         (let ((base (claude-term-agents--strip-progress-suffix (edmacs-agent-title row))))

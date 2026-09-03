@@ -139,6 +139,20 @@ leaves a stubbed workmux row under the same root untouched."
                                                    edmacs-agents--table)))))
         (kill-buffer buf)))))
 
+(ert-deftest claude-term-agents-test-on-remove-nil-instance-finds-normalized-row ()
+  "Removing with a nil INSTANCE (the default session ending) must find
+the row `claude-term-agents--on-create' stored under the normalized
+key, not under a literal nil the row was never keyed by."
+  (claude-term-agents-test--with-clean-state
+    (let* ((root "/repo/wt/")
+           (buf (generate-new-buffer "claude-term-agents-test-buf")))
+      (unwind-protect
+          (progn
+            (claude-term-agents--on-create root nil buf)
+            (claude-term-agents--on-remove root nil)
+            (should (= 0 (hash-table-count edmacs-agents--table))))
+        (kill-buffer buf)))))
+
 (ert-deftest claude-term-agents-test-on-remove-unknown-key-is-a-no-op ()
   "Removing a ROOT/INSTANCE with no matching row does not error -- a
 session killed while a status update against the same row races."
@@ -247,6 +261,81 @@ row; a workmux row under the same root is byte-identical afterward."
                                                  edmacs-agents--table))))
         (kill-buffer buf)))))
 
+(ert-deftest claude-term-agents-test-on-create-default-instance-key-agrees-with-hook ()
+  "A session launched with no INSTANCE (nil) is what
+`claude-term-registry--set-instance-env' always resolves to
+`claude-term-registry--default-instance-label' \(never leaves
+`EDMACS_AGENT_INSTANCE' unset\), so the ported status hook always calls
+`edmacs-agents-set-status' with that literal string, never with nil.
+The row `claude-term-agents--on-create' stores for a nil INSTANCE must
+therefore already be keyed under that label, so the very first status
+update the hook sends UPDATES this row instead of creating a second,
+`:source' nil phantom one alongside it."
+  (claude-term-agents-test--with-clean-state
+    (let* ((root "/repo/wt/")
+           (buf (generate-new-buffer "claude-term-agents-test-buf")))
+      (unwind-protect
+          (progn
+            (claude-term-agents--on-create root nil buf)
+            (should (= 1 (hash-table-count edmacs-agents--table)))
+            (edmacs-agents-set-status root 'waiting
+                                       claude-term-registry--default-instance-label)
+            ;; Still exactly one row -- the hook's update landed on the
+            ;; adapter's own row, not a freshly fabricated one.
+            (should (= 1 (hash-table-count edmacs-agents--table)))
+            (let ((row (gethash (edmacs-agents--key
+                                  root claude-term-registry--default-instance-label)
+                                 edmacs-agents--table)))
+              (should row)
+              (should (eq (edmacs-agent-source row) 'claude-term))
+              (should (eq (edmacs-agent-locator row) buf))
+              (should (eq (edmacs-agent-status row) 'waiting))))
+        (kill-buffer buf)))))
+
+(ert-deftest claude-term-agents-test-on-create-nil-instance-keeps-raw-instance-field ()
+  "The row's stored INSTANCE field stays the raw nil `claude-term-registry-put'
+was actually called with -- not the normalized display label used for
+the KEY/TITLE -- because `edmacs-sidebar-agents--claude-term-session'
+feeds this field straight into `claude-term-registry-get', whose own
+key (`claude-term-registry--key') is never normalized: a default
+session is registered, and stays registered, under a literal nil."
+  (claude-term-agents-test--with-clean-state
+    (let* ((root "/repo/wt/")
+           (buf (generate-new-buffer "claude-term-agents-test-buf")))
+      (unwind-protect
+          (progn
+            (claude-term-agents--on-create root nil buf)
+            (let ((row (gethash (edmacs-agents--key
+                                  root claude-term-registry--default-instance-label)
+                                 edmacs-agents--table)))
+              (should row)
+              (should-not (edmacs-agent-instance row))
+              (should (equal (edmacs-agent-title row)
+                              claude-term-registry--default-instance-label))))
+        (kill-buffer buf)))))
+
+(ert-deftest claude-term-agents-test-set-status-no-instance-sole-default-row-updates-it ()
+  "`edmacs-agents-set-status' called with NO instance argument at all,
+against a root with exactly one (default-instance) claude-term row,
+must resolve via that row's own KEY rather than its raw (nil) INSTANCE
+field -- deriving from the field would look up a key this row was
+never stored under and spawn a duplicate, the same class of bug as the
+hook-driven case this phase closes."
+  (claude-term-agents-test--with-clean-state
+    (let* ((root "/repo/wt/")
+           (buf (generate-new-buffer "claude-term-agents-test-buf")))
+      (unwind-protect
+          (progn
+            (claude-term-agents--on-create root nil buf)
+            (edmacs-agents-set-status root 'working)
+            (should (= 1 (hash-table-count edmacs-agents--table)))
+            (let ((row (gethash (edmacs-agents--key
+                                  root claude-term-registry--default-instance-label)
+                                 edmacs-agents--table)))
+              (should row)
+              (should (eq (edmacs-agent-status row) 'working))))
+        (kill-buffer buf)))))
+
 (ert-deftest claude-term-agents-test-set-status-remove-deletes-targeted-row-only ()
   "`edmacs-agents-set-status' with STATUS `remove' deletes exactly the
 resolved row (the fix for the internal enum gap this phase closes) and
@@ -302,8 +391,15 @@ let-bound) `edmacs-agents--table'."
              (setq-local claude-term--root ,root-var)
              (setq-local claude-term--instance ,instance-var)
              (claude-term-agents--on-create ,root-var ,instance-var buf)
-             (setf (edmacs-agent-status (gethash (edmacs-agents--key ,root-var ,instance-var)
-                                                  edmacs-agents--table))
+             ;; The row is keyed by the NORMALIZED instance (see
+             ;; `claude-term-agents--on-create'), which differs from a
+             ;; nil INSTANCE-VAR -- look it up the same way
+             ;; `claude-term-agents--update-progress-title' does.
+             (setf (edmacs-agent-status
+                    (gethash (edmacs-agents--key
+                              ,root-var
+                              (claude-term-agents--normalize-instance ,instance-var))
+                             edmacs-agents--table))
                    ,status)
              ,@body)
          (kill-buffer buf)))))
@@ -330,8 +426,10 @@ rendering anything at all."
     (claude-term-agents-test--with-fake-session "/repo/wt/" nil 'working
       (claude-term-agents--update-progress-title 'set 42)
       (should (equal (format "%s 42%%" claude-term-registry--default-instance-label)
-                      (edmacs-agent-title (gethash (edmacs-agents--key "/repo/wt/" nil)
-                                                    edmacs-agents--table)))))))
+                      (edmacs-agent-title
+                       (gethash (edmacs-agents--key
+                                 "/repo/wt/" claude-term-registry--default-instance-label)
+                                edmacs-agents--table)))))))
 
 (ert-deftest claude-term-agents-test-progress-repeated-set-replaces-not-accumulates ()
   (claude-term-agents-test--with-clean-state

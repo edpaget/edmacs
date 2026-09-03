@@ -203,7 +203,14 @@ shared definition of that rule."
           (or instance
               (cond
                ((null matches) "default")
-               ((null (cdr matches)) (edmacs-agent-instance (car matches)))
+               ;; The sole row's own KEY, not its INSTANCE field, is the
+               ;; authority for what it is actually stored under: a
+               ;; claude-term row's INSTANCE can be raw/nil while its KEY
+               ;; is normalized to the display label (see
+               ;; claude-term-agents.el's `claude-term-agents--on-create'),
+               ;; so deriving from INSTANCE here could look up a key this
+               ;; row was never stored under and spawn a duplicate.
+               ((null (cdr matches)) (cdr (edmacs-agent-key (car matches))))
                (t (user-error
                    "edmacs-agents: multiple agents under %s; specify INSTANCE" root)))))
          (key (edmacs-agents--key root resolved-instance)))
