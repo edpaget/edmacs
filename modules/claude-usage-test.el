@@ -740,20 +740,38 @@ check, so this never silently hides a real bug."
     ;; unchanged
     ;; ==========================================================================
 
-    ;; Captured shape: the phase that added this fetch verified (2026-09-03,
-    ;; against the real endpoint) that a live response is the bare
-    ;; utilization object -- the same normalized `limits[]' array
-    ;; `claude-usage--read-cache' already reads out of the on-disk cache.
-    ;; This fixture's bytes are reconstructed to match that verified shape
-    ;; (three `limits[]' entries, one carrying `scope.model.display_name')
-    ;; rather than pasted from a live capture: this dispatch has neither
-    ;; keychain nor network access. Capture-date lineage: 2026-09-03.
+    ;; NOT a literal capture -- disclosed, not silently assumed. These bytes
+    ;; are reconstructed to match the shape verified by hand against the
+    ;; real endpoint on 2026-09-03 (see this phase's Context): a live
+    ;; response is the bare utilization object, carrying `five_hour',
+    ;; `seven_day', the per-model `seven_day_*' keys, AND the same
+    ;; normalized `limits[]' array `claude-usage--read-cache' already reads
+    ;; from the on-disk cache -- this fixture now includes all of those
+    ;; top-level keys, not just `limits[]', so the parse path is exercised
+    ;; against the full verified shape. What it is still not: bytes pasted
+    ;; from an actual response. Producing that requires a real bearer token
+    ;; off the login keychain, and this suite runs inside an automated
+    ;; dispatch whose auto-mode classifier hard-denies keychain reads
+    ;; (`security find-generic-password ...') outright -- the same
+    ;; restriction `claude-usage--access-token's docstring calls out for
+    ;; the deferred-refresh path, but here it blocks the *test author* too.
+    ;; Swapping in a literal capture (`curl -sD- -H "Authorization: Bearer
+    ;; $TOKEN" https://api.anthropic.com/api/oauth/usage`, run by hand with
+    ;; a real unlocked keychain) and updating this comment with the true
+    ;; capture date remains outstanding manual work; see the commit message.
     (defconst claude-usage-test--fixture-real-response
       (concat
        "HTTP/1.1 200 OK\r\n"
        "Content-Type: application/json\r\n"
        "\r\n"
-       "{\"limits\":["
+       "{\"five_hour\":{\"utilization\":45,\"severity\":\"normal\","
+       "\"resets_at\":\"2026-09-03T20:00:00Z\",\"limit_dollars\":10.0,"
+       "\"used_dollars\":4.5,\"remaining_dollars\":5.5},"
+       "\"seven_day\":{\"utilization\":62,\"severity\":\"warning\","
+       "\"resets_at\":\"2026-09-07T00:00:00Z\",\"limit_dollars\":100.0,"
+       "\"used_dollars\":62.0,\"remaining_dollars\":38.0},"
+       "\"seven_day_opus\":null,\"seven_day_sonnet\":null,"
+       "\"limits\":["
        "{\"kind\":\"session\",\"percent\":45,\"severity\":\"normal\","
        "\"resets_at\":\"2026-09-03T20:00:00Z\",\"limit_dollars\":10.0,"
        "\"used_dollars\":4.5,\"remaining_dollars\":5.5},"
@@ -766,8 +784,10 @@ check, so this never silently hides a real bug."
        "\"scope\":{\"model\":{\"id\":\"claude-opus-4-1\","
        "\"display_name\":\"Claude 3.5 Opus\"}}}"
        "],\"extra_usage\":0.0,\"spend\":110.5}")
-      "A captured-shape HTTP response from GET /api/oauth/usage. See the
-comment above for capture-date lineage and reconstruction rationale.")
+      "A reconstructed (not literally captured) HTTP response from GET
+/api/oauth/usage, covering the full verified shape (five_hour, seven_day,
+seven_day_opus, seven_day_sonnet, limits). See the comment above for why
+it is not a literal capture and what remains outstanding.")
 
     (ert-deftest claude-usage-test-parse-fetch-buffer-feeds-meters-unchanged ()
       "`claude-usage--parse-fetch-buffer's own parse path, run against the
@@ -787,6 +807,13 @@ expect from the on-disk cache -- unchanged."
                               (cons 'accountUuid nil)
                               (cons 'utilization body)))
              (meters (claude-usage-meters envelope)))
+        ;; The parse path handles the full verified response shape --
+        ;; five_hour/seven_day/seven_day_* alongside limits[] -- without
+        ;; erroring, and `claude-usage-meters' correctly prefers `limits[]'
+        ;; over the legacy top-level keys when both are present.
+        (should (alist-get 'five_hour body))
+        (should (alist-get 'seven_day body))
+        (should (null (alist-get 'seven_day_opus body)))
         (should (= (length meters) 3))
         (should (eq (plist-get (nth 0 meters) :id) 'session))
         (should (= (plist-get (nth 0 meters) :percent) 45))
