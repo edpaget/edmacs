@@ -310,7 +310,7 @@ For fallback, reads `utilization' (already 0-100). Preserves
 
 (define-derived-mode claude-usage-mode magit-section-mode "Claude-Usage"
   "Major mode for the `*claude-usage*' buffer, showing Claude CLI usage meters."
-  (setq revert-buffer-function #'claude-usage--revert)
+  (setq-local revert-buffer-function #'claude-usage--revert)
   (when (fboundp 'evil-set-initial-state)
     (evil-set-initial-state 'claude-usage-mode 'motion)))
 

@@ -492,6 +492,18 @@ eventually go stale/wrong as real time passes."
         (claude-usage-mode)
         (should (eq revert-buffer-function #'claude-usage--revert))))
 
+    (ert-deftest claude-usage-test-revert-buffer-function-does-not-leak-globally ()
+      "Regression test: `claude-usage-mode' must set `revert-buffer-function'
+buffer-locally. A plain `setq' on it mutates the variable's *global*
+default, so activating the mode once would silently redirect an
+unrelated buffer's later `revert-buffer' into `claude-usage--redraw',
+erasing that buffer's real contents."
+      (with-temp-buffer
+        (claude-usage-mode))
+      (with-temp-buffer
+        (should-not (local-variable-p 'revert-buffer-function))
+        (should-not (eq revert-buffer-function #'claude-usage--revert))))
+
     (ert-deftest claude-usage-test-g-and-q-resolve-through-real-evil-keymaps ()
       "Regression test for the g/q-shadowed-by-evil-motion-state fix.
 A plain `define-key' on `claude-usage-mode-map' alone is invisible to
