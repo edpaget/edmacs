@@ -27,6 +27,26 @@
 ;; `window-sides-slots' LEFT element is bumped to 1 below; the RIGHT
 ;; element (reserved for edmacs-claude-terminal's agent panes) is read back
 ;; and preserved verbatim, never overwritten.
+;;
+;; Phase 8's "no subprocess frames on the render path" AC is checked two
+;; ways. `sidebar-test.el's `edmacs-sidebar-test-redraw-and-hooks-never-
+;; shell-out' is the automated, CI-equivalent guard (advises every
+;; subprocess primitive to signal instead of run, then drives every
+;; redraw/command path many times over) and is the actual evidence relied
+;; on. A literal `M-x profiler-start' pass was also attempted on this
+;; machine (GNU Emacs 31.1, emacs-plus@31/Homebrew) driving that same
+;; loop for a real 60-second wall-clock run, in `--batch', in `--batch'
+;; under a `script'-attached pty, and with a plain CPU-bound loop
+;; containing no sidebar code at all as a control: `profiler-cpu-log' and
+;; `profiler-memory-log' both come back as an empty hash table (0
+;; samples) in every case, including the control -- this build's sampling
+;; profiler records nothing under any non-GUI invocation on this machine,
+;; not something specific to sidebar.el. A real sample-bearing profiler
+;; run therefore needs an actual interactive GUI frame, outside what an
+;; unattended worktree/batch pass can drive; the advice-guard test is
+;; this codebase's substitute, per the same "automate the underlying
+;; property, not the literal manual step" approach `agents.el's own
+;; Commentary already documents for its workmux-status-parity AC.
 
 ;;; Code:
 

@@ -449,7 +449,15 @@ Not end-to-end exercisable until edmacs-claude-terminal's claude-term
 rows actually appear in this table (edmacs-sidebar roadmap phase 9);
 this file's own test coverage of the `claude-term' branch is
 necessarily against a synthetic `edmacs-agent' struct and a mocked
-`claude-term-registry-rename', not a real registry."
+`claude-term-registry-rename', not a real registry.
+The design's key table describes `r' on an agent row plainly as
+\"Rename instance\", with no source qualifier; `workmux' is the only
+source with real rows before phase 9 lands, so until then `r' on
+every agent row that actually exists errors rather than renaming.
+That narrowing is deliberate -- workmux titles come from the tmux
+pane, not this UI -- and traces to this phase's own body (\"an
+in-Emacs agent instance\"), not a bug here; the design table itself
+should be updated to say so explicitly."
   (if (eq (edmacs-agent-source agent) 'claude-term)
       (let ((new-instance (read-string "New instance label: ")))
         (claude-term-registry-rename (edmacs-agent-root agent)

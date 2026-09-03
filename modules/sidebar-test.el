@@ -1233,6 +1233,79 @@ no-op for a frame with no live sidebar window shown."
           (set-frame-parameter frame 'name original-name)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
+    ;; ==========================================================================
+    ;; Tab/worktree marker glyphs: nerd-icons with a plain-text fallback
+    ;; (phase 8, AC2) -- same coverage pattern as
+    ;; `edmacs-sidebar-agents-test-glyph-*' and
+    ;; `edmacs-sidebar-buffers-test-visible-glyph-*' for their own glyphs.
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-glyph-fallback-plain-unicode ()
+      "With no `nerd-icons', every kind falls back to its plain marker."
+      (should (equal "●" (edmacs-sidebar--glyph 'current-tab)))
+      (should (equal "○" (edmacs-sidebar--glyph 'open-tab)))
+      (should (equal "⋯" (edmacs-sidebar--glyph 'no-tab)))
+      (should (equal "?" (edmacs-sidebar--glyph 'some-unknown-kind))))
+
+    (ert-deftest edmacs-sidebar-test-glyph-prefers-nerd-icons-when-available ()
+      "When `nerd-icons' is (simulated) present, its icon wins over the
+plain fallback."
+      (cl-letf (((symbol-function 'nerd-icons-octicon)
+                 (lambda (name) (format "NERD-%s" name)))
+                ((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons))))
+        (should (equal "NERD-nf-oct-arrow_right" (edmacs-sidebar--glyph 'current-tab)))
+        (should (equal "NERD-nf-oct-circle" (edmacs-sidebar--glyph 'open-tab)))
+        (should (equal "NERD-nf-oct-dash" (edmacs-sidebar--glyph 'no-tab)))))
+
+    (ert-deftest edmacs-sidebar-test-glyph-nerd-icon-error-falls-back ()
+      "A `nerd-icons' call that errors falls back to plain text, never signals."
+      (cl-letf (((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
+                ((symbol-function 'fboundp) (lambda (f) (eq f 'nerd-icons-octicon)))
+                ((symbol-function 'nerd-icons-octicon) (lambda (_name) (error "boom"))))
+        (should (equal "●" (edmacs-sidebar--glyph 'current-tab)))))
+
+    (ert-deftest edmacs-sidebar-test-glyph-force-text-overrides-nerd-icons ()
+      (cl-letf (((symbol-function 'nerd-icons-octicon) (lambda (_name) "NERD-ARROW"))
+                ((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
+                ((symbol-function 'fboundp) (lambda (f) (eq f 'nerd-icons-octicon)))
+                (edmacs-sidebar-force-text-glyphs t))
+        (should (equal "●" (edmacs-sidebar--glyph 'current-tab)))))
+
+    ;; ==========================================================================
+    ;; Ellipsis truncation to the sidebar window's live width (phase 8, AC2/AC5)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-truncate-label-boundary ()
+      "A label exactly as wide as the window is left untouched; one
+character over gets truncated with a trailing … so the result is still
+exactly WIDTH characters wide; no live sidebar window falls back to the
+frame's remembered width, then `edmacs-sidebar-width'."
+      (let ((frame (selected-frame)))
+        (should-not (edmacs-sidebar--window frame))
+        (unwind-protect
+            (let ((edmacs-sidebar-width 10))
+              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+              (should (equal "0123456789" (edmacs-sidebar--truncate-label "0123456789" frame)))
+              (should (equal "012345678…" (edmacs-sidebar--truncate-label "0123456789X" frame)))
+              (should (= 10 (length (edmacs-sidebar--truncate-label "0123456789X" frame))))
+              (set-frame-parameter frame 'edmacs-sidebar-remembered-width 5)
+              (should (equal "0123…" (edmacs-sidebar--truncate-label "0123456789" frame))))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil))))
+
+    (ert-deftest edmacs-sidebar-test-truncate-label-uses-live-window-width ()
+      "Once the sidebar window is live, truncation keys off its current
+width, not the static `edmacs-sidebar-width' default -- a widened
+sidebar must not keep truncating to the old default."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show frame)
+              (let* ((window (edmacs-sidebar--window frame))
+                     (width (window-width window))
+                     (long (make-string (+ width 5) ?x)))
+                (should (= width (length (edmacs-sidebar--truncate-label long frame))))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-test.el ends here
