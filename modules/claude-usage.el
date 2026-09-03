@@ -72,7 +72,9 @@ Never signals an error."
             (progn
               (insert-file-contents cache-file)
               (goto-char (point-min))
-              (let ((parsed (json-parse-buffer :object-type 'alist)))
+              (let ((parsed (json-parse-buffer :object-type 'alist
+                                               :array-type 'list
+                                               :null-object nil)))
                 (alist-get 'cachedUsageUtilization parsed)))
           (error nil))))))
 

@@ -80,8 +80,8 @@
      (spend . 58.0)))
   "Fallback payload with five_hour and seven_day instead of limits.")
 
-;; Payload with null values
-(defconst claude-usage-test--fixture-null-values
+;; Payload with null values in fallback keys
+(defconst claude-usage-test--fixture-null-values-fallback
   '((cachedUsageUtilization
      (fetchedAtMs . 1725274680000)
      (accountUuid . "test-uuid-789")
@@ -109,7 +109,42 @@
       (remaining_dollars . 12.5))
      (extra_usage . 0.0)
      (spend . 90.0)))
-  "Payload with null values for opus but present sonnet.")
+  "Fallback payload with null values for opus but present sonnet.")
+
+;; Payload with limits array containing null utilization entries
+(defconst claude-usage-test--fixture-null-values-in-limits
+  '((cachedUsageUtilization
+     (fetchedAtMs . 1725274680000)
+     (accountUuid . "test-uuid-999")
+     (limits .
+             (((kind . "session")
+               (utilization . 0.35)
+               (severity . "normal")
+               (resets_at . "2026-09-03T20:00:00Z")
+               (limit_dollars . 10.0)
+               (used_dollars . 3.5)
+               (remaining_dollars . 6.5))
+              ((kind . "weekly_all")
+               (utilization . nil)
+               (severity . "normal")
+               (resets_at . "2026-09-07T00:00:00Z")
+               (limit_dollars . 100.0)
+               (used_dollars . 0.0)
+               (remaining_dollars . 100.0))
+              ((kind . "weekly_scoped")
+               (utilization . 0.80)
+               (severity . "warning")
+               (resets_at . "2026-09-07T00:00:00Z")
+               (limit_dollars . 50.0)
+               (used_dollars . 40.0)
+               (remaining_dollars . 10.0)
+               (scope
+                (model
+                 (id . "claude-sonnet-4")
+                 (display_name . "Claude 3.5 Sonnet"))))))
+     (extra_usage . 0.0)
+     (spend . 43.5)))
+  "Limits array with null utilization in one entry (weekly_all).")
 
 ;;; Tests
 
@@ -161,34 +196,59 @@
       (should (string-equal (plist-get m2 :label) "Week (all)"))
       (should (= (plist-get m2 :percent) 55)))))
 
-(ert-deftest claude-usage-test-meters-null-values ()
-  "Null utilization values should be skipped."
-  (let* ((cache (alist-get 'cachedUsageUtilization claude-usage-test--fixture-null-values))
+(ert-deftest claude-usage-test-meters-null-values-fallback ()
+  "Null utilization in fallback keys should be skipped."
+  (let* ((cache (alist-get 'cachedUsageUtilization claude-usage-test--fixture-null-values-fallback))
          (meters (claude-usage-meters cache)))
     ;; Should have 2 meters (five_hour and seven_day, but not seven_day_opus which is nil)
-    ;; Actually, in this fixture, we don't have a limits array, so we fall back to
-    ;; the five_hour/seven_day case.
+    ;; This fixture has no limits array, so we fall back to the five_hour/seven_day case.
     (should (= (length meters) 2))))
+
+(ert-deftest claude-usage-test-meters-null-values-in-limits ()
+  "Null utilization within limits array should be skipped."
+  (let* ((cache (alist-get 'cachedUsageUtilization claude-usage-test--fixture-null-values-in-limits))
+         (meters (claude-usage-meters cache)))
+    ;; Should have 2 meters (session and weekly_scoped), but not weekly_all which has nil utilization
+    (should (= (length meters) 2))
+
+    ;; First meter: session
+    (let ((m1 (nth 0 meters)))
+      (should (eq (plist-get m1 :id) 'session))
+      (should (string-equal (plist-get m1 :label) "Session (5h)"))
+      (should (= (plist-get m1 :percent) 35)))
+
+    ;; Second meter: weekly_scoped (skipping the nil weekly_all)
+    (let ((m2 (nth 1 meters)))
+      (should (string-equal (plist-get m2 :id) "weekly_scoped"))
+      (should (string-match "Week (Claude 3.5 Sonnet)" (plist-get m2 :label)))
+      (should (= (plist-get m2 :percent) 80)))))
 
 (ert-deftest claude-usage-test-read-cache-missing-file ()
   "Reading a non-existent cache file should return nil without signalling."
-  ;; We can't easily test with a real missing file without mocking the
-  ;; file system. Just verify that calling the function doesn't crash
-  ;; even with the default path check.
-  (let ((result (claude-usage--read-cache)))
-    ;; Result should be nil or an alist-like structure
-    (should (or (null result) (listp result)))))
+  ;; Bind to a path that definitely doesn't exist
+  (let ((claude-usage-cache-file "/nonexistent/path/.claude.json"))
+    (let ((result (claude-usage--read-cache)))
+      ;; Result must be nil when file doesn't exist
+      (should (null result)))))
 
 (ert-deftest claude-usage-test-read-cache-malformed-json ()
   "Reading malformed JSON should return nil without signalling."
-  (let ((result (with-temp-buffer
-                  (insert "{invalid json")
-                  (goto-char (point-min))
-                  (condition-case nil
-                      (json-parse-buffer :object-type 'alist)
-                    (error nil)))))
-    ;; Verify that malformed JSON doesn't crash
-    (should (null result))))
+  ;; Create a temporary file with malformed JSON
+  (let ((temp-file (make-temp-file "claude-usage-test" nil ".json")))
+    (unwind-protect
+        (progn
+          ;; Write malformed JSON to the temp file
+          (with-temp-buffer
+            (insert "{invalid json")
+            (write-region (point-min) (point-max) temp-file))
+          ;; Bind claude-usage-cache-file to the temp file and call the function
+          (let ((claude-usage-cache-file temp-file))
+            (let ((result (claude-usage--read-cache)))
+              ;; Should return nil without signalling
+              (should (null result)))))
+      ;; Clean up the temp file
+      (when (file-exists-p temp-file)
+        (delete-file temp-file)))))
 
 (ert-deftest claude-usage-test-format-reset-fixed-timestamp ()
   "Format reset with fixed timestamp should produce consistent output."
