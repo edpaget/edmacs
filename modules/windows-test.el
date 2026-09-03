@@ -1104,4 +1104,114 @@ kill-buffer call."
           (dolist (b (list buf0 buf1 buf2 buf3))
             (when (buffer-live-p b) (kill-buffer b))))))))
 
+;; ============================================================================
+;; Catch-all tiling (phase 5)
+;; ============================================================================
+
+(ert-deftest edmacs-windows-test-fallback-routes-unrouted-buffer-to-right-slot-minus-1 ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "*ewt-anything*"))
+          (nonside-count (edmacs-windows-test--nonside-count)))
+      (unwind-protect
+          (let ((win (display-buffer buf)))
+            (should (eq (window-parameter win 'window-side) 'right))
+            (should (equal (window-parameter win 'window-slot) -1))
+            (should (= (edmacs-windows-test--nonside-count) nonside-count)))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-other-window-shape-lands-in-stack ()
+  ;; `find-file-other-window'/`xref-find-definitions-other-window'/
+  ;; `switch-to-buffer-other-window' all reduce to `(display-buffer buf t)'
+  ;; in Emacs 31.1, which `display-buffer' turns into action nil plus
+  ;; `(inhibit-same-window . t)'; there is no `display-buffer--other-window-
+  ;; action' constant in this version.
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "*ewt-other-window*")))
+      (unwind-protect
+          (let ((win (display-buffer buf '(nil (inhibit-same-window . t)))))
+            (should (window-parameter win 'window-side)))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-switch-to-buffer-obey-display-actions-stays-nil ()
+  (should-not switch-to-buffer-obey-display-actions))
+
+(ert-deftest edmacs-windows-test-switch-to-buffer-in-main-does-not-move-window ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((main (selected-window))
+          (other-buf (generate-new-buffer "*ewt-switch-target*")))
+      (unwind-protect
+          (progn
+            (edmacs-window-set-main main)
+            (switch-to-buffer other-buf)
+            (should (eq (selected-window) main))
+            (should (eq (window-buffer main) other-buf)))
+        (kill-buffer other-buf)))))
+
+(ert-deftest edmacs-windows-test-base-action-fallback-excludes-pop-up-window ()
+  (should-not (memq #'display-buffer-pop-up-window (car display-buffer-base-action))))
+
+(ert-deftest edmacs-windows-test-center-reuse-p-excludes-other-window-commands ()
+  (let ((this-command 'find-file-other-window))
+    (should-not (edmacs-windows--center-reuse-p nil nil))))
+
+(ert-deftest edmacs-windows-test-center-reuse-p-includes-plain-file-commands ()
+  (let ((this-command 'find-file))
+    (should (edmacs-windows--center-reuse-p nil nil))))
+
+(ert-deftest edmacs-windows-test-dired-mode-buffer-stays-center ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "*ewt-dired-stand-in*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf (setq major-mode 'dired-mode))
+            (should-not (window-parameter (display-buffer buf) 'window-side)))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-magit-status-mode-buffer-stays-center ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "*ewt-magit-status-stand-in*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf (setq major-mode 'magit-status-mode))
+            (should-not (window-parameter (display-buffer buf) 'window-side)))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-shell-buffer-gets-fixed-slot-and-resists-eviction ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((shell-buf (edmacs-windows-test--fresh-named-buffer "*shell*"))
+          (popup-buf (generate-new-buffer "*ewt-generic-popup*")))
+      (unwind-protect
+          (let ((shell-win (display-buffer shell-buf)))
+            (should (equal (window-parameter shell-win 'window-slot) -2))
+            (display-buffer popup-buf)
+            (should (window-live-p shell-win))
+            (should (eq (window-buffer shell-win) shell-buf)))
+        (kill-buffer popup-buf)
+        (when (buffer-live-p shell-buf) (kill-buffer shell-buf))))))
+
+(ert-deftest edmacs-windows-test-pin-skips-occupied-fixed-slot ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((fixed-buf (generate-new-buffer "*ewt-fixed-minus-2*"))
+          (popup-buf (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
+          (edmacs-stack--next-pin-slot -2))
+      (unwind-protect
+          (progn
+            ;; Simulate the cider/*shell* fixed placement at slot -2 out of
+            ;; band, without going through display-buffer-alist.
+            (display-buffer-in-side-window fixed-buf (edmacs-stack--popup-alist -2))
+            (let ((popup-win (display-buffer popup-buf)))
+              (should (equal (window-parameter popup-win 'window-slot) -1))
+              (edmacs-stack-pin popup-win)
+              (let ((pinned (get-buffer-window popup-buf t)))
+                (should (equal (window-parameter pinned 'window-slot) -3)))))
+        (dolist (b (list fixed-buf popup-buf))
+          (when (buffer-live-p b) (kill-buffer b)))))))
+
 ;;; windows-test.el ends here

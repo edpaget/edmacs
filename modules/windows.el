@@ -7,6 +7,13 @@
 ;; looks a window up by parameter first and only falls back to designating
 ;; the top-left non-side window when nothing in the frame claims it yet.
 ;;
+;; `display-buffer-base-action' makes the stack the default destination for
+;; any `display-buffer' call that would otherwise pop up a window -- dwm's
+;; rule that the window manager, not the program, decides placement. A small
+;; `display-buffer-alist' allow-list ahead of that fallback keeps dired,
+;; magit-status, and plain (non-other-window) file commands reusing a
+;; manually-split center window instead.
+;;
 ;; This module owns the RIGHT element of `window-sides-slots' (nil, i.e.
 ;; uncapped); `modules/sidebar.el' owns LEFT and must never be clobbered by
 ;; this module or vice versa -- both use the same nth-rebuild
@@ -277,6 +284,58 @@ same template, registered display-buffer-alist entries included."
              (cons "\\`\\*Embark Collect \\(Live\\|Completions\\)\\*"
                    (edmacs-stack--popup-alist nil '((mode-line-format . none)))))
 
+;; ============================================================================
+;; Catch-all: display-buffer fallback (dwm default placement)
+;; ============================================================================
+
+;; The fallback chain for any unrouted `display-buffer' call: reuse a window
+;; already showing the buffer, else create it in the shared stack slot.
+;; `display-buffer-pop-up-window' never appears here, so an ordinary popup
+;; can no longer split the center -- and because
+;; `display-buffer-in-side-window' always succeeds (RIGHT is uncapped),
+;; Emacs's own `display-buffer-fallback-action' is never reached either.
+(setq display-buffer-base-action
+      (cons (list #'display-buffer-reuse-window #'display-buffer-in-side-window)
+            (cdr (edmacs-stack--popup-alist))))
+
+;; Flipping this to t would route `switch-to-buffer' through
+;; `display-buffer-base-action' above, moving main's buffer into the stack
+;; instead of swapping it in place -- pinned at the Emacs default so that
+;; can't happen by drift.
+(setq switch-to-buffer-obey-display-actions nil)
+
+(defcustom edmacs-windows-center-reuse-commands
+  '(find-file find-alternate-file revert-buffer)
+  "Commands whose buffer stays in a manually-split center window.
+Deliberately excludes the -other-window family (`find-file-other-window',
+`switch-to-buffer-other-window', `dired-other-window') and
+`xref-find-definitions-other-window' -- those must fall through to the
+stack via `display-buffer-base-action'."
+  :type '(repeat symbol)
+  :group 'windows)
+
+(defun edmacs-windows--center-reuse-p (_buffer _action)
+  "CONDITION for `display-buffer-alist': non-nil when `this-command' is in
+`edmacs-windows-center-reuse-commands'. A `display-buffer-alist' CONDITION
+function runs inside the triggering command, so `this-command' is bound."
+  (memq this-command edmacs-windows-center-reuse-commands))
+
+(add-to-list 'display-buffer-alist
+             (cons #'edmacs-windows--center-reuse-p
+                   '((display-buffer-reuse-window display-buffer-same-window))))
+
+;; Belt-and-braces: dired and magit-status are already same-window by their
+;; own display functions, but route them explicitly too.
+(dolist (mode '(dired-mode magit-status-mode))
+  (add-to-list 'display-buffer-alist
+               (cons (cons 'major-mode mode)
+                     '((display-buffer-reuse-window display-buffer-same-window)))))
+
+;; cider's REPL and the shell buffers get a fixed stack slot of their own so
+;; a generic popup at slot -1 can never evict them.
+(dolist (pattern '("\\`\\*cider-repl " "\\`\\*shell\\*\\'" "\\`\\*eshell\\*\\'"))
+  (add-to-list 'display-buffer-alist (cons pattern (edmacs-stack--popup-alist -2))))
+
 (defun edmacs-stack-windows ()
   "Return the selected frame's stack windows: right side windows, by slot."
   (sort (seq-filter (lambda (w) (eq (window-parameter w 'window-side) 'right))
@@ -302,9 +361,17 @@ Decrements on every call so repeated pins never collide with each other
 or with the shared popup slot -1.")
 
 (defun edmacs-stack--allocate-pin-slot ()
-  "Return the next unused pin slot and advance the counter."
-  (prog1 edmacs-stack--next-pin-slot
-    (setq edmacs-stack--next-pin-slot (1- edmacs-stack--next-pin-slot))))
+  "Return the next unused pin slot and advance the counter past it.
+Skips any slot already carried by a live stack window -- e.g. the fixed
+-2 slot cider/*shell* pin themselves to -- rather than handing out a
+slot `display-buffer-in-side-window' would just reuse instead of
+creating fresh."
+  (let ((used (mapcar (lambda (w) (window-parameter w 'window-slot))
+                       (edmacs-stack-windows))))
+    (while (memq edmacs-stack--next-pin-slot used)
+      (setq edmacs-stack--next-pin-slot (1- edmacs-stack--next-pin-slot)))
+    (prog1 edmacs-stack--next-pin-slot
+      (setq edmacs-stack--next-pin-slot (1- edmacs-stack--next-pin-slot)))))
 
 (defun edmacs-stack-pin (&optional window)
   "Relocate WINDOW's buffer out of the shared popup slot to its own slot.
