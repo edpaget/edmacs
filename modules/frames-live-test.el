@@ -26,7 +26,18 @@
 ;; while the identical watch fires immediately under a real `emacs
 ;; --daemon'. The preflight distinguishes that known `--batch'/kqueue gap
 ;; from an actual regression, and skips (rather than fails) when it can't
-;; be exercised here.
+;; be exercised here. Unlike the AC2/AC3/AC4/AC7/AC8 tests above, this one
+;; does NOT go through `edmacs-frames-live-test--with-frames': it only
+;; ever needs one frame, and forcing a second `(tty . "/dev/tty")' frame
+;; would fail outright under the very `emacs --daemon' environment the
+;; preflight requires (a daemon has no controlling terminal to open) --
+;; it uses the suite's ambient/selected frame instead, which
+;; `edmacs-frames-open' adopts as a spare. Manually verified green against
+;; a real, throwaway `emacs --daemon' (`emacsclient -e' driving
+;; `ert-run-test' directly): `git worktree add'/`remove' on a sandbox repo
+;; are reflected in `edmacs-worktrees-for-repo' within the 0.5s debounce
+;; window with `edmacs-frames--worktree-refresh-timers' draining back to
+;; empty, and no leftover watch after `edmacs-frames--teardown-worktrees-watch'.
 ;;
 ;; AC1/AC5 (the picker-seeding registrar in core.el) additionally load
 ;; core.el itself, standalone, with `straight-use-package' stubbed to a
@@ -817,46 +828,58 @@ suite from a real `emacs --daemon' or interactive session to exercise it"))
                (edmacs-frames--worktree-watches (make-hash-table :test #'equal))
                (edmacs-frames--worktree-refresh-timers (make-hash-table :test #'equal)))
           (edmacs-frames-live-test--make-git-repo repo)
-          (edmacs-frames-live-test--with-frames (frame)
-            (let (common)
-              (unwind-protect
-                  (progn
-                    (with-selected-frame frame (edmacs-frames-open repo))
-                    (setq common (edmacs-frames--repo-of repo))
-                    (unless (gethash common edmacs-frames--worktree-watches)
-                      (ert-skip "no file-notify watch was established for the \
+          ;; Deliberately NOT `edmacs-frames-live-test--with-frames': this
+          ;; test only ever needs ONE frame, and that macro's `make-frame'
+          ;; call with an explicit `(tty . "/dev/tty")' fails outright under
+          ;; a real `emacs --daemon' (no controlling terminal to open) --
+          ;; exactly the environment this test's own preflight is written to
+          ;; require. The suite's ambient/selected frame (there is always
+          ;; one; widened to 200x50 at load time above) is adopted as a
+          ;; spare by `edmacs-frames-open' instead, sidestepping the need
+          ;; for a second real terminal entirely.
+          (let ((frame (selected-frame)) common)
+            (unwind-protect
+                (progn
+                  (with-selected-frame frame (edmacs-frames-open repo))
+                  (setq common (edmacs-frames--repo-of repo))
+                  (unless (gethash common edmacs-frames--worktree-watches)
+                    (ert-skip "no file-notify watch was established for the \
 sandbox repo in this environment (backend unavailable?) -- cannot exercise \
 real add/remove reflection"))
-                    ;; Baseline: only the main worktree, from the synchronous
-                    ;; refresh `edmacs-frames-open' already ran.
-                    (should (= 1 (length (edmacs-worktrees-for-repo common))))
-                    (edmacs-frames-live-test--add-worktree repo wt)
-                    (should (edmacs-frames-live-test--wait-until
-                             (lambda () (assoc "wt-test" (edmacs-worktrees-for-repo common)))
-                             5.0))
-                    (should (= 2 (length (edmacs-worktrees-for-repo common))))
-                    ;; `git worktree add' writes several files under the new
-                    ;; worktree's `worktrees/<name>/' directory, so more than
-                    ;; one file-notify event -- and so more than one
-                    ;; reschedule of the debounce timer -- can land after the
-                    ;; `assoc' above already went true off an earlier one;
-                    ;; each reschedule still collapses to a single pending
-                    ;; timer (`edmacs-frames--schedule-worktrees-refresh'
-                    ;; cancels the old one first), so this settles to zero
-                    ;; shortly after, never accumulating a second entry --
-                    ;; the concrete "no polling timer" proof.
-                    (should (edmacs-frames-live-test--wait-until
-                             (lambda () (= 0 (hash-table-count
-                                               edmacs-frames--worktree-refresh-timers)))
-                             2.0))
-                    (should (<= (hash-table-count edmacs-frames--worktree-refresh-timers) 1))
-                    (edmacs-frames-live-test--remove-worktree repo wt)
-                    (should (edmacs-frames-live-test--wait-until
-                             (lambda () (not (assoc "wt-test" (edmacs-worktrees-for-repo common))))
-                             5.0))
-                    (should (= 1 (length (edmacs-worktrees-for-repo common)))))
-                (when common
-                  (ignore-errors (edmacs-frames--teardown-worktrees-watch common)))))))))
+                  ;; Baseline: only the main worktree, from the synchronous
+                  ;; refresh `edmacs-frames-open' already ran.
+                  (should (= 1 (length (edmacs-worktrees-for-repo common))))
+                  (edmacs-frames-live-test--add-worktree repo wt)
+                  (should (edmacs-frames-live-test--wait-until
+                           (lambda () (assoc "wt-test" (edmacs-worktrees-for-repo common)))
+                           5.0))
+                  (should (= 2 (length (edmacs-worktrees-for-repo common))))
+                  ;; `git worktree add' writes several files under the new
+                  ;; worktree's `worktrees/<name>/' directory, so more than
+                  ;; one file-notify event -- and so more than one
+                  ;; reschedule of the debounce timer -- can land after the
+                  ;; `assoc' above already went true off an earlier one;
+                  ;; each reschedule still collapses to a single pending
+                  ;; timer (`edmacs-frames--schedule-worktrees-refresh'
+                  ;; cancels the old one first), so this settles to zero
+                  ;; shortly after, never accumulating a second entry --
+                  ;; the concrete "no polling timer" proof.
+                  (should (edmacs-frames-live-test--wait-until
+                           (lambda () (= 0 (hash-table-count
+                                             edmacs-frames--worktree-refresh-timers)))
+                           2.0))
+                  (should (<= (hash-table-count edmacs-frames--worktree-refresh-timers) 1))
+                  (edmacs-frames-live-test--remove-worktree repo wt)
+                  (should (edmacs-frames-live-test--wait-until
+                           (lambda () (not (assoc "wt-test" (edmacs-worktrees-for-repo common))))
+                           5.0))
+                  (should (= 1 (length (edmacs-worktrees-for-repo common)))))
+              (when common
+                (ignore-errors (edmacs-frames--teardown-worktrees-watch common)))
+              (when (frame-live-p frame)
+                (let ((buf (edmacs-sidebar--buffer frame)))
+                  (when (buffer-live-p buf) (kill-buffer buf)))
+                (ignore-errors (set-frame-parameter frame 'edmacs-repo nil))))))))
 
     (provide 'frames-live-test)))
 ;;; frames-live-test.el ends here
