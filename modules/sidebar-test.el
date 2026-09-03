@@ -1155,6 +1155,36 @@ at all."
         (edmacs-sidebar-mode)
         (should-error (edmacs-sidebar-rename-at-point) :type 'user-error)))
 
+    (ert-deftest edmacs-sidebar-test-rename-at-point-renames-background-tab-not-current ()
+      "`r' on a *background* (non-current) tab's row renames that tab,
+never the frame's currently-selected tab -- the exact interaction J/K
+navigation exists to enable. `tab-bar-rename-tab' called interactively
+defaults TAB-NUMBER to the selected tab regardless of which row
+triggered the command, so this only passes if
+`edmacs-sidebar-rename-at-point' threads the row's own tab-number
+through explicitly instead of `call-interactively'-ing blind."
+      (edmacs-sidebar-test--with-extra-tab
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show (selected-frame))
+              ;; The newly-added tab is current, at index 1; point-min
+              ;; is the original (background) tab's row, at index 0.
+              (should (= 1 (tab-bar--current-tab-index)))
+              (let ((current-name-before (alist-get 'name (tab-bar--current-tab-find))))
+                (cl-letf (((symbol-function 'read-from-minibuffer)
+                           (lambda (&rest _) "edmacs-sidebar-test-bg-renamed")))
+                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                    (goto-char (point-min))
+                    (edmacs-sidebar-rename-at-point)))
+                ;; The background tab (index 0) got the new name...
+                (should (equal "edmacs-sidebar-test-bg-renamed"
+                                (alist-get 'name (nth 0 (tab-bar-tabs)))))
+                ;; ...and the still-current tab (index 1) is untouched.
+                (should (= 1 (tab-bar--current-tab-index)))
+                (should (equal current-name-before
+                                (alist-get 'name (tab-bar--current-tab-find))))))
+          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+
     (ert-deftest edmacs-sidebar-test-current-tab-and-worktree-closed-faces ()
       (let* ((current (tab-bar--current-tab-find))
              (root-alist (list (cons current "/repo/wt-open/")))

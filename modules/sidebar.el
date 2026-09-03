@@ -690,13 +690,24 @@ already dispatches on."
   "Rename the row at point: `tab-bar-rename-tab' on a tab row with an
 open tab, `edmacs-sidebar-agents-rename' (sidebar-agents.el) on an agent
 row. Every other row -- a tab-less worktree row, or no row at all --
-signals `user-error' instead."
+signals `user-error' instead.
+
+Always renames the tab whose row is under point, never the frame's
+currently-selected tab: `tab-bar-rename-tab' called interactively
+defaults TAB-NUMBER to the selected tab, which is wrong once J/K have
+moved point onto a background tab's row, so this passes the row's own
+tab-number through explicitly instead of using `call-interactively'."
   (interactive)
   (let ((section (magit-current-section)))
     (cond
      ((and section (eq (oref section type) 'edmacs-sidebar-tab))
-      (if (edmacs-sidebar--section-tab-number section)
-          (call-interactively #'tab-bar-rename-tab)
+      (if-let* ((tab-number (edmacs-sidebar--section-tab-number section)))
+          (let* ((tabs (funcall tab-bar-tabs-function))
+                 (tab-name (alist-get 'name (nth (1- tab-number) tabs)))
+                 (new-name (read-from-minibuffer
+                            "New name for tab (leave blank for automatic naming): "
+                            nil nil nil nil tab-name)))
+            (tab-bar-rename-tab new-name tab-number))
         (user-error "No tab to rename")))
      ((and section (eq (oref section type) 'edmacs-sidebar-agent) (slot-boundp section 'value))
       (edmacs-sidebar-agents-rename (oref section value)))

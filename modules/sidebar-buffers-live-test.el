@@ -16,6 +16,16 @@
 ;; `edmacs-frames--tab-root'), the same convention
 ;; sidebar-agents-live-test.el already uses for the same seam.
 ;;
+;; agents.el and sidebar-agents.el are ALSO loaded for real here, purely
+;; so one test (`edmacs-sidebar-live-test-composed-worktree-render-
+;; never-shell-out') can register a real agent alongside a real buffer
+;; and guard the composed render -- a worktree row with both the
+;; `agents' group and the buffer tree nested under it -- against any
+;; subprocess primitive. Neither sidebar-agents-test.el nor
+;; sidebar-buffers-test.el composes the other module in, and
+;; sidebar-test.el's own no-shellout guard loads sidebar.el alone, so
+;; this composed shape was otherwise never exercised under any guard.
+;;
 ;; A second real frame needs a controlling terminal -- absent under
 ;; plain `-Q --batch', present under `script -q /dev/null emacs -Q
 ;; --batch ...' -- so the two tests needing one (`per-frame-isolation',
@@ -109,6 +119,12 @@ worktree in a real Emacs session) to enable this suite"))
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar-buffers.el" default-directory) nil t)
+    ;; Also loaded here (not just in sidebar-agents-live-test.el) so this
+    ;; file can compose a real worktree render with BOTH sidebar-buffers.el's
+    ;; buffer tree and sidebar-agents.el's agent group nested under the same
+    ;; row -- see the composed no-shellout guard test below.
+    (load (expand-file-name "modules/agents.el" default-directory) nil t)
+    (load (expand-file-name "modules/sidebar-agents.el" default-directory) nil t)
 
     ;; ==========================================================================
     ;; Shared helpers
@@ -748,5 +764,80 @@ single-frame test cannot."
             (should-not (get-file-buffer a))
             (should-not (string-match-p "a\\.el"
                                         (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))))))
+
+    ;; ==========================================================================
+    ;; Composed render path -- worktree row + agent group + buffer tree,
+    ;; all nested together, under the same subprocess-signal guard as
+    ;; sidebar-test.el's `edmacs-sidebar-test-redraw-and-hooks-never-shell-out'.
+    ;; That suite's own Commentary loads sidebar.el alone, so it never
+    ;; registers sidebar-agents.el's/sidebar-buffers.el's
+    ;; `edmacs-sidebar-worktree-section-functions' hooks and never actually
+    ;; renders the nested sections a real repo frame does -- this file
+    ;; already loads sidebar.el + windows.el + bufferlo for real, and now
+    ;; agents.el + sidebar-agents.el too (above), so it can close that gap
+    ;; without inventing a fourth test file.
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-live-test-composed-worktree-render-never-shell-out ()
+      "Drives a real worktree row whose rendered section tree actually
+nests both sidebar-agents.el's `agents' group and sidebar-buffers.el's
+per-tab buffer tree -- the composed shape a real repo frame renders,
+which neither module's own pure suite (each loads only sidebar.el) nor
+this file's other tests (no agent ever registered) exercises under a
+subprocess guard. Deliberately excludes agent-visit/tmux-jump
+\(sidebar-agents.el's own documented `start-process' exception, already
+covered by its own tests\) and the worktree-refresh subprocess call
+\(frames.el, phase 3\) -- neither is reachable from this loop's own
+render/navigation/rename path."
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (let* ((a (edmacs-sidebar-buffers-live-test--write-file root "a.el"))
+                 (agent-key (edmacs-agents--key root "1"))
+                 (violations nil)
+                 (guarded '(call-process call-process-region process-file
+                            start-process start-file-process make-process)))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "repo" root)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+            (find-file a)
+            (puthash agent-key
+                     (make-edmacs-agent :key agent-key :root root :instance "1"
+                                         :status 'working :status-ts (float-time)
+                                         :updated-ts (float-time)
+                                         :title "composed-render-agent"
+                                         :source 'workmux :locator nil :unread nil)
+                     edmacs-agents--table)
+            (unwind-protect
+                (progn
+                  (edmacs-sidebar-show (selected-frame))
+                  ;; Confirm the composed shape is actually there before
+                  ;; guarding it -- a guard around a render that silently
+                  ;; skipped the nested sections would prove nothing.
+                  (let ((text (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                                (buffer-string))))
+                    (should (string-match-p "composed-render-agent" text))
+                    (should (string-match-p "a\\.el" text)))
+                  (dolist (fn guarded)
+                    (advice-add fn :before
+                                (lambda (&rest _) (push fn violations))
+                                `((name . ,(intern (format "edmacs-sidebar-live-test--guard-%s" fn))))))
+                  (cl-letf (((symbol-function 'read-from-minibuffer)
+                             (lambda (&rest _) "edmacs-sidebar-live-test-composed-renamed")))
+                    (dotimes (_ 50)
+                      (edmacs-sidebar--redraw (selected-frame))
+                      (edmacs-sidebar-redraw)
+                      (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                        (goto-char (point-min))
+                        (edmacs-sidebar-move-to-next-worktree)
+                        (edmacs-sidebar-move-to-prev-worktree)
+                        (edmacs-sidebar-rename-at-point))))
+                  (sleep-for 0.2)
+                  (sit-for 0)
+                  (should-not violations))
+              (dolist (fn guarded)
+                (advice-remove fn (intern (format "edmacs-sidebar-live-test--guard-%s" fn))))
+              (remhash agent-key edmacs-agents--table)
+              (ignore-errors (tab-bar-rename-tab "")))))))
 
     ))
