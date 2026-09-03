@@ -64,6 +64,39 @@
 (declare-function edmacs-frames--tab-root "frames")
 (declare-function edmacs-frames-open-worktree-tab "frames")
 
+;; sidebar-agents.el (phase 6) loads AFTER this file (init.el's
+;; `load-module' order); these two commands are only ever reached
+;; through the keymap below, resolved at keypress time.
+(declare-function edmacs-sidebar-agents-visit "sidebar-agents")
+(declare-function edmacs-sidebar-agents-toggle-all "sidebar-agents")
+
+;; ============================================================================
+;; Extension points for sidebar-agents.el (phase 6)
+;; ============================================================================
+;; Kept here, rather than sidebar.el reaching into sidebar-agents.el
+;; directly, so this file stays agent-agnostic -- exactly the same
+;; swappable-seam convention claude-term-registry.el uses for
+;; `claude-term-registry-state-accessor'.
+
+(defvar edmacs-sidebar-worktree-label-suffix-function #'ignore
+  "Function of one argument, a worktree ROOT (truename), returning a
+string to append to that worktree's own row label, or nil.
+sidebar-agents.el reassigns this to append its per-worktree agent
+count.")
+
+(defvar edmacs-sidebar-worktree-section-functions nil
+  "Hook run with (ROOT HAS-TAB) right after each worktree row is
+inserted in `edmacs-sidebar--redraw-worktrees' -- ROOT is that
+worktree's truename, HAS-TAB is non-nil when an open tab row was
+inserted (nil for a tab-less row). Lets sidebar-agents.el append its
+own `agents' child section immediately after the row, without this
+file needing to know anything about agents.")
+
+(defvar edmacs-sidebar-extra-section-functions nil
+  "Hook run with FRAME at the end of `edmacs-sidebar--redraw', after
+every other section. Lets sidebar-agents.el append its own
+frame-independent ALL AGENTS section.")
+
 ;; ============================================================================
 ;; Faces
 ;; ============================================================================
@@ -118,15 +151,17 @@ restore bridge."
 ;; evil's AUXILIARY-MAPS bucket, which wins over the main motion-state
 ;; map -- is exactly git.el's `git-timemachine-mode-map' pattern, safely
 ;; scoped to sidebar buffers only.
-(define-key edmacs-sidebar-mode-map (kbd "RET") #'edmacs-sidebar-activate)
+(define-key edmacs-sidebar-mode-map (kbd "RET") #'edmacs-sidebar-visit-at-point)
 (define-key edmacs-sidebar-mode-map (kbd "q") #'edmacs-sidebar-hide)
 (define-key edmacs-sidebar-mode-map (kbd "d") #'edmacs-sidebar-close-worktree)
+(define-key edmacs-sidebar-mode-map (kbd "a") #'edmacs-sidebar-agents-toggle-all)
 
 (with-eval-after-load 'evil
   (evil-define-key 'motion edmacs-sidebar-mode-map
-    (kbd "RET") #'edmacs-sidebar-activate
+    (kbd "RET") #'edmacs-sidebar-visit-at-point
     (kbd "q") #'edmacs-sidebar-hide
-    (kbd "d") #'edmacs-sidebar-close-worktree))
+    (kbd "d") #'edmacs-sidebar-close-worktree
+    (kbd "a") #'edmacs-sidebar-agents-toggle-all))
 
 ;; ============================================================================
 ;; Per-frame buffer management
@@ -208,7 +243,8 @@ list (phase body Steps item 6)."
   ;; `tab-bar--tab-index' defaults to `(selected-frame)' and would
   ;; silently return nil for a tab belonging to a non-selected frame.
   (let* ((tab-number (1+ (tab-bar--tab-index tab tabs frame)))
-         (label (edmacs-sidebar--tab-label tab))
+         (suffix (and root (funcall edmacs-sidebar-worktree-label-suffix-function root)))
+         (label (concat (edmacs-sidebar--tab-label tab) (or suffix "")))
          (value (if root (cons root tab-number) tab-number)))
     (magit-insert-section (edmacs-sidebar-tab value)
       (magit-insert-heading
@@ -217,7 +253,8 @@ list (phase body Steps item 6)."
 
 (defun edmacs-sidebar--insert-no-tab-row (entry)
   "Insert a dimmed, tab-less row for worktree ENTRY, a (NAME . ROOT) pair."
-  (let ((label (concat "⋯ " (car entry) " (no tab)")))
+  (let* ((suffix (funcall edmacs-sidebar-worktree-label-suffix-function (cdr entry)))
+         (label (concat "⋯ " (car entry) (or suffix "") " (no tab)")))
     (magit-insert-section (edmacs-sidebar-tab (cons (cdr entry) nil))
       (magit-insert-heading
         (propertize label 'face 'edmacs-sidebar-no-tab-face)))))
@@ -251,7 +288,8 @@ with a warning face."
                  (tab (edmacs-frames--tab-for-root root frame)))
             (if tab
                 (edmacs-sidebar--insert-tab-row tab tabs frame root nil)
-              (edmacs-sidebar--insert-no-tab-row entry))))
+              (edmacs-sidebar--insert-no-tab-row entry))
+            (run-hook-with-args 'edmacs-sidebar-worktree-section-functions root (and tab t))))
         (dolist (tab tabs)
           (let ((root (edmacs-frames--tab-root tab)))
             (unless (member root roots)
@@ -287,7 +325,8 @@ was saved) gets a warning section ahead of everything else."
               (edmacs-sidebar--insert-missing-repo-warning))
             (if common
                 (edmacs-sidebar--redraw-worktrees frame common)
-              (edmacs-sidebar--redraw-tabs frame)))
+              (edmacs-sidebar--redraw-tabs frame))
+            (run-hook-with-args 'edmacs-sidebar-extra-section-functions frame))
           (edmacs-sidebar--goto-tab-name point-tab-name))))))
 
 ;; ============================================================================
@@ -314,6 +353,18 @@ reselects, never duplicating."
       (if (cdr value)
           (tab-bar-select-tab (cdr value))
         (edmacs-frames-open-worktree-tab (car value)))))))
+
+(defun edmacs-sidebar-visit-at-point ()
+  "Act on the section at point, dispatched by its magit-section TYPE.
+An `edmacs-sidebar-agent' row (sidebar-agents.el, phase 6) is visited
+via `edmacs-sidebar-agents-visit'; every other section type (tab,
+worktree, root, warning, agents-group) keeps the original
+`edmacs-sidebar-activate' behavior unchanged."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (if (and section (eq (oref section type) 'edmacs-sidebar-agent))
+        (edmacs-sidebar-agents-visit)
+      (edmacs-sidebar-activate))))
 
 (defun edmacs-sidebar-close-worktree ()
   "Close the open tab represented by the section at point.

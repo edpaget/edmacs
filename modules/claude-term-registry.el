@@ -34,8 +34,10 @@
 ;; Two swappable seams are stubbed here for phase 5 to replace without
 ;; touching this file's other code: `claude-term-registry-state-accessor'
 ;; (always `idle' here) and `claude-term-registry-sort-function' (MRU
-;; here). Phase 5 also owns the `SPC a TAB' binding this phase
-;; deliberately leaves unbound.
+;; here). `SPC a TAB' was deliberately left unbound at the time -- the
+;; attention-ordered comparator that binding would need was not yet part
+;; of any module's surface; edmacs-sidebar roadmap phase 6
+;; (sidebar-agents.el) now supplies it, bound below.
 ;;
 ;; Run pure-function tests:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
@@ -592,9 +594,14 @@ was asked to die (see the phase body's own edge case)."
 ;; b, c, s, k, K, l, i, t and the "p" submenu); claude-repl has since been
 ;; retired and ai.el's whole keybinding block deleted, so the ":ignore"
 ;; entry that supplies the which-key heading for the prefix -- which ai.el
-;; used to own -- now lives here too. Deliberately does NOT bind TAB
-;; anywhere under SPC a -- see `claude-term-registry-sort-function's own
-;; docstring.
+;; used to own -- now lives here too. TAB is bound to edmacs-sidebar
+;; roadmap phase 6's global agent attention-jump
+;; (`edmacs-sidebar-agents-goto-attention', sidebar-agents.el) rather than
+;; anything of this module's own, kept here rather than duplicating a
+;; second `with-eval-after-load' block elsewhere, since this module is
+;; SPC a's sole owner.
+
+(declare-function edmacs-sidebar-agents-goto-attention "sidebar-agents")
 
 (with-eval-after-load 'general
   (general-define-key
@@ -608,7 +615,8 @@ was asked to die (see the phase body's own edge case)."
    "A" '(claude-term-show-all :which-key "show all sessions")
    "x" '(claude-term-kill :which-key "kill session")
    "X" '(claude-term-kill-all :which-key "kill all sessions")
-   "r" '(claude-term-rename :which-key "rename session")))
+   "r" '(claude-term-rename :which-key "rename session")
+   "TAB" '(edmacs-sidebar-agents-goto-attention :which-key "next agent wanting attention")))
 
 (provide 'claude-term-registry)
 ;;; claude-term-registry.el ends here

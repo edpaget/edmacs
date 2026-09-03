@@ -231,7 +231,12 @@ real key lookup in motion state: evil's state keymaps are installed via
 `evil-motion-state-map' already binds RET to `evil-ret'. Calling
 `edmacs-sidebar-activate'/`edmacs-sidebar-hide' directly as Lisp
 functions (as the tests above do) cannot catch this -- only dispatching
-through the real, active keymaps the way a keypress does can."
+through the real, active keymaps the way a keypress does can.
+RET now resolves to `edmacs-sidebar-visit-at-point' (edmacs-sidebar
+roadmap phase 6's type-dispatching generalization) rather than directly
+to `edmacs-sidebar-activate' -- see
+`edmacs-sidebar-test-visit-at-point-dispatches-by-section-type' below
+for coverage of the dispatch itself."
       (edmacs-sidebar-test--ensure-real-evil)
       (unwind-protect
           (progn
@@ -240,9 +245,47 @@ through the real, active keymaps the way a keypress does can."
               (edmacs-sidebar-mode)
               (evil-motion-state)
               (should (eq evil-state 'motion))
-              (should (eq (key-binding (kbd "RET")) #'edmacs-sidebar-activate))
+              (should (eq (key-binding (kbd "RET")) #'edmacs-sidebar-visit-at-point))
               (should (eq (key-binding (kbd "q")) #'edmacs-sidebar-hide))))
         (evil-mode -1)))
+
+    (ert-deftest edmacs-sidebar-test-visit-at-point-dispatches-by-section-type ()
+      "`edmacs-sidebar-visit-at-point' calls `edmacs-sidebar-agents-visit'
+on an `edmacs-sidebar-agent' section, and `edmacs-sidebar-activate' on
+every other section type (a plain tab row here) -- sidebar-agents.el
+itself is not loaded by this suite, so the agent-visit command is
+stubbed."
+      (let ((activate-calls 0) (agent-visit-calls 0))
+        (cl-letf (((symbol-function 'edmacs-sidebar-activate)
+                   (lambda () (setq activate-calls (1+ activate-calls))))
+                  ((symbol-function 'edmacs-sidebar-agents-visit)
+                   (lambda () (setq agent-visit-calls (1+ agent-visit-calls)))))
+          (with-temp-buffer
+            (edmacs-sidebar-mode)
+            (let ((inhibit-read-only t))
+              ;; Both rows nested inside one outer wrapper: an
+              ;; unwrapped top-level `magit-insert-section' call
+              ;; becomes `magit-root-section' itself and is skipped by
+              ;; `magit-section--set-section-properties' (see
+              ;; magit-section.el's `magit-insert-section--finish'),
+              ;; so two sibling top-level calls here would leave
+              ;; neither row's own text actually tagged with its
+              ;; section -- exactly the real shape `--redraw' always
+              ;; produces via its own wrapping `edmacs-sidebar-root'.
+              (magit-insert-section (edmacs-sidebar-root)
+                (magit-insert-section (edmacs-sidebar-tab 1)
+                  (magit-insert-heading "a tab row"))
+                (magit-insert-section (edmacs-sidebar-agent "fake-agent")
+                  (magit-insert-heading "an agent row"))))
+            (goto-char (point-min))
+            (edmacs-sidebar-visit-at-point)
+            (should (= 1 activate-calls))
+            (should (= 0 agent-visit-calls))
+            (goto-char (point-max))
+            (forward-line -1)
+            (edmacs-sidebar-visit-at-point)
+            (should (= 1 activate-calls))
+            (should (= 1 agent-visit-calls))))))
 
     (ert-deftest edmacs-sidebar-test-redraw-passes-tabs-and-frame-explicitly ()
       "Regression test for the frame-mismatch fix.

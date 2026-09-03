@@ -679,8 +679,13 @@ straight locally -- so the caller can `ert-skip' instead of failing."
 
 (ert-deftest claude-term-registry-test-spc-a-bindings-resolve ()
   "This module's eight SPC a leaf keys resolve to its own commands.
-`SPC a TAB' stays unbound: the attention-ordered comparator that binding
-would need is not part of this module's surface."
+`SPC a TAB' resolves to edmacs-sidebar roadmap phase 6's global agent
+attention-jump (`edmacs-sidebar-agents-goto-attention', sidebar-agents.el)
+-- this module is SPC a's sole owner, so that binding lives in its own
+`with-eval-after-load' block even though the command itself belongs to
+another module; `general-define-key' stores the quoted symbol without
+requiring it to be `fboundp', so this resolves correctly even though
+sidebar-agents.el itself is not loaded by this test file."
   (unless (claude-term-registry-test--load-real-general-and-evil)
     (ert-skip "real evil.el/general.el not found in this checkout; bootstrap straight once locally to enable this test"))
   ;; This module's own `with-eval-after-load 'general' bindings
@@ -698,7 +703,8 @@ would need is not part of this module's surface."
     (dolist (pair ours)
       (should (eq (lookup-key evil-normal-state-map (kbd (concat "SPC a " (car pair))))
                   (cdr pair)))))
-  (should-not (lookup-key evil-normal-state-map (kbd "SPC a TAB"))))
+  (should (eq (lookup-key evil-normal-state-map (kbd "SPC a TAB"))
+              'edmacs-sidebar-agents-goto-attention)))
 
 (ert-deftest claude-term-registry-test-retired-claude-repl-keys-are-unbound ()
   "None of modules/ai.el's former claude-repl SPC a keys still resolves.

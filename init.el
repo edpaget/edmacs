@@ -97,6 +97,13 @@ LANGUAGE should be the name without the .el extension."
 (load-module "git")
 (load-module "sessions")
 (load-module "sidebar")
+;; Right after sidebar: only `declare-function' forward references tie
+;; the two together, which silence the byte-compiler but load nothing
+;; on their own -- see git-common-dir's own comment above for the same
+;; hazard. `frames' and `agents' load later below, but every call this
+;; module makes into either is inside a function body, resolved at
+;; call/keypress time, never at this module's own load time.
+(load-module "sidebar-agents")
 ;; After sidebar (calls `edmacs-sidebar-show'), sessions (reuses its
 ;; tab-bar/desktop setup), and evil-config (its C-x chord registrar).
 (load-module "frames")
