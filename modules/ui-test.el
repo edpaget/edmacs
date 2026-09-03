@@ -5,16 +5,185 @@
 ;; window, the stack, and rotate.el's parameter-preserving advice) moved to
 ;; modules/windows.el in edmacs-window-management/phase-1-layout-model,
 ;; along with the three tests that covered it (now
-;; edmacs-windows-test-windmove-* in modules/windows-test.el). ui.el retains
-;; no window-management code of its own to unit-test, so this file carries
-;; none -- 0 tests is this suite's correct, passing state.
+;; edmacs-windows-test-windmove-* in modules/windows-test.el).
+;;
+;; What this file covers is the "Modeline content" section: the buffer-name
+;; filtering and the diagnostics segment. Those are pure string functions,
+;; so they run under plain `-Q --batch' with no display, no theme and no
+;; nano-modeline. The `edmacs-modeline-*-mode' line CONSTRUCTORS are not
+;; unit-tested -- they are nano's own lists with elements swapped, and
+;; asserting the list back would test the literal, not behavior; what
+;; matters about them is which element functions they name, which is
+;; checked here directly.
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/ui.el -l modules/ui-test.el \
 ;;         -f ert-run-tests-batch-and-exit
+;;
+;; Loading ui.el under `-Q' prints benign "Unrecognized keyword: :straight"
+;; and "Cannot load" notices from its `use-package' forms; the definitions
+;; under test are all at top level, ahead of and outside those forms.
 
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
+
+;; See modules/sessions-test.el for the same guard and why: `cl-letf' on a C
+;; primitive builds a native trampoline, and that compile fails under `-Q'
+;; when `user-emacs-directory''s eln-cache is not writable.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
+
+;; ============================================================================
+;; edmacs-modeline-filter-name
+;; ============================================================================
+
+(ert-deftest edmacs-ui-test-filter-name-strips-the-claude-term-wrapper ()
+  "The case this section was written for: a pane's modeline should carry
+the session label, not the `*claude-term:...*' plumbing around it."
+  (should (equal (edmacs-modeline-filter-name "*claude-term:edmacs*") "edmacs"))
+  (should (equal (edmacs-modeline-filter-name "*claude-term:edmacs:review*")
+                 "edmacs:review")))
+
+(ert-deftest edmacs-ui-test-filter-name-leaves-unmatched-names-alone ()
+  (dolist (name '("init.el" "*scratch*" "*Messages*" "windows.el"))
+    (should (equal (edmacs-modeline-filter-name name) name))))
+
+(ert-deftest edmacs-ui-test-filter-name-handles-the-other-stock-filters ()
+  (should (equal (edmacs-modeline-filter-name "*magit-diff: edmacs*") "edmacs diff"))
+  (should (equal (edmacs-modeline-filter-name "*magit-log: edmacs*") "edmacs log"))
+  (should (equal (edmacs-modeline-filter-name "*helpful variable: foo*") "foo"))
+  (should (equal (edmacs-modeline-filter-name "*helpful function: bar*") "bar"))
+  (should (equal (edmacs-modeline-filter-name "*cider-repl edmacs*") "edmacs repl")))
+
+(ert-deftest edmacs-ui-test-filter-name-uses-the-first-matching-filter ()
+  "Documented precedence: first match wins, not last, not longest."
+  (let ((edmacs-modeline-name-filters '(("\\`a\\(.*\\)\\'" . "first-\\1")
+                                        ("\\`a\\(.*\\)\\'" . "second-\\1"))))
+    (should (equal (edmacs-modeline-filter-name "abc") "first-bc"))))
+
+(ert-deftest edmacs-ui-test-filter-name-never-returns-empty ()
+  "A filter that would erase the name is ignored: a nameless modeline is
+worse than a noisy one."
+  (let ((edmacs-modeline-name-filters '(("\\`.*\\'" . ""))))
+    (should (equal (edmacs-modeline-filter-name "*claude-term:edmacs*")
+                   "*claude-term:edmacs*"))))
+
+(ert-deftest edmacs-ui-test-filter-name-falls-through-to-a-later-filter ()
+  "An erasing filter is skipped rather than ending the search, so a
+following filter still gets its chance."
+  (let ((edmacs-modeline-name-filters '(("\\`a\\(.*\\)\\'" . "")
+                                        ("\\`abc\\'" . "kept"))))
+    (should (equal (edmacs-modeline-filter-name "abc") "kept"))))
+
+(ert-deftest edmacs-ui-test-filter-name-does-not-rename-the-buffer ()
+  "Only the displayed string changes -- `claude-term--parse-buffer-name'
+and every other consumer still sees the real name."
+  (let ((buf (generate-new-buffer "*claude-term:edmacs:probe*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (should (equal (edmacs-modeline-filter-name (buffer-name))
+                         "edmacs:probe"))
+          (should (equal (buffer-name) "*claude-term:edmacs:probe*")))
+      (kill-buffer buf))))
+
+;; ============================================================================
+;; edmacs-modeline-buffer-name
+;; ============================================================================
+
+(ert-deftest edmacs-ui-test-buffer-name-passes-the-filtered-name-through ()
+  (let (passed)
+    (cl-letf (((symbol-function 'nano-modeline-buffer-name)
+               (lambda (&optional name) (setq passed name) name)))
+      (with-temp-buffer
+        (rename-buffer "*claude-term:edmacs:review*" t)
+        (edmacs-modeline-buffer-name)
+        (should (equal passed "edmacs:review"))))))
+
+(ert-deftest edmacs-ui-test-buffer-name-keeps-the-narrowing-suffix ()
+  "Passing `nano-modeline-buffer-name' an explicit NAME takes away its own
+narrowed-buffer branch, so the suffix has to be re-applied here."
+  (let (passed)
+    (cl-letf (((symbol-function 'nano-modeline-buffer-name)
+               (lambda (&optional name) (setq passed name) name)))
+      (with-temp-buffer
+        (rename-buffer "*claude-term:edmacs*" t)
+        (insert "one\ntwo\nthree\n")
+        (narrow-to-region (point-min) (+ (point-min) 3))
+        (edmacs-modeline-buffer-name)
+        (should (equal passed "edmacs [narrow]"))))))
+
+;; ============================================================================
+;; edmacs-modeline-diagnostics
+;; ============================================================================
+;; The segment reads flycheck directly rather than through
+;; `global-mode-string', which nano-modeline's single `:eval' form never
+;; consults -- the reason `lsp-modeline-diagnostics-enable' rendered nothing.
+
+;; Declared WITH values, unlike ui.el's own bare `(defvar flycheck-mode)':
+;; a valueless `defvar' marks a symbol special only inside the file that
+;; carries it, so a plain `let' here would create a LEXICAL binding that
+;; `edmacs-modeline-diagnostics' -- reading the dynamic value -- never sees,
+;; and every count assertion below would silently test the flycheck-is-off
+;; path instead. Real flycheck is not loadable under `-Q', so nothing else
+;; owns these names here.
+(defvar flycheck-mode nil)
+(defvar flycheck-current-errors nil)
+
+(defmacro edmacs-ui-test--with-flycheck (counts &rest body)
+  "Run BODY with flycheck on and `flycheck-count-errors' returning COUNTS."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'flycheck-count-errors) (lambda (&rest _) ,counts)))
+     (let ((flycheck-mode t)
+           (flycheck-current-errors nil))
+       ,@body)))
+
+(ert-deftest edmacs-ui-test-diagnostics-is-silent-when-flycheck-is-off ()
+  "Silent, not zero: the segment must cost no width in the common case."
+  (let ((flycheck-mode nil))
+    (should (equal (edmacs-modeline-diagnostics) ""))))
+
+(ert-deftest edmacs-ui-test-diagnostics-is-silent-when-clean ()
+  (edmacs-ui-test--with-flycheck nil
+    (should (equal (edmacs-modeline-diagnostics) ""))))
+
+(ert-deftest edmacs-ui-test-diagnostics-is-silent-at-zero-counts ()
+  "An explicit zero count reads as clean, not as `E0'."
+  (edmacs-ui-test--with-flycheck '((error . 0) (warning . 0))
+    (should (equal (edmacs-modeline-diagnostics) ""))))
+
+(ert-deftest edmacs-ui-test-diagnostics-shows-errors-only ()
+  (edmacs-ui-test--with-flycheck '((error . 3))
+    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "E3 "))))
+
+(ert-deftest edmacs-ui-test-diagnostics-shows-warnings-only ()
+  (edmacs-ui-test--with-flycheck '((warning . 2))
+    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "W2 "))))
+
+(ert-deftest edmacs-ui-test-diagnostics-shows-both-errors-first ()
+  (edmacs-ui-test--with-flycheck '((warning . 2) (error . 3))
+    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "E3 W2 "))))
+
+(ert-deftest edmacs-ui-test-diagnostics-ignores-other-levels ()
+  "`info'-level results are noise in a modeline; only errors and warnings
+earn the width."
+  (edmacs-ui-test--with-flycheck '((info . 9))
+    (should (equal (edmacs-modeline-diagnostics) ""))))
+
+(ert-deftest edmacs-ui-test-diagnostics-carries-severity-faces ()
+  "The counts are distinguishable by color, not only by letter -- the
+stock `error'/`warning' faces, which every theme defines."
+  (edmacs-ui-test--with-flycheck '((error . 1) (warning . 1))
+    (let ((s (edmacs-modeline-diagnostics)))
+      (should (eq (get-text-property (string-search "E" s) 'face s) 'error))
+      (should (eq (get-text-property (string-search "W" s) 'face s) 'warning)))))
+
+(ert-deftest edmacs-ui-test-diagnostics-honors-the-format-variables ()
+  (let ((edmacs-modeline-diagnostics-format "%d err")
+        (edmacs-modeline-diagnostics-warning-format "%d warn"))
+    (edmacs-ui-test--with-flycheck '((error . 1) (warning . 2))
+      (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
+                     "1 err 2 warn ")))))
 
 ;;; ui-test.el ends here

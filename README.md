@@ -211,6 +211,35 @@ decrease-height) and `C-w H/J/K/L` (were move-window-far-\*) become split and
 resize, `C-w x` (was exchange) closes the pane, and insert-state `C-w`
 (delete-word-backward, and a terminal pane's own word-erase) gives up its key.
 
+### Modeline
+
+`nano-modeline` renders one `:eval` form and never consults
+`global-mode-string`, so anything reporting through that channel is invisible
+(this is why `lsp-modeline-diagnostics-enable` shows nothing). `modules/ui.el`'s
+"Modeline content" section adds what is missing and filters what is noise:
+
+- **Name filtering.** `edmacs-modeline-name-filters` is an alist of
+  `(REGEXP . REPLACEMENT)` applied to the *displayed* buffer name only — the
+  buffer keeps its real name, so `switch-to-buffer` and
+  `claude-term--parse-buffer-name` are unaffected. First match wins; a filter
+  that would empty the name is ignored. Out of the box:
+
+  | Buffer | Shown as |
+  |---|---|
+  | `*claude-term:edmacs:review*` | `edmacs:review` |
+  | `*magit-diff: edmacs*` | `edmacs diff` |
+  | `*helpful variable: tab-width*` | `tab-width` |
+  | `*cider-repl edmacs*` | `edmacs repl` |
+
+- **Diagnostics.** `edmacs-modeline-diagnostics` reads flycheck directly and
+  shows `E3 W2` in the stock `error`/`warning` faces. Silent — not zero — when
+  flycheck is off, still checking, or clean, so it costs no width normally.
+
+- **Terminal panes.** `ghostel-mode` has no line of its own upstream, so a
+  Claude pane fell through to the default text line and showed a file buffer's
+  furniture. It now gets `>_  edmacs:review` on the left and the working
+  directory on the right — no read-write box, no cursor position.
+
 ### Quitting and Restarting
 
 Emacs runs as a launchd daemon (`brew services start emacs-plus@31`) whose
