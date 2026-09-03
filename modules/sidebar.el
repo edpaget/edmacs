@@ -862,11 +862,33 @@ size changes are unrelated windows."
 
 (defun edmacs-sidebar-show (&optional frame)
   "Show FRAME's sidebar window, creating and redrawing its buffer first.
-Guards against `display-buffer-in-side-window' returning nil -- e.g.
-`window-sides-slots' forbidding creation on this edge -- by simply not
-dedicating anything in that case, mirroring
-`claude-term--pop-to-window's own nil guard. Uses FRAME's
-remembered width (see above) when it has one, else
+Guarantees the result is either FRAME's left side window or nil --
+never a window on any other edge. Calls
+`display-buffer-in-side-window' DIRECTLY rather than handing a
+one-function action list to `display-buffer': `display-buffer'
+concatenates that action with `display-buffer-alist',
+`display-buffer-base-action' and `display-buffer-fallback-action' into
+one list and keeps trying entries after any one of them returns nil,
+so when the left slot can't be created (`window-sides-slots'
+forbidding it, or the frame too small) `display-buffer' would fall
+through to its own base/fallback actions -- which split whatever
+window is widest, landing the sidebar on the right on a wide frame.
+Bypassing `display-buffer' itself is what stops that fallthrough; a
+`display-buffer-overriding-action' wrapper alone would not; only
+inspecting the returned window afterward would be too late; and this
+call site is exactly where a nil `display-buffer-in-side-window'
+result is otherwise turned into an empty-not-nil action list, so the
+placement guarantee and the width clamp below share this same call by
+necessity, not convenience.
+
+As a second line of defense, if the call somehow still returns a
+live, non-nil window that is not a left side window, that window is
+deleted and treated as nil for the rest of this function -- nothing is
+dedicated. This mirrors `claude-term--pop-to-window's own nil
+guard for the ordinary `display-buffer-in-side-window' returns-nil
+case (slot exhausted, frame too small).
+
+Uses FRAME's remembered width (see above) when it has one, else
 `edmacs-sidebar-width', so a manual resize survives a hide/show cycle.
 Either way the width is passed through `edmacs-sidebar--clamp-width'
 here, at read time -- this is what makes a value already poisoned in a
@@ -880,18 +902,22 @@ show, rather than only ever being prevented on write."
                      edmacs-sidebar-width)
                  frame))
          (window (with-selected-frame frame
-                   (display-buffer
+                   (display-buffer-in-side-window
                     buf
-                    `((display-buffer-in-side-window)
-                      (side . left)
+                    `((side . left)
                       (slot . 0)
                       (window-width . ,width)
                       (preserve-size . (t . nil))
                       (window-parameters . ((no-delete-other-windows . t)
                                              (no-other-window . t))))))))
-    (when window
-      (set-window-dedicated-p window t))
-    window))
+    (cond
+     ((null window) nil)
+     ((not (eq (window-parameter window 'window-side) 'left))
+      (delete-window window)
+      nil)
+     (t
+      (set-window-dedicated-p window t)
+      window))))
 
 (defun edmacs-sidebar-hide (&optional frame)
   "Hide FRAME's sidebar window, if shown. Only the window is deleted."

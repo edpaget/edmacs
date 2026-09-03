@@ -1426,6 +1426,63 @@ poisoned remembered-width back clamped, not full-frame-wide."
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
+    ;; ==========================================================================
+    ;; AC4 -- the sidebar is always a left side window, never a wrong-edge
+    ;; or split window, even with the left slot exhausted at slot 0 (item
+    ;; 4c: reported live as the sidebar intermittently popping up on the
+    ;; far right of the frame)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-show-refuses-when-left-slot-exhausted ()
+      "Drives the exhausted-left-slot path through the REAL
+`window-sides-slots' global (not a mock of `edmacs-sidebar-show's
+internals): with the left element forced to 0, no left side window can
+be created at all, so `display-buffer-in-side-window' itself returns
+nil per its own docstring. `edmacs-sidebar-show' must return nil and
+leave the frame's window layout (count and buffer identities) exactly
+as it found it -- never falling back to a wrong-edge or split window
+the way a plain `display-buffer' call with a one-function action list
+would."
+      (let* ((frame (selected-frame))
+             (before-buffers (mapcar #'window-buffer (window-list frame 'never)))
+             (before-count (length before-buffers)))
+        (unwind-protect
+            (let ((window-sides-slots (list 0 (nth 1 window-sides-slots)
+                                             (nth 2 window-sides-slots)
+                                             (nth 3 window-sides-slots))))
+              (should (null (edmacs-sidebar-show frame)))
+              (should-not (seq-find (lambda (w) (window-parameter w 'window-side))
+                                     (window-list frame 'never)))
+              (should-not (seq-find #'window-dedicated-p (window-list frame 'never)))
+              (should (= before-count (length (window-list frame 'never))))
+              (should (equal before-buffers (mapcar #'window-buffer (window-list frame 'never)))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-show-cleans-up-non-left-window-from-placement ()
+      "Belt-and-suspenders branch: even if `display-buffer-in-side-window'
+itself returned a live window that is NOT a left side window (stubbed
+here via `cl-letf' to fabricate an ordinary split, independent of
+whatever real side-window semantics the exhausted-slot test above
+relies on), `edmacs-sidebar-show' must delete that window and return
+nil rather than dedicating and keeping it."
+      (let* ((frame (selected-frame))
+             (before-buffers (mapcar #'window-buffer (window-list frame 'never)))
+             (before-count (length before-buffers))
+             (stub-window nil))
+        (unwind-protect
+            (progn
+              (cl-letf (((symbol-function 'display-buffer-in-side-window)
+                         (lambda (buffer _alist)
+                           (setq stub-window (split-window (selected-window)))
+                           (set-window-buffer stub-window buffer)
+                           stub-window)))
+                (should (null (edmacs-sidebar-show frame))))
+              (should-not (window-live-p stub-window))
+              (should (= before-count (length (window-list frame 'never))))
+              (should (equal before-buffers (mapcar #'window-buffer (window-list frame 'never)))))
+          (when (window-live-p stub-window) (delete-window stub-window))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
     (ert-deftest edmacs-sidebar-test-header-line-shows-repo-name ()
       (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) nil)))
         (edmacs-sidebar-test--with-repo-frame "/repo/.git"
