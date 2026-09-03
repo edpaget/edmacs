@@ -74,15 +74,19 @@
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar-hide "sidebar")
 (declare-function claude-term--pop-to-side-window "claude-term")
+(declare-function claude-term-registry-rename "claude-term-registry")
 (defvar edmacs-sidebar-worktree-label-suffix-function)
 (defvar edmacs-sidebar-worktree-section-functions)
 (defvar edmacs-sidebar-extra-section-functions)
+(defvar edmacs-sidebar-header-line-function)
+(defvar edmacs-sidebar-force-text-glyphs)
 
 ;; agents.el's struct accessors/table -- loaded by init.el before this
 ;; module ever actually runs any of the functions below that touch them.
 (declare-function make-edmacs-agent "agents")
 (declare-function edmacs-agent-key "agents")
 (declare-function edmacs-agent-root "agents")
+(declare-function edmacs-agent-instance "agents")
 (declare-function edmacs-agent-status "agents")
 (declare-function edmacs-agent-status-ts "agents")
 (declare-function edmacs-agent-title "agents")
@@ -106,6 +110,40 @@
   :group 'edmacs-sidebar)
 
 ;; ============================================================================
+;; Faces
+;; ============================================================================
+
+(defface edmacs-sidebar-agent-working-face
+  '((t))
+  "Face for a `working' agent row -- deliberately ambient/neutral, no
+strong color, so a busy worktree's list doesn't read as an alert."
+  :group 'edmacs-sidebar-agents)
+
+(defface edmacs-sidebar-agent-waiting-face
+  '((t :inherit warning))
+  "Face for a `waiting' agent row -- it wants the user's attention."
+  :group 'edmacs-sidebar-agents)
+
+(defface edmacs-sidebar-agent-done-face
+  '((t :inherit success))
+  "Face for a `done' agent row."
+  :group 'edmacs-sidebar-agents)
+
+(defface edmacs-sidebar-agent-idle-face
+  '((t :inherit shadow))
+  "Face for an `idle' agent row (only reached after `edmacs-agents-mark-read')."
+  :group 'edmacs-sidebar-agents)
+
+(defun edmacs-sidebar-agents--status-face (status)
+  "Return STATUS's face, or nil for an unrecognized status."
+  (pcase status
+    ('working 'edmacs-sidebar-agent-working-face)
+    ('waiting 'edmacs-sidebar-agent-waiting-face)
+    ('done 'edmacs-sidebar-agent-done-face)
+    ('idle 'edmacs-sidebar-agent-idle-face)
+    (_ nil)))
+
+;; ============================================================================
 ;; Glyphs
 ;; ============================================================================
 
@@ -120,7 +158,8 @@ read the same way whenever nerd-icons is unavailable.")
 Never signals: an icon lookup failing (a data-table miss, a future
 nerd-icons release renaming a glyph) falls back to the plain-ASCII
 table exactly as if nerd-icons were not loaded at all."
-  (and (featurep 'nerd-icons)
+  (and (not edmacs-sidebar-force-text-glyphs)
+       (featurep 'nerd-icons)
        (condition-case nil
            (pcase status
              ('working (and (fboundp 'nerd-icons-faicon)
@@ -235,18 +274,23 @@ deterministic for two rows in the same state at the same timestamp."
 ;; ============================================================================
 
 (defun edmacs-sidebar-agents--insert-row (agent)
-  "Insert one row for AGENT: glyph, title, elapsed time.
-Bold when AGENT is an unread `done' row -- cleared the moment
+  "Insert one row for AGENT: glyph, title, elapsed time, per-status face.
+Bold is layered ON TOP of the status face (rather than replacing it)
+when AGENT is an unread `done' row -- cleared the moment
 `edmacs-agents-mark-read' flips it to `idle', which the visit commands
 below call before redrawing."
   (let* ((unread (and (eq (edmacs-agent-status agent) 'done) (edmacs-agent-unread agent)))
          (glyph (edmacs-sidebar-agents--glyph (edmacs-agent-status agent)))
          (elapsed (edmacs-sidebar-agents--elapsed-string (edmacs-agent-status-ts agent)))
          (label (string-trim-right
-                 (format "  %s %s %s" glyph (or (edmacs-agent-title agent) "") elapsed))))
+                 (format "  %s %s %s" glyph (or (edmacs-agent-title agent) "") elapsed)))
+         (status-face (edmacs-sidebar-agents--status-face (edmacs-agent-status agent)))
+         (face (cond ((and unread status-face) (list 'bold status-face))
+                     (unread 'bold)
+                     (t status-face))))
     (magit-insert-section (edmacs-sidebar-agent agent)
       (magit-insert-heading
-        (if unread (propertize label 'face 'bold) label)))))
+        (if face (propertize label 'face face) label)))))
 
 (defun edmacs-sidebar-agents--insert-group (agents)
   "Insert AGENTS (already known to belong to one worktree) as child rows
@@ -280,6 +324,25 @@ swappable seam below."
     (and (> n 0) (format " (%d)" n))))
 
 (setq edmacs-sidebar-worktree-label-suffix-function #'edmacs-sidebar-agents--label-suffix)
+
+;; ============================================================================
+;; Header line: repo-wide agent-status roll-up
+;; ============================================================================
+
+(defun edmacs-sidebar-agents--header-line (_frame)
+  "Return a \"  [N working, N waiting, N done]\" roll-up suffix, or nil
+when no agent is tracked at all. Assigned to sidebar.el's
+`edmacs-sidebar-header-line-function' swappable seam, mirroring
+`--label-suffix's own assignment above; FRAME is unused -- the whole
+(frame-independent) agent table is identical on every frame."
+  (let ((agents (edmacs-sidebar-agents--all)))
+    (when agents
+      (let ((working (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'working)) agents))
+            (waiting (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'waiting)) agents))
+            (done (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'done)) agents)))
+        (format "  [%d working, %d waiting, %d done]" working waiting done)))))
+
+(setq edmacs-sidebar-header-line-function #'edmacs-sidebar-agents--header-line)
 
 ;; ============================================================================
 ;; Rendering: global ALL AGENTS section
@@ -369,6 +432,31 @@ Pulls the `edmacs-agent' struct straight off the section's own VALUE
               (agent (and (slot-boundp section 'value) (oref section value))))
     (edmacs-sidebar-agents--visit-common agent)
     (edmacs-sidebar-agents--visit-source-extra agent)))
+
+;; ============================================================================
+;; r -- rename an agent instance (sidebar.el's `edmacs-sidebar-rename-at-point')
+;; ============================================================================
+
+;;;###autoload
+(defun edmacs-sidebar-agents-rename (agent)
+  "Rename AGENT's title, called by sidebar.el's `edmacs-sidebar-rename-at-point'.
+Only a `claude-term'-sourced row can be renamed here: its instance
+label lives in `claude-term-registry.el's own table, migrated via
+`claude-term-registry-rename'. Every other source (`workmux', and any
+future one) signals `user-error' -- its title comes from the pane
+itself, with no channel this UI can push a rename through.
+Not end-to-end exercisable until edmacs-claude-terminal's claude-term
+rows actually appear in this table (edmacs-sidebar roadmap phase 9);
+this file's own test coverage of the `claude-term' branch is
+necessarily against a synthetic `edmacs-agent' struct and a mocked
+`claude-term-registry-rename', not a real registry."
+  (if (eq (edmacs-agent-source agent) 'claude-term)
+      (let ((new-instance (read-string "New instance label: ")))
+        (claude-term-registry-rename (edmacs-agent-root agent)
+                                      (edmacs-agent-instance agent)
+                                      new-instance)
+        (edmacs-sidebar-agents--redraw-all))
+    (user-error "Cannot rename a %s agent" (edmacs-agent-source agent))))
 
 ;; ============================================================================
 ;; SPC a TAB -- attention cycling

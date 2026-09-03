@@ -64,8 +64,10 @@
 (declare-function edmacs-sidebar--buffer "sidebar")
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar--goto-identity "sidebar")
+(declare-function nerd-icons-octicon "nerd-icons")
 (defvar edmacs-sidebar-worktree-section-functions)
 (defvar edmacs-sidebar-extra-section-functions)
+(defvar edmacs-sidebar-force-text-glyphs)
 
 (defgroup edmacs-sidebar-buffers nil
   "Per-tab buffer tree in the sidebar."
@@ -84,6 +86,31 @@
   '((t :inherit highlight))
   "Face for the row of the buffer shown in the frame's selected window."
   :group 'edmacs-sidebar-buffers)
+
+(defface edmacs-sidebar-buffer-visible-face
+  '((t :inherit success))
+  "Face for the visible-in-a-live-window marker glyph on a buffer row.
+Distinct from `edmacs-sidebar-buffers-selected-face', which marks the
+buffer in the SELECTED window specifically."
+  :group 'edmacs-sidebar-buffers)
+
+;; ============================================================================
+;; Visible-marker glyph: nerd-icons with a plain-text fallback
+;; ============================================================================
+
+(defconst edmacs-sidebar-buffers--visible-glyph-fallback "●"
+  "Plain fallback glyph marking a buffer visible in a live window.")
+
+(defun edmacs-sidebar-buffers--visible-glyph ()
+  "Return the glyph marking a buffer as visible in a live window: a
+nerd-icon when available and not forced off by
+`edmacs-sidebar-force-text-glyphs', else the plain-text fallback."
+  (or (and (not edmacs-sidebar-force-text-glyphs)
+           (featurep 'nerd-icons)
+           (condition-case nil
+               (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-eye"))
+             (error nil)))
+      edmacs-sidebar-buffers--visible-glyph-fallback))
 
 ;; ============================================================================
 ;; Buffer classification
@@ -368,7 +395,11 @@ visible/selected without any extra current-tab check needed here."
          (selected (and (buffer-live-p buf) (window-live-p sel-win)
                         (eq buf (window-buffer sel-win))))
          (modified (and (buffer-live-p buf) (buffer-modified-p buf))))
-    (overlay-put ov 'before-string (if visible "● " "  "))
+    (overlay-put ov 'before-string
+                 (if visible
+                     (propertize (concat (edmacs-sidebar-buffers--visible-glyph) " ")
+                                 'face 'edmacs-sidebar-buffer-visible-face)
+                   "  "))
     (overlay-put ov 'after-string (if modified "*" ""))
     (overlay-put ov 'face (and selected 'edmacs-sidebar-buffers-selected-face))))
 

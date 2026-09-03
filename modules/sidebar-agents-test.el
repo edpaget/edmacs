@@ -79,10 +79,13 @@ a real Emacs session) to enable this suite"))
     (defvar edmacs-sidebar-worktree-label-suffix-function #'ignore)
     (defvar edmacs-sidebar-worktree-section-functions nil)
     (defvar edmacs-sidebar-extra-section-functions nil)
+    (defvar edmacs-sidebar-header-line-function #'ignore)
+    (defvar edmacs-sidebar-force-text-glyphs nil)
     (defun edmacs-sidebar--redraw (_frame) nil)
     (defun edmacs-sidebar--window (_frame) nil)
     (defun edmacs-sidebar-hide (&optional _frame) nil)
     (defun edmacs-frames-open-worktree-tab (_dir) nil)
+    (defun claude-term-registry-rename (_root _old _new) nil)
 
     (load (expand-file-name "modules/agents.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar-agents.el" default-directory) nil t)
@@ -271,10 +274,14 @@ Commentary on the module-boundary convention), and every
               (should (string-match-p "0s" text)))))))
 
     (ert-deftest edmacs-sidebar-agents-test-insert-row-unread-done-is-bold ()
+      "`bold' is layered ON TOP of the `done' status face (phase 8), not a
+bare `bold' symbol replacing it -- see the dedicated status-face tests
+below for the exact layered shape."
       (let ((agent (edmacs-sidebar-agents-test--make-agent :status 'done :unread t)))
         (edmacs-sidebar-agents-test--with-sidebar-buffer
           (edmacs-sidebar-agents--insert-row agent)
-          (should (text-property-any (point-min) (point-max) 'face 'bold)))))
+          (let ((face (get-text-property (point-min) 'face)))
+            (should (or (eq face 'bold) (and (listp face) (memq 'bold face))))))))
 
     (ert-deftest edmacs-sidebar-agents-test-insert-row-working-is-not-bold ()
       (let ((agent (edmacs-sidebar-agents-test--make-agent :status 'working)))
@@ -570,6 +577,92 @@ stubbed one, matching agents.el's own real-timer test convention."
             (should (equal (list "k1") observed))
             (should redrawn)
             (should checked)))))
+
+    ;; ==========================================================================
+    ;; Status faces (phase 8, AC2)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-agents-test-status-face-per-row ()
+      (let ((waiting (edmacs-sidebar-agents-test--make-agent :status 'waiting))
+            (done (edmacs-sidebar-agents-test--make-agent :status 'done :unread nil))
+            (working (edmacs-sidebar-agents-test--make-agent :status 'working))
+            (idle (edmacs-sidebar-agents-test--make-agent :status 'idle)))
+        (edmacs-sidebar-agents-test--with-sidebar-buffer
+          (edmacs-sidebar-agents--insert-row waiting)
+          (edmacs-sidebar-agents--insert-row done)
+          (edmacs-sidebar-agents--insert-row working)
+          (edmacs-sidebar-agents--insert-row idle)
+          (goto-char (point-min))
+          (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-agent-waiting-face))
+          (forward-line 1)
+          (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-agent-done-face))
+          (forward-line 1)
+          (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-agent-working-face))
+          (forward-line 1)
+          (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-agent-idle-face)))))
+
+    (ert-deftest edmacs-sidebar-agents-test-unread-done-layers-bold-over-done-face ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent :status 'done :unread t)))
+        (edmacs-sidebar-agents-test--with-sidebar-buffer
+          (edmacs-sidebar-agents--insert-row agent)
+          (should (equal (get-text-property (point-min) 'face)
+                          (list 'bold 'edmacs-sidebar-agent-done-face))))))
+
+    ;; ==========================================================================
+    ;; Glyph fallback respects `edmacs-sidebar-force-text-glyphs' (phase 8)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-agents-test-glyph-force-text-overrides-nerd-icons ()
+      (cl-letf (((symbol-function 'nerd-icons-faicon) (lambda (_name) "NERD-WORKING"))
+                ((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
+                ((symbol-function 'fboundp) (lambda (f) (eq f 'nerd-icons-faicon)))
+                (edmacs-sidebar-force-text-glyphs t))
+        (should (equal "*" (edmacs-sidebar-agents--glyph 'working)))))
+
+    ;; ==========================================================================
+    ;; edmacs-sidebar-agents-rename (phase 8)
+    ;; ==========================================================================
+    ;; The `claude-term' branch is necessarily exercised against a synthetic
+    ;; `edmacs-agent' struct and a mocked `claude-term-registry-rename', not
+    ;; a real registry -- end-to-end coverage needs edmacs-claude-terminal's
+    ;; claude-term rows, which land in this table only once phase 9 does.
+
+    (ert-deftest edmacs-sidebar-agents-test-rename-claude-term-calls-registry-rename ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent
+                    :root "/repo/wt/" :instance "%1" :source 'claude-term))
+            (calls nil))
+        (cl-letf (((symbol-function 'claude-term-registry-rename)
+                   (lambda (root old new) (push (list root old new) calls)))
+                  ((symbol-function 'read-string) (lambda (&rest _) "new-label"))
+                  ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
+          (edmacs-sidebar-agents-rename agent)
+          (should (equal calls (list (list "/repo/wt/" "%1" "new-label")))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-rename-workmux-user-errors ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent :source 'workmux)))
+        (should-error (edmacs-sidebar-agents-rename agent) :type 'user-error)))
+
+    ;; ==========================================================================
+    ;; Header-line roll-up (phase 8)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-agents-test-header-line-roll-up-counts-per-status ()
+      (edmacs-sidebar-agents-test--with-clean-state
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/r2/" :instance "%1" :status 'waiting))
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/r3/" :instance "%1" :status 'done))
+        (should (equal "  [1 working, 1 waiting, 1 done]"
+                        (edmacs-sidebar-agents--header-line (selected-frame))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-header-line-nil-when-no-agents ()
+      (edmacs-sidebar-agents-test--with-clean-state
+        (should-not (edmacs-sidebar-agents--header-line (selected-frame)))))
+
+    (ert-deftest edmacs-sidebar-agents-test-header-line-assigned-to-sidebar-extension-point ()
+      (should (eq edmacs-sidebar-header-line-function #'edmacs-sidebar-agents--header-line)))
 
     )) ; end of build-root-found branch
 

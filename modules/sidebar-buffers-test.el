@@ -70,6 +70,7 @@ a real Emacs session) to enable this suite"))
     ;; sidebar-agents-test.el pre-populates its own extension-point vars.
     (defvar edmacs-sidebar-worktree-section-functions nil)
     (defvar edmacs-sidebar-extra-section-functions nil)
+    (defvar edmacs-sidebar-force-text-glyphs nil)
     (defun edmacs-sidebar--buffer (_frame) nil)
     (defun edmacs-sidebar--redraw (_frame) nil)
     (defun edmacs-sidebar--goto-identity (_identity) nil)
@@ -253,5 +254,43 @@ modules/'s aggregate rank 1)."
            (b (edmacs-sidebar-buffers-test--file-buffer "/repo/aaa.el")))
         (let ((sorted (edmacs-sidebar-buffers--sort-bufs (list a b) nil)))
           (should (equal (list b a) sorted)))))
+
+    ;; ==========================================================================
+    ;; Visible-marker overlay: glyph + face (phase 8, AC2)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-test-decorate-overlay-visible-marker-has-glyph-and-face ()
+      "The visible-marker `before-string' carries
+`edmacs-sidebar-buffer-visible-face' and the current
+nerd-icons-availability state's glyph/fallback -- ASCII fallback here,
+since `nerd-icons' is not loaded by this standalone suite."
+      (edmacs-sidebar-buffers-test--with-buffers
+          ((buf (edmacs-sidebar-buffers-test--file-buffer "/repo/a.el")))
+        (with-temp-buffer
+          (let ((ov (make-overlay (point-min) (point-min))))
+            (cl-letf (((symbol-function 'get-buffer-window) (lambda (_buf _frame) t))
+                      ((symbol-function 'frame-selected-window) (lambda (_frame) nil)))
+              (edmacs-sidebar-buffers--decorate-overlay ov buf 'fake-frame))
+            (let ((before (overlay-get ov 'before-string)))
+              (should (equal (concat edmacs-sidebar-buffers--visible-glyph-fallback " ") before))
+              (should (eq (get-text-property 0 'face before) 'edmacs-sidebar-buffer-visible-face)))))))
+
+    (ert-deftest edmacs-sidebar-buffers-test-decorate-overlay-invisible-marker-is-blank ()
+      (edmacs-sidebar-buffers-test--with-buffers
+          ((buf (edmacs-sidebar-buffers-test--file-buffer "/repo/a.el")))
+        (with-temp-buffer
+          (let ((ov (make-overlay (point-min) (point-min))))
+            (cl-letf (((symbol-function 'get-buffer-window) (lambda (_buf _frame) nil))
+                      ((symbol-function 'frame-selected-window) (lambda (_frame) nil)))
+              (edmacs-sidebar-buffers--decorate-overlay ov buf 'fake-frame))
+            (should (equal "  " (overlay-get ov 'before-string)))))))
+
+    (ert-deftest edmacs-sidebar-buffers-test-visible-glyph-force-text-overrides-nerd-icons ()
+      (cl-letf (((symbol-function 'nerd-icons-octicon) (lambda (_name) "NERD-EYE"))
+                ((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
+                ((symbol-function 'fboundp) (lambda (f) (eq f 'nerd-icons-octicon)))
+                (edmacs-sidebar-force-text-glyphs t))
+        (should (equal edmacs-sidebar-buffers--visible-glyph-fallback
+                        (edmacs-sidebar-buffers--visible-glyph)))))
 
     ))

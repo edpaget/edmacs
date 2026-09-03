@@ -32,6 +32,7 @@
 
 (require 'tab-bar)
 (require 'desktop)
+(require 'cl-lib)
 
 ;; `modules/git.el's `use-package magit :commands (...)' only activates
 ;; magit's autoloads file, which does not autoload `magit-section-mode',
@@ -64,11 +65,23 @@
 (declare-function edmacs-frames--tab-root "frames")
 (declare-function edmacs-frames-open-worktree-tab "frames")
 
+;; git-common-dir.el loads BEFORE sidebar.el (init.el's `load-module'
+;; order), so this one resolves at real load time too; declared anyway
+;; for this file's own standalone `-Q --batch' test harness, which does
+;; not always load it first.
+(declare-function edmacs-git-common-dir-repo-name "git-common-dir")
+
 ;; sidebar-agents.el (phase 6) loads AFTER this file (init.el's
-;; `load-module' order); these two commands are only ever reached
+;; `load-module' order); these commands are only ever reached
 ;; through the keymap below, resolved at keypress time.
 (declare-function edmacs-sidebar-agents-visit "sidebar-agents")
 (declare-function edmacs-sidebar-agents-toggle-all "sidebar-agents")
+(declare-function edmacs-sidebar-agents-rename "sidebar-agents")
+
+;; Autoloaded by Emacs 29+ core (`describe-keymap.el'); declared here so
+;; the byte-compiler has no forward-reference warning on a build whose
+;; autoloads have not yet been regenerated.
+(declare-function which-key-show-full-keymap "which-key")
 
 ;; agents.el loads AFTER this file too; used only by
 ;; `edmacs-sidebar--point-identity'/`--find-agent-section' below to key
@@ -115,6 +128,13 @@ about agents or buffers.")
 every other section. Lets sidebar-agents.el append its own
 frame-independent ALL AGENTS section.")
 
+(defvar edmacs-sidebar-header-line-function #'ignore
+  "Function of one argument, a FRAME, returning a suffix string to
+append to that frame's own repo-name header line, or nil.
+sidebar-agents.el reassigns this to append a repo-wide agent-status
+roll-up -- the same swappable-seam convention
+`edmacs-sidebar-worktree-label-suffix-function' uses.")
+
 ;; ============================================================================
 ;; Faces
 ;; ============================================================================
@@ -123,7 +143,7 @@ frame-independent ALL AGENTS section.")
   "Per-frame tab/worktree list in a left side window."
   :group 'convenience)
 
-(defface edmacs-sidebar-no-tab-face
+(defface edmacs-sidebar-worktree-closed-face
   '((t :inherit shadow))
   "Face for a worktree row with no open tab."
   :group 'edmacs-sidebar)
@@ -138,6 +158,34 @@ frame-independent ALL AGENTS section.")
   "Face for the warning row shown when FRAME's whole repo is gone.
 See `edmacs-repo-missing', set by `modules/sessions.el's frameset
 restore bridge."
+  :group 'edmacs-sidebar)
+
+(defface edmacs-sidebar-current-tab-face
+  '((t :inherit magit-section-heading))
+  "Face for the current tab's own row label."
+  :group 'edmacs-sidebar)
+
+(defface edmacs-sidebar-header-face
+  '((t :inherit magit-section-heading))
+  "Face for the sidebar buffer's header line."
+  :group 'edmacs-sidebar)
+
+;; ============================================================================
+;; Customization: width, glyphs
+;; ============================================================================
+
+(defcustom edmacs-sidebar-width 32
+  "Default width, in columns, of the sidebar side window.
+Overridden per frame once the user manually resizes the window -- see
+`edmacs-sidebar--on-window-size-change'."
+  :type 'integer
+  :group 'edmacs-sidebar)
+
+(defcustom edmacs-sidebar-force-text-glyphs nil
+  "Non-nil forces the plain text/Unicode marker glyphs everywhere in the
+sidebar, even when `nerd-icons' is loaded. Useful for a terminal frame
+where nerd-icons's private-use-area glyphs render as unreadable boxes."
+  :type 'boolean
   :group 'edmacs-sidebar)
 
 ;; ============================================================================
@@ -176,6 +224,19 @@ restore bridge."
 (define-key edmacs-sidebar-mode-map (kbd "[") #'edmacs-sidebar-buffers-prev)
 (define-key edmacs-sidebar-mode-map (kbd "]") #'edmacs-sidebar-buffers-next)
 (define-key edmacs-sidebar-mode-map (kbd "s") #'edmacs-sidebar-buffers-toggle-flat)
+(define-key edmacs-sidebar-mode-map (kbd "J") #'edmacs-sidebar-move-to-next-worktree)
+(define-key edmacs-sidebar-mode-map (kbd "K") #'edmacs-sidebar-move-to-prev-worktree)
+(define-key edmacs-sidebar-mode-map (kbd "r") #'edmacs-sidebar-rename-at-point)
+(define-key edmacs-sidebar-mode-map (kbd "g r") #'edmacs-sidebar-redraw)
+(define-key edmacs-sidebar-mode-map (kbd "?") #'edmacs-sidebar-help)
+;; TAB and `C-i' are the same event in a non-GUI/tty keymap lookup, and
+;; `evil-motion-state-map' binds `C-i' to `evil-jump-forward' regardless
+;; of `evil-want-C-i-jump' (that variable only governs whether evil
+;; claims plain `TAB' too under a GUI frame, where the two differ) -- so
+;; TAB needs the same dual-binding override as RET/q/K/? once measured
+;; live, even though `magit-section-mode-map' already binds it and a
+;; GUI frame alone would not have shown the shadow.
+(define-key edmacs-sidebar-mode-map (kbd "TAB") #'magit-section-toggle)
 
 (with-eval-after-load 'evil
   (evil-define-key 'motion edmacs-sidebar-mode-map
@@ -185,7 +246,13 @@ restore bridge."
     (kbd "a") #'edmacs-sidebar-agents-toggle-all
     (kbd "[") #'edmacs-sidebar-buffers-prev
     (kbd "]") #'edmacs-sidebar-buffers-next
-    (kbd "s") #'edmacs-sidebar-buffers-toggle-flat))
+    (kbd "s") #'edmacs-sidebar-buffers-toggle-flat
+    (kbd "J") #'edmacs-sidebar-move-to-next-worktree
+    (kbd "K") #'edmacs-sidebar-move-to-prev-worktree
+    (kbd "r") #'edmacs-sidebar-rename-at-point
+    (kbd "g r") #'edmacs-sidebar-redraw
+    (kbd "?") #'edmacs-sidebar-help
+    (kbd "TAB") #'magit-section-toggle))
 
 ;; ============================================================================
 ;; Per-frame buffer management
@@ -293,7 +360,10 @@ nil when point is on no recognized row."
       (cons 'buffer (buffer-name (oref section value))))
      (t (save-excursion
           (goto-char (line-beginning-position))
-          (when (looking-at "[●○⋯] \\(.*\\)$")
+          ;; One non-space marker glyph (a plain Unicode dot/circle, or a
+          ;; nerd-icons private-use-area glyph -- see `--glyph' below)
+          ;; followed by a space, then the row's own text.
+          (when (looking-at "\\S-+ \\(.*\\)$")
             (cons 'tab (match-string 1))))))))
 
 (defun edmacs-sidebar--goto-identity (identity)
@@ -310,12 +380,66 @@ or `point-min' if it can no longer be found."
        (when section
          (goto-char (oref section start)))))
     (`(tab . ,name)
-     (re-search-forward (concat "^[●○⋯] " (regexp-quote name) "$") nil t))))
+     (re-search-forward (concat "^\\S-+ " (regexp-quote name) "$") nil t))))
+
+;; ============================================================================
+;; Glyphs: nerd-icons with a plain-text fallback
+;; ============================================================================
+
+(defconst edmacs-sidebar--fallback-glyphs
+  '((current-tab . "●") (open-tab . "○") (no-tab . "⋯"))
+  "Plain-Unicode fallback marker glyph per row KIND.")
+
+(declare-function nerd-icons-octicon "nerd-icons")
+
+(defun edmacs-sidebar--nerd-icon (kind)
+  "Return KIND's nerd-icons glyph, or nil when unavailable.
+Never signals: an icon lookup failing falls back to plain text exactly
+as if nerd-icons were not loaded at all -- mirrors
+`edmacs-sidebar-agents--nerd-icon's own convention."
+  (and (not edmacs-sidebar-force-text-glyphs)
+       (featurep 'nerd-icons)
+       (condition-case nil
+           (pcase kind
+             ('current-tab (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-arrow_right")))
+             ('open-tab (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-circle")))
+             ('no-tab (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-dash")))
+             (_ nil))
+         (error nil))))
+
+(defun edmacs-sidebar--glyph (kind)
+  "Return the display glyph for KIND: a nerd-icon if available and not
+forced off by `edmacs-sidebar-force-text-glyphs', else the plain-Unicode
+fallback from `edmacs-sidebar--fallback-glyphs'."
+  (or (edmacs-sidebar--nerd-icon kind)
+      (alist-get kind edmacs-sidebar--fallback-glyphs "?")))
+
+;; ============================================================================
+;; Ellipsis truncation to the sidebar window's live width
+;; ============================================================================
+
+(defun edmacs-sidebar--truncate-label (label &optional frame)
+  "Truncate LABEL with a trailing … to fit FRAME's sidebar window width.
+FRAME defaults to the selected frame. Falls back to the frame's
+remembered width, or `edmacs-sidebar-width', when the sidebar has no
+live window yet (e.g. the very first redraw of a freshly created
+buffer, before `display-buffer' has shown it) -- there is no live width
+to measure against yet, but this is still a reasonable estimate,
+consistent with what `edmacs-sidebar-show' is about to use."
+  (let* ((frame (or frame (selected-frame)))
+         (window (edmacs-sidebar--window frame))
+         (width (if (window-live-p window)
+                    (window-width window)
+                  (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
+                      edmacs-sidebar-width))))
+    (if (> (length label) width)
+        (concat (substring label 0 (max 0 (1- width))) "…")
+      label)))
 
 (defun edmacs-sidebar--tab-label (tab)
   "Return TAB's marker-prefixed display label, unpropertized."
-  (concat (if (eq (car tab) 'current-tab) "● " "○ ")
-          (alist-get 'name tab)))
+  (concat (edmacs-sidebar--glyph (if (eq (car tab) 'current-tab) 'current-tab 'open-tab))
+          " " (alist-get 'name tab)))
 
 (defun edmacs-sidebar--insert-tab-row (tab tabs frame &optional root stale)
   "Insert a row for TAB, an element of TABS in FRAME.
@@ -324,26 +448,33 @@ shape `edmacs-sidebar-activate' dispatches on); without it, the section
 value is the bare 1-based TAB-NUMBER (the repo-less flat-list shape).
 STALE renders the label with `edmacs-sidebar-missing-worktree-face' --
 TAB's own worktree directory has disappeared from the fresh worktree
-list (phase body Steps item 6)."
+list (phase body Steps item 6); otherwise the current tab's row gets
+`edmacs-sidebar-current-tab-face'."
   ;; `tabs'/`frame' passed explicitly: the 0-arg form of
   ;; `tab-bar--tab-index' defaults to `(selected-frame)' and would
   ;; silently return nil for a tab belonging to a non-selected frame.
   (let* ((tab-number (1+ (tab-bar--tab-index tab tabs frame)))
          (suffix (and root (funcall edmacs-sidebar-worktree-label-suffix-function root)))
-         (label (concat (edmacs-sidebar--tab-label tab) (or suffix "")))
+         (label (edmacs-sidebar--truncate-label
+                 (concat (edmacs-sidebar--tab-label tab) (or suffix "")) frame))
          (value (if root (cons root tab-number) tab-number)))
     (magit-insert-section (edmacs-sidebar-tab value)
       (magit-insert-heading
-        (if stale (propertize label 'face 'edmacs-sidebar-missing-worktree-face)
-          label)))))
+        (cond
+         (stale (propertize label 'face 'edmacs-sidebar-missing-worktree-face))
+         ((eq (car tab) 'current-tab) (propertize label 'face 'edmacs-sidebar-current-tab-face))
+         (t label))))))
 
-(defun edmacs-sidebar--insert-no-tab-row (entry)
-  "Insert a dimmed, tab-less row for worktree ENTRY, a (NAME . ROOT) pair."
+(defun edmacs-sidebar--insert-no-tab-row (entry frame)
+  "Insert a dimmed, tab-less row for worktree ENTRY, a (NAME . ROOT) pair,
+in FRAME's sidebar."
   (let* ((suffix (funcall edmacs-sidebar-worktree-label-suffix-function (cdr entry)))
-         (label (concat "⋯ " (car entry) (or suffix "") " (no tab)")))
+         (label (edmacs-sidebar--truncate-label
+                 (concat (edmacs-sidebar--glyph 'no-tab) " " (car entry) (or suffix "") " (no tab)")
+                 frame)))
     (magit-insert-section (edmacs-sidebar-tab (cons (cdr entry) nil))
       (magit-insert-heading
-        (propertize label 'face 'edmacs-sidebar-no-tab-face)))))
+        (propertize label 'face 'edmacs-sidebar-worktree-closed-face)))))
 
 (defun edmacs-sidebar--redraw-tabs (frame)
   "Render FRAME's tabs as a flat list -- the repo-less fallback.
@@ -375,7 +506,7 @@ with a warning face."
                  (tab-number (and tab (1+ (tab-bar--tab-index tab tabs frame)))))
             (if tab
                 (edmacs-sidebar--insert-tab-row tab tabs frame root nil)
-              (edmacs-sidebar--insert-no-tab-row entry))
+              (edmacs-sidebar--insert-no-tab-row entry frame))
             (run-hook-with-args 'edmacs-sidebar-worktree-section-functions
                                  root (and tab t) frame tab-number)))
         (dolist (tab tabs)
@@ -391,6 +522,23 @@ FRAME's `edmacs-repo-missing' parameter -- see AC3."
     (magit-insert-heading
       (propertize "repo missing" 'face 'edmacs-sidebar-missing-repo-face))))
 
+(defun edmacs-sidebar--header-line-name (frame)
+  "Return FRAME's own identity string for the header line: its repo's
+bare leaf directory name if it carries an `edmacs-repo' parameter, else
+its frame `name' parameter (the repo-less flat-tab-list case)."
+  (let ((common (frame-parameter frame 'edmacs-repo)))
+    (if common
+        (edmacs-git-common-dir-repo-name common)
+      (or (frame-parameter frame 'name) ""))))
+
+(defun edmacs-sidebar--header-line (frame)
+  "Return FRAME's sidebar header-line string: its own repo/frame
+identity plus whatever suffix `edmacs-sidebar-header-line-function'
+supplies (sidebar-agents.el's repo-wide roll-up, by default none)."
+  (let ((suffix (funcall edmacs-sidebar-header-line-function frame)))
+    (propertize (concat (edmacs-sidebar--header-line-name frame) (or suffix ""))
+                'face 'edmacs-sidebar-header-face)))
+
 (defun edmacs-sidebar--redraw (frame)
   "Redraw FRAME's sidebar buffer from its current `tab-bar-tabs'.
 No-ops when FRAME has no live sidebar buffer -- callers such as the
@@ -400,7 +548,8 @@ row when possible; falls back to `point-min' otherwise. Branches on
 FRAME's `edmacs-repo' parameter: a repo frame gets the worktree-aware
 render, everything else keeps the original flat tab list. A frame
 carrying `edmacs-repo-missing' (its repo directory vanished since it
-was saved) gets a warning section ahead of everything else."
+was saved) gets a warning section ahead of everything else. Also
+(re)sets the buffer's `header-line-format' -- see `--header-line'."
   (let ((buf (edmacs-sidebar--buffer frame)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
@@ -415,6 +564,7 @@ was saved) gets a warning section ahead of everything else."
                 (edmacs-sidebar--redraw-worktrees frame common)
               (edmacs-sidebar--redraw-tabs frame))
             (run-hook-with-args 'edmacs-sidebar-extra-section-functions frame))
+          (setq header-line-format (edmacs-sidebar--header-line frame))
           (edmacs-sidebar--goto-identity point-identity))))))
 
 ;; ============================================================================
@@ -447,9 +597,13 @@ reselects, never duplicating."
 An `edmacs-sidebar-agent' row (sidebar-agents.el, phase 6) is visited
 via `edmacs-sidebar-agents-visit'; a `edmacs-sidebar-buffers-file'/
 `-special' row (sidebar-buffers.el, phase 7) via
-`edmacs-sidebar-buffers-visit'; every other section type (tab,
-worktree, root, warning, agents-group) keeps the original
-`edmacs-sidebar-activate' behavior unchanged."
+`edmacs-sidebar-buffers-visit'; a tab/worktree row (or any other,
+unrecognized section type) keeps the original `edmacs-sidebar-activate'
+behavior unchanged. Every section type known to have no RET action at
+all -- the root wrapper, the missing-repo warning row, sidebar-agents.el's
+group/ALL-AGENTS headings, and sidebar-buffers.el's directory-node
+headings -- and no section at all, signal `user-error' instead of
+silently doing nothing."
   (interactive)
   (let ((section (magit-current-section)))
     (cond
@@ -457,7 +611,97 @@ worktree, root, warning, agents-group) keeps the original
       (edmacs-sidebar-agents-visit))
      ((and section (memq (oref section type) '(edmacs-sidebar-buffers-file edmacs-sidebar-buffers-special)))
       (edmacs-sidebar-buffers-visit))
+     ((or (null section)
+          (memq (oref section type)
+                '(edmacs-sidebar-root edmacs-sidebar-warning
+                  edmacs-sidebar-agents-group edmacs-sidebar-agents-all
+                  edmacs-sidebar-buffers-dir)))
+      (user-error "Nothing to do on this row"))
      (t (edmacs-sidebar-activate)))))
+
+(defun edmacs-sidebar--top-level-section-at (section)
+  "Return the top-level (direct child of `magit-root-section') ancestor
+of SECTION, or nil when SECTION is nil or is `magit-root-section' itself."
+  (while (and section (oref section parent) (not (eq (oref section parent) magit-root-section)))
+    (setq section (oref section parent)))
+  (and section (not (eq section magit-root-section)) section))
+
+(defun edmacs-sidebar--move-to-worktree (delta)
+  "Move point DELTA positions along the top-level rows (direct children
+of `magit-root-section' -- tab/worktree rows, the warning row, and the
+agents-all section are all direct children today). A no-op past either
+end: DELTA is +1 for `edmacs-sidebar-move-to-next-worktree', -1 for
+`edmacs-sidebar-move-to-prev-worktree'. With no current top-level row
+under point (e.g. point at `point-min' before any row), DELTA > 0 moves
+to the first row and DELTA < 0 is a no-op."
+  (let* ((children (oref magit-root-section children))
+         (current (edmacs-sidebar--top-level-section-at (magit-current-section)))
+         (index (and current (cl-position current children)))
+         (target (cond (index (+ index delta))
+                       ((> delta 0) 0))))
+    (when (and target (>= target 0) (< target (length children)))
+      (goto-char (oref (nth target children) start)))))
+
+;;;###autoload
+(defun edmacs-sidebar-move-to-next-worktree ()
+  "Move point to the next top-level row. A no-op past the last row."
+  (interactive)
+  (edmacs-sidebar--move-to-worktree 1))
+
+;;;###autoload
+(defun edmacs-sidebar-move-to-prev-worktree ()
+  "Move point to the previous top-level row. A no-op before the first row."
+  (interactive)
+  (edmacs-sidebar--move-to-worktree -1))
+
+(defun edmacs-sidebar--section-tab-number (section)
+  "Return the open tab-number for tab-row SECTION's value, or nil.
+An integer value (the repo-less flat tab list) is itself always an open
+tab's number; a `(ROOT . TAB-NUMBER)' value's TAB-NUMBER may be nil for
+a tab-less worktree row -- same shape `edmacs-sidebar-close-worktree'
+already dispatches on."
+  (let ((value (and section (slot-boundp section 'value) (oref section value))))
+    (cond ((integerp value) value)
+          ((consp value) (cdr value)))))
+
+;;;###autoload
+(defun edmacs-sidebar-rename-at-point ()
+  "Rename the row at point: `tab-bar-rename-tab' on a tab row with an
+open tab, `edmacs-sidebar-agents-rename' (sidebar-agents.el) on an agent
+row. Every other row -- a tab-less worktree row, or no row at all --
+signals `user-error' instead."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (cond
+     ((and section (eq (oref section type) 'edmacs-sidebar-tab))
+      (if (edmacs-sidebar--section-tab-number section)
+          (call-interactively #'tab-bar-rename-tab)
+        (user-error "No tab to rename")))
+     ((and section (eq (oref section type) 'edmacs-sidebar-agent) (slot-boundp section 'value))
+      (edmacs-sidebar-agents-rename (oref section value)))
+     (t (user-error "Nothing to rename here")))))
+
+;;;###autoload
+(defun edmacs-sidebar-redraw ()
+  "Force a redraw of the selected frame's sidebar from cached data.
+Never re-runs `edmacs-frames--worktrees-refresh' (a subprocess call) --
+this only rebuilds the section tree from data already cached, so it is
+always safe to bind to a bare key."
+  (interactive)
+  (edmacs-sidebar--redraw (selected-frame))
+  (message "sidebar redrawn"))
+
+;;;###autoload
+(defun edmacs-sidebar-help ()
+  "Show a cheat sheet of every binding in `edmacs-sidebar-mode-map'.
+Prefers `which-key-show-full-keymap' when available; falls back to the
+Emacs 29+ core `describe-keymap', which is always present -- even under
+`-Q --batch' with no which-key loaded -- so this fallback path is
+exercisable in the ERT suite."
+  (interactive)
+  (if (fboundp 'which-key-show-full-keymap)
+      (which-key-show-full-keymap 'edmacs-sidebar-mode-map)
+    (describe-keymap 'edmacs-sidebar-mode-map)))
 
 (defun edmacs-sidebar-close-worktree ()
   "Close the open tab represented by the section at point.
@@ -487,22 +731,80 @@ phase 7), else close the worktree row's tab exactly as before."
       (seq-find (lambda (w) (eq (window-buffer w) buf))
                  (window-list frame 'never)))))
 
+;; ============================================================================
+;; Manual resize survives a hide/show cycle (AC3)
+;; ============================================================================
+;; `preserve-size's `(t . nil)' parameter (below) blocks only AUTOMATIC
+;; resizing -- `balance-windows', `fit-window-to-buffer' -- not an
+;; explicit user mouse-drag or `C-x {'/`}', which keep working exactly
+;; as before. What mouse-resize does NOT survive on its own is a
+;; hide/show cycle: `edmacs-sidebar-show' would otherwise always fall
+;; back to the `edmacs-sidebar-width' defcustom. So the frame's actual
+;; window width is mirrored into a frame parameter here, debounced per
+;; frame (mirroring `edmacs-frames--worktree-refresh-timers's shape) so
+;; a mouse drag's stream of intermediate sizes doesn't thrash.
+
+(defvar edmacs-sidebar-resize-debounce-seconds 0.2
+  "Seconds a frame's sidebar-window-width changes coalesce into one
+remembered-width update. A plain `defvar', not `defcustom', so a test
+can shrink it -- mirrors `edmacs-sidebar-agents-coalesce-seconds's own
+convention.")
+
+(defvar edmacs-sidebar--resize-debounce-timers (make-hash-table :test #'eq)
+  "FRAME -> pending debounce timer for `edmacs-sidebar--on-window-size-change'.")
+
+(defun edmacs-sidebar--remember-width (frame)
+  "Stash the `window-width' value that reproduces FRAME's current
+sidebar window width the next time `edmacs-sidebar-show' creates a
+fresh side window. `display-buffer-in-side-window's own `window-width'
+action-alist entry consistently yields an actual window one column
+narrower than requested on a fresh split -- confirmed live, both for
+the plain `edmacs-sidebar-width' default and after a manual resize --
+so `1+' compensates for that offset; a plain `window-resize' (an
+already-live window, not a fresh split) has no such offset, which is
+why `--on-window-size-change's own measurement below has to go through
+this same compensation rather than stashing the raw width."
+  (remhash frame edmacs-sidebar--resize-debounce-timers)
+  (when (frame-live-p frame)
+    (let ((window (edmacs-sidebar--window frame)))
+      (when (window-live-p window)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width (1+ (window-width window)))))))
+
+(defun edmacs-sidebar--on-window-size-change (frame)
+  "Registered on `window-size-change-functions': debounce-stash FRAME's
+sidebar window width, if it currently has one shown. A no-op for a
+frame with no live sidebar window at all -- most redisplay-triggering
+size changes are unrelated windows."
+  (when (and (frame-live-p frame) (edmacs-sidebar--window frame))
+    (when-let* ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+      (cancel-timer timer))
+    (puthash frame
+             (run-at-time edmacs-sidebar-resize-debounce-seconds nil
+                           #'edmacs-sidebar--remember-width frame)
+             edmacs-sidebar--resize-debounce-timers)))
+
+(add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change)
+
 (defun edmacs-sidebar-show (&optional frame)
   "Show FRAME's sidebar window, creating and redrawing its buffer first.
 Guards against `display-buffer-in-side-window' returning nil -- e.g.
 `window-sides-slots' forbidding creation on this edge -- by simply not
 dedicating anything in that case, mirroring
-`claude-term--pop-to-window's own nil guard."
+`claude-term--pop-to-window's own nil guard. Uses FRAME's
+remembered width (see above) when it has one, else
+`edmacs-sidebar-width', so a manual resize survives a hide/show cycle."
   (interactive)
   (let* ((frame (or frame (selected-frame)))
          (buf (edmacs-sidebar--ensure-buffer frame))
+         (width (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
+                    edmacs-sidebar-width))
          (window (with-selected-frame frame
                    (display-buffer
                     buf
-                    '((display-buffer-in-side-window)
+                    `((display-buffer-in-side-window)
                       (side . left)
                       (slot . 0)
-                      (window-width . 32)
+                      (window-width . ,width)
                       (preserve-size . (t . nil))
                       (window-parameters . ((no-delete-other-windows . t)
                                              (no-other-window . t))))))))

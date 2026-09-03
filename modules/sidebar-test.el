@@ -871,6 +871,18 @@ non-graphical batch frame."
     ;; sidebar.el.)
 
     (ert-deftest edmacs-sidebar-test-redraw-and-hooks-never-shell-out ()
+      "Extended for phase 8: also drives every new command (J/K/gr/rename/
+help) through the same guard. This phase adds no new *expected*
+subprocess call -- the guard's expectation stays 'zero', not 'zero
+except N'. The two real, already-documented exceptions elsewhere in
+this codebase (`edmacs-frames--worktrees-refresh' [phase 3] and
+sidebar-agents.el's tmux-jump `start-process' calls [phase 6]) are
+never reached by this loop: it never creates a frame or fires an
+agent jump. This automated guard is the primary, CI-equivalent check;
+the phase body's own 'one minute of `profiler-start' over mixed tab
+switching/buffer opening/agent state changes' is a documented,
+non-automated interactive checklist pass for the implementer/reviewer
+to run once before marking the phase reviewed."
       (edmacs-sidebar-test--with-extra-tab
         (let ((violations nil)
               (guarded '(call-process call-process-region process-file
@@ -882,18 +894,39 @@ non-graphical batch frame."
                               (lambda (&rest _) (push fn violations))
                               `((name . ,(intern (format "edmacs-sidebar-test--guard-%s" fn))))))
                 (edmacs-sidebar-show (selected-frame))
-                (dotimes (_ 50)
-                  (edmacs-sidebar--redraw (selected-frame))
-                  (edmacs-sidebar--on-tab-select nil nil)
-                  (edmacs-sidebar--on-tab-open nil)
-                  (edmacs-sidebar--on-tab-pre-close nil nil)
-                  (tab-bar-rename-tab "edmacs-sidebar-test-shellout-check"))
+                (cl-letf (((symbol-function 'read-from-minibuffer)
+                           (lambda (&rest _) "edmacs-sidebar-test-renamed-tab")))
+                  (dotimes (_ 50)
+                    (edmacs-sidebar--redraw (selected-frame))
+                    (edmacs-sidebar--on-tab-select nil nil)
+                    (edmacs-sidebar--on-tab-open nil)
+                    (edmacs-sidebar--on-tab-pre-close nil nil)
+                    (tab-bar-rename-tab "edmacs-sidebar-test-shellout-check")
+                    (edmacs-sidebar-redraw)
+                    ;; `describe-keymap' is real Emacs 29+ core, exercised for
+                    ;; real (against a plain temp buffer, no dedicated side
+                    ;; window in the way) by its own dedicated test below;
+                    ;; stubbed here to a no-op -- this loop's only concern is
+                    ;; that `edmacs-sidebar-help's own dispatch never shells
+                    ;; out, not that the real help/which-key UI can coexist
+                    ;; with this frame's dedicated, `no-other-window' sidebar
+                    ;; side window without wedging `display-buffer'.
+                    (cl-letf (((symbol-function 'describe-keymap) (lambda (&rest _) nil))
+                              ((symbol-function 'which-key-show-full-keymap) (lambda (&rest _) nil)))
+                      (let ((inhibit-message t))
+                        (edmacs-sidebar-help)))
+                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                      (goto-char (point-min))
+                      (edmacs-sidebar-move-to-next-worktree)
+                      (edmacs-sidebar-move-to-prev-worktree)
+                      (edmacs-sidebar-rename-at-point))))
                 (sleep-for 0.2)
                 (sit-for 0)
                 (should-not violations))
             (dolist (fn guarded)
               (advice-remove fn (intern (format "edmacs-sidebar-test--guard-%s" fn))))
             (ignore-errors (tab-bar-rename-tab ""))
+            (when (get-buffer "*Help*") (kill-buffer "*Help*"))
             (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
 
     ;; ==========================================================================
@@ -946,6 +979,258 @@ showing the frame's live sidebar buffer, never `*scratch*'."
                 (should (eq (window-buffer (car side-windows))
                             (edmacs-sidebar--buffer frame)))
                 (should-not (eq (window-buffer (car side-windows)) (get-buffer "*scratch*")))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    ;; ==========================================================================
+    ;; Phase 8 -- J/K/r/gr/? bindings, RET user-errors, faces, resize, header-line
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-j-k-r-gr-help-resolve-through-real-evil-keymaps ()
+      "Regression test mirroring `-ret-and-q-resolve-...' above, for this
+phase's own bindings: J/K/r/gr/? must resolve through real evil
+motion-state keymaps to this file's own commands, not evil's own
+K/?/... bindings (`evil-lookup', `evil-search-backward', ...) --
+per evil-maps.el:234,294. TAB is checked too: contrary to the phase
+body's own expectation that `evil-want-C-i-jump' being nil leaves TAB
+unclaimed, this live check found `evil-motion-state-map' still binding
+`C-i' (the same event as plain TAB outside a GUI frame) to
+`evil-jump-forward' regardless of that variable, shadowing
+`magit-section-mode-map's own binding -- so TAB got the same
+dual-binding override as RET/q/K/? (see sidebar.el's own comment at
+its `TAB' binding)."
+      (edmacs-sidebar-test--ensure-real-evil)
+      (unwind-protect
+          (progn
+            (evil-mode 1)
+            (with-temp-buffer
+              (edmacs-sidebar-mode)
+              (evil-motion-state)
+              (should (eq evil-state 'motion))
+              (should (eq (key-binding (kbd "J")) #'edmacs-sidebar-move-to-next-worktree))
+              (should (eq (key-binding (kbd "K")) #'edmacs-sidebar-move-to-prev-worktree))
+              (should (eq (key-binding (kbd "r")) #'edmacs-sidebar-rename-at-point))
+              (should (eq (key-binding (kbd "g r")) #'edmacs-sidebar-redraw))
+              (should (eq (key-binding (kbd "?")) #'edmacs-sidebar-help))
+              (should (eq (key-binding (kbd "TAB")) #'magit-section-toggle))))
+        (evil-mode -1)))
+
+    (ert-deftest edmacs-sidebar-test-visit-at-point-user-errors-with-no-section ()
+      "No section at all (an `edmacs-sidebar-mode' buffer with nothing
+ever inserted into it -- `magit-root-section' stays nil) user-errors."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (should-error (edmacs-sidebar-visit-at-point) :type 'user-error)))
+
+    (ert-deftest edmacs-sidebar-test-visit-at-point-user-errors-on-empty-root ()
+      "Point on the root wrapper itself (no children at all) user-errors."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)))
+        (goto-char (point-min))
+        (should-error (edmacs-sidebar-visit-at-point) :type 'user-error)))
+
+    (ert-deftest edmacs-sidebar-test-visit-at-point-user-errors-on-inactionable-types ()
+      "warning/agents-group/agents-all/buffers-dir all user-error on RET."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)
+            (magit-insert-section (edmacs-sidebar-warning)
+              (magit-insert-heading "warning row"))
+            (magit-insert-section (edmacs-sidebar-agents-group nil)
+              (magit-insert-heading "agents group"))
+            (magit-insert-section (edmacs-sidebar-agents-all)
+              (magit-insert-heading "all agents"))
+            (magit-insert-section (edmacs-sidebar-buffers-dir "src" nil)
+              (magit-insert-heading "src/"))))
+        (goto-char (point-min))
+        (should-error (edmacs-sidebar-visit-at-point) :type 'user-error)
+        (forward-line 1)
+        (should-error (edmacs-sidebar-visit-at-point) :type 'user-error)
+        (forward-line 1)
+        (should-error (edmacs-sidebar-visit-at-point) :type 'user-error)
+        (forward-line 1)
+        (should-error (edmacs-sidebar-visit-at-point) :type 'user-error)))
+
+    (ert-deftest edmacs-sidebar-test-kill-at-point-closes-scratch-tab-in-flat-list ()
+      "`d' (`edmacs-sidebar-kill-at-point') already closes a tab in the
+repo-less flat-tab-list frame (the daemon's scratch/spare frame) --
+regression coverage for phase 1/3's `(integerp value)' branch; no code
+change needed for this phase."
+      (edmacs-sidebar-test--with-extra-tab
+        (let ((closed nil))
+          (cl-letf (((symbol-function 'tab-bar-close-tab) (lambda (&optional n) (push n closed))))
+            (unwind-protect
+                (progn
+                  (edmacs-sidebar-show (selected-frame))
+                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                    (goto-char (point-min))
+                    (edmacs-sidebar-kill-at-point))
+                  (should closed))
+              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+
+    (ert-deftest edmacs-sidebar-test-move-to-worktree-top-level-only ()
+      "J/K move only among top-level (direct root children) rows, skipping
+over a nested child section entirely, and no-op past either end."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)
+            (magit-insert-section (edmacs-sidebar-tab 1)
+              (magit-insert-heading "row one")
+              (magit-insert-section (edmacs-sidebar-agents-group nil)
+                (magit-insert-heading "  nested agent group")))
+            (magit-insert-section (edmacs-sidebar-tab 2)
+              (magit-insert-heading "row two"))
+            (magit-insert-section (edmacs-sidebar-tab 3)
+              (magit-insert-heading "row three"))))
+        (cl-flet ((line () (buffer-substring (line-beginning-position) (line-end-position))))
+          (goto-char (point-min))
+          (forward-line 1)
+          (should (equal "  nested agent group" (line)))
+          (edmacs-sidebar-move-to-next-worktree)
+          (should (equal "row two" (line)))
+          (edmacs-sidebar-move-to-next-worktree)
+          (should (equal "row three" (line)))
+          (edmacs-sidebar-move-to-next-worktree)
+          (should (equal "row three" (line)))
+          (edmacs-sidebar-move-to-prev-worktree)
+          (should (equal "row two" (line)))
+          (edmacs-sidebar-move-to-prev-worktree)
+          (should (equal "row one" (line)))
+          (edmacs-sidebar-move-to-prev-worktree)
+          (should (equal "row one" (line))))))
+
+    (ert-deftest edmacs-sidebar-test-rename-at-point-dispatches-and-user-errors ()
+      "`r' calls `tab-bar-rename-tab' on an open tab row -- through the
+real `call-interactively' dispatch, so `tab-bar-rename-tab's own
+Lisp-form interactive spec actually runs too, exactly as it would from
+a keypress; that spec calls `read-from-minibuffer' via a normal
+(stubbable) Lisp call, unlike a bare string interactive spec's C-level
+argument reading, which `fset'/`cl-letf' cannot intercept -- confirmed
+against a real tab's name actually changing, not a mock call count.
+`r' user-errors on a tab-less worktree row, and with no recognized row
+at all."
+      (let* ((current (tab-bar--current-tab-find))
+             (root-alist (list (cons current "/repo/wt-open/")))
+             (worktrees '(("wt-open" . "/repo/wt-open/") ("wt-closed" . "/repo/wt-closed/"))))
+        (edmacs-sidebar-test--stub-worktree-lookup root-alist
+          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees))
+                    ((symbol-function 'read-from-minibuffer)
+                     (lambda (&rest _) "edmacs-sidebar-test-renamed")))
+            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
+              (unwind-protect
+                  (progn
+                    (edmacs-sidebar-show (selected-frame))
+                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                      (goto-char (point-min))
+                      (edmacs-sidebar-rename-at-point)
+                      (should (equal "edmacs-sidebar-test-renamed"
+                                      (alist-get 'name (tab-bar--current-tab-find))))
+                      (forward-line 1)
+                      (should-error (edmacs-sidebar-rename-at-point) :type 'user-error)))
+                (ignore-errors (tab-bar-rename-tab ""))
+                (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (should-error (edmacs-sidebar-rename-at-point) :type 'user-error)))
+
+    (ert-deftest edmacs-sidebar-test-current-tab-and-worktree-closed-faces ()
+      (let* ((current (tab-bar--current-tab-find))
+             (root-alist (list (cons current "/repo/wt-open/")))
+             (worktrees '(("wt-open" . "/repo/wt-open/") ("wt-closed" . "/repo/wt-closed/"))))
+        (edmacs-sidebar-test--stub-worktree-lookup root-alist
+          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
+            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
+              (unwind-protect
+                  (progn
+                    (edmacs-sidebar-show (selected-frame))
+                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                      (goto-char (point-min))
+                      (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-current-tab-face))
+                      (forward-line 1)
+                      (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-worktree-closed-face))))
+                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+
+    (ert-deftest edmacs-sidebar-test-resize-survives-toggle ()
+      "A manual resize survives `edmacs-sidebar-toggle' twice (hide, then
+show): the restored width comes from the frame-parameter stash, not
+the `edmacs-sidebar-width' default. `--remember-width' (the debounced
+timer's own callback) is called directly rather than through
+`--on-window-size-change' + a real wait -- a live window's own
+automatic `window-size-change-functions' firing during the wait would
+keep re-arming the debounce timer out from under a fixed `sleep-for',
+and this test's own concern is the stash-and-restore behavior, not the
+debounce timing (which has no dedicated assertion here)."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show frame)
+              (let ((window (edmacs-sidebar--window frame)))
+                (window-resize window -5 t)
+                (edmacs-sidebar--remember-width frame))
+              (let ((resized (window-width (edmacs-sidebar--window frame))))
+                (should (/= resized edmacs-sidebar-width))
+                (edmacs-sidebar-toggle)
+                (edmacs-sidebar-toggle)
+                (should (= resized (window-width (edmacs-sidebar--window frame))))))
+          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+            (when (timerp timer) (cancel-timer timer)))
+          (remhash frame edmacs-sidebar--resize-debounce-timers)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-on-window-size-change-debounces-and-stashes ()
+      "`--on-window-size-change' schedules a debounced call to
+`--remember-width', which stashes the CURRENT window width (`1+', to
+compensate for `display-buffer-in-side-window's own fresh-split
+off-by-one -- see `--remember-width's docstring) once it fires; a
+no-op for a frame with no live sidebar window shown."
+      (let ((frame (selected-frame))
+            (edmacs-sidebar-resize-debounce-seconds 0.05))
+        (unwind-protect
+            (progn
+              (should-not (edmacs-sidebar--window frame))
+              (edmacs-sidebar--on-window-size-change frame)
+              (should-not (gethash frame edmacs-sidebar--resize-debounce-timers))
+              (edmacs-sidebar-show frame)
+              (window-resize (edmacs-sidebar--window frame) -3 t)
+              (edmacs-sidebar--on-window-size-change frame)
+              (should (timerp (gethash frame edmacs-sidebar--resize-debounce-timers)))
+              (let ((deadline (+ (float-time) 2)))
+                (while (and (< (float-time) deadline)
+                            (not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
+                  (sit-for 0.1)))
+              (should (= (1+ (window-width (edmacs-sidebar--window frame)))
+                          (frame-parameter frame 'edmacs-sidebar-remembered-width))))
+          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+            (when (timerp timer) (cancel-timer timer)))
+          (remhash frame edmacs-sidebar--resize-debounce-timers)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-header-line-shows-repo-name ()
+      (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) nil)))
+        (edmacs-sidebar-test--with-repo-frame "/repo/.git"
+          (unwind-protect
+              (progn
+                (edmacs-sidebar-show (selected-frame))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (should (equal "repo" (substring-no-properties header-line-format)))))
+            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
+
+    (ert-deftest edmacs-sidebar-test-header-line-shows-frame-name-when-repo-less ()
+      (let ((frame (selected-frame))
+            (original-name (frame-parameter (selected-frame) 'name)))
+        (unwind-protect
+            (progn
+              (set-frame-parameter frame 'name "edmacs-sidebar-test-boot-frame")
+              (edmacs-sidebar-show frame)
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (should (equal "edmacs-sidebar-test-boot-frame"
+                                (substring-no-properties header-line-format)))))
+          (set-frame-parameter frame 'name original-name)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     )) ; end of build-root-found branch
