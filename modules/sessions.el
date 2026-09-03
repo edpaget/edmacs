@@ -186,6 +186,81 @@ Under the daemon a deleted last frame would drop Emacs out of the Dock."
         (ns-do-hide-emacs)
       (delete-frame frame t))))
 
+(defgroup edmacs-sessions nil
+  "Tabs, layout persistence, and the launchd daemon's lifecycle."
+  :group 'convenience)
+
+(defcustom edmacs-sessions-launchd-service "emacs-plus@31"
+  "Homebrew service name for the launchd-managed Emacs daemon.
+Read only by `edmacs-stop-daemon'.  The plist this names sets
+`KeepAlive' unconditionally, which is what makes a plain `kill-emacs' a
+restart rather than a quit -- see `edmacs-quit' and
+`edmacs-restart-daemon'."
+  :type 'string
+  :group 'edmacs-sessions)
+
+;; The three commands below exist because `KeepAlive' is unconditional in
+;; homebrew.mxcl.emacs-plus@31.plist: launchd relaunches the daemon on ANY
+;; exit, so `save-buffers-kill-terminal' -- which reaches
+;; `save-buffers-kill-emacs' here, the boot frame having no `client'
+;; parameter to send it down the delete-frame branch instead -- behaves as
+;; a restart no matter what it is bound to. Each of the three intents
+;; therefore needs its own command; they are not interchangeable.
+
+(defun edmacs-quit ()
+  "Close the selected frame, leaving the daemon and its session running.
+The daemon-native meaning of \"quit\": under launchd nothing here can
+end the Emacs process without it being relaunched, and the session is
+the point of running a daemon at all. Delegates to
+`edmacs-ns-close-frame', so this is the same path the window close
+button takes -- the last visible GUI frame hides Emacs rather than being
+deleted, and a Dock click brings the layout straight back. Outside a
+daemon there is no such distinction, so fall through to the stock
+`save-buffers-kill-terminal'."
+  (interactive)
+  (if (and (daemonp) (display-graphic-p))
+      (edmacs-ns-close-frame)
+    (save-buffers-kill-terminal)))
+
+(defun edmacs-restart-daemon (&optional arg)
+  "Restart the Emacs daemon: save, exit, and let launchd relaunch it.
+Under this service's unconditional `KeepAlive', exiting IS the restart --
+launchd starts a fresh daemon and `edmacs-sessions--restore-pending-frameset'
+puts the layout back, `desktop-save-mode' having written it from
+`kill-emacs-hook' on the way out. Prompts to save modified buffers
+first; a prefix ARG is passed through to `save-some-buffers' to save
+them all without asking. Outside a daemon there is nothing to relaunch,
+so defer to `restart-emacs', which spawns a replacement itself."
+  (interactive "P")
+  (if (daemonp)
+      (progn (save-some-buffers arg) (kill-emacs))
+    (restart-emacs)))
+
+(defun edmacs-stop-daemon ()
+  "Stop the launchd Emacs service so it stays down.
+`brew services stop' both signals the daemon and unloads the job, so
+launchd does not relaunch it and it does not come back at next login --
+the only thing here that really quits. Starting Emacs again then needs
+`brew services start' from a terminal, which is why this is the
+confirm-first, least-reachable of the three.
+
+Run through `call-process' with DESTINATION 0: that forks the command
+without Emacs waiting on or tracking the child, so `brew' survives long
+enough to kill us. A tracked `start-process' child would be sent SIGHUP
+by `kill-emacs' as the daemon tore down, potentially before the service
+was unloaded -- leaving it stopped but still loaded, and back at next
+login."
+  (interactive)
+  (let ((brew (or (executable-find "brew") "/opt/homebrew/bin/brew")))
+    (unless (file-executable-p brew)
+      (user-error "edmacs-stop-daemon: no `brew' executable found at %s" brew))
+    (when (yes-or-no-p
+           (format "Stop the %s service? Emacs will not come back on its own. "
+                   edmacs-sessions-launchd-service))
+      (save-some-buffers)
+      (call-process brew nil 0 nil
+                    "services" "stop" edmacs-sessions-launchd-service))))
+
 (defun edmacs-ns-handle-delete-frame (event)
   "Handle the window close button EVENT via `edmacs-ns-close-frame'."
   (interactive "e")

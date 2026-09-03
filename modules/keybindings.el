@@ -136,10 +136,13 @@
   "tf" '(toggle-font-size :which-key "toggle font size")
 
   ;; Quit/Session
+  ;; Under the launchd daemon (KeepAlive is unconditional) an Emacs that
+  ;; exits is relaunched, so "quit" and "restart" cannot both be an exit --
+  ;; see the three commands in modules/sessions.el.
   "q" '(:ignore t :which-key "quit")
-  "qq" '(save-buffers-kill-terminal :which-key "quit emacs")
-  "qQ" '(kill-emacs :which-key "quit without saving")
-  "qr" '(restart-emacs :which-key "restart emacs"))
+  "qq" '(edmacs-quit :which-key "close frame")
+  "qr" '(edmacs-restart-daemon :which-key "restart daemon")
+  "qQ" '(edmacs-stop-daemon :which-key "stop daemon service"))
 
 ;; ============================================================================
 ;; C-w window prefix -- every state, tmux vocabulary

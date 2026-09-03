@@ -211,6 +211,22 @@ decrease-height) and `C-w H/J/K/L` (were move-window-far-\*) become split and
 resize, `C-w x` (was exchange) closes the pane, and insert-state `C-w`
 (delete-word-backward, and a terminal pane's own word-erase) gives up its key.
 
+### Quitting and Restarting
+
+Emacs runs as a launchd daemon (`brew services start emacs-plus@31`) whose
+plist sets `KeepAlive` unconditionally — launchd relaunches on *any* exit. So
+"quit" cannot mean "end the process": that is a restart, whatever it is bound
+to. The three intents get three commands (`modules/sessions.el`):
+
+| Key | Action |
+|-----|--------|
+| `SPC qq` | Close the frame; the daemon and your session stay up. Last visible frame hides Emacs, so the Dock tile keeps owning it and a click brings the layout straight back. |
+| `SPC qr` | Restart the daemon: save, exit, let launchd relaunch and the frameset restore. |
+| `SPC qQ` | `brew services stop` — the only one that really quits. Confirms first; starting Emacs again needs a terminal. |
+
+Outside a daemon each falls back to the stock behavior
+(`save-buffers-kill-terminal`, `restart-emacs`).
+
 ### Git
 
 | Key | Action |
