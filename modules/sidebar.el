@@ -752,9 +752,12 @@ always safe to bind to a bare key."
 (defun edmacs-sidebar-help ()
   "Show a cheat sheet of every binding in `edmacs-sidebar-mode-map'.
 Prefers `which-key-show-full-keymap' when available; falls back to the
-Emacs 29+ core `describe-keymap', which is always present -- even under
-`-Q --batch' with no which-key loaded -- so this fallback path is
-exercisable in the ERT suite."
+Emacs 29+ core `describe-keymap', which is always present. Emacs 31
+ships which-key's autoloads by default, so `fboundp' alone is true even
+under `-Q --batch' with no which-key loaded -- exercising the
+`describe-keymap' branch in the ERT suite needs that autoload stub
+unbound first, per
+`edmacs-sidebar-test-help-falls-back-to-describe-keymap-for-real'."
   (interactive)
   (if (fboundp 'which-key-show-full-keymap)
       (which-key-show-full-keymap 'edmacs-sidebar-mode-map)

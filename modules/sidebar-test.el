@@ -920,13 +920,13 @@ not only under its own dedicated AC4 tests."
                     (edmacs-sidebar--remember-width (selected-frame))
                     (edmacs-sidebar--on-desktop-read)
                     ;; `describe-keymap' is real Emacs 29+ core, exercised for
-                    ;; real (against a plain temp buffer, no dedicated side
-                    ;; window in the way) by its own dedicated test below;
-                    ;; stubbed here to a no-op -- this loop's only concern is
-                    ;; that `edmacs-sidebar-help's own dispatch never shells
-                    ;; out, not that the real help/which-key UI can coexist
-                    ;; with this frame's dedicated, `no-other-window' sidebar
-                    ;; side window without wedging `display-buffer'.
+                    ;; real by `edmacs-sidebar-test-help-falls-back-to-describe-keymap-for-real'
+                    ;; below; stubbed here to a no-op -- this loop's only
+                    ;; concern is that `edmacs-sidebar-help's own dispatch
+                    ;; never shells out, not that the real help/which-key UI
+                    ;; can coexist with this frame's dedicated,
+                    ;; `no-other-window' sidebar side window without wedging
+                    ;; `display-buffer'.
                     (cl-letf (((symbol-function 'describe-keymap) (lambda (&rest _) nil))
                               ((symbol-function 'which-key-show-full-keymap) (lambda (&rest _) nil)))
                       (let ((inhibit-message t))
@@ -1030,6 +1030,34 @@ its `TAB' binding)."
               (should (eq (key-binding (kbd "?")) #'edmacs-sidebar-help))
               (should (eq (key-binding (kbd "TAB")) #'magit-section-toggle))))
         (evil-mode -1)))
+
+    (ert-deftest edmacs-sidebar-test-help-falls-back-to-describe-keymap-for-real ()
+      "`edmacs-sidebar-help' actually takes its real `describe-keymap'
+branch and produces a `*Help*' buffer listing the mode's own bindings
+-- unlike the never-shell-out loop above, which stubs both branches to
+no-ops and only guards against a subprocess call.
+Emacs 31 ships which-key's autoloads by default, so
+`(fboundp 'which-key-show-full-keymap)' is already true under plain
+`-Q --batch' before which-key.el itself ever loads; unbind that
+autoload stub here to simulate which-key genuinely being absent, which
+is the actual precondition `edmacs-sidebar-help's fallback branch is
+for."
+      (let ((which-key-was-bound (fboundp 'which-key-show-full-keymap))
+            (which-key-def (and (fboundp 'which-key-show-full-keymap)
+                                 (symbol-function 'which-key-show-full-keymap))))
+        (unwind-protect
+            (progn
+              (fmakunbound 'which-key-show-full-keymap)
+              (when (get-buffer "*Help*") (kill-buffer "*Help*"))
+              (let ((inhibit-message t)) (edmacs-sidebar-help))
+              (let ((help-buf (get-buffer "*Help*")))
+                (should help-buf)
+                (with-current-buffer help-buf
+                  (should (string-match-p "edmacs-sidebar-mode-map" (buffer-string)))
+                  (should (string-match-p "edmacs-sidebar-redraw" (buffer-string))))))
+          (when which-key-was-bound
+            (fset 'which-key-show-full-keymap which-key-def))
+          (when (get-buffer "*Help*") (kill-buffer "*Help*")))))
 
     (ert-deftest edmacs-sidebar-test-visit-at-point-user-errors-with-no-section ()
       "No section at all (an `edmacs-sidebar-mode' buffer with nothing
