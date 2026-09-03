@@ -28,6 +28,9 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
 - `modules/claude-term-approval-parity-live-test.el` -- runs the real `claude`
   binary to prove an Emacs-hosted session resolves the same permission
   policy as a terminal one (see Tool Approval below)
+- `modules/windows-test.el` -- master-and-stack layout, popup routing, the
+  `SPC w` command set, tab/desktop persistence, the `display-buffer` catch-all
+- `modules/ui-test.el`, `modules/sidebar-test.el` -- ui.el and sidebar.el
 
 Run a suite in batch from the repository root, loading the modules it
 depends on first:
@@ -44,6 +47,36 @@ Each test file's own `;;; Commentary:` header carries its exact
 invocation, including the `*-live-test.el` variants and whatever they
 need in the environment. Add new tests to the existing `-test.el` file
 for the module -- **never** create throwaway files like `/tmp/test-*.el`.
+
+#### A skipped test is unverified coverage, not a pass
+
+Read the whole `Ran N tests, ...` line, not just `0 unexpected`:
+
+```
+Ran 60 tests, 58 results as expected, 0 unexpected, 2 skipped
+```
+
+That run is **not** green. A test whose helper module is absent calls
+`ert-skip` rather than failing, so a narrower invocation silently drops
+coverage while still exiting 0. Treat any non-zero `skipped` as a result
+you have not yet obtained: read the skip message (it names what is
+missing), add that `-l modules/<dep>.el`, and re-run until the skip count
+is zero or you can say why the skip is legitimate.
+
+A file's own header invocation is not automatically the complete one. The
+worked example: `modules/windows-test.el`'s header omits
+`-l modules/claude-term.el`, and two of its tests skip without it -- one
+of which fails once the module *is* loaded. Cross-module tests generally
+need every module they touch on the command line, and the exhaustive
+invocation may live in a comment further down the file rather than in the
+header.
+
+This matters most before landing. Skips are also environment-dependent:
+tests that load real packages out of `straight/` skip in a worktree, which
+has no populated package tree, and only run from the main checkout -- so
+the same suite legitimately reports different skip counts in the two
+places. Run the suites from the main checkout when the skip count is what
+you are trying to drive to zero.
 
 ### Compilation
 
