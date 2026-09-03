@@ -20,6 +20,19 @@
 ;; --batch ...' -- so those tests skip cleanly under the plain
 ;; invocation, following sidebar-test.el's own documented convention.
 ;;
+;; edmacs-sidebar roadmap phase 9 also loads claude-term.el,
+;; claude-term-registry.el and claude-term-agents.el here (real, not
+;; stubbed) and adds one test that spawns a real claude-term session
+;; via `claude-term--exec' -- following claude-term-registry-live-test.el's
+;; own fake-ghostel-exec stub pattern, duplicated locally rather than
+;; shared, per that file's own stated no-cross-load-order-dependency
+;; convention -- so `edmacs-sidebar-agents-visit' is exercised against a
+;; REAL, adapter-produced `edmacs-agent' row instead of the synthetic
+;; struct-and-mocked-registry stub every other claude-term test in this
+;; file (and in sidebar-agents-test.el) uses. Closes the "not
+;; end-to-end exercisable until edmacs-sidebar roadmap phase 9" caveat
+;; named in sidebar-agents.el's own rename/kill docstrings.
+;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
 ;;         -l modules/sidebar-agents-live-test.el -f ert-run-tests-batch-and-exit
@@ -99,6 +112,59 @@ a real Emacs session) to enable this suite"))
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
     (load (expand-file-name "modules/agents.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar-agents.el" default-directory) nil t)
+    (load (expand-file-name "modules/claude-term.el" default-directory) nil t)
+    (load (expand-file-name "modules/claude-term-registry.el" default-directory) nil t)
+    (load (expand-file-name "modules/claude-term-agents.el" default-directory) nil t)
+
+    ;; The real `inheritenv' package is not bootstrapped under `-Q
+    ;; --batch' (straight.el is absent), but `claude-term--exec'
+    ;; unconditionally wraps its `ghostel-exec' call in `(inheritenv
+    ;; ...)' -- see claude-term-live-test.el's identical shim.
+    (unless (fboundp 'inheritenv)
+      (defmacro inheritenv (&rest body) `(progn ,@body)))
+
+    ;; `claude-term.el' declares `ghostel--process' via a bare `(defvar
+    ;; ghostel--process)' for byte-compiler purposes only; production
+    ;; installs its buffer-local nil default by `require'ing the real
+    ;; `ghostel' package inside `claude-term--ensure-ghostel', stubbed
+    ;; to a no-op below. Install the same nil default directly here --
+    ;; mirrors claude-term-registry-live-test.el's identical setup.
+    (unless (default-boundp 'ghostel--process)
+      (setq-default ghostel--process nil))
+
+    ;; ==========================================================================
+    ;; Phase 9: fake `ghostel-exec' stub, duplicated from
+    ;; claude-term-registry-live-test.el rather than shared (see that
+    ;; file's own Commentary for why) -- attaches a real dummy `sleep'
+    ;; process so `claude-term--exec''s real registry put/remove call
+    ;; sites, and therefore this phase's real create/remove hooks, run
+    ;; end to end without a real `claude'/`ghostel' subprocess.
+    ;; ==========================================================================
+
+    (defvar edmacs-sidebar-agents-live-test--claude-term-spawn-log nil)
+
+    (defun edmacs-sidebar-agents-live-test--fake-ghostel-sentinel (process event)
+      (let ((buf (process-buffer process)))
+        (when (buffer-live-p buf)
+          (with-current-buffer buf
+            (run-hook-with-args 'ghostel-exit-functions buf event))
+          (when (buffer-live-p buf)
+            (with-current-buffer buf
+              (unless ghostel-kill-buffer-on-exit
+                (let ((inhibit-read-only t))
+                  (goto-char (point-max))
+                  (insert "\n[Process exited]\n"))))))))
+
+    (defun edmacs-sidebar-agents-live-test--fake-ghostel-exec (buffer program args)
+      (push (list buffer program args) edmacs-sidebar-agents-live-test--claude-term-spawn-log)
+      (with-current-buffer buffer
+        (let ((inhibit-read-only t)) (erase-buffer))
+        (let ((proc (start-process "edmacs-sidebar-agents-live-test-claude-term" buffer
+                                    "sleep" "3600")))
+          (set-process-sentinel proc #'edmacs-sidebar-agents-live-test--fake-ghostel-sentinel)
+          (set-process-query-on-exit-flag proc nil)
+          (setq-local ghostel--process proc)
+          proc)))
 
     ;; ==========================================================================
     ;; Shared helpers
@@ -417,6 +483,86 @@ such refresh), so it does not jump back to `point-min'."
             (remhash "/repo/" edmacs-frames--worktrees-cache)
             (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))
             (set-frame-parameter (selected-frame) 'edmacs-repo nil)))))
+
+    ;; ==========================================================================
+    ;; Phase 9 -- a REAL claude-term row, visited and reaped end to end
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-agents-live-test-real-claude-term-row-visit-and-kill ()
+      "A session spawned via the real `claude-term--exec' registers a real
+source=`claude-term' `edmacs-agent' row (via phase 9's
+`claude-term-registry-create-functions' -> `claude-term-agents--on-create'
+chain, not a synthetic stub); `edmacs-sidebar-agents-visit' on that row
+selects the real session buffer's window and clears its unread flag;
+and killing the session (real `claude-term-kill' -> `claude-term--on-exit'
+-> `claude-term-registry-remove' -> `claude-term-registry-remove-functions')
+removes the row from `edmacs-agents--table'."
+      (edmacs-sidebar-agents-live-test--with-clean-state
+        (let* ((claude-term-registry--table (make-hash-table :test #'equal))
+               (edmacs-sidebar-agents-live-test--claude-term-spawn-log nil)
+               (root (file-name-as-directory
+                      (make-temp-file "edmacs-sidebar-agents-live-test-ct-root-" t)))
+               (instance "ghostel-live-1")
+               (buf (get-buffer-create (claude-term-buffer-name root instance))))
+          (unwind-protect
+              (cl-letf (((symbol-function 'claude-term--ensure-ghostel) #'ignore)
+                        ((symbol-function 'ghostel-exec)
+                         #'edmacs-sidebar-agents-live-test--fake-ghostel-exec))
+                (claude-term--exec buf root instance nil)
+                (let* ((key (edmacs-agents--key root instance))
+                       (agent (gethash key edmacs-agents--table)))
+                  (should agent)
+                  (should (eq (edmacs-agent-source agent) 'claude-term))
+                  (should (eq (edmacs-agent-locator agent) buf))
+                  ;; Force it unread so the visit's clearing below is a
+                  ;; real assertion, not vacuous against the freshly
+                  ;; spawned `idle' default. Rebuilds via `make-edmacs-agent'
+                  ;; and `puthash', like every other test in this file,
+                  ;; rather than `setf' on the struct directly -- a plain
+                  ;; struct-slot `setf' written inside a test nested in
+                  ;; this file's own `if'/`progn' guard around a missing
+                  ;; `magit-section' build can hit a real (if obscure)
+                  ;; `gv'/`cl-defstruct' inlining gap in that specific
+                  ;; nesting shape and signal a spurious `void-function
+                  ;; (setf edmacs-agent-unread)' -- unrelated to anything
+                  ;; this phase's production code does (its own `setf'
+                  ;; calls live in plain top-level `defun's, unaffected).
+                  (puthash key
+                           (make-edmacs-agent
+                            :key (edmacs-agent-key agent) :root (edmacs-agent-root agent)
+                            :instance (edmacs-agent-instance agent)
+                            :status (edmacs-agent-status agent)
+                            :status-ts (edmacs-agent-status-ts agent)
+                            :updated-ts (edmacs-agent-updated-ts agent)
+                            :title (edmacs-agent-title agent)
+                            :source (edmacs-agent-source agent)
+                            :locator (edmacs-agent-locator agent)
+                            :unread t)
+                           edmacs-agents--table)
+                  (setq agent (gethash key edmacs-agents--table))
+                  (edmacs-sidebar-show (selected-frame))
+                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                    (let ((inhibit-read-only t))
+                      (goto-char (point-max))
+                      ;; Wrapped in an outer section: an unwrapped
+                      ;; top-level `magit-insert-section' call becomes
+                      ;; `magit-root-section' itself -- see the earlier
+                      ;; visit test's own comment on this same quirk.
+                      (magit-insert-section (edmacs-sidebar-agents-live-test-root)
+                        (magit-insert-section (edmacs-sidebar-agent agent)
+                          (magit-insert-heading "row"))))
+                    (goto-char (point-max))
+                    (forward-line -1)
+                    (edmacs-sidebar-agents-visit))
+                  (should (eq (window-buffer (selected-window)) buf))
+                  (should-not (edmacs-agent-unread (gethash key edmacs-agents--table)))
+                  (claude-term-kill buf)
+                  (should (edmacs-sidebar-agents-live-test--wait-until
+                           (lambda () (not (buffer-live-p buf))) 3.0))
+                  (should-not (gethash key edmacs-agents--table))))
+            (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))
+            (when (buffer-live-p buf) (kill-buffer buf))
+            (ignore-errors (delete-directory root t))))))
 
     )) ; end of build-root-found branch
 

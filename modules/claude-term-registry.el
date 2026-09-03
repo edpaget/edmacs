@@ -127,6 +127,23 @@ the sharp edge the phase body names in claude-code-ide.el's own
 `string='/`expand-file-name' matching."
   (cons (file-truename root) instance))
 
+(defvar claude-term-registry-create-functions nil
+  "Hook run at the end of `claude-term-registry-put', with ROOT INSTANCE BUFFER.
+A swappable extension point, matching `claude-term-registry-state-accessor'
+and `claude-term-registry-sort-function's convention: edmacs-sidebar
+roadmap phase 9's `claude-term-agents.el' adds a listener here to mirror
+a newly (re-)registered session into the shared agent table, without
+this file needing any dependency on that module. Fires on every
+`claude-term-registry-put' call, including a restart's re-exec of an
+already-registered ROOT/INSTANCE -- listeners must treat that as an
+idempotent upsert, not only a fresh-session event.")
+
+(defvar claude-term-registry-remove-functions nil
+  "Hook run at the end of `claude-term-registry-remove', with ROOT INSTANCE.
+See `claude-term-registry-create-functions'; fires unconditionally, even
+when ROOT/INSTANCE named no registered session, so listeners must
+tolerate removing an already-absent row.")
+
 (defun claude-term-registry-put (root instance buffer)
   "Register BUFFER as the live session for ROOT/INSTANCE.
 Stamps LAST-USED to now -- a freshly spawned session should sort as
@@ -135,21 +152,27 @@ later `claude-term-registry-touch'. Snapshots BUFFER's current
 `ghostel--process' into the PROCESS field via
 `claude-term-registry--process-of' -- called again on every fresh spawn
 and every restart's re-exec, so this stays current across a restart
-without needing its own separate update path."
+without needing its own separate update path.
+Runs `claude-term-registry-create-functions' last, after the table is
+updated, so a listener reading the table back sees this entry."
   (puthash (claude-term-registry--key root instance)
            (make-claude-term-session :root root :instance instance
                                       :buffer buffer
                                       :process (claude-term-registry--process-of buffer)
                                       :last-used (float-time))
-           claude-term-registry--table))
+           claude-term-registry--table)
+  (run-hook-with-args 'claude-term-registry-create-functions root instance buffer))
 
 (defun claude-term-registry-get (root instance)
   "Return the registered session for ROOT/INSTANCE, or nil."
   (gethash (claude-term-registry--key root instance) claude-term-registry--table))
 
 (defun claude-term-registry-remove (root instance)
-  "Remove the registered session for ROOT/INSTANCE, if any."
-  (remhash (claude-term-registry--key root instance) claude-term-registry--table))
+  "Remove the registered session for ROOT/INSTANCE, if any.
+Runs `claude-term-registry-remove-functions' unconditionally, whether or
+not ROOT/INSTANCE named a live entry -- see that hook's docstring."
+  (remhash (claude-term-registry--key root instance) claude-term-registry--table)
+  (run-hook-with-args 'claude-term-registry-remove-functions root instance))
 
 (defun claude-term-registry-touch (root instance)
   "Update the last-used time of the ROOT/INSTANCE session to now.

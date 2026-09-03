@@ -118,6 +118,10 @@ LANGUAGE should be the name without the .el extension."
 ;; so loading agents.el alone (every ERT run) has no side effects.
 (load-module "agents")
 (edmacs-agents-init)
+;; Last: the phase-9 claude-term<->agents adapter needs both
+;; claude-term-registry.el's create/remove hook vars (loaded near the
+;; top) and agents.el's row API (loaded just above) to exist.
+(load-module "claude-term-agents")
 
 ;; ============================================================================
 ;; Language-specific configurations

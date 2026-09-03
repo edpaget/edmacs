@@ -187,6 +187,14 @@ only row already under that root, if exactly one exists; a fresh row
 with a default instance if none exist; or a `user-error' if more than
 one already exists, rather than guessing which one the caller means.
 
+STATUS `remove' is special-cased: rather than upserting a row with
+that bogus status value, the row resolved by the same CWD/INSTANCE
+rule above is deleted via `edmacs-agents--remove' -- a no-op if no
+such row exists -- and no row is created or updated. This is the
+entry point the ported claude-terminal SessionEnd hook (and, for its
+own in-Emacs rows, edmacs-sidebar phase 9's claude-term adapter,
+redundantly) calls to reap a session.
+
 UNREAD is recomputed by `edmacs-agents--compute-unread', the single
 shared definition of that rule."
   (let* ((root (condition-case nil (file-truename cwd) (error cwd)))
@@ -198,24 +206,26 @@ shared definition of that rule."
                ((null (cdr matches)) (edmacs-agent-instance (car matches)))
                (t (user-error
                    "edmacs-agents: multiple agents under %s; specify INSTANCE" root)))))
-         (key (edmacs-agents--key root resolved-instance))
-         (existing (gethash key edmacs-agents--table))
-         (old-status (and existing (edmacs-agent-status existing)))
-         (now (float-time))
-         (unread (edmacs-agents--compute-unread
-                  old-status status (and existing (edmacs-agent-unread existing))))
-         (row (if existing
-                  (progn
-                    (setf (edmacs-agent-status existing) status
-                          (edmacs-agent-status-ts existing) now
-                          (edmacs-agent-updated-ts existing) now
-                          (edmacs-agent-unread existing) unread)
-                    existing)
-                (make-edmacs-agent :key key :root root :instance resolved-instance
-                                    :status status :status-ts now :updated-ts now
-                                    :title resolved-instance :source nil
-                                    :locator nil :unread unread))))
-    (edmacs-agents--upsert row)))
+         (key (edmacs-agents--key root resolved-instance)))
+    (if (eq status 'remove)
+        (edmacs-agents--remove key)
+      (let* ((existing (gethash key edmacs-agents--table))
+             (old-status (and existing (edmacs-agent-status existing)))
+             (now (float-time))
+             (unread (edmacs-agents--compute-unread
+                      old-status status (and existing (edmacs-agent-unread existing))))
+             (row (if existing
+                      (progn
+                        (setf (edmacs-agent-status existing) status
+                              (edmacs-agent-status-ts existing) now
+                              (edmacs-agent-updated-ts existing) now
+                              (edmacs-agent-unread existing) unread)
+                        existing)
+                    (make-edmacs-agent :key key :root root :instance resolved-instance
+                                        :status status :status-ts now :updated-ts now
+                                        :title resolved-instance :source nil
+                                        :locator nil :unread unread))))
+        (edmacs-agents--upsert row)))))
 
 (defun edmacs-agents-mark-read (key)
   "Clear KEY's unread flag and move it to `idle'.

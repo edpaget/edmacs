@@ -62,6 +62,40 @@ as a second, distinct session there)."
           (should-not (claude-term-registry-get root "x")))
       (kill-buffer buf))))
 
+(ert-deftest claude-term-registry-test-put-remove-fire-create-and-remove-hooks ()
+  "`claude-term-registry-put'/`-remove' invoke
+`claude-term-registry-create-functions'/`-remove-functions' with
+ROOT INSTANCE BUFFER / ROOT INSTANCE respectively -- edmacs-sidebar
+roadmap phase 9's swappable extension points, exercised here the same
+way this file already covers `claude-term-registry-state-accessor' and
+`claude-term-registry-sort-function' as reassignable seams: via a spy,
+not by depending on any real listener being installed."
+  (let ((claude-term-registry--table (make-hash-table :test #'equal))
+        (claude-term-registry-create-functions nil)
+        (claude-term-registry-remove-functions nil)
+        (buf (generate-new-buffer "claude-term-registry-test-hooks"))
+        (root "/tmp/claude-term-registry-test-hooks-root/")
+        (create-calls nil)
+        (remove-calls nil))
+    (unwind-protect
+        (progn
+          (add-hook 'claude-term-registry-create-functions
+                    (lambda (root instance buffer)
+                      (push (list root instance buffer) create-calls)))
+          (add-hook 'claude-term-registry-remove-functions
+                    (lambda (root instance)
+                      (push (list root instance) remove-calls)))
+          (claude-term-registry-put root "x" buf)
+          (should (equal create-calls (list (list root "x" buf))))
+          (should (null remove-calls))
+          (claude-term-registry-remove root "x")
+          (should (equal remove-calls (list (list root "x"))))
+          ;; Removing an already-absent entry still fires the hook --
+          ;; listeners must tolerate that, not this function.
+          (claude-term-registry-remove root "x")
+          (should (equal remove-calls (list (list root "x") (list root "x")))))
+      (kill-buffer buf))))
+
 (ert-deftest claude-term-registry-test-put-populates-process-field ()
   "The registry's struct literally holds a PROCESS field (per the phase
 body's own \"buffer, process, instance name, and last-used time\" data

@@ -467,18 +467,21 @@ this file's own row model already reflects the new one. Every other
 source (`workmux', and any future one) signals `user-error' -- its
 title comes from the pane itself, with no channel this UI can push a
 rename through.
-Not end-to-end exercisable until edmacs-claude-terminal's claude-term
-rows actually appear in this table (edmacs-sidebar roadmap phase 9);
-this file's own test coverage of the `claude-term' branch is
-necessarily against a synthetic `edmacs-agent' struct and mocked
-registry/rename functions, not a real registry.
+This function's own test coverage of the `claude-term' branch (this
+file's pure suite) is against a synthetic `edmacs-agent' struct and a
+mocked `claude-term-registry-get'/`claude-term-rename', not a real
+registry entry -- `claude-term-rename' itself, the function this
+delegates to, already has real-session coverage via
+`claude-term-registry-live-test.el's AC5 test. Sibling commands
+`edmacs-sidebar-agents-visit' and `-kill' now also have a real,
+adapter-produced row to run against: see
+`edmacs-sidebar-agents-live-test-real-claude-term-row-visit-and-kill'
+(sidebar-agents-live-test.el, edmacs-sidebar roadmap phase 9).
 The design's key table describes `r' on an agent row plainly as
-\"Rename instance\", with no source qualifier; `workmux' is the only
-source with real rows before phase 9 lands, so until then `r' on
-every agent row that actually exists errors rather than renaming.
-That narrowing is deliberate -- workmux titles come from the tmux
-pane, not this UI -- and traces to this phase's own body (\"an
-in-Emacs agent instance\"), not a bug here; the design table itself
+\"Rename instance\", with no source qualifier; `workmux' rows still
+error rather than rename, since workmux titles come from the tmux
+pane, not this UI, and this phase's own body scopes renaming to \"an
+in-Emacs agent instance\" specifically -- the design table itself
 should be updated to say so explicitly."
   (if (eq (edmacs-agent-source agent) 'claude-term)
       (let ((session (edmacs-sidebar-agents--claude-term-session agent)))
