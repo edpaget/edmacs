@@ -70,6 +70,12 @@
 (declare-function edmacs-sidebar-agents-visit "sidebar-agents")
 (declare-function edmacs-sidebar-agents-toggle-all "sidebar-agents")
 
+;; agents.el loads AFTER this file too; used only by
+;; `edmacs-sidebar--point-identity'/`--find-agent-section' below to key
+;; point-preservation on an agent row by its stable struct field rather
+;; than its rendered (and frequently-changing) label text.
+(declare-function edmacs-agent-key "agents")
+
 ;; ============================================================================
 ;; Extension points for sidebar-agents.el (phase 6)
 ;; ============================================================================
@@ -211,20 +217,55 @@ sidebar buffer is untouched."
 ;; field -- never recomputed via `edmacs-sessions--tab-name'/`project-current'
 ;; -- so redraw does no subprocess or directory-stat work.
 
-(defun edmacs-sidebar--point-tab-name ()
-  "Return the row label displayed on the line at point, or nil."
-  (save-excursion
-    (goto-char (line-beginning-position))
-    (when (looking-at "[●○⋯] \\(.*\\)$")
-      (match-string 1))))
+(defun edmacs-sidebar--map-sections (section fn)
+  "Call FN on SECTION and, recursively, on every descendant."
+  (when section
+    (funcall fn section)
+    (dolist (child (oref section children))
+      (edmacs-sidebar--map-sections child fn))))
 
-(defun edmacs-sidebar--goto-tab-name (name)
-  "Move point to the row for label NAME, or `point-min' if not found."
+(defun edmacs-sidebar--find-agent-section (key)
+  "Return the `edmacs-sidebar-agent' section (anywhere in the current
+buffer's section tree) whose agent's KEY matches, or nil."
+  (catch 'edmacs-sidebar--found-agent-section
+    (edmacs-sidebar--map-sections
+     magit-root-section
+     (lambda (section)
+       (when (and (eq (oref section type) 'edmacs-sidebar-agent)
+                  (slot-boundp section 'value)
+                  (equal (edmacs-agent-key (oref section value)) key))
+         (throw 'edmacs-sidebar--found-agent-section section))))
+    nil))
+
+(defun edmacs-sidebar--point-identity ()
+  "Return an identity for the row at point, preserved across a redraw.
+An `edmacs-sidebar-agent' row is identified by its agent's own stable
+KEY field rather than its rendered label: unlike a tab row, an agent
+row's label text (elapsed-time string, title on a heartbeat refresh)
+routinely changes between one redraw and the next even though it is
+still \"the same row\" as far as the user sitting on it is concerned.
+Every other row keeps the original rendered-label identity. Returns
+nil when point is on no recognized row."
+  (let ((section (magit-current-section)))
+    (if (and section (eq (oref section type) 'edmacs-sidebar-agent)
+             (slot-boundp section 'value))
+        (cons 'agent (edmacs-agent-key (oref section value)))
+      (save-excursion
+        (goto-char (line-beginning-position))
+        (when (looking-at "[●○⋯] \\(.*\\)$")
+          (cons 'tab (match-string 1)))))))
+
+(defun edmacs-sidebar--goto-identity (identity)
+  "Move point to the row named by IDENTITY (from `--point-identity'),
+or `point-min' if it can no longer be found."
   (goto-char (point-min))
-  (unless (and name
-               (re-search-forward
-                (concat "^[●○⋯] " (regexp-quote name) "$") nil t))
-    (goto-char (point-min))))
+  (pcase identity
+    (`(agent . ,key)
+     (let ((section (edmacs-sidebar--find-agent-section key)))
+       (when section
+         (goto-char (oref section start)))))
+    (`(tab . ,name)
+     (re-search-forward (concat "^[●○⋯] " (regexp-quote name) "$") nil t))))
 
 (defun edmacs-sidebar--tab-label (tab)
   "Return TAB's marker-prefixed display label, unpropertized."
@@ -318,7 +359,7 @@ was saved) gets a warning section ahead of everything else."
       (with-current-buffer buf
         (let* ((inhibit-read-only t)
                (common (frame-parameter frame 'edmacs-repo))
-               (point-tab-name (edmacs-sidebar--point-tab-name)))
+               (point-identity (edmacs-sidebar--point-identity)))
           (erase-buffer)
           (magit-insert-section (edmacs-sidebar-root)
             (when (frame-parameter frame 'edmacs-repo-missing)
@@ -327,7 +368,7 @@ was saved) gets a warning section ahead of everything else."
                 (edmacs-sidebar--redraw-worktrees frame common)
               (edmacs-sidebar--redraw-tabs frame))
             (run-hook-with-args 'edmacs-sidebar-extra-section-functions frame))
-          (edmacs-sidebar--goto-tab-name point-tab-name))))))
+          (edmacs-sidebar--goto-identity point-identity))))))
 
 ;; ============================================================================
 ;; Commands

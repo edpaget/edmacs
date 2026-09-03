@@ -164,17 +164,16 @@ of taking down the whole redraw."
 ;; Worktree matching
 ;; ============================================================================
 
-(defun edmacs-sidebar-agents--match-worktree (agent worktrees)
-  "Return the WORKTREES entry (NAME . ROOT) owning AGENT's root, or nil.
-WORKTREES is `edmacs-worktrees-for-repo''s own (NAME . TRUENAME-ROOT)
-shape. Both sides are already `file-truename'-resolved by their own
-producers (agents.el's `edmacs-agent-root', frames.el's
-`edmacs-worktrees-for-repo') -- the re-normalize here is defensive, not
-the primary comparison, so a caller passing an already-resolved root
-pays only an extra `file-truename' call, never a behavior change."
-  (let ((root (condition-case nil (file-truename (edmacs-agent-root agent))
-                (error (edmacs-agent-root agent)))))
-    (seq-find (lambda (entry) (equal (cdr entry) root)) worktrees)))
+(defun edmacs-sidebar-agents--agent-root-truename (agent)
+  "Return AGENT's root, truename-normalized.
+Both `edmacs-agent-root' (agents.el) and `edmacs-worktrees-for-repo'
+(frames.el) already return truenames from their own producers, so this
+re-normalize is defensive, not the primary comparison -- it only
+matters if either producer's own contract ever drifts. This is the
+single implementation of \"does this agent belong to this worktree
+root\"; `--for-root' below is its only caller."
+  (condition-case nil (file-truename (edmacs-agent-root agent))
+    (error (edmacs-agent-root agent))))
 
 ;; ============================================================================
 ;; Reading the (frame-independent) global agent table
@@ -189,8 +188,11 @@ is already \"every agent across frames\", no per-frame aggregation."
     acc))
 
 (defun edmacs-sidebar-agents--for-root (root)
-  "Return every tracked agent whose own root equals ROOT."
-  (seq-filter (lambda (agent) (equal (edmacs-agent-root agent) root))
+  "Return every tracked agent whose truename-normalized root equals ROOT.
+ROOT is expected to already be a truename (every caller passes one from
+`edmacs-worktrees-for-repo'); see `--agent-root-truename'."
+  (seq-filter (lambda (agent)
+                (equal (edmacs-sidebar-agents--agent-root-truename agent) root))
               (edmacs-sidebar-agents--all)))
 
 ;; ============================================================================
@@ -520,7 +522,11 @@ string advancing without a redraw on every tick regardless of
 visibility. A plain `defvar' so a test can shrink it.")
 
 (defvar edmacs-sidebar-agents--elapsed-timer nil
-  "The periodic elapsed-render timer, or nil when disarmed.")
+  "The periodic elapsed-render timer, or nil when disarmed.
+A genuinely repeating `run-with-timer', not a self-rescheduling one-shot:
+`timerp' stays non-nil on a one-shot timer object even after it has
+already fired and left `timer-list', so a self-reschedule guarded only
+by `timerp' would silently never re-arm past its first firing.")
 
 (defun edmacs-sidebar-agents--any-working-p ()
   "Return non-nil iff any tracked agent is `working'."
@@ -541,20 +547,33 @@ visibility. A plain `defvar' so a test can shrink it.")
        (edmacs-sidebar-agents--any-sidebar-visible-p)))
 
 (defun edmacs-sidebar-agents--elapsed-tick ()
-  "One firing of the elapsed-render timer: redraw, then re-evaluate."
+  "One firing of the repeating elapsed-render timer: redraw, then disarm
+if conditions no longer call for ticking. Re-arming (should conditions
+later call for it again) goes back through `--ensure-elapsed-timer',
+same as every other trigger site."
   (edmacs-sidebar-agents--redraw-all)
-  (edmacs-sidebar-agents--ensure-elapsed-timer))
+  (unless (edmacs-sidebar-agents--should-tick-p)
+    (edmacs-sidebar-agents--ensure-elapsed-timer)))
+
+(defun edmacs-sidebar-agents--elapsed-tick-safe ()
+  "Call `edmacs-sidebar-agents--elapsed-tick', catching any error so the
+repeating timer never dies silently on one bad redraw -- matching
+agents.el's own `edmacs-agents--sweep-safe' convention."
+  (condition-case err
+      (edmacs-sidebar-agents--elapsed-tick)
+    (error (message "edmacs-sidebar-agents: elapsed tick failed: %s" err))))
 
 (defun edmacs-sidebar-agents--ensure-elapsed-timer ()
   "Arm or disarm the periodic elapsed-render timer to match current
 visibility/working-agent conditions. Idempotent: calling this when the
 timer already matches the desired state is a no-op."
   (if (edmacs-sidebar-agents--should-tick-p)
-      (unless (timerp edmacs-sidebar-agents--elapsed-timer)
+      (unless edmacs-sidebar-agents--elapsed-timer
         (setq edmacs-sidebar-agents--elapsed-timer
-              (run-at-time edmacs-sidebar-agents-elapsed-interval nil
-                            #'edmacs-sidebar-agents--elapsed-tick)))
-    (when (timerp edmacs-sidebar-agents--elapsed-timer)
+              (run-with-timer edmacs-sidebar-agents-elapsed-interval
+                               edmacs-sidebar-agents-elapsed-interval
+                               #'edmacs-sidebar-agents--elapsed-tick-safe)))
+    (when edmacs-sidebar-agents--elapsed-timer
       (cancel-timer edmacs-sidebar-agents--elapsed-timer)
       (setq edmacs-sidebar-agents--elapsed-timer nil))))
 

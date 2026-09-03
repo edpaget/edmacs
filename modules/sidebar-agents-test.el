@@ -173,18 +173,25 @@ a real Emacs session) to enable this suite"))
     ;; Worktree truename matching
     ;; ==========================================================================
 
-    (ert-deftest edmacs-sidebar-agents-test-match-worktree-finds-tabless-entry ()
-      (let* ((agent (edmacs-sidebar-agents-test--make-agent :root "/repo/wt-b/"))
-             (worktrees '(("repo" . "/repo/") ("wt-a" . "/repo/wt-a/") ("wt-b" . "/repo/wt-b/"))))
-        (cl-letf (((symbol-function 'file-truename) #'identity))
-          (should (equal '("wt-b" . "/repo/wt-b/")
-                          (edmacs-sidebar-agents--match-worktree agent worktrees))))))
+    (ert-deftest edmacs-sidebar-agents-test-for-root-matches-by-truename ()
+      "`--for-root' (the live match path `--on-worktree-section'/
+`--label-suffix' actually call) finds an agent by truename-normalized
+root, not raw string equality -- so a tabless worktree's agent is found
+even when its own root string differs from the worktree list's."
+      (edmacs-sidebar-agents-test--with-clean-state
+        (cl-letf (((symbol-function 'file-truename)
+                   (lambda (p) (if (equal p "/repo/wt-b") "/real/wt-b" p))))
+          (let ((agent (edmacs-sidebar-agents-test--put
+                        (edmacs-sidebar-agents-test--make-agent :root "/repo/wt-b"))))
+            (should (equal (list agent) (edmacs-sidebar-agents--for-root "/real/wt-b")))
+            (should-not (edmacs-sidebar-agents--for-root "/repo/wt-b"))))))
 
-    (ert-deftest edmacs-sidebar-agents-test-match-worktree-no-match-is-nil ()
-      (let* ((agent (edmacs-sidebar-agents-test--make-agent :root "/gone/deleted-wt/"))
-             (worktrees '(("repo" . "/repo/"))))
+    (ert-deftest edmacs-sidebar-agents-test-for-root-no-match-is-empty ()
+      (edmacs-sidebar-agents-test--with-clean-state
         (cl-letf (((symbol-function 'file-truename) #'identity))
-          (should-not (edmacs-sidebar-agents--match-worktree agent worktrees)))))
+          (edmacs-sidebar-agents-test--put
+           (edmacs-sidebar-agents-test--make-agent :root "/gone/deleted-wt"))
+          (should-not (edmacs-sidebar-agents--for-root "/repo")))))
 
     ;; ==========================================================================
     ;; Attention comparator / attention-list

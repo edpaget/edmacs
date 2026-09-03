@@ -356,6 +356,68 @@ focused or not -- a permission prompt always notifies."
                 (should-not edmacs-sidebar-agents--elapsed-timer))
             (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))))))
 
+    (ert-deftest edmacs-sidebar-agents-live-test-elapsed-timer-rearms-after-firing ()
+      "The elapsed-render timer keeps ticking every interval, not just
+once -- regression test for the one-shot-timer rearm bug: `timerp'
+stays non-nil on an already-fired one-shot timer object (it has simply
+left `timer-list'), so a rearm guard that only checks `timerp' would
+silently never fire again while conditions stay tick-worthy."
+      (edmacs-sidebar-agents-live-test--with-clean-state
+        (let* ((edmacs-sidebar-agents-elapsed-interval 0.05)
+               (agent (edmacs-sidebar-agents-live-test--make-agent :status 'working))
+               (redraw-count 0))
+          (puthash (edmacs-agent-key agent) agent edmacs-agents--table)
+          (unwind-protect
+              (progn
+                (edmacs-sidebar-show (selected-frame))
+                (cl-letf* ((orig (symbol-function 'edmacs-sidebar-agents--redraw-all))
+                           ((symbol-function 'edmacs-sidebar-agents--redraw-all)
+                            (lambda () (cl-incf redraw-count) (funcall orig))))
+                  (edmacs-sidebar-agents--ensure-elapsed-timer)
+                  (should (edmacs-sidebar-agents-live-test--wait-until
+                           (lambda () (>= redraw-count 2)) 3.0))))
+            (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))))))
+
+    ;; ==========================================================================
+    ;; Point preservation across a heartbeat-only redraw (agent rows)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-agents-live-test-point-survives-heartbeat-redraw ()
+      "Point sitting on an agent's row survives a heartbeat-only redraw
+that replaces its struct with a fresh one under the same key --
+mirroring `edmacs-agents--apply-workmux-row', which always builds a new
+struct rather than mutating one in place. Point must track the agent's
+own stable KEY, not the rendered label text (which changes on every
+such refresh), so it does not jump back to `point-min'."
+      (edmacs-sidebar-agents-live-test--with-clean-state
+        (let ((agent (edmacs-sidebar-agents-live-test--make-agent
+                      :root "/repo/wt/" :status 'working :status-ts (float-time))))
+          (puthash "/repo/" (list (cons "wt" "/repo/wt/")) edmacs-frames--worktrees-cache)
+          (puthash (edmacs-agent-key agent) agent edmacs-agents--table)
+          (unwind-protect
+              (progn
+                (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/")
+                (edmacs-sidebar-show (selected-frame))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (goto-char (oref (edmacs-sidebar--find-agent-section (edmacs-agent-key agent))
+                                    start))
+                  (should (eq 'agent (car (edmacs-sidebar--point-identity))))
+                  (let ((refreshed (edmacs-sidebar-agents-live-test--make-agent
+                                    :root (edmacs-agent-root agent)
+                                    :instance (edmacs-agent-instance agent)
+                                    :status (edmacs-agent-status agent)
+                                    :status-ts (+ (edmacs-agent-status-ts agent) 5)
+                                    :title (edmacs-agent-title agent)
+                                    :source (edmacs-agent-source agent))))
+                    (puthash (edmacs-agent-key refreshed) refreshed edmacs-agents--table))
+                  (edmacs-sidebar--redraw (selected-frame))
+                  (should (eq (oref (magit-current-section) type) 'edmacs-sidebar-agent))
+                  (should (equal (edmacs-agent-key agent)
+                                 (edmacs-agent-key (oref (magit-current-section) value))))))
+            (remhash "/repo/" edmacs-frames--worktrees-cache)
+            (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))
+            (set-frame-parameter (selected-frame) 'edmacs-repo nil)))))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-agents-live-test.el ends here

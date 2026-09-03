@@ -644,15 +644,40 @@ buffer."
 ;; it would drag in markdown-mode and olivetti for a check that only
 ;; needs to know no binding form naming a deleted command survives.
 
+(defun claude-term-registry-test--locate-straight-repos-root ()
+  "Return this checkout's (or its sibling main checkout's) `straight/repos'.
+A roadmap worktree's `.gitignore' keeps only `straight/versions/' (see
+this repo's own CLAUDE.md \"Worktrees\" section) -- so `evil.el' and
+`general.el' are only ever actually present in the main checkout's
+`straight/repos/'. Mirrors sidebar-test.el's own
+`--locate-straight-build-root' sibling-checkout convention, so a real
+key-dispatch test run from inside this roadmap's worktree still finds
+them rather than always skipping."
+  (let* ((modules-dir (file-name-directory (or load-file-name buffer-file-name)))
+         (checkout-root (directory-file-name (expand-file-name ".." modules-dir))))
+    (or
+     (let ((here (expand-file-name "straight/repos" checkout-root)))
+       (and (file-directory-p here) here))
+     (let ((worktrees-dir (directory-file-name (file-name-directory checkout-root))))
+       (when (string-suffix-p "__worktrees" worktrees-dir)
+         (let* ((projects-dir (file-name-directory worktrees-dir))
+                (repo-name (string-remove-suffix
+                            "__worktrees" (file-name-nondirectory worktrees-dir)))
+                (main-repos (expand-file-name (concat repo-name "/straight/repos") projects-dir)))
+           (and (file-directory-p main-repos) main-repos)))))))
+
 (defconst claude-term-registry-test--evil-source
-  (expand-file-name "../straight/repos/evil/evil.el"
-                     (file-name-directory (or load-file-name buffer-file-name)))
-  "Path to the real evil.el, when this checkout has fetched it.")
+  (if-let* ((repos (claude-term-registry-test--locate-straight-repos-root)))
+      (expand-file-name "evil/evil.el" repos)
+    "")
+  "Path to the real evil.el, when this checkout or its sibling main
+checkout has fetched it.")
 
 (defconst claude-term-registry-test--general-source
-  (expand-file-name "../straight/repos/general.el/general.el"
-                     (file-name-directory (or load-file-name buffer-file-name)))
-  "Path to the real general.el, when this checkout has fetched it.")
+  (if-let* ((repos (claude-term-registry-test--locate-straight-repos-root)))
+      (expand-file-name "general.el/general.el" repos)
+    "")
+  "Path to the real general.el, same fallback as `--evil-source'.")
 
 (defconst claude-term-registry-test--ai-el-source
   (expand-file-name "ai.el" (file-name-directory (or load-file-name buffer-file-name)))
