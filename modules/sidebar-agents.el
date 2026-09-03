@@ -440,6 +440,17 @@ Pulls the `edmacs-agent' struct straight off the section's own VALUE
 ;; r -- rename an agent instance (sidebar.el's `edmacs-sidebar-rename-at-point')
 ;; ============================================================================
 
+(defun edmacs-sidebar-agents--claude-term-session (agent)
+  "Return AGENT's live `claude-term' session, or signal `user-error'.
+Shared by `edmacs-sidebar-agents-rename' and `edmacs-sidebar-agents-kill':
+mapping an `edmacs-agent' row onto a registered session is one piece of
+domain logic, so a later change to how instances are matched lands in
+one place rather than half of two commands."
+  (or (claude-term-registry-get (edmacs-agent-root agent)
+                                (edmacs-agent-instance agent))
+      (user-error "Claude-term: no session registered for instance %s"
+                  (edmacs-agent-instance agent))))
+
 ;;;###autoload
 (defun edmacs-sidebar-agents-rename (agent)
   "Rename AGENT's title, called by sidebar.el's `edmacs-sidebar-rename-at-point'.
@@ -469,11 +480,7 @@ pane, not this UI -- and traces to this phase's own body (\"an
 in-Emacs agent instance\"), not a bug here; the design table itself
 should be updated to say so explicitly."
   (if (eq (edmacs-agent-source agent) 'claude-term)
-      (let ((session (claude-term-registry-get (edmacs-agent-root agent)
-                                                 (edmacs-agent-instance agent))))
-        (unless session
-          (user-error "Claude-term: no session registered for instance %s"
-                      (edmacs-agent-instance agent)))
+      (let ((session (edmacs-sidebar-agents--claude-term-session agent)))
         (claude-term-rename (claude-term-session-buffer session))
         (edmacs-sidebar-agents--redraw-all))
     (user-error "Cannot rename a %s agent" (edmacs-agent-source agent))))
@@ -499,12 +506,9 @@ the same way that jump already is. Any other source signals
   (when (yes-or-no-p (format "Kill agent session %s? " (edmacs-agent-title agent)))
     (pcase (edmacs-agent-source agent)
       ('claude-term
-       (let ((session (claude-term-registry-get (edmacs-agent-root agent)
-                                                  (edmacs-agent-instance agent))))
-         (unless session
-           (user-error "Claude-term: no session registered for instance %s"
-                       (edmacs-agent-instance agent)))
-         (claude-term-kill (claude-term-session-buffer session))))
+       (claude-term-kill
+        (claude-term-session-buffer
+         (edmacs-sidebar-agents--claude-term-session agent))))
       ('workmux
        (let ((pane-id (plist-get (edmacs-agent-locator agent) :pane-id)))
          (unless pane-id
