@@ -175,6 +175,32 @@ agent pane's buffer, only its window."
         (dolist (b (list buf0 buf1 buf2 buf3))
           (when (buffer-live-p b) (kill-buffer b)))))))
 
+(ert-deftest claude-term-test-redisplay-does-not-hijack-slot-reused-by-another-buffer ()
+  "A's pane closes (window only, buffer stays live per `edmacs-stack-close'
+semantics); its freed slot goes to a new buffer B; redisplaying A later
+must draw a fresh slot rather than trust A's stale cached slot and
+silently steal B's window out from under B -- the collision this
+allocator's own freed-slot reuse would otherwise reopen."
+  (claude-term-test--with-fresh-slots
+    (let ((window-sides-slots '(nil nil 3 nil))
+          (bufa (generate-new-buffer "claude-term-test-hijack-a"))
+          (bufb (generate-new-buffer "claude-term-test-hijack-b")))
+      (unwind-protect
+          (progn
+            (let ((wina (claude-term--display-buffer bufa)))
+              (should (equal (window-parameter wina 'window-slot) 0))
+              (delete-window wina))
+            (let ((winb (claude-term--display-buffer bufb)))
+              (should (equal (window-parameter winb 'window-slot) 0))
+              ;; A's cached slot (0) is now B's -- redisplaying A must not
+              ;; reuse it and must leave B's window and buffer untouched.
+              (let ((wina2 (claude-term--display-buffer bufa)))
+                (should (not (equal (window-parameter wina2 'window-slot) 0)))
+                (should (window-live-p winb))
+                (should (eq (window-buffer winb) bufb)))))
+        (dolist (b (list bufa bufb))
+          (when (buffer-live-p b) (kill-buffer b)))))))
+
 (ert-deftest claude-term-test-display-buffer-three-agents-stacked ()
   (claude-term-test--with-fresh-slots
     (let ((window-sides-slots '(nil nil 3 nil))

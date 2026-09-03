@@ -625,17 +625,32 @@ can never collide with or block agent-pane slot reuse."
       (cl-incf slot))
     slot))
 
+(defun claude-term--slot-occupant (slot)
+  "Return the buffer showing in the selected frame's right-column SLOT.
+Nil when no live right-side window currently holds SLOT."
+  (seq-some (lambda (w)
+              (and (eq (window-parameter w 'window-side) 'right)
+                   (eql (window-parameter w 'window-slot) slot)
+                   (window-buffer w)))
+            (window-list nil 'no-minibuf)))
+
 (defun claude-term--allocate-slot (buffer)
   "Return the side-window slot assigned to BUFFER, assigning one if needed.
-Reuses BUFFER's existing `claude-term--slot' when already set, so
-repeated display calls for the same live session -- a toggle, a
-restart -- keep the same slot rather than drawing a fresh one. A fresh
-allocation always takes the lowest free non-negative slot -- see
-`claude-term--lowest-free-slot' -- so a killed session's slot is
+BUFFER's cached `claude-term--slot' is trusted only when that slot is
+currently free or still showing BUFFER itself on the selected frame.
+`claude-term--slot' is a plain buffer-local with no teardown hook when
+its window closes, so once BUFFER's pane is gone a later allocation can
+hand that same number to a different buffer; redisplaying BUFFER later
+must not blindly reuse the stale number and silently steal that other
+buffer's window (or, since the cache is not frame-scoped, do the same
+to an unrelated window in a second frame). Any other case draws a fresh
+slot via `claude-term--lowest-free-slot', so a killed session's slot is
 reclaimed by the next agent pane instead of the column growing forever."
   (with-current-buffer buffer
-    (or claude-term--slot
-        (setq claude-term--slot (claude-term--lowest-free-slot)))))
+    (if (and claude-term--slot
+             (memq (claude-term--slot-occupant claude-term--slot) (list nil buffer)))
+        claude-term--slot
+      (setq claude-term--slot (claude-term--lowest-free-slot)))))
 
 (defun claude-term--display-buffer (buffer)
   "Display BUFFER in a stacked right-side window and return that window.
