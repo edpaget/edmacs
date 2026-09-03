@@ -181,13 +181,35 @@ This configuration uses **SPC** (spacebar) as the leader key in normal/visual mo
 
 ### Window Operations
 
+`C-w` is the window prefix, active in **every** evil state — including
+insert state and inside a Claude terminal pane — so moving between windows
+never means leaving insert first. It carries evil's own window map plus a
+tmux-flavored layer; `SPC w` reaches the same commands under the same
+letters.
+
 | Key | Action |
 |-----|--------|
-| `SPC w` | Window menu |
+| `C-w h/j/k/l` | Navigate windows |
+| `C-w \|` / `C-w -` | Split right / below |
+| `C-w H/J/K/L` | Resize pane (left/down/up/right) |
+| `C-w RET` | Promote pane to main |
+| `C-w =` | Rebalance the center windows |
+| `C-w x` | Close pane (keeps the buffer) |
+| `C-w d` | Delete window, or demote from main |
+| `C-w m` | Pop a buffer into main |
+| `C-w [` / `C-w ]` | Previous / next stack pane |
+| `C-w <` / `C-w >` | Narrow / widen the stack column |
+| `C-w S` | Toggle side windows |
+| `SPC w` | Window menu (same commands, leader-driven) |
 | `SPC ws` | Split below |
 | `SPC wv` | Split right |
 | `SPC wd` | Delete window |
 | `C-h/j/k/l` | Navigate windows |
+
+Deliberately shadowed, following tmux rather than vim: `C-w -` (was
+decrease-height) and `C-w H/J/K/L` (were move-window-far-\*) become split and
+resize, `C-w x` (was exchange) closes the pane, and insert-state `C-w`
+(delete-word-backward, and a terminal pane's own word-erase) gives up its key.
 
 ### Git
 
@@ -218,6 +240,11 @@ When in an LSP-enabled buffer:
 Claude runs as the real interactive CLI inside a ghostel terminal buffer
 (`modules/claude-term.el`), tracked by a session registry
 (`modules/claude-term-registry.el`).
+
+Session panes are **ordinary windows**, not side windows, so `C-w =`
+rebalances them along with everything else, `other-window` cycles through
+them, and `delete-other-windows` closes them — the session keeps running
+either way, since only the window goes.
 
 | Key | Action |
 |-----|--------|

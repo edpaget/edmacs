@@ -5,10 +5,9 @@
 ;; buffer, with a parseable buffer name and kill/restart commands.
 ;;
 ;; This is phase 1 of the edmacs-claude-terminal roadmap: spawn, naming, and
-;; lifecycle only.  Side-window placement (phase 2), evil integration
-;; (phase 3), and a real multi-session registry (phase 4) build on this
-;; module without needing to change its naming regexp or
-;; `claude-term--exec's signature.
+;; lifecycle only.  Pane placement (phase 2), evil integration (phase 3),
+;; and a real multi-session registry (phase 4) build on this module without
+;; needing to change its naming regexp or `claude-term--exec's signature.
 ;;
 ;; DECIDED 2026-08-31: build a thin launcher rather than adopt a package
 ;; such as claude-code-ide.el.  Adopting means keeping that package's
@@ -30,10 +29,18 @@
   :straight t
   :defer t
   ;; 5 MB, ghostel's default, is roughly 5,000 rows at 80 columns and fewer
-  ;; in a narrow side pane -- short of a long agent session and of the 50,000
+  ;; in a narrow pane -- short of a long agent session and of the 50,000
   ;; lines tmux is configured for.  The scrollback is materialized into the
   ;; Emacs buffer, so this is heap as well as terminal memory.
-  :custom (ghostel-max-scrollback (* 20 1024 1024)))
+  :custom (ghostel-max-scrollback (* 20 1024 1024))
+  :config
+  ;; C-w is the global window prefix (modules/keybindings.el), so ghostel's
+  ;; own char-mode keymap must let it reach Emacs instead of sending a
+  ;; word-erase to the shell.  `customize-set-variable', not `setq': this
+  ;; defcustom's `:set' is what rebuilds the already-built keymap.
+  (unless (member "C-w" ghostel-keymap-exceptions)
+    (customize-set-variable 'ghostel-keymap-exceptions
+                            (cons "C-w" ghostel-keymap-exceptions))))
 
 ;; evil-ghostel gives, without work, insert-state on entry, ESC to normal
 ;; with cursor snapping, hjkl/w/b/e motion, and d/c/r/p implemented through
@@ -65,6 +72,7 @@
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-buffer-name-function)
 (defvar ghostel-exit-functions)
+(defvar ghostel-keymap-exceptions)
 (declare-function ghostel-exec "ghostel")
 (declare-function ghostel-sync-theme "ghostel")
 
@@ -103,18 +111,6 @@ only future fresh spawns.  Use this to inject e.g. a `--mcp-config'
 argument scoping an MCP server to Emacs-launched sessions."
   :type '(repeat string)
   :group 'claude-term)
-
-;; `edmacs-stack-width' (modules/windows.el) is the real, customizable
-;; variable; this `defvar' only supplies a working default when
-;; claude-term.el is loaded standalone (e.g. claude-term-test.el's own -Q
-;; invocation, which never loads windows.el) and is a no-op once windows.el's
-;; own `defcustom edmacs-stack-width' has already run, as it does in the
-;; real init.el load order (windows.el loads before claude-term.el).
-(defvar edmacs-stack-width 0.4
-  "Fractional width of the right-hand stack column, relative to the frame.")
-
-(defvaralias 'claude-term-window-width 'edmacs-stack-width
-  "Obsolete alias for `edmacs-stack-width'.")
 
 ;; ============================================================================
 ;; Terminal appearance
@@ -216,13 +212,6 @@ this buffer, including restarts.")
 
 (defvar-local claude-term--restarting nil
   "Non-nil while an async kill -> sentinel -> re-exec restart is in flight.")
-
-(defvar-local claude-term--slot nil
-  "Side-window slot assigned to this buffer, or nil until first displayed.
-Sticking to one slot for the life of a buffer (via
-`claude-term--allocate-slot') is what keeps a re-display of an already
-live session (toggling back to it, restarting it) from grabbing a fresh
-slot instead of its own.")
 
 ;; ============================================================================
 ;; Buffer naming
@@ -577,138 +566,41 @@ everything else from the dead session."
         (kill-buffer buf)))))
 
 ;; ============================================================================
-;; Side-window display
+;; Pane display
 ;; ============================================================================
-;; This looks like it should be a two-line `display-buffer-in-side-window'
-;; call and is not.  `display-buffer-in-side-window' only installs the
-;; `window-side' and `window-slot' parameters -- dedication follows from
-;; that automatically, but exclusion from `other-window' and
-;; `windmove'/evil-window-* does NOT: it depends solely on the
-;; `no-other-window' window parameter, which neither
-;; `display-buffer-in-side-window' nor any of its callers sets on its
-;; own (verified live via `emacs -Q --batch': without it,
-;; `window-no-other-p' returns nil, `(other-window 1)' selects the side
-;; window, and so does `window-in-direction').  `no-other-window' below
-;; is therefore the actual new code this phase is about; everything else
-;; in the window-parameters/action alist is stock `display-buffer'
-;; plumbing.
+;; Agent panes are ORDINARY windows, not side windows.  A side window is
+;; invisible to `balance-windows' (which only ever rebalances the non-side
+;; subtree `window-main-window' returns), so an agent pane placed in the
+;; right-hand stack column could never be rebalanced along with the rest of
+;; the frame -- the reason this module moved off `display-buffer-in-side-window'.
+;; The side-window machinery that went with it -- per-buffer slot allocation,
+;; `no-other-window', `no-delete-other-windows', and the
+;; `edmacs-windmove-reachable' opt-in windows.el used to honor for these
+;; panes -- is gone with it: an agent pane now cycles under `other-window',
+;; is reached by any windmove direction, and is closed by
+;; `delete-other-windows' like any other window.  Killing the WINDOW never
+;; kills the session; the buffer and its process outlive it.
 ;;
-;; DECIDED: a single `SPC w l' (or any windmove direction key) does
-;; enter an agent pane despite `no-other-window' -- that parameter only
-;; ever blocks `other-window'/`SPC w w'/`C-x 1' cycling here.  The
-;; `edmacs-windmove-reachable' parameter below is what opts a pane back
-;; into single-invocation windmove reachability; see windows.el's advice on
-;; `windmove-find-other-window' for the mechanism and why the blunter
-;; `windmove-allow-all-windows' can't express this per-window.
-
-(defun claude-term--occupied-slots ()
-  "Return the selected frame's occupied right-column slot numbers.
-Scans live windows directly rather than delegating to
-`edmacs-stack-windows' (modules/windows.el): claude-term-test.el's own
-documented invocation never loads windows.el, and this function must
-stay usable on its own, mirroring this file's existing standalone
-fallback for `edmacs-stack-width'."
-  (delq nil
-        (mapcar (lambda (w)
-                  (and (eq (window-parameter w 'window-side) 'right)
-                       (window-parameter w 'window-slot)))
-                (window-list nil 'no-minibuf))))
-
-(defun claude-term--lowest-free-slot ()
-  "Return the smallest non-negative integer not in `claude-term--occupied-slots'.
-Popup/pin slots are negative (see `edmacs-stack--popup-alist' and
-`edmacs-stack-pin' in modules/windows.el) and never appear here, so they
-can never collide with or block agent-pane slot reuse."
-  (let ((occupied (claude-term--occupied-slots))
-        (slot 0))
-    (while (memq slot occupied)
-      (cl-incf slot))
-    slot))
-
-(defun claude-term--slot-occupant (slot)
-  "Return the buffer showing in the selected frame's right-column SLOT.
-Nil when no live right-side window currently holds SLOT."
-  (seq-some (lambda (w)
-              (and (eq (window-parameter w 'window-side) 'right)
-                   (eql (window-parameter w 'window-slot) slot)
-                   (window-buffer w)))
-            (window-list nil 'no-minibuf)))
-
-(defun claude-term--allocate-slot (buffer)
-  "Return the side-window slot assigned to BUFFER, assigning one if needed.
-BUFFER's cached `claude-term--slot' is trusted only when that slot is
-currently free or still showing BUFFER itself on the selected frame.
-`claude-term--slot' is a plain buffer-local with no teardown hook when
-its window closes, so once BUFFER's pane is gone a later allocation can
-hand that same number to a different buffer; redisplaying BUFFER later
-must not blindly reuse the stale number and silently steal that other
-buffer's window (or, since the cache is not frame-scoped, do the same
-to an unrelated window in a second frame). Any other case draws a fresh
-slot via `claude-term--lowest-free-slot', so a killed session's slot is
-reclaimed by the next agent pane instead of the column growing forever."
-  (with-current-buffer buffer
-    (if (and claude-term--slot
-             (memq (claude-term--slot-occupant claude-term--slot) (list nil buffer)))
-        claude-term--slot
-      (setq claude-term--slot (claude-term--lowest-free-slot)))))
-
-(defun claude-term--resize-to-stack-width (window)
-  "Resize WINDOW's total width to the live value of `edmacs-stack-width'.
-Deliberately duplicated from windows.el's `edmacs-stack--resize-width'
-rather than calling it: claude-term-test.el's own documented invocation
-never loads windows.el, mirroring this file's existing standalone
-fallbacks (`claude-term--occupied-slots', the local `edmacs-stack-width'
-defvar)."
-  (let ((new-width (round (* edmacs-stack-width
-                              (window-total-width (frame-root-window window))))))
-    (ignore-errors
-      (window-resize window (- new-width (window-total-width window)) t 'safe))))
+;; The explicit action list below is load-bearing.  `display-buffer' would
+;; otherwise fall through to windows.el's `display-buffer-base-action',
+;; whose `display-buffer-in-side-window' fallback always succeeds -- putting
+;; the pane straight back into the side-window column this section exists to
+;; leave.
 
 (defun claude-term--display-buffer (buffer)
-  "Display BUFFER in a stacked right-side window and return that window.
-Builds this phase's verified target shape: a right side window sized by
-`edmacs-stack-width', sized-preserving across a
-`window-toggle-side-windows' hide/show cycle, excluded from
-`delete-other-windows'/`other-window' via `no-other-window' but kept
-reachable by a single windmove direction key via
-`edmacs-windmove-reachable' (see the section comment above).
-Returns nil exactly when `display-buffer-in-side-window' does -- e.g.
-when `window-sides-slots' forbids side-window creation on this edge --
-never signals in that case.
-Checks for a live window of BUFFER on the selected frame before
-allocating anything: `claude-term--slot' is a plain buffer-local, not
-frame-scoped, so displaying BUFFER on a second frame can overwrite its
-cached slot to a number that happens to be free back on this frame.
-Trusting that stale-but-free number here would draw a second window
-for a buffer that already has one on this frame; reusing the existing
-window instead keeps one buffer to one window per frame regardless of
-what the cache says. A reused window is also resized to the live
-`edmacs-stack-width' via `claude-term--resize-to-stack-width' before
-being returned, so redisplaying an already-visible agent pane tracks a
-rebound width exactly as a freshly created pane or popup would."
-  (let ((existing (get-buffer-window buffer (selected-frame))))
-    (if existing
-        (progn
-          (claude-term--resize-to-stack-width existing)
-          existing)
-      (display-buffer
-       buffer
-       `((display-buffer-in-side-window)
-         (side . right)
-         (slot . ,(claude-term--allocate-slot buffer))
-         (window-width . ,edmacs-stack-width)
-         (preserve-size . (t . nil))
-         (window-parameters . ((no-delete-other-windows . t)
-                                (no-other-window . t)
-                                (edmacs-windmove-reachable . t))))))))
+  "Display BUFFER in an ordinary window and return that window.
+Reuses a window already showing BUFFER (on any frame) before splitting,
+so redisplaying a live session never draws it a second window.  Returns
+nil exactly when `display-buffer' does, and never signals in that case."
+  (display-buffer buffer
+                  '((display-buffer-reuse-window display-buffer-pop-up-window)
+                    (reusable-frames . visible))))
 
-(defun claude-term--pop-to-side-window (buffer)
-  "Display BUFFER in a side window via `claude-term--display-buffer' and select it.
-Preserves `pop-to-buffer''s \"display and select\" semantics at this
-module's two call sites.  Guards against a nil return (side-window
-creation can be forbidden by `window-sides-slots', which then makes
-`display-buffer-in-side-window' return nil rather than error) by simply
-not selecting anything in that case."
+(defun claude-term--pop-to-window (buffer)
+  "Display BUFFER via `claude-term--display-buffer' and select its window.
+Preserves `pop-to-buffer\='s \"display and select\" semantics at this
+module\='s call sites.  Guards against a nil return by simply not
+selecting anything in that case."
   (let ((window (claude-term--display-buffer buffer)))
     (when window
       (select-window window))
@@ -739,9 +631,9 @@ this module."
     (if (with-current-buffer buffer (process-live-p ghostel--process))
         (progn
           (claude-term-registry-touch root instance)
-          (claude-term--pop-to-side-window buffer))
+          (claude-term--pop-to-window buffer))
       (claude-term--exec buffer root instance args)
-      (claude-term--pop-to-side-window buffer))))
+      (claude-term--pop-to-window buffer))))
 
 (defun claude-term--read-buffer (prompt)
   "Return a claude-term buffer to act on, prompting via PROMPT if needed.

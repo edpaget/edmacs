@@ -96,24 +96,23 @@ re-shows the left sidebar."
 (defun edmacs--swap-window-buffers (w1 w2)
   "Exchange the buffers shown in W1 and W2.
 Uses `window-swap-states' for ordinary windows; a side window keeps its
-side and slot and only trades buffers. A non-claude buffer moved into a
-side window clears `no-other-window' so window navigation still reaches it."
+side and slot and only trades buffers. A buffer swapped into a side
+window clears `no-other-window' so window navigation still reaches it."
   (if (or (window-parameter w1 'window-side) (window-parameter w2 'window-side))
       (let ((b1 (window-buffer w1)) (b2 (window-buffer w2)))
         (set-window-buffer w1 b2)
         (set-window-buffer w2 b1)
         (dolist (w (list w1 w2))
-          (when (and (window-parameter w 'window-side)
-                     (not (string-prefix-p "*claude-term" (buffer-name (window-buffer w)))))
+          (when (window-parameter w 'window-side)
             (set-window-parameter w 'no-other-window nil))))
     (window-swap-states w1 w2)))
 
 (defun edmacs-window-promote (&optional window)
   "Swap WINDOW's buffer into the main window and select the main window.
-Like dwm's zoom or tmux's promote. Side windows (the right-hand column
-claude-term and *Warnings* use) count as stack windows: promoting from
-one puts its buffer in main and the old main buffer in that pane. From
-the main window itself, swap with the first stack window.
+Like dwm's zoom or tmux's promote. Side windows (the right-hand popup
+column *Warnings* and friends use) count as stack windows: promoting
+from one puts its buffer in main and the old main buffer in that pane.
+From the main window itself, swap with the first stack window.
 With a numeric prefix arg N, WINDOW defaults to the Nth window of
 `edmacs-stack-windows' (0-based); an N past the end of the stack, or
 a negative N, is a no-op with a message rather than an error."
@@ -186,25 +185,13 @@ slot is the inverse: it swaps the two buffers straight back."
 ;; from `window-layout-transpose' the moment something does.
 (setq transpose-dedicated-windows t)
 
-;; claude-term panes set `no-other-window' to stay out of `other-window'
-;; cycling; directional moves (SPC w h/j/k/l) should still reach them.
-;; `windmove-allow-all-windows' can't express that on its own -- it's a
-;; single global boolean forwarded as `window-in-direction''s IGNORE
-;; argument, so turning it on makes every `no-other-window' window
-;; windmove-reachable, sidebar.el's own side window included, which
-;; that module's own acceptance criteria forbid. So the flag stays at
-;; its default (nil) and reachability is opt-in per window instead: a
-;; window sets its own `edmacs-windmove-reachable' parameter (see
-;; claude-term.el) to be found on a direction search that would
-;; otherwise stop at `no-other-window'.
-(advice-add 'windmove-find-other-window :around
-            (lambda (orig dir &optional arg window)
-              (or (funcall orig dir arg window)
-                  (let* ((windmove-allow-all-windows t)
-                         (found (funcall orig dir arg window)))
-                    (and found
-                         (window-parameter found 'edmacs-windmove-reachable)
-                         found)))))
+;; `windmove-allow-all-windows' stays at its default (nil), so a window
+;; carrying `no-other-window' -- sidebar.el's left side window is the only
+;; one left that does -- is skipped by directional moves as well as by
+;; `other-window', which sidebar.el's own acceptance criteria require.
+;; Agent panes used to need an opt-in back out of that (`edmacs-windmove-
+;; reachable', honored by an advice here); they are ordinary windows now
+;; and reachable without one.
 
 ;; ============================================================================
 ;; The stack: the right-hand side-window column
@@ -473,7 +460,7 @@ The exact reverse traversal of `edmacs-stack-next'."
           (when main (select-window main)))))))
 
 (defun edmacs-stack-close ()
-  "Close the selected stack window without killing its buffer.
+  "Close the selected window without killing its buffer.
 Never acts on `edmacs-main-window' itself. Deletes the window -- an
 agent pane's live session buffer, in particular, is never killed -- then
 selects main."
@@ -551,8 +538,8 @@ window."
 ;; ============================================================================
 
 (defvar edmacs-stack-agent-pane-p #'ignore
-  "Predicate for a right stack window whose agent session has died.
-Called with one live right side window; a non-nil return means
+  "Predicate for a window whose agent session has died.
+Called with one live window on the swept frame; a non-nil return means
 `edmacs-stack-sweep-stale-panes' should delete it rather than show it as
 a stale pane. Default `#\\='ignore' never matches, which keeps this
 module free of any claude-term dependency; `modules/claude-term-registry.el'
@@ -560,20 +547,23 @@ wires the real liveness check (buffer-shaped-like-an-agent-pane plus a
 dead process) onto this variable at load time.")
 
 (defun edmacs-stack-sweep-stale-panes (&optional frame)
-  "Delete FRAME's (default the selected frame) dead right stack windows.
+  "Delete FRAME's (default the selected frame) dead panes.
 Meant to run right after a desktop restore: `window-state-put' recreates
-whatever side windows the saved frameset had, but an agent pane's
-process cannot survive a restart and a popup's buffer may not have been
-saved at all, so a plain state restore alone can leave stale panes
-behind. Deletes a right stack window whose buffer is no longer live, or
-for which `edmacs-stack-agent-pane-p' reports its session has died;
-every other stack window -- a popup with a live buffer -- is left alone.
+whatever windows the saved frameset had, but an agent pane's process
+cannot survive a restart and a popup's buffer may not have been saved at
+all, so a plain state restore alone can leave stale panes behind.
+Deletes a right stack window whose buffer is no longer live, and any
+window -- agent panes are ordinary windows, so this is not restricted to
+the stack -- for which `edmacs-stack-agent-pane-p' reports its session
+has died; everything else, a popup with a live buffer included, is left
+alone.
 Finishes by calling `edmacs-main-window', which re-designates main when
 the `edmacs-main' parameter did not survive the restore."
   (with-selected-frame (or frame (selected-frame))
-    (dolist (w (edmacs-stack-windows))
+    (dolist (w (window-list nil 'no-minibuf))
       (when (and (window-live-p w)
-                 (or (not (buffer-live-p (window-buffer w)))
+                 (or (and (eq (window-parameter w 'window-side) 'right)
+                          (not (buffer-live-p (window-buffer w))))
                      (funcall edmacs-stack-agent-pane-p w)))
         (ignore-errors (delete-window w))))
     (edmacs-main-window)))

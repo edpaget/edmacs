@@ -8,11 +8,10 @@
 ;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/claude-term.el \
 ;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
 ;;
-;; `modules/claude-term.el' is on the invocation line above because the
-;; AC5 width test and the "Persistence" section's lowest-free-slot test
-;; both exercise `claude-term--display-buffer' directly; each still
-;; carries a defensive `ert-skip' guard for anyone running a narrower ad
-;; hoc command without it. Loading it under `-Q' prints a benign
+;; `modules/claude-term.el' is on the invocation line above because
+;; `edmacs-stack-agent-pane-p' (whose wiring this file's sweep tests
+;; stub out) and the pane-shaped helpers here mirror that module's
+;; buffer-name conventions. Loading it under `-Q' prints a benign
 ;; "Unrecognized keyword: :straight" notice from the `use-package
 ;; ghostel'/`use-package evil-ghostel' forms -- see claude-term-test.el's
 ;; own Commentary for why that is harmless here.
@@ -26,7 +25,8 @@
 ;; has sidebar.el left to load internally. See that test's own comments for
 ;; the straight-bootstrap skip condition.
 ;;
-;; The "SPC w binding surface" section near the bottom loads
+;; The "SPC w binding surface" and "C-w window prefix" sections near the
+;; bottom load
 ;; `modules/keybindings.el' itself, fixing up `load-path' against the
 ;; straight source tree first -- it is deliberately NOT passed on the
 ;; invocation line above, the same treatment AC4 gives `modules/sidebar.el'.
@@ -199,23 +199,20 @@ a single windmove direction key despite `no-other-window' blocking
        ,@body)))
 
 (ert-deftest edmacs-windows-test-windmove-allow-all-windows-stays-nil ()
-  "The blanket flag is gone -- reachability is per-window now, not global."
+  "The blanket flag stays off: sidebar.el's own ACs forbid its left side
+window being windmove-reachable, and nothing needs the exemption any
+more now that agent panes are ordinary windows."
   (should (null windmove-allow-all-windows)))
 
-(ert-deftest edmacs-windows-test-windmove-does-not-reach-unmarked-no-other-window ()
-  "A `no-other-window' window without the opt-in parameter (sidebar.el's
-shape) is never windmove-reachable, even though it is the nearest
-window in that direction."
+(ert-deftest edmacs-windows-test-windmove-does-not-reach-no-other-window ()
+  "A `no-other-window' window (sidebar.el's shape) is never
+windmove-reachable, even though it is the nearest window in that
+direction -- and the `edmacs-windmove-reachable' opt-in that used to
+carve agent panes back out of this is gone with the side-window panes
+themselves, so marking a window no longer changes the answer."
   (edmacs-windows-test--with-side-windows
-    (should-not (windmove-find-other-window 'left))))
-
-(ert-deftest edmacs-windows-test-windmove-reaches-marked-no-other-window ()
-  "A `no-other-window' window that opts in via `edmacs-windmove-reachable'
-(claude-term.el's shape) is still windmove-reachable, preserving the
-original claude-term intent this mechanism replaced
-`windmove-allow-all-windows' to serve."
-  (edmacs-windows-test--with-side-windows
-    (should (eq (windmove-find-other-window 'right) right))))
+    (should-not (windmove-find-other-window 'left))
+    (should-not (windmove-find-other-window 'right))))
 
 ;; ============================================================================
 ;; AC4 -- load order: windows.el then sidebar.el leaves window-sides-slots
@@ -502,53 +499,45 @@ multiple windows for the same buffer."
 ;; ---------------------------------------------------------------------------
 ;; AC5 -- every right-edge window's width tracks `edmacs-stack-width' live
 ;; ---------------------------------------------------------------------------
-;; The agent-pane half of this test needs `modules/claude-term.el' loaded
-;; (its own `display-buffer' path is what proves the agent-pane side of
-;; this AC already worked before this phase) -- it is part of this file's
-;; default invocation at the top of the Commentary above. The `ert-skip'
-;; guard below is defensive fallback for anyone running a narrower ad hoc
-;; command without it.
-
-(ert-deftest edmacs-windows-test-width-tracks-live-variable-for-agent-and-popup ()
-  (if (not (fboundp 'claude-term--display-buffer))
-      (ert-skip "modules/claude-term.el not loaded -- see this test's Commentary")
-    (save-window-excursion
-      (delete-other-windows)
-      (let ((agent-buf (generate-new-buffer "*ewt-width-agent*"))
-            (popup-buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
-        (unwind-protect
-            (let (agent-w1 popup-w1 agent-w2 popup-w2)
-              (let ((edmacs-stack-width 0.4))
-                (delete-other-windows)
-                (setq agent-w1 (window-total-width (claude-term--display-buffer agent-buf)))
-                (setq popup-w1 (window-total-width (display-buffer popup-buf))))
+(ert-deftest edmacs-windows-test-popup-width-tracks-live-variable ()
+  "A routed popup re-reads `edmacs-stack-width' on every display, so
+rebinding the variable resizes the next popup without re-registering any
+`display-buffer-alist' entry.  Agent panes are deliberately NOT covered:
+they are ordinary windows now (see claude-term.el's \"Pane display\")
+and take whatever size the split gives them."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((popup-buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
+      (unwind-protect
+          (let (popup-w1 popup-w2)
+            (let ((edmacs-stack-width 0.4))
               (delete-other-windows)
-              (let ((edmacs-stack-width 0.6))
-                (setq agent-w2 (window-total-width (claude-term--display-buffer agent-buf)))
-                (setq popup-w2 (window-total-width (display-buffer popup-buf))))
-              (should (/= agent-w1 agent-w2))
-              (should (/= popup-w1 popup-w2))
-              (should (> agent-w2 agent-w1))
-              (should (> popup-w2 popup-w1)))
-          (kill-buffer agent-buf)
-          (kill-buffer popup-buf))))))
+              (setq popup-w1 (window-total-width (display-buffer popup-buf))))
+            (delete-other-windows)
+            (let ((edmacs-stack-width 0.6))
+              (setq popup-w2 (window-total-width (display-buffer popup-buf))))
+            (should (/= popup-w1 popup-w2))
+            (should (> popup-w2 popup-w1)))
+        (kill-buffer popup-buf)))))
 
 ;; ============================================================================
 ;; Phase 4 -- demote, stack cycling, close, numeric-prefix promote, widen/narrow
 ;; ============================================================================
 
 (defun edmacs-windows-test--display-claude-term-shaped-pane (buffer slot)
-  "Display BUFFER as a right-column stack pane, claude-term.el's real shape.
-`no-delete-other-windows', `no-other-window', and `edmacs-windmove-reachable'
-match `claude-term--display-buffer' exactly."
+  "Display BUFFER as a right-column stack pane at SLOT.
+The shape claude-term.el used to display an agent pane with, kept here
+because the stack commands under test (`edmacs-stack-next'/`-prev',
+`edmacs-stack-close', numeric-prefix promote) still have to handle a
+`no-other-window' side window -- sidebar.el's left window is one, and a
+pinned popup can be moved into the column by hand."
   (display-buffer
    buffer
    `((display-buffer-in-side-window)
      (side . right)
      (slot . ,slot)
      (window-parameters . ((no-delete-other-windows . t)
-                            (no-other-window . t)
-                            (edmacs-windmove-reachable . t))))))
+                            (no-other-window . t))))))
 
 (defun edmacs-windows-test--slot-1-window ()
   "Return the selected frame's right-column window at slot -1, or nil."
@@ -870,6 +859,12 @@ has never bootstrapped straight locally, so callers can `ert-skip'."
   "This phase's new/changed `SPC w' leaves, key -> intended command.")
 
 (declare-function evil-get-auxiliary-keymap "evil-core")
+(declare-function evil-get-minor-mode-keymap "evil-core")
+(declare-function evil-state-keymaps "evil-core")
+(declare-function evil-define-key* "evil-core")
+(declare-function evil-local-mode "evil-core")
+(declare-function evil-insert-state "evil-states")
+(defvar evil-window-map)
 (defvar general-override-mode-map)
 
 (defun edmacs-windows-test--spc-w-keymap ()
@@ -935,6 +930,92 @@ binding just to make a direct lookup succeed."
     (should (eq (lookup-key keymap (kbd "SPC w s")) 'split-window-below))
     (should (eq (lookup-key keymap (kbd "SPC w v")) 'split-window-right))
     (should (eq (lookup-key keymap (kbd "SPC w t e")) 'edmacs-window-promote))))
+
+;; ---------------------------------------------------------------------------
+;; C-w window prefix -- reachable from every state
+;; ---------------------------------------------------------------------------
+;; Same straight-bootstrap skip condition as the `SPC w' tests above, and the
+;; same one-shot `modules/keybindings.el' load.
+
+(defconst edmacs-windows-test--c-w-leaves
+  '(("|" . split-window-right)
+    ("-" . split-window-below)
+    ("H" . evil-window-decrease-width)
+    ("L" . evil-window-increase-width)
+    ("J" . evil-window-increase-height)
+    ("K" . evil-window-decrease-height)
+    ("RET" . edmacs-window-promote)
+    ("=" . edmacs-stack-balance-center)
+    ("x" . edmacs-stack-close)
+    ("d" . edmacs-window-delete-or-demote)
+    ("m" . edmacs-window-pop-buffer-to-main)
+    ("[" . edmacs-stack-prev)
+    ("]" . edmacs-stack-next)
+    ("<" . edmacs-stack-narrow)
+    (">" . edmacs-stack-widen)
+    ("S" . edmacs-stack-toggle))
+  "The tmux vocabulary layered onto `evil-window-map', key -> command.")
+
+(ert-deftest edmacs-windows-test-c-w-leaves-resolve-in-evil-window-map ()
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (dolist (pair edmacs-windows-test--c-w-leaves)
+    (should (eq (lookup-key evil-window-map (kbd (car pair))) (cdr pair)))))
+
+(ert-deftest edmacs-windows-test-c-w-agrees-with-spc-w ()
+  "Every command reachable both ways is reachable by the SAME key under
+both prefixes -- one vocabulary, two entry points."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (let ((spc-w (edmacs-windows-test--spc-w-keymap)))
+    (dolist (key '("=" "x" "d" "m" "[" "]" "<" ">" "S"))
+      (should (eq (lookup-key evil-window-map (kbd key))
+                  (lookup-key spc-w (kbd (concat "SPC w " key))))))))
+
+(ert-deftest edmacs-windows-test-c-w-is-a-prefix-in-every-state ()
+  "`C-w' reaches `evil-window-map' from insert and emacs state, not just
+normal/motion -- moving between windows must never require leaving
+insert state. Asserted through `evil-get-minor-mode-keymap', the bucket
+`evil-state-keymaps' consults AHEAD of the auxiliary maps evil-ghostel
+binds its own insert-state `C-w' terminal passthrough into."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (should edmacs-window-prefix-mode)
+  (dolist (state '(normal visual insert emacs motion replace operator))
+    (let ((map (evil-get-minor-mode-keymap state 'edmacs-window-prefix-mode)))
+      (should (keymapp map))
+      (should (eq (lookup-key map (kbd "C-w")) evil-window-map))
+      ;; and a real leaf resolves through it, not merely the prefix
+      (should (eq (lookup-key map (kbd "C-w h")) 'evil-window-left)))))
+
+(ert-deftest edmacs-windows-test-c-w-minor-mode-map-outranks-auxiliary-maps ()
+  "The reason `evil-define-minor-mode-key' is used rather than general's
+`override' keymap: `evil-state-keymaps' orders minor-mode maps ahead of
+the auxiliary maps `evil-define-key*' populates, which is what puts this
+binding ahead of evil-ghostel's insert-state `C-w' passthrough inside a
+claude-term pane. The probe below stands in for
+`evil-ghostel-mode-map' -- an ordinary keymap carrying an
+`evil-define-key*' insert-state binding -- and is made active as the
+buffer's local map so evil actually collects its auxiliary keymap."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (let ((probe (make-sparse-keymap))
+        (mode-map (evil-get-minor-mode-keymap 'insert 'edmacs-window-prefix-mode)))
+    (evil-define-key* 'insert probe (kbd "C-w") #'ignore)
+    (with-temp-buffer
+      (use-local-map probe)
+      (evil-local-mode 1)
+      (evil-insert-state)
+      (let* ((maps (mapcar #'cdr (evil-state-keymaps 'insert)))
+             (aux (evil-get-auxiliary-keymap probe 'insert))
+             (mode-pos (seq-position maps mode-map))
+             (aux-pos (seq-position maps aux)))
+        (should mode-pos)
+        (should aux-pos)
+        (should (< mode-pos aux-pos))
+        ;; and the winner really is this module's binding, not the probe's
+        (should (eq (lookup-key (make-composed-keymap maps) (kbd "C-w h"))
+                    'evil-window-left))))))
 
 ;; ============================================================================
 ;; Persistence: tab-bar hooks, dead-pane sweep, lowest-free-slot allocation
@@ -1046,6 +1127,24 @@ kill-buffer call."
             (should-not (window-live-p win)))
         (kill-buffer buf)))))
 
+(ert-deftest edmacs-windows-test-sweep-deletes-stale-agent-pane-in-an-ordinary-window ()
+  "The sweep is not scoped to the stack column. Agent panes are ordinary
+windows now (see claude-term.el's \"Pane display\"), so a pane whose
+session died has to be swept from wherever a restored frameset put it,
+not only from a right side window."
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((buf (generate-new-buffer "ewt-sweep-agent-ordinary"))
+           (win (split-window-right)))
+      (set-window-buffer win buf)
+      (unwind-protect
+          (let ((edmacs-stack-agent-pane-p (lambda (w) (eq w win))))
+            (should (window-live-p win))
+            (should-not (window-parameter win 'window-side))
+            (edmacs-stack-sweep-stale-panes)
+            (should-not (window-live-p win)))
+        (kill-buffer buf)))))
+
 (ert-deftest edmacs-windows-test-sweep-keeps-live-popup-pane ()
   (save-window-excursion
     (delete-other-windows)
@@ -1072,34 +1171,13 @@ kill-buffer call."
                        (window-list nil 'no-minibuf)))))
 
 ;; ---------------------------------------------------------------------------
-;; AC4 -- claude-term--allocate-slot reuses the lowest free slot
+;; Agent panes are ordinary windows, so the stack never allocates a slot for
+;; one. claude-term.el's own suite owns the pane-placement assertions now
+;; (`claude-term-test-display-buffer-creates-an-ordinary-window' and
+;; friends); what stays this module's business is that a pane in an
+;; ordinary window is still swept when its session is dead -- covered by
+;; `edmacs-windows-test-sweep-deletes-stale-agent-pane' above.
 ;; ---------------------------------------------------------------------------
-;; Guarded like AC5's width test above: `modules/claude-term.el' is part of
-;; this file's default invocation (see the Commentary above); the
-;; `ert-skip' guard below is defensive fallback for anyone running a
-;; narrower ad hoc command without it.
-
-(ert-deftest edmacs-windows-test-allocate-slot-reuses-lowest-free-slot ()
-  (if (not (fboundp 'claude-term--display-buffer))
-      (ert-skip "modules/claude-term.el not loaded -- see this test's Commentary")
-    (save-window-excursion
-      (delete-other-windows)
-      (let ((buf0 (generate-new-buffer "ewt-slot-reuse-0"))
-            (buf1 (generate-new-buffer "ewt-slot-reuse-1"))
-            (buf2 (generate-new-buffer "ewt-slot-reuse-2"))
-            (buf3 (generate-new-buffer "ewt-slot-reuse-3")))
-        (unwind-protect
-            (progn
-              (let ((win0 (claude-term--display-buffer buf0))
-                    (win1 (claude-term--display-buffer buf1))
-                    (win2 (claude-term--display-buffer buf2)))
-                (should (equal (window-parameter win0 'window-slot) 0))
-                (should (equal (window-parameter win1 'window-slot) 1))
-                (should (equal (window-parameter win2 'window-slot) 2))
-                (delete-window win1))
-              (should (equal (claude-term--allocate-slot buf3) 1)))
-          (dolist (b (list buf0 buf1 buf2 buf3))
-            (when (buffer-live-p b) (kill-buffer b))))))))
 
 ;; ============================================================================
 ;; Catch-all tiling (phase 5)

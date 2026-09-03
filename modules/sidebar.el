@@ -188,7 +188,7 @@ sentinel, so redraw stores `(1+ index)', not the raw 0-based index."
 Guards against `display-buffer-in-side-window' returning nil -- e.g.
 `window-sides-slots' forbidding creation on this edge -- by simply not
 dedicating anything in that case, mirroring
-`claude-term--pop-to-side-window's own nil guard."
+`claude-term--pop-to-window's own nil guard."
   (interactive)
   (let* ((frame (or frame (selected-frame)))
          (buf (edmacs-sidebar--ensure-buffer frame))

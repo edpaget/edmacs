@@ -68,7 +68,7 @@
 (declare-function claude-term--leaf "claude-term")
 (declare-function claude-term--parse-buffer-name "claude-term")
 (declare-function claude-term--display-buffer "claude-term")
-(declare-function claude-term--pop-to-side-window "claude-term")
+(declare-function claude-term--pop-to-window "claude-term")
 (declare-function claude-term-buffer-name "claude-term")
 (declare-function claude-term "claude-term")
 (declare-function claude-term--terminate "claude-term")
@@ -223,6 +223,12 @@ touching `claude-term--read-session's body.")
         (let ((buf (window-buffer w)))
           (and (claude-term--parse-buffer-name (buffer-name buf))
                (not (process-live-p (claude-term-registry--process-of buf)))))))
+
+(defun claude-term-registry--windows ()
+  "Return the selected frame\='s windows showing a claude-term buffer."
+  (seq-filter (lambda (w)
+                (claude-term--parse-buffer-name (buffer-name (window-buffer w))))
+              (window-list nil 'no-minibuf)))
 
 ;; ============================================================================
 ;; Repo name / elapsed time / label
@@ -491,7 +497,7 @@ MRU order."
   (interactive)
   (let* ((session (claude-term--read-session "Jump to session: "))
          (buffer (claude-term-session-buffer session)))
-    (claude-term--pop-to-side-window buffer)
+    (claude-term--pop-to-window buffer)
     (claude-term-registry-touch (claude-term-session-root session)
                                 (claude-term-session-instance session))))
 
@@ -541,20 +547,25 @@ listing of them."
 
 ;;;###autoload
 (defun claude-term-toggle-pane ()
-  "Toggle visibility of every side window, including claude-term panes.
-Thin wrapper around the stock `window-toggle-side-windows' -- no new
-side-window logic of its own; reuses phase 2's existing column."
+  "Hide every visible claude-term pane, or redisplay every live session.
+Agent panes are ordinary windows (see claude-term.el\='s \"Pane display\"
+section), so the stock `window-toggle-side-windows' this used to wrap no
+longer reaches them.  Deletes the WINDOWS only -- every session keeps
+running, exactly as `edmacs-stack-close' guarantees for a pane closed
+one at a time."
   (interactive)
-  (window-toggle-side-windows))
+  (if-let* ((windows (claude-term-registry--windows)))
+      (dolist (w windows)
+        (ignore-errors (delete-window w)))
+    (claude-term-show-all)))
 
 ;;;###autoload
 (defun claude-term-show-all ()
-  "Display every registered, still-live claude-term session's buffer.
-Calls the existing, non-selecting `claude-term--display-buffer' on
-each. Interacts with `window-sides-slots's right-side cap of 3 (set in
-claude-term.el phases 1-3): a 4th+ simultaneous session will silently
-evict/reuse a slot per Emacs's own side-window slot-reuse behavior --
-a pre-existing, accepted limitation this phase does not change."
+  "Display every registered, still-live claude-term session\='s buffer.
+Calls the existing, non-selecting `claude-term--display-buffer' on each.
+Each pane is an ordinary window, so the frame simply runs out of room
+once the splits get too small; `display-buffer' then declines rather
+than evicting an existing pane."
   (interactive)
   (dolist (session (claude-term-registry-sessions))
     (claude-term--display-buffer (claude-term-session-buffer session))))

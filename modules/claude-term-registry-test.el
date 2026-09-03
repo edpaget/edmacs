@@ -515,7 +515,7 @@ non-claude-term ghostel session someone opens directly."
 the chosen session's buffer in a (real) side window, selecting it, and
 touches its last-used time. Wires the separately-tested
 `claude-term--read-session' picker primitive onto
-`claude-term--pop-to-side-window'/`claude-term-registry-touch', neither
+`claude-term--pop-to-window'/`claude-term-registry-touch', neither
 of which was previously exercised by any test calling `claude-term-jump'
 itself."
   (let ((claude-term-registry--table (make-hash-table :test #'equal))
@@ -564,14 +564,43 @@ builds a `claude-term-session-list-mode' buffer whose
       (when (get-buffer "*claude-term-sessions*")
         (kill-buffer "*claude-term-sessions*")))))
 
-(ert-deftest claude-term-registry-test-toggle-pane-calls-window-toggle-side-windows ()
-  "`claude-term-toggle-pane' -- the actual command SPC a w invokes -- is a
-thin wrapper around the stock `window-toggle-side-windows'."
-  (let (called)
-    (cl-letf (((symbol-function 'window-toggle-side-windows)
-               (lambda () (setq called t))))
-      (claude-term-toggle-pane)
-      (should called))))
+(ert-deftest claude-term-registry-test-toggle-pane-hides-visible-panes ()
+  "`claude-term-toggle-pane' -- the actual command SPC a w invokes --
+deletes the windows showing claude-term buffers, leaving the buffers
+themselves (and so the live sessions) alone.  It no longer wraps
+`window-toggle-side-windows': agent panes are ordinary windows, which
+that command does not touch."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer (claude-term-buffer-name "/tmp/ctr-toggle/")))
+          (called nil))
+      (unwind-protect
+          (let ((win (split-window-right)))
+            (set-window-buffer win buf)
+            (should (window-live-p win))
+            (cl-letf (((symbol-function 'window-toggle-side-windows)
+                       (lambda () (setq called t))))
+              (claude-term-toggle-pane))
+            (should-not (window-live-p win))
+            (should (buffer-live-p buf))
+            (should-not called))
+        (kill-buffer buf)))))
+
+(ert-deftest claude-term-registry-test-toggle-pane-shows-all-when-hidden ()
+  "With no pane visible, the same command redisplays every live session."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((claude-term-registry--table (make-hash-table :test #'equal))
+          (buf (generate-new-buffer (claude-term-buffer-name "/tmp/ctr-toggle-show/")))
+          shown)
+      (unwind-protect
+          (progn
+            (claude-term-registry-put "/tmp/ctr-toggle-show/" nil buf)
+            (cl-letf (((symbol-function 'claude-term--display-buffer)
+                       (lambda (b) (push b shown))))
+              (claude-term-toggle-pane))
+            (should (equal shown (list buf))))
+        (kill-buffer buf)))))
 
 (ert-deftest claude-term-registry-test-show-all-displays-every-live-session ()
   "`claude-term-show-all' -- the actual command SPC a A invokes -- calls

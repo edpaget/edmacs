@@ -142,6 +142,75 @@
   "qr" '(restart-emacs :which-key "restart emacs"))
 
 ;; ============================================================================
+;; C-w window prefix -- every state, tmux vocabulary
+;; ============================================================================
+;; `evil-window-map' is already C-w's prefix in normal/motion state; this
+;; section extends it with the tmux pane vocabulary and makes the SAME map
+;; reachable from insert, emacs and visual state so window moves never
+;; require leaving insert -- the point of the whole section.
+;;
+;; The reachability mechanism is `evil-define-minor-mode-key' on a global
+;; marker mode, NOT `general-define-key :keymaps 'override'.
+;; `evil-state-keymaps' (evil-core.el) concatenates keymap buckets in a
+;; fixed structural order: intercept, local, MINOR-MODE-MAPS, AUXILIARY-MAPS,
+;; overriding maps, then the state map. evil-ghostel binds insert-state C-w
+;; to its own terminal word-erase passthrough via `evil-define-key*' on
+;; `evil-ghostel-mode-map' -- an AUXILIARY-MAPS entry -- and general's
+;; `override' keymap lands in the overriding bucket, BEHIND it. A
+;; minor-mode-maps entry is the only one of the three that wins inside a
+;; claude-term pane. `ghostel-keymap-exceptions' (modules/claude-term.el)
+;; covers the same key for ghostel's non-evil char mode.
+;;
+;; Deliberately shadowed, following tmux rather than vim: `C-w -' (was
+;; decrease-height) and `C-w H/J/K/L' (were move-window-far-*) become split
+;; and resize, and `C-w x' (was exchange) closes the pane. Resizing lives on
+;; H/J/K/L, so nothing is lost. Insert-state `C-w' (delete-word-backward)
+;; and a claude-term pane's own C-w word-erase are the accepted cost of a
+;; prefix that works without leaving insert state.
+
+(defvar evil-window-map)
+(declare-function evil-define-minor-mode-key "evil-core")
+(declare-function evil-window-decrease-width "evil-commands")
+(declare-function evil-window-increase-width "evil-commands")
+(declare-function evil-window-decrease-height "evil-commands")
+(declare-function evil-window-increase-height "evil-commands")
+
+(define-minor-mode edmacs-window-prefix-mode
+  "Global marker mode carrying the `C-w' window prefix in every evil state.
+Carries no keymap of its own; `evil-define-minor-mode-key' below
+associates `evil-window-map' with this mode's symbol directly. Not meant
+to be toggled by hand."
+  :global t
+  :lighter nil
+  :group 'windows)
+
+(with-eval-after-load 'evil
+  ;; tmux's pane vocabulary, layered onto evil's own window map so both
+  ;; `C-w' and `SPC w' reach the same commands.
+  (define-key evil-window-map (kbd "|") #'split-window-right)
+  (define-key evil-window-map (kbd "-") #'split-window-below)
+  (define-key evil-window-map (kbd "H") #'evil-window-decrease-width)
+  (define-key evil-window-map (kbd "L") #'evil-window-increase-width)
+  (define-key evil-window-map (kbd "J") #'evil-window-increase-height)
+  (define-key evil-window-map (kbd "K") #'evil-window-decrease-height)
+  (define-key evil-window-map (kbd "RET") #'edmacs-window-promote)
+  (define-key evil-window-map (kbd "=") #'edmacs-stack-balance-center)
+  (define-key evil-window-map (kbd "x") #'edmacs-stack-close)
+  (define-key evil-window-map (kbd "d") #'edmacs-window-delete-or-demote)
+  (define-key evil-window-map (kbd "m") #'edmacs-window-pop-buffer-to-main)
+  (define-key evil-window-map (kbd "[") #'edmacs-stack-prev)
+  (define-key evil-window-map (kbd "]") #'edmacs-stack-next)
+  (define-key evil-window-map (kbd "<") #'edmacs-stack-narrow)
+  (define-key evil-window-map (kbd ">") #'edmacs-stack-widen)
+  (define-key evil-window-map (kbd "S") #'edmacs-stack-toggle)
+
+  (dolist (state '(normal visual insert emacs motion replace operator))
+    (evil-define-minor-mode-key state 'edmacs-window-prefix-mode
+      (kbd "C-w") evil-window-map))
+
+  (edmacs-window-prefix-mode 1))
+
+;; ============================================================================
 ;; Evil-specific keybindings
 ;; ============================================================================
 
