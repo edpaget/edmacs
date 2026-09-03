@@ -654,12 +654,17 @@ emacs ...' to exercise this test): %s" e)))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
     (ert-deftest edmacs-sidebar-test-rename-advice-redraws ()
+      "Short tab name deliberately: `edmacs-sidebar-max-width-fraction'
+(AC4) can clamp the default sidebar width below what a long literal
+test name needs to render untruncated -- this test's own concern is
+that the rename advice triggers a redraw at all, not truncation, which
+has its own dedicated coverage below."
       (unwind-protect
           (progn
             (edmacs-sidebar-show (selected-frame))
-            (tab-bar-rename-tab "edmacs-sidebar-test-renamed")
+            (tab-bar-rename-tab "renamed-tab")
             (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-              (should (string-match-p "edmacs-sidebar-test-renamed" (buffer-string)))))
+              (should (string-match-p "renamed-tab" (buffer-string)))))
         (ignore-errors (tab-bar-rename-tab ""))
         (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
 
@@ -882,7 +887,13 @@ agent jump. This automated guard is the primary, CI-equivalent check;
 the phase body's own 'one minute of `profiler-start' over mixed tab
 switching/buffer opening/agent state changes' is a documented,
 non-automated interactive checklist pass for the implementer/reviewer
-to run once before marking the phase reviewed."
+to run once before marking the phase reviewed.
+
+Also poisons `edmacs-sidebar-remembered-width' up front and re-drives
+`edmacs-sidebar-show', `--remember-width', and `--on-desktop-read'
+through the same loop (item 4b's clamp path), so the width-clamp code
+added for AC4 is exercised under this same zero-subprocess guarantee,
+not only under its own dedicated AC4 tests."
       (edmacs-sidebar-test--with-extra-tab
         (let ((violations nil)
               (guarded '(call-process call-process-region process-file
@@ -894,6 +905,8 @@ to run once before marking the phase reviewed."
                               (lambda (&rest _) (push fn violations))
                               `((name . ,(intern (format "edmacs-sidebar-test--guard-%s" fn))))))
                 (edmacs-sidebar-show (selected-frame))
+                (set-frame-parameter (selected-frame) 'edmacs-sidebar-remembered-width
+                                      (* 2 (frame-width (selected-frame))))
                 (cl-letf (((symbol-function 'read-from-minibuffer)
                            (lambda (&rest _) "edmacs-sidebar-test-renamed-tab")))
                   (dotimes (_ 50)
@@ -903,6 +916,9 @@ to run once before marking the phase reviewed."
                     (edmacs-sidebar--on-tab-pre-close nil nil)
                     (tab-bar-rename-tab "edmacs-sidebar-test-shellout-check")
                     (edmacs-sidebar-redraw)
+                    (edmacs-sidebar-show (selected-frame))
+                    (edmacs-sidebar--remember-width (selected-frame))
+                    (edmacs-sidebar--on-desktop-read)
                     ;; `describe-keymap' is real Emacs 29+ core, exercised for
                     ;; real (against a plain temp buffer, no dedicated side
                     ;; window in the way) by its own dedicated test below;
@@ -927,6 +943,7 @@ to run once before marking the phase reviewed."
               (advice-remove fn (intern (format "edmacs-sidebar-test--guard-%s" fn))))
             (ignore-errors (tab-bar-rename-tab ""))
             (when (get-buffer "*Help*") (kill-buffer "*Help*"))
+            (set-frame-parameter (selected-frame) 'edmacs-sidebar-remembered-width nil)
             (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
 
     ;; ==========================================================================
@@ -1256,6 +1273,128 @@ no-op for a frame with no live sidebar window shown."
           (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
             (when (timerp timer) (cancel-timer timer)))
           (remhash frame edmacs-sidebar--resize-debounce-timers)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    ;; ==========================================================================
+    ;; AC4 -- the sidebar never exceeds `edmacs-sidebar-max-width-fraction'
+    ;; of the frame width (item 4b: unbounded width, reported live as the
+    ;; sidebar intermittently occupying ~50% of the frame)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-clamp-width-caps-and-floors ()
+      "`--clamp-width' caps at the fraction of FRAME's width, floors at
+`edmacs-sidebar--min-width', and passes a mid-range width through
+unchanged."
+      (cl-letf (((symbol-function 'frame-width) (lambda (_frame) 100)))
+        (let ((edmacs-sidebar-max-width-fraction 0.33)
+              (edmacs-sidebar--min-width 15))
+          ;; Fraction cap wins: floor(100 * 0.33) = 33.
+          (should (= 33 (edmacs-sidebar--clamp-width 90 'fake-frame)))
+          ;; Floor wins: below the minimum usable width.
+          (should (= 15 (edmacs-sidebar--clamp-width 5 'fake-frame)))
+          ;; Mid-range: passes through unchanged.
+          (should (= 25 (edmacs-sidebar--clamp-width 25 'fake-frame))))))
+
+    (ert-deftest edmacs-sidebar-test-remember-width-refuses-as-sole-window ()
+      "Measuring the sidebar while it is the frame's only live window must
+not stash that width -- e.g. mid-frameset-restore before other windows
+exist. `window-list' is stubbed to report the sidebar as the frame's
+only window rather than literally deleting every sibling: Emacs's own
+side-window invariant (a frame keeps at least one main window whenever
+a side window exists) makes that real layout unreachable by deletion,
+so the guard is exercised by controlling exactly what it inspects."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show frame)
+              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+              (let ((sidebar-window (edmacs-sidebar--window frame)))
+                (should (window-live-p sidebar-window))
+                (cl-letf (((symbol-function 'window-list)
+                           (lambda (&rest _) (list sidebar-window))))
+                  (edmacs-sidebar--remember-width frame)))
+              (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-remember-width-refuses-non-side-window ()
+      "A sidebar buffer displayed in an ordinary (non-side) window must not
+have its width stashed -- `--window' can still find it by buffer
+identity, but `window-parameter ... window-side' is nil there."
+      (let* ((frame (selected-frame))
+             (buf (edmacs-sidebar--ensure-buffer frame))
+             (original-window (selected-window))
+             (split nil))
+        (unwind-protect
+            (progn
+              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+              (setq split (split-window original-window))
+              (set-window-buffer split buf)
+              (let ((window (edmacs-sidebar--window frame)))
+                (should (window-live-p window))
+                (should-not (window-parameter window 'window-side)))
+              (edmacs-sidebar--remember-width frame)
+              (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
+          (when (window-live-p split) (delete-window split))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (let ((b (edmacs-sidebar--buffer frame)))
+            (when (buffer-live-p b) (kill-buffer b)))
+          (set-frame-parameter frame 'edmacs-sidebar-buffer nil))))
+
+    (ert-deftest edmacs-sidebar-test-remember-width-clamps-stash ()
+      "A genuinely live side window measuring wider than the fraction cap
+gets the CLAMPED value stashed, not the raw `(1+ (window-width window))'."
+      (let* ((frame (selected-frame))
+             (fw (frame-width frame))
+             (oversized (max 40 (- fw 10))))
+        (unwind-protect
+            (let ((edmacs-sidebar-max-width-fraction 1.0)
+                  (edmacs-sidebar-width oversized))
+              (edmacs-sidebar-show frame)
+              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+              (let* ((edmacs-sidebar-max-width-fraction 0.2)
+                     (edmacs-sidebar--min-width 5)
+                     (window (edmacs-sidebar--window frame))
+                     (measured (window-width window))
+                     (expected (edmacs-sidebar--clamp-width (1+ measured) frame)))
+                ;; The scenario is only meaningful if the live window is
+                ;; actually wider than the shrunk cap.
+                (should (> (1+ measured) expected))
+                (edmacs-sidebar--remember-width frame)
+                (should (= expected (frame-parameter frame 'edmacs-sidebar-remembered-width)))))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-show-clamps-poisoned-remembered-width ()
+      "A frame parameter already poisoned to (at or above) the frame's full
+width still yields a clamped window from `edmacs-sidebar-show' -- the
+reported bug of the sidebar coming back at ~50% of the frame."
+      (let* ((frame (selected-frame))
+             (fw (frame-width frame)))
+        (unwind-protect
+            (progn
+              (set-frame-parameter frame 'edmacs-sidebar-remembered-width (+ fw 50))
+              (edmacs-sidebar-show frame)
+              (let ((window (edmacs-sidebar--window frame)))
+                (should (<= (window-width window)
+                             (floor (* fw edmacs-sidebar-max-width-fraction))))))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-desktop-restore-clamps-poisoned-width ()
+      "`--on-desktop-read' (this file's documented stand-in for a real
+`desktop-read' round trip under `-Q --batch') brings a frame carrying a
+poisoned remembered-width back clamped, not full-frame-wide."
+      (let* ((frame (selected-frame))
+             (fw (frame-width frame)))
+        (unwind-protect
+            (progn
+              (set-frame-parameter frame 'edmacs-sidebar-remembered-width (* fw 2))
+              (edmacs-sidebar--on-desktop-read)
+              (let ((window (edmacs-sidebar--window frame)))
+                (should (<= (window-width window)
+                             (floor (* fw edmacs-sidebar-max-width-fraction))))))
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 

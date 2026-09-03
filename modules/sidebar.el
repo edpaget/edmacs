@@ -198,9 +198,34 @@ restore bridge."
 (defcustom edmacs-sidebar-width 32
   "Default width, in columns, of the sidebar side window.
 Overridden per frame once the user manually resizes the window -- see
-`edmacs-sidebar--on-window-size-change'."
+`edmacs-sidebar--on-window-size-change'. Always subject to
+`edmacs-sidebar--clamp-width' before it reaches a live window."
   :type 'integer
   :group 'edmacs-sidebar)
+
+(defcustom edmacs-sidebar-max-width-fraction 0.33
+  "Maximum fraction of the frame's total width the sidebar may occupy.
+Enforced by `edmacs-sidebar--clamp-width' both when a width is stashed
+into `edmacs-sidebar-remembered-width' and when one is read back out in
+`edmacs-sidebar-show' -- so a value already poisoned in a live frame
+parameter or a restored desktop self-heals on the next show rather than
+persisting forever."
+  :type 'float
+  :group 'edmacs-sidebar)
+
+(defvar edmacs-sidebar--min-width 15
+  "Floor, in columns, below which a glyph plus a truncated name no
+longer fits usefully. Wins over `edmacs-sidebar-max-width-fraction' on a
+pathologically narrow frame, where the fraction-derived cap would be
+smaller than this floor. A plain `defvar', not `defcustom', so a test
+can shrink it -- mirrors `edmacs-sidebar-resize-debounce-seconds's own
+convention.")
+
+(defun edmacs-sidebar--clamp-width (width frame)
+  "Clamp WIDTH to `edmacs-sidebar-max-width-fraction' of FRAME's width,
+floored at `edmacs-sidebar--min-width'."
+  (max edmacs-sidebar--min-width
+       (min width (floor (* (frame-width frame) edmacs-sidebar-max-width-fraction)))))
 
 (defcustom edmacs-sidebar-force-text-glyphs nil
   "Non-nil forces the plain text/Unicode marker glyphs everywhere in the
@@ -799,12 +824,23 @@ the plain `edmacs-sidebar-width' default and after a manual resize --
 so `1+' compensates for that offset; a plain `window-resize' (an
 already-live window, not a fresh split) has no such offset, which is
 why `--on-window-size-change's own measurement below has to go through
-this same compensation rather than stashing the raw width."
+this same compensation rather than stashing the raw width.
+
+Refuses to stash unless WINDOW is genuinely a side window with at
+least one sibling window in the frame -- a bare `window-width' read at
+a moment the sidebar is effectively the frame's only live window (e.g.
+`delete-other-windows', or mid-frameset-restore before other windows
+exist) is not a real sidebar width and must never be persisted. The
+stashed value itself is clamped via `edmacs-sidebar--clamp-width'."
   (remhash frame edmacs-sidebar--resize-debounce-timers)
   (when (frame-live-p frame)
     (let ((window (edmacs-sidebar--window frame)))
-      (when (window-live-p window)
-        (set-frame-parameter frame 'edmacs-sidebar-remembered-width (1+ (window-width window)))))))
+      (when (and (window-live-p window)
+                 (window-parameter window 'window-side)
+                 (> (length (window-list frame 'never)) 1))
+        (set-frame-parameter
+         frame 'edmacs-sidebar-remembered-width
+         (edmacs-sidebar--clamp-width (1+ (window-width window)) frame))))))
 
 (defun edmacs-sidebar--on-window-size-change (frame)
   "Registered on `window-size-change-functions': debounce-stash FRAME's
@@ -828,12 +864,18 @@ Guards against `display-buffer-in-side-window' returning nil -- e.g.
 dedicating anything in that case, mirroring
 `claude-term--pop-to-window's own nil guard. Uses FRAME's
 remembered width (see above) when it has one, else
-`edmacs-sidebar-width', so a manual resize survives a hide/show cycle."
+`edmacs-sidebar-width', so a manual resize survives a hide/show cycle.
+Either way the width is passed through `edmacs-sidebar--clamp-width'
+here, at read time -- this is what makes a value already poisoned in a
+live frame parameter or a restored desktop self-heal on the very next
+show, rather than only ever being prevented on write."
   (interactive)
   (let* ((frame (or frame (selected-frame)))
          (buf (edmacs-sidebar--ensure-buffer frame))
-         (width (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
-                    edmacs-sidebar-width))
+         (width (edmacs-sidebar--clamp-width
+                 (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
+                     edmacs-sidebar-width)
+                 frame))
          (window (with-selected-frame frame
                    (display-buffer
                     buf
