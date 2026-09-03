@@ -60,8 +60,8 @@ Returns a time value suitable for use with `float-time' and
 (defun claude-usage--read-cache ()
   "Read the Claude CLI's usage cache from `claude-usage-cache-file'.
 
-Returns the parsed `cachedUsageUtilization' object as an alist,
-or nil if the file is missing, unreadable, or contains malformed JSON.
+Returns the parsed `utilization' object (nested in cachedUsageUtilization)
+as an alist, or nil if the file is missing, unreadable, or malformed.
 Never signals an error."
   (let* ((cache-file (expand-file-name claude-usage-cache-file))
          (inhibit-message t))
@@ -75,7 +75,8 @@ Never signals an error."
               (let ((parsed (json-parse-buffer :object-type 'alist
                                                :array-type 'list
                                                :null-object nil)))
-                (alist-get 'cachedUsageUtilization parsed)))
+                (let ((cached-util (alist-get 'cachedUsageUtilization parsed)))
+                  (alist-get 'utilization cached-util))))
           (error nil))))))
 
 (defun claude-usage--severity-face (severity percent)
@@ -180,11 +181,10 @@ nil otherwise."
         (> age-secs claude-usage-stale-threshold))
     (error nil)))
 
-(defun claude-usage-meters (cache)
-  "Transform a parsed usage cache into an ordered list of meter plists.
+(defun claude-usage-meters (utilization)
+  "Transform a parsed utilization object into an ordered list of meter plists.
 
-CACHE is the parsed `cachedUsageUtilization' alist from
-`claude-usage--read-cache'.
+UTILIZATION is the parsed `utilization' object from `claude-usage--read-cache'.
 
 Returns a list of plists, one per limit entry.
 Each plist contains: :id KIND :label LABEL :percent PERCENT
@@ -197,17 +197,19 @@ Maps limit `kind' to human-readable label:
   - \"session\" -> \"Session (5h)\"
   - \"weekly_all\" -> \"Week (all)\"
   - \"weekly_scoped\" -> \"Week (<model>)\"
-Extracts `utilization' as a percentage, preserves `severity' string,
-and computes remaining time to `resets_at'. For scoped limits, extracts
-model name from `scope.model.display_name'."
+
+For limits[], reads `percent' (already 0-100) directly.
+For five_hour/seven_day fallback, reads `utilization' (already 0-100).
+Preserves `severity' string, and extracts model name from
+`scope.model.display_name' when present."
   (let ((meters '())
-        (limits (alist-get 'limits cache)))
+        (limits (alist-get 'limits utilization)))
 
     ;; Primary path: use limits array if present
     (when limits
       (dolist (limit limits)
         (let* ((kind (alist-get 'kind limit))
-               (utilization (alist-get 'utilization limit))
+               (percent (alist-get 'percent limit))
                (severity (alist-get 'severity limit))
                (resets-at (alist-get 'resets_at limit))
                (model-info (alist-get 'scope limit))
@@ -217,8 +219,8 @@ model name from `scope.model.display_name'."
                (kind-sym (when kind (intern kind)))
                label)
 
-          ;; Skip null utilization entries
-          (when utilization
+          ;; Skip null percent entries
+          (when percent
             ;; Derive label from kind
             (setq label
                   (cond
@@ -233,7 +235,7 @@ model name from `scope.model.display_name'."
             ;; Build meter plist
             (push (list :id kind-sym
                         :label label
-                        :percent (truncate (* utilization 100))
+                        :percent percent
                         :severity severity
                         :resets-at resets-at
                         :model model-name)
@@ -241,30 +243,30 @@ model name from `scope.model.display_name'."
 
     ;; Fallback path: use legacy five_hour and seven_day if limits absent
     (unless limits
-      (let ((five-hour (alist-get 'five_hour cache))
-            (seven-day (alist-get 'seven_day cache)))
+      (let ((five-hour (alist-get 'five_hour utilization))
+            (seven-day (alist-get 'seven_day utilization)))
 
         (when five-hour
-          (let* ((utilization (alist-get 'utilization five-hour))
+          (let* ((percent (alist-get 'utilization five-hour))
                  (severity (alist-get 'severity five-hour))
                  (resets-at (alist-get 'resets_at five-hour)))
-            (when utilization
+            (when percent
               (push (list :id 'session
                           :label "Session (5h)"
-                          :percent (truncate (* utilization 100))
+                          :percent percent
                           :severity severity
                           :resets-at resets-at
                           :model nil)
                     meters))))
 
         (when seven-day
-          (let* ((utilization (alist-get 'utilization seven-day))
+          (let* ((percent (alist-get 'utilization seven-day))
                  (severity (alist-get 'severity seven-day))
                  (resets-at (alist-get 'resets_at seven-day)))
-            (when utilization
+            (when percent
               (push (list :id 'weekly_all
                           :label "Week (all)"
-                          :percent (truncate (* utilization 100))
+                          :percent percent
                           :severity severity
                           :resets-at resets-at
                           :model nil)

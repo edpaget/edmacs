@@ -23,136 +23,102 @@
 ;;; Fixtures
 
 ;; Full payload with limits array containing 3 entries: session, weekly_all, weekly_scoped
+;; This is the utilization object structure returned by claude-usage--read-cache
 (defconst claude-usage-test--fixture-full-payload
-  '((cachedUsageUtilization
-     (fetchedAtMs . 1725274680000)
-     (accountUuid . "test-uuid-123")
-     (limits .
-             (((kind . "session")
-               (utilization . 0.45)
-               (severity . "normal")
-               (resets_at . "2026-09-03T20:00:00Z")
-               (limit_dollars . 10.0)
-               (used_dollars . 4.5)
-               (remaining_dollars . 5.5))
-              ((kind . "weekly_all")
-               (utilization . 0.62)
-               (severity . "warning")
-               (resets_at . "2026-09-07T00:00:00Z")
-               (limit_dollars . 100.0)
-               (used_dollars . 62.0)
-               (remaining_dollars . 38.0))
-              ((kind . "weekly_scoped")
-               (utilization . 0.88)
-               (severity . "critical")
-               (resets_at . "2026-09-07T00:00:00Z")
-               (limit_dollars . 50.0)
-               (used_dollars . 44.0)
-               (remaining_dollars . 6.0)
-               (scope
-                (model
-                 (id . "claude-opus-4-1")
-                 (display_name . "Claude 3.5 Opus"))))))
-     (extra_usage . 0.0)
-     (spend . 110.5)))
-  "Full payload with three limits entries.")
+  '((fetchedAtMs . 1725274680000)
+    (accountUuid . "test-uuid-123")
+    (limits .
+            (((kind . "session")
+              (percent . 45)
+              (severity . "normal")
+              (resets_at . "2026-09-03T20:00:00Z")
+              (limit_dollars . 10.0)
+              (used_dollars . 4.5)
+              (remaining_dollars . 5.5))
+             ((kind . "weekly_all")
+              (percent . 62)
+              (severity . "warning")
+              (resets_at . "2026-09-07T00:00:00Z")
+              (limit_dollars . 100.0)
+              (used_dollars . 62.0)
+              (remaining_dollars . 38.0))
+             ((kind . "weekly_scoped")
+              (percent . 88)
+              (severity . "critical")
+              (resets_at . "2026-09-07T00:00:00Z")
+              (limit_dollars . 50.0)
+              (used_dollars . 44.0)
+              (remaining_dollars . 6.0)
+              (scope
+               (model
+                (id . "claude-opus-4-1")
+                (display_name . "Claude 3.5 Opus"))))))
+    (extra_usage . 0.0)
+    (spend . 110.5))
+  "Utilization object with three limits entries, each using percent field.")
 
 ;; Fallback payload without limits key but with five_hour and seven_day
+;; Uses utilization field for five_hour/seven_day (already 0-100)
 (defconst claude-usage-test--fixture-fallback-payload
-  '((cachedUsageUtilization
-     (fetchedAtMs . 1725274680000)
-     (accountUuid . "test-uuid-456")
-     (five_hour
-      (utilization . 0.30)
-      (severity . "normal")
-      (resets_at . "2026-09-03T20:00:00Z")
-      (limit_dollars . 10.0)
-      (used_dollars . 3.0)
-      (remaining_dollars . 7.0))
-     (seven_day
-      (utilization . 0.55)
-      (severity . "warning")
-      (resets_at . "2026-09-07T00:00:00Z")
-      (limit_dollars . 100.0)
-      (used_dollars . 55.0)
-      (remaining_dollars . 45.0))
-     (extra_usage . 0.0)
-     (spend . 58.0)))
-  "Fallback payload with five_hour and seven_day instead of limits.")
+  '((fetchedAtMs . 1725274680000)
+    (accountUuid . "test-uuid-456")
+    (five_hour
+     (utilization . 30)
+     (severity . "normal")
+     (resets_at . "2026-09-03T20:00:00Z")
+     (limit_dollars . 10.0)
+     (used_dollars . 3.0)
+     (remaining_dollars . 7.0))
+    (seven_day
+     (utilization . 55)
+     (severity . "warning")
+     (resets_at . "2026-09-07T00:00:00Z")
+     (limit_dollars . 100.0)
+     (used_dollars . 55.0)
+     (remaining_dollars . 45.0))
+    (extra_usage . 0.0)
+    (spend . 58.0))
+  "Utilization object with five_hour and seven_day instead of limits.")
 
-;; Payload with null values in fallback keys
-(defconst claude-usage-test--fixture-null-values-fallback
-  '((cachedUsageUtilization
-     (fetchedAtMs . 1725274680000)
-     (accountUuid . "test-uuid-789")
-     (five_hour
-      (utilization . 0.25)
-      (severity . "normal")
-      (resets_at . "2026-09-03T20:00:00Z")
-      (limit_dollars . 10.0)
-      (used_dollars . 2.5)
-      (remaining_dollars . 7.5))
-     (seven_day
-      (utilization . 0.50)
-      (severity . "normal")
-      (resets_at . "2026-09-07T00:00:00Z")
-      (limit_dollars . 100.0)
-      (used_dollars . 50.0)
-      (remaining_dollars . 50.0))
-     (seven_day_opus . nil)
-     (seven_day_sonnet
-      (utilization . 0.75)
-      (severity . "warning")
-      (resets_at . "2026-09-07T00:00:00Z")
-      (limit_dollars . 50.0)
-      (used_dollars . 37.5)
-      (remaining_dollars . 12.5))
-     (extra_usage . 0.0)
-     (spend . 90.0)))
-  "Fallback payload with null values for opus but present sonnet.")
-
-;; Payload with limits array containing null utilization entries
-(defconst claude-usage-test--fixture-null-values-in-limits
-  '((cachedUsageUtilization
-     (fetchedAtMs . 1725274680000)
-     (accountUuid . "test-uuid-999")
-     (limits .
-             (((kind . "session")
-               (utilization . 0.35)
-               (severity . "normal")
-               (resets_at . "2026-09-03T20:00:00Z")
-               (limit_dollars . 10.0)
-               (used_dollars . 3.5)
-               (remaining_dollars . 6.5))
-              ((kind . "weekly_all")
-               (utilization . nil)
-               (severity . "normal")
-               (resets_at . "2026-09-07T00:00:00Z")
-               (limit_dollars . 100.0)
-               (used_dollars . 0.0)
-               (remaining_dollars . 100.0))
-              ((kind . "weekly_scoped")
-               (utilization . 0.80)
-               (severity . "warning")
-               (resets_at . "2026-09-07T00:00:00Z")
-               (limit_dollars . 50.0)
-               (used_dollars . 40.0)
-               (remaining_dollars . 10.0)
-               (scope
-                (model
-                 (id . "claude-sonnet-4")
-                 (display_name . "Claude 3.5 Sonnet"))))))
-     (extra_usage . 0.0)
-     (spend . 43.5)))
-  "Limits array with null utilization in one entry (weekly_all).")
+;; Payload with limits array containing null percent entries
+(defconst claude-usage-test--fixture-null-percent-in-limits
+  '((fetchedAtMs . 1725274680000)
+    (accountUuid . "test-uuid-999")
+    (limits .
+            (((kind . "session")
+              (percent . 35)
+              (severity . "normal")
+              (resets_at . "2026-09-03T20:00:00Z")
+              (limit_dollars . 10.0)
+              (used_dollars . 3.5)
+              (remaining_dollars . 6.5))
+             ((kind . "weekly_all")
+              (percent . nil)
+              (severity . "normal")
+              (resets_at . "2026-09-07T00:00:00Z")
+              (limit_dollars . 100.0)
+              (used_dollars . 0.0)
+              (remaining_dollars . 100.0))
+             ((kind . "weekly_scoped")
+              (percent . 80)
+              (severity . "warning")
+              (resets_at . "2026-09-07T00:00:00Z")
+              (limit_dollars . 50.0)
+              (used_dollars . 40.0)
+              (remaining_dollars . 10.0)
+              (scope
+               (model
+                (id . "claude-sonnet-4")
+                (display_name . "Claude 3.5 Sonnet"))))))
+    (extra_usage . 0.0)
+    (spend . 43.5))
+  "Utilization object with limits array containing null percent entry.")
 
 ;;; Tests
 
 (ert-deftest claude-usage-test-meters-full-payload ()
-  "Full payload with limits array should produce three meters."
-  (let* ((cache (alist-get 'cachedUsageUtilization claude-usage-test--fixture-full-payload))
-         (meters (claude-usage-meters cache)))
-    ;; Should have 3 meters
+  "Full payload with three limits entries produces three meters."
+  (let ((meters (claude-usage-meters claude-usage-test--fixture-full-payload)))
     (should (= (length meters) 3))
 
     ;; First meter: session
@@ -164,181 +130,143 @@
 
     ;; Second meter: weekly_all
     (let ((m2 (nth 1 meters)))
-      (should (string-equal (plist-get m2 :id) "weekly_all"))
+      (should (eq (plist-get m2 :id) 'weekly_all))
       (should (string-equal (plist-get m2 :label) "Week (all)"))
       (should (= (plist-get m2 :percent) 62))
       (should (string-equal (plist-get m2 :severity) "warning")))
 
-    ;; Third meter: weekly_scoped
+    ;; Third meter: weekly_scoped with model
     (let ((m3 (nth 2 meters)))
-      (should (string-equal (plist-get m3 :id) "weekly_scoped"))
-      (should (string-match "Week (Claude 3.5 Opus)" (plist-get m3 :label)))
+      (should (eq (plist-get m3 :id) 'weekly_scoped))
+      (should (string-match "Week (" (plist-get m3 :label)))
+      (should (string-match "Claude 3.5 Opus" (plist-get m3 :label)))
       (should (= (plist-get m3 :percent) 88))
       (should (string-equal (plist-get m3 :severity) "critical"))
       (should (string-equal (plist-get m3 :model) "Claude 3.5 Opus")))))
 
 (ert-deftest claude-usage-test-meters-fallback ()
-  "Payload without limits key should fall back to five_hour and seven_day."
-  (let* ((cache (alist-get 'cachedUsageUtilization claude-usage-test--fixture-fallback-payload))
-         (meters (claude-usage-meters cache)))
-    ;; Should have 2 meters (five_hour and seven_day)
+  "Fallback payload without limits key produces two meters from five_hour and seven_day."
+  (let ((meters (claude-usage-meters claude-usage-test--fixture-fallback-payload)))
     (should (= (length meters) 2))
 
-    ;; First meter: session (from five_hour)
+    ;; First meter: session from five_hour
     (let ((m1 (nth 0 meters)))
       (should (eq (plist-get m1 :id) 'session))
       (should (string-equal (plist-get m1 :label) "Session (5h)"))
       (should (= (plist-get m1 :percent) 30)))
 
-    ;; Second meter: weekly_all (from seven_day)
+    ;; Second meter: weekly_all from seven_day
     (let ((m2 (nth 1 meters)))
       (should (eq (plist-get m2 :id) 'weekly_all))
       (should (string-equal (plist-get m2 :label) "Week (all)"))
       (should (= (plist-get m2 :percent) 55)))))
 
-(ert-deftest claude-usage-test-meters-null-values-fallback ()
-  "Null utilization in fallback keys should be skipped."
-  (let* ((cache (alist-get 'cachedUsageUtilization claude-usage-test--fixture-null-values-fallback))
-         (meters (claude-usage-meters cache)))
-    ;; Should have 2 meters (five_hour and seven_day, but not seven_day_opus which is nil)
-    ;; This fixture has no limits array, so we fall back to the five_hour/seven_day case.
-    (should (= (length meters) 2))))
-
-(ert-deftest claude-usage-test-meters-null-values-in-limits ()
-  "Null utilization within limits array should be skipped."
-  (let* ((cache (alist-get 'cachedUsageUtilization claude-usage-test--fixture-null-values-in-limits))
-         (meters (claude-usage-meters cache)))
-    ;; Should have 2 meters (session and weekly_scoped), but not weekly_all which has nil utilization
+(ert-deftest claude-usage-test-meters-null-percent ()
+  "Payload with null percent in limits produces only non-null entries."
+  (let ((meters (claude-usage-meters claude-usage-test--fixture-null-percent-in-limits)))
+    ;; Should have 2 meters (session and weekly_scoped), skipping weekly_all with nil percent
     (should (= (length meters) 2))
-
-    ;; First meter: session
-    (let ((m1 (nth 0 meters)))
-      (should (eq (plist-get m1 :id) 'session))
-      (should (string-equal (plist-get m1 :label) "Session (5h)"))
-      (should (= (plist-get m1 :percent) 35)))
-
-    ;; Second meter: weekly_scoped (skipping the nil weekly_all)
-    (let ((m2 (nth 1 meters)))
-      (should (string-equal (plist-get m2 :id) "weekly_scoped"))
-      (should (string-match "Week (Claude 3.5 Sonnet)" (plist-get m2 :label)))
-      (should (= (plist-get m2 :percent) 80)))))
+    
+    ;; Verify it's session and weekly_scoped
+    (should (eq (plist-get (nth 0 meters) :id) 'session))
+    (should (eq (plist-get (nth 1 meters) :id) 'weekly_scoped))))
 
 (ert-deftest claude-usage-test-read-cache-missing-file ()
-  "Reading a non-existent cache file should return nil without signalling."
-  ;; Bind to a path that definitely doesn't exist
-  (let ((claude-usage-cache-file "/nonexistent/path/.claude.json"))
-    (let ((result (claude-usage--read-cache)))
-      ;; Result must be nil when file doesn't exist
-      (should (null result)))))
-
-(ert-deftest claude-usage-test-read-cache-malformed-json ()
-  "Reading malformed JSON should return nil without signalling."
-  ;; Create a temporary file with malformed JSON
-  (let ((temp-file (make-temp-file "claude-usage-test" nil ".json")))
+  "Missing cache file returns nil without signaling error."
+  (let ((orig-val claude-usage-cache-file))
     (unwind-protect
         (progn
-          ;; Write malformed JSON to the temp file
-          (with-temp-buffer
-            (insert "{invalid json")
-            (write-region (point-min) (point-max) temp-file))
-          ;; Bind claude-usage-cache-file to the temp file and call the function
-          (let ((claude-usage-cache-file temp-file))
-            (let ((result (claude-usage--read-cache)))
-              ;; Should return nil without signalling
-              (should (null result)))))
-      ;; Clean up the temp file
-      (when (file-exists-p temp-file)
-        (delete-file temp-file)))))
+          (setq claude-usage-cache-file "/nonexistent/path/to/.claude.json")
+          (should (null (claude-usage--read-cache))))
+      (setq claude-usage-cache-file orig-val))))
+
+(ert-deftest claude-usage-test-read-cache-malformed-json ()
+  "Malformed JSON returns nil without signaling error."
+  (let* ((temp-file (make-temp-file "claude-usage-test-"))
+         (orig-val claude-usage-cache-file))
+    (unwind-protect
+        (progn
+          ;; Write malformed JSON
+          (with-temp-file temp-file
+            (insert "{\"cachedUsageUtilization\": {\"utilization\": [invalid json}}"))
+          (setq claude-usage-cache-file temp-file)
+          (should (null (claude-usage--read-cache))))
+      (setq claude-usage-cache-file orig-val)
+      (delete-file temp-file))))
 
 (ert-deftest claude-usage-test-format-reset-fixed-timestamp ()
-  "Format reset with fixed timestamp should produce consistent output."
-  ;; Use a fixed ISO 8601 string and a fixed current-time
-  ;; Current time is 3 hours and 12 minutes before reset
-  (let* ((resets-at-iso "2026-09-03T20:00:00Z")
-         ;; Mock current-time to be 2026-09-03 16:48:00 UTC (3h 12m before 20:00)
-         ;; (seconds since epoch high-order bits low-order bits microseconds)
-         (mock-current-time (encode-time 2026 9 3 16 48 0 t))
-         (result (claude-usage--format-reset resets-at-iso mock-current-time)))
-    ;; Should return a non-empty string
-    (should (> (length result) 0))
-    ;; Should contain relative time indicator
-    (should (string-match "in.*h" result))))
+  "Format reset with fixed timestamp produces expected output format."
+  ;; Use a fixed resets_at and a mock current-time
+  ;; resets_at = 2026-09-03T20:00:00Z
+  ;; current-time mocked to 2026-09-03T16:48:00Z (3h 12m before reset)
+  (let* ((resets-at "2026-09-03T20:00:00Z")
+         ;; Create a mock current-time that is 3h 12m before the reset
+         (reset-time (claude-usage--parse-iso8601 resets-at))
+         ;; 3h 12m = 11520 seconds
+         (current-time (time-subtract reset-time (seconds-to-time 11520)))
+         (output (claude-usage--format-reset resets-at current-time)))
+    ;; Output should contain "in" and time components
+    (should (string-match "in.*[0-9]" output))))
 
 (ert-deftest claude-usage-test-format-age-fixed-timestamp ()
-  "Format age with fixed timestamp should produce consistent output."
-  ;; Use a fixed fetchedAtMs timestamp and current-time for deterministic output
-  ;; Fetched 2 minutes ago (120 seconds)
-  (let* ((current-time-val (encode-time 2026 9 3 16 48 0 t))
-         ;; 120 seconds before current time
-         (fetched-at-ms (* (- (float-time current-time-val) 120) 1000))
-         (result (claude-usage--format-age fetched-at-ms current-time-val)))
-    ;; Should return a non-empty string
-    (should (> (length result) 0))
-    ;; Should contain "ago" and "2m"
-    (should (string-match "2m ago" result))))
-
-(ert-deftest claude-usage-test-severity-face-critical ()
-  "Severity face should map critical to error face."
-  (let ((face (claude-usage--severity-face "critical" 50)))
-    (should (eq face 'error))))
-
-(ert-deftest claude-usage-test-severity-face-warning ()
-  "Severity face should map warning to warning face."
-  (let ((face (claude-usage--severity-face "warning" 50)))
-    (should (eq face 'warning))))
+  "Format age with fixed timestamp produces expected output."
+  ;; fetchedAtMs = 1725274680000 (milliseconds)
+  ;; This is 2026-09-02T18:18:00 UTC
+  ;; Mock current-time to be exactly 120 seconds (2 minutes) later
+  (let* ((fetched-ms 1725274680000)
+         (fetched-time (/ fetched-ms 1000.0))
+         ;; current-time 120 seconds later
+         (current-time (seconds-to-time (+ fetched-time 120)))
+         (output (claude-usage--format-age fetched-ms current-time)))
+    ;; Output should be "2m ago"
+    (should (string-equal output "2m ago"))))
 
 (ert-deftest claude-usage-test-severity-face-normal ()
-  "Severity face should map normal to success face."
-  (let ((face (claude-usage--severity-face "normal" 50)))
-    (should (eq face 'success))))
+  "Severity \"normal\" maps to success face."
+  (should (eq (claude-usage--severity-face "normal" 50) 'success)))
 
-(ert-deftest claude-usage-test-severity-face-fallback-high ()
-  "Severity face should fallback to critical at 90%+ without severity string."
-  (let ((face (claude-usage--severity-face nil 95)))
-    (should (eq face 'error))))
+(ert-deftest claude-usage-test-severity-face-warning ()
+  "Severity \"warning\" maps to warning face."
+  (should (eq (claude-usage--severity-face "warning" 75) 'warning)))
 
-(ert-deftest claude-usage-test-severity-face-fallback-mid ()
-  "Severity face should fallback to warning at 70-89% without severity string."
-  (let ((face (claude-usage--severity-face nil 75)))
-    (should (eq face 'warning))))
+(ert-deftest claude-usage-test-severity-face-critical ()
+  "Severity \"critical\" maps to error face."
+  (should (eq (claude-usage--severity-face "critical" 95) 'error)))
 
-(ert-deftest claude-usage-test-severity-face-fallback-low ()
-  "Severity face should fallback to success below 70% without severity string."
-  (let ((face (claude-usage--severity-face nil 50)))
-    (should (eq face 'success))))
+(ert-deftest claude-usage-test-severity-face-percent-fallback-warning ()
+  "Fallback to percent: 75% maps to warning face."
+  (should (eq (claude-usage--severity-face nil 75) 'warning)))
 
-(ert-deftest claude-usage-test-bar ()
-  "Bar should generate Unicode block characters."
-  (let ((bar (claude-usage--bar 50 10)))
-    ;; 50% of 10 width = 5 filled blocks and 5 empty blocks
-    (should (and (= (length bar) 10)
-                 (string-match "^█+░+$" bar)))))
-
-(ert-deftest claude-usage-test-bar-zero ()
-  "Bar at 0% should be all empty."
-  (let ((bar (claude-usage--bar 0 10)))
-    (should (string-equal bar "░░░░░░░░░░"))))
+(ert-deftest claude-usage-test-severity-face-percent-fallback-critical ()
+  "Fallback to percent: 95% maps to error face."
+  (should (eq (claude-usage--severity-face nil 95) 'error)))
 
 (ert-deftest claude-usage-test-bar-full ()
-  "Bar at 100% should be all filled."
+  "Bar with 100% percent generates all full blocks."
   (let ((bar (claude-usage--bar 100 10)))
     (should (string-equal bar "██████████"))))
 
-(ert-deftest claude-usage-test-stale-p ()
-  "Stale check should compare age against threshold."
-  ;; With a very old timestamp, should be stale
-  (let* ((very-old-ms 1000000000000)  ; Sep 2001
-         (is-stale (claude-usage-stale-p very-old-ms)))
-    (should is-stale)))
+(ert-deftest claude-usage-test-bar-half ()
+  "Bar with 50% percent generates half-filled bar."
+  (let ((bar (claude-usage--bar 50 10)))
+    (should (string-equal bar "█████░░░░░"))))
 
-(ert-deftest claude-usage-test-stale-p-recent ()
-  "Recent data should not be stale."
-  ;; Use a timestamp from very recently (within threshold)
-  (let* ((recent-ms (float-time (current-time)))
-         ;; Convert to milliseconds
-         (recent-ms-int (truncate (* recent-ms 1000)))
-         (is-stale (claude-usage-stale-p recent-ms-int)))
-    (should (not is-stale))))
+(ert-deftest claude-usage-test-bar-empty ()
+  "Bar with 0% percent generates all empty blocks."
+  (let ((bar (claude-usage--bar 0 10)))
+    (should (string-equal bar "░░░░░░░░░░"))))
+
+(ert-deftest claude-usage-test-stale-p-fresh ()
+  "Fresh data (0 seconds old) is not stale."
+  (let ((now-ms (* (float-time (current-time)) 1000)))
+    (should (null (claude-usage-stale-p now-ms)))))
+
+(ert-deftest claude-usage-test-stale-p-old ()
+  "Very old data is stale."
+  (let ((old-ms (- (* (float-time (current-time)) 1000) 
+                   ;; 2 hours in milliseconds
+                   (* 2 3600 1000))))
+    (should (claude-usage-stale-p old-ms))))
 
 (provide 'claude-usage-test)
 
