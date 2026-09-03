@@ -1018,7 +1018,7 @@ buffer's local map so evil actually collects its auxiliary keymap."
                     'evil-window-left))))))
 
 ;; ============================================================================
-;; Persistence: tab-bar hooks, dead-pane sweep, lowest-free-slot allocation
+;; Persistence: tab-bar hooks, dead-pane sweep
 ;; (this phase)
 ;; ============================================================================
 

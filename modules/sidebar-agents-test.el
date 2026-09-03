@@ -385,11 +385,11 @@ assertions passing untouched."
           (should (equal '("tmux" "select-window" "-t" "s1:w1") (nth 0 calls)))
           (should (equal '("tmux" "select-pane" "-t" "%7") (nth 1 calls))))))
 
-    (ert-deftest edmacs-sidebar-agents-test-visit-source-extra-claude-term-selects-side-window ()
+    (ert-deftest edmacs-sidebar-agents-test-visit-source-extra-claude-term-pops-to-its-window ()
       (let ((agent (edmacs-sidebar-agents-test--make-agent
                     :source 'claude-term :locator "fake-buffer"))
             (selected nil))
-        (cl-letf (((symbol-function 'claude-term--pop-to-side-window)
+        (cl-letf (((symbol-function 'claude-term--pop-to-window)
                    (lambda (buf) (setq selected buf))))
           (edmacs-sidebar-agents--visit-source-extra agent)
           (should (equal "fake-buffer" selected)))))

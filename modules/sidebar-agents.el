@@ -73,7 +73,7 @@
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar-hide "sidebar")
-(declare-function claude-term--pop-to-side-window "claude-term")
+(declare-function claude-term--pop-to-window "claude-term")
 (declare-function claude-term-registry-get "claude-term-registry")
 (declare-function claude-term-session-buffer "claude-term-registry")
 (declare-function claude-term-rename "claude-term-registry")
@@ -405,10 +405,12 @@ source-specific extra step in `edmacs-sidebar-agents--visit-source-extra'."
   "Run AGENT's source-specific jump side effect.
 A workmux row also switches the real tmux window/pane, via two
 `start-process' calls -- async, never `call-process'/`shell-command',
-so this never blocks the command loop. An in-Emacs row (phase 9,
-source `claude-term'/`claude-repl') instead selects its own side
-window; guarded by `fboundp' since phase 9 has not landed yet and the
-function may not exist."
+so this never blocks the command loop. An in-Emacs row (source
+`claude-term'/`claude-repl') instead displays and selects its own pane
+via `claude-term--pop-to-window' -- an ordinary window, not a side
+window, since claude-term stopped allocating right-hand side slots.
+Called unguarded on purpose: the `fboundp' guard this replaced turned a
+renamed-away function into a silent no-op rather than an error."
   (pcase (edmacs-agent-source agent)
     ('workmux
      (let* ((locator (edmacs-agent-locator agent))
@@ -422,8 +424,7 @@ function may not exist."
          (start-process "edmacs-sidebar-agents-tmux-pane" nil
                          "tmux" "select-pane" "-t" pane-id))))
     ((or 'claude-term 'claude-repl)
-     (when (fboundp 'claude-term--pop-to-side-window)
-       (claude-term--pop-to-side-window (edmacs-agent-locator agent))))))
+     (claude-term--pop-to-window (edmacs-agent-locator agent)))))
 
 ;;;###autoload
 (defun edmacs-sidebar-agents-visit ()

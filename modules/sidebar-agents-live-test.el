@@ -239,7 +239,7 @@ shows the row no longer bold."
             (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))
             (ignore-errors (delete-directory (car shim) t))))))
 
-    (ert-deftest edmacs-sidebar-agents-live-test-visit-claude-term-source-selects-side-window ()
+    (ert-deftest edmacs-sidebar-agents-live-test-visit-claude-term-source-pops-to-its-window ()
       "An in-Emacs (phase 9) agent row selects its side window instead of
 touching tmux at all."
       (edmacs-sidebar-agents-live-test--with-clean-state
@@ -247,7 +247,7 @@ touching tmux at all."
                        :root "/repo/wt/" :source 'claude-term :locator "the-buffer"))
                (selected nil))
           (puthash (edmacs-agent-key agent) agent edmacs-agents--table)
-          (cl-letf (((symbol-function 'claude-term--pop-to-side-window)
+          (cl-letf (((symbol-function 'claude-term--pop-to-window)
                      (lambda (buf) (setq selected buf))))
             (edmacs-sidebar-agents--visit-source-extra agent)
             (should (equal "the-buffer" selected))))))
