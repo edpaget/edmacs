@@ -307,6 +307,34 @@ preflight/skip."
         (when (timerp edmacs-agents--sweep-timer)
           (cancel-timer edmacs-agents--sweep-timer))))))
 
+(ert-deftest edmacs-agents-test-sweep-timer-fires-ac4-literal-values ()
+  "Same mechanism as `edmacs-agents-test-sweep-timer-fires', but with the
+AC's own literal values -- `edmacs-agents-stale-seconds' bound to 5 and
+`edmacs-agents-sweep-seconds' to 2 -- rather than the faster values used
+there for everyday suite speed, so the acceptance criterion's exact
+numbers are themselves exercised by an automated test."
+  (edmacs-agents-test--with-clean-state
+    (let* ((edmacs-agents-stale-seconds 5)
+           (edmacs-agents-sweep-seconds 2)
+           (edmacs-agents--sweep-timer nil)
+           (root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
+           (key (edmacs-agents--key root "%1")))
+      (puthash key (make-edmacs-agent :key key :root root :instance "%1"
+                                       :status 'waiting
+                                       :status-ts (- (float-time) 3600)
+                                       :updated-ts (- (float-time) 3600)
+                                       :title "t" :source 'workmux :locator nil)
+               edmacs-agents--table)
+      (unwind-protect
+          (progn
+            (edmacs-agents--ensure-sweep-timer)
+            (should (edmacs-agents-test--wait-until
+                     (lambda () (not (gethash key edmacs-agents--table)))
+                     9.0))
+            (should-not (gethash key edmacs-agents--table)))
+        (when (timerp edmacs-agents--sweep-timer)
+          (cancel-timer edmacs-agents--sweep-timer))))))
+
 ;; ============================================================================
 ;; edmacs-agents-set-status
 ;; ============================================================================
@@ -378,6 +406,53 @@ again, which IS a fresh transition and DOES re-set `unread'."
                                    :title "t" :source 'workmux :locator nil)))
       (should-not (edmacs-agent-unread (gethash key edmacs-agents--table))))))
 
+(ert-deftest edmacs-agents-test-mark-read-survives-heartbeat-reapply ()
+  "A workmux row marked read stays `idle'/unread=nil across the next
+heartbeat-only file-notify re-apply of the same on-disk `done' file --
+regression test for the bug where `edmacs-agents-mark-read' left
+STATUS-TS untouched, so a same-`status_ts' re-apply (workmux's
+`updated_ts' heartbeat advances every few seconds even though
+`status_ts' does not) passed the ordering guard and silently reverted
+the row back to `done' with UNREAD re-set."
+  (edmacs-agents-test--with-clean-state
+    (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
+           (key (edmacs-agents--key root "%1"))
+           ;; Anchor around the real clock, since `edmacs-agents-mark-read'
+           ;; stamps STATUS-TS with a real `(float-time)' call -- these
+           ;; values must stay ordered relative to that, not to each other
+           ;; in isolation.
+           (base (float-time)))
+      ;; The pane finishes: status_ts=BASE.
+      (should (edmacs-agents--apply-workmux-row
+               (make-edmacs-agent :key key :root root :instance "%1"
+                                   :status 'done :status-ts base :updated-ts base
+                                   :title "t" :source 'workmux :locator nil)))
+      (should (edmacs-agent-unread (gethash key edmacs-agents--table)))
+      ;; The user visits it from Emacs.
+      (edmacs-agents-mark-read key)
+      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'idle))
+      (should-not (edmacs-agent-unread (gethash key edmacs-agents--table)))
+      ;; workmux's heartbeat re-writes the same file a few seconds later:
+      ;; status is still `done' on disk, status_ts is UNCHANGED (BASE),
+      ;; only updated_ts (BASE+60) advanced. This must not resurrect
+      ;; `done' or UNREAD.
+      (should-not (edmacs-agents--apply-workmux-row
+                   (make-edmacs-agent :key key :root root :instance "%1"
+                                       :status 'done :status-ts base
+                                       :updated-ts (+ base 60)
+                                       :title "t" :source 'workmux :locator nil)))
+      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'idle))
+      (should-not (edmacs-agent-unread (gethash key edmacs-agents--table)))
+      ;; A genuine fresh `done' later (a strictly newer status_ts, well
+      ;; past mark-read's own stamp) is still honored.
+      (should (edmacs-agents--apply-workmux-row
+               (make-edmacs-agent :key key :root root :instance "%1"
+                                   :status 'done :status-ts (+ base 500)
+                                   :updated-ts (+ base 500)
+                                   :title "t" :source 'workmux :locator nil)))
+      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'done))
+      (should (edmacs-agent-unread (gethash key edmacs-agents--table))))))
+
 ;; ============================================================================
 ;; Mode-line roll-up
 ;; ============================================================================
@@ -402,6 +477,49 @@ empty once the table has none of those."
       (should (equal (edmacs-agents--mode-line-string-compute) "[2⟳ 1✓ 1💬]")))
     (clrhash edmacs-agents--table)
     (should (equal (edmacs-agents--mode-line-string-compute) ""))))
+
+;; ============================================================================
+;; Tabulated-list view
+;; ============================================================================
+
+(ert-deftest edmacs-agents-test-list-entries ()
+  "`edmacs-agents--list-entries' returns one `tabulated-list-entries' row
+per table row, keyed by the row's own key, with the unread `done' flag
+rendered as a trailing `*' and a read `idle' row rendered without one."
+  (edmacs-agents-test--with-clean-state
+    (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
+           (done-key (edmacs-agents--key root "%1"))
+           (idle-key (edmacs-agents--key root "%2")))
+      (puthash done-key (make-edmacs-agent
+                          :key done-key :root root :instance "%1"
+                          :status 'done :status-ts 1 :updated-ts 1
+                          :title "Fixing the thing" :source 'workmux
+                          :locator nil :unread t)
+               edmacs-agents--table)
+      (puthash idle-key (make-edmacs-agent
+                          :key idle-key :root root :instance "%2"
+                          :status 'idle :status-ts 1 :updated-ts 1
+                          :title "Already read" :source 'workmux
+                          :locator nil :unread nil)
+               edmacs-agents--table)
+      (let ((entries (edmacs-agents--list-entries)))
+        (should (= (length entries) 2))
+        (should (assoc done-key entries))
+        (should (assoc idle-key entries))
+        (let ((done-cols (cadr (assoc done-key entries)))
+              (idle-cols (cadr (assoc idle-key entries))))
+          (should (equal (aref done-cols 0) "%1"))
+          (should (equal (aref done-cols 1) root))
+          (should (equal (aref done-cols 2) "%1"))
+          (should (equal (aref done-cols 3) "done*"))
+          (should (equal (aref done-cols 4) "Fixing the thing"))
+          (should (equal (aref idle-cols 3) "idle"))
+          (should (equal (aref idle-cols 4) "Already read")))))))
+
+(ert-deftest edmacs-agents-test-list-entries-empty ()
+  "An empty table produces an empty entries list, not an error."
+  (edmacs-agents-test--with-clean-state
+    (should (equal (edmacs-agents--list-entries) nil))))
 
 (provide 'agents-test)
 ;;; agents-test.el ends here

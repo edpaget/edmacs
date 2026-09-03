@@ -73,12 +73,15 @@ watch plumbing."
       (when desc (ignore-errors (file-notify-rm-watch desc)))
       (delete-directory dir t))))
 
-(defun edmacs-agents-live-test--write (path workdir status ts)
-  "Write a real workmux-shaped JSON file at PATH."
+(defun edmacs-agents-live-test--write (path workdir status ts &optional pane-id)
+  "Write a real workmux-shaped JSON file at PATH.
+PANE-ID defaults to \"%1\"; pass the real one when the test's row must
+key off an actual tmux pane."
   (let ((coding-system-for-write 'utf-8-unix))
     (with-temp-file path
       (insert (json-serialize
-               `((pane_key . ((backend . "tmux") (instance . "/tmp/x") (pane_id . "%1")))
+               `((pane_key . ((backend . "tmux") (instance . "/tmp/x")
+                               (pane_id . ,(or pane-id "%1"))))
                  (workdir . ,workdir)
                  (status . ,status)
                  (status_ts . ,ts)
@@ -132,6 +135,98 @@ watch `edmacs-agents--ensure-workmux-watch' arms."
                      (lambda () (not (gethash key edmacs-agents--table))) 5.0)))
         (when edmacs-agents--workmux-watch
           (ignore-errors (file-notify-rm-watch edmacs-agents--workmux-watch)))
+        (ignore-errors (delete-directory dir t))
+        (ignore-errors (delete-directory workdir t))))))
+
+;; ============================================================================
+;; AC4's literal scenario: kill a REAL tmux pane, watch the sweep reap it
+;; ============================================================================
+;;
+;; Everything above fabricates its `pane_id' -- this test's only addition
+;; is that the id, and the kill, are real: a dedicated, uniquely-named
+;; tmux session this test creates and tears down itself (never touching
+;; any pane that predates it), so it is safe to run against a tmux
+;; server that also hosts the user's own real sessions. Nothing in this
+;; test talks to the real `workmux' binary or its real state directory
+;; (`edmacs-agents-workmux-dir' is let-bound to a throwaway temp dir, as
+;; above) -- it stands in for workmux's own heartbeat writer by writing
+;; one JSON file itself, then -- exactly as a killed pane leaves it, per
+;; this file's Commentary -- simply stops updating it.
+
+(defun edmacs-agents-live-test--tmux-available-p ()
+  "Return non-nil iff a `tmux' binary is on `exec-path'."
+  (executable-find "tmux"))
+
+(if (not (and (edmacs-agents-live-test--file-notify-delivers-p)
+              (edmacs-agents-live-test--tmux-available-p)))
+
+    (ert-deftest edmacs-agents-live-test-real-tmux-kill-unavailable ()
+      (ert-skip "either the real file-notify backend does not deliver here \
+\(see edmacs-agents-live-test-file-notify-unavailable\) or no `tmux' binary \
+is available; run against a real `emacs --daemon' with tmux installed to \
+exercise this suite"))
+
+  (ert-deftest edmacs-agents-live-test-real-tmux-kill-reaped-by-sweep ()
+    "Killing a REAL tmux pane -- literally AC4's scenario -- removes its
+row on the next sweep, at AC4's own literal
+`edmacs-agents-stale-seconds'/`edmacs-agents-sweep-seconds' values (5
+and 2), with no scan and no explicit `edmacs-agents--sweep' call from
+this test: the row is created by the real `file-notify' watch, and
+reaped by the real repeating sweep timer, exactly as production wires
+the two together in `edmacs-agents-init'."
+    (let* ((edmacs-agents--table (make-hash-table :test #'equal))
+           (edmacs-agents--workmux-path->key (make-hash-table :test #'equal))
+           (edmacs-agents-changed-hook nil)
+           (edmacs-agents--workmux-watch nil)
+           (edmacs-agents--sweep-timer nil)
+           (edmacs-agents-stale-seconds 5)
+           (edmacs-agents-sweep-seconds 2)
+           (dir (make-temp-file "edmacs-agents-live-test-" t))
+           (edmacs-agents-workmux-dir dir)
+           (workdir (make-temp-file "edmacs-agents-live-test-workdir-" t))
+           (root (file-truename workdir))
+           (session (format "edmacs-agents-livetest-%d" (emacs-pid)))
+           (path (expand-file-name "pane.json" dir))
+           pane-id)
+      (unwind-protect
+          (progn
+            (should (= 0 (call-process "tmux" nil nil nil
+                                        "new-session" "-d" "-s" session)))
+            (setq pane-id
+                  (string-trim
+                   (with-output-to-string
+                     (call-process "tmux" nil standard-output nil
+                                    "list-panes" "-t" session "-F" "#{pane_id}"))))
+            (should (string-prefix-p "%" pane-id))
+            (let ((key (edmacs-agents--key root pane-id)))
+              ;; Arm the watch BEFORE the file exists, exactly as
+              ;; `edmacs-agents-init' does at real startup -- a file
+              ;; that already existed when the watch was armed produces
+              ;; no `created' event to react to.
+              (edmacs-agents--ensure-workmux-watch)
+              ;; The pane is alive: a fresh heartbeat under it survives.
+              (edmacs-agents-live-test--write path workdir "working"
+                                               (float-time) pane-id)
+              (should (edmacs-agents-live-test--wait-until
+                       (lambda () (gethash key edmacs-agents--table)) 5.0))
+              (should (eq (edmacs-agent-status (gethash key edmacs-agents--table))
+                          'working))
+              ;; Kill the real pane. Nothing updates the JSON file's
+              ;; heartbeat from here on, exactly as a real dead workmux
+              ;; pane's file goes stale in place (this file's Commentary).
+              (call-process "tmux" nil nil nil "kill-session" "-t" session)
+              (setq session nil)
+              (edmacs-agents--ensure-sweep-timer)
+              (should (edmacs-agents-live-test--wait-until
+                       (lambda () (not (gethash key edmacs-agents--table)))
+                       9.0))
+              (should-not (gethash key edmacs-agents--table))))
+        (when session (ignore-errors (call-process "tmux" nil nil nil
+                                                     "kill-session" "-t" session)))
+        (when edmacs-agents--workmux-watch
+          (ignore-errors (file-notify-rm-watch edmacs-agents--workmux-watch)))
+        (when (timerp edmacs-agents--sweep-timer)
+          (ignore-errors (cancel-timer edmacs-agents--sweep-timer)))
         (ignore-errors (delete-directory dir t))
         (ignore-errors (delete-directory workdir t))))))
 

@@ -195,10 +195,24 @@ shared definition of that rule."
   "Clear KEY's unread flag and move it to `idle'.
 The generic \"visited\" entry point for any source; phase 6 calls this
 when the user jumps to a row from the sidebar. A no-op if KEY names no
-row (already gone, e.g. reaped by a race with the sweep)."
+row (already gone, e.g. reaped by a race with the sweep).
+
+Also bumps STATUS-TS to now. Without this, a workmux row marked read
+locally stays `done' on disk with its OLD `status_ts' (workmux only
+advances `status_ts' on a genuine status change, not on its frequent
+`updated_ts' heartbeat) -- the very next heartbeat-only file-notify
+event for that file would then carry an equal-or-older `status_ts',
+which `edmacs-agents--apply-workmux-row's ordering guard treats as
+\"fresh enough to apply\" (only a STRICTLY older `status_ts' is
+rejected), clobbering the local `idle' back to `done' and, because
+`edmacs-agents--compute-unread' sees a non-`done' -> `done' transition,
+re-setting UNREAD right back. Stamping STATUS-TS to now makes that
+next on-disk re-apply strictly older, so the ordering guard rejects it
+instead of reverting the just-cleared read."
   (when-let* ((row (gethash key edmacs-agents--table)))
     (setf (edmacs-agent-unread row) nil
-          (edmacs-agent-status row) 'idle)
+          (edmacs-agent-status row) 'idle
+          (edmacs-agent-status-ts row) (float-time))
     (edmacs-agents--upsert row)))
 
 ;; ============================================================================
