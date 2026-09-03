@@ -201,6 +201,28 @@ allocator's own freed-slot reuse would otherwise reopen."
         (dolist (b (list bufa bufb))
           (when (buffer-live-p b) (kill-buffer b)))))))
 
+(ert-deftest claude-term-test-redisplay-does-not-duplicate-window-on-stale-cross-frame-slot ()
+  "`claude-term--slot' is a plain buffer-local, not frame-scoped, so
+displaying a buffer on a second frame can overwrite its cache to a slot
+number that happens to be free back on this frame.  Simulate exactly
+that overwrite -- buffer's real window stays live at slot 0, its cache
+is forced to 1 (free on this frame) -- and confirm redisplaying the
+buffer reuses its existing window instead of trusting the stale-but-free
+cache and opening a second one."
+  (claude-term-test--with-fresh-slots
+    (let ((window-sides-slots '(nil nil 3 nil))
+          (buf (generate-new-buffer "claude-term-test-cross-frame-stale")))
+      (unwind-protect
+          (let ((win1 (claude-term--display-buffer buf)))
+            (should (equal (window-parameter win1 'window-slot) 0))
+            (with-current-buffer buf
+              (setq claude-term--slot 1))
+            (let ((win2 (claude-term--display-buffer buf)))
+              (should (eq win2 win1))
+              (should (window-live-p win1))
+              (should (= (length (get-buffer-window-list buf nil (selected-frame))) 1))))
+        (kill-buffer buf)))))
+
 (ert-deftest claude-term-test-display-buffer-three-agents-stacked ()
   (claude-term-test--with-fresh-slots
     (let ((window-sides-slots '(nil nil 3 nil))

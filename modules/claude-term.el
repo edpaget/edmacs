@@ -662,17 +662,26 @@ reachable by a single windmove direction key via
 `edmacs-windmove-reachable' (see the section comment above).
 Returns nil exactly when `display-buffer-in-side-window' does -- e.g.
 when `window-sides-slots' forbids side-window creation on this edge --
-never signals in that case."
-  (display-buffer
-   buffer
-   `((display-buffer-in-side-window)
-     (side . right)
-     (slot . ,(claude-term--allocate-slot buffer))
-     (window-width . ,edmacs-stack-width)
-     (preserve-size . (t . nil))
-     (window-parameters . ((no-delete-other-windows . t)
-                            (no-other-window . t)
-                            (edmacs-windmove-reachable . t))))))
+never signals in that case.
+Checks for a live window of BUFFER on the selected frame before
+allocating anything: `claude-term--slot' is a plain buffer-local, not
+frame-scoped, so displaying BUFFER on a second frame can overwrite its
+cached slot to a number that happens to be free back on this frame.
+Trusting that stale-but-free number here would draw a second window
+for a buffer that already has one on this frame; reusing the existing
+window instead keeps one buffer to one window per frame regardless of
+what the cache says."
+  (or (get-buffer-window buffer (selected-frame))
+      (display-buffer
+       buffer
+       `((display-buffer-in-side-window)
+         (side . right)
+         (slot . ,(claude-term--allocate-slot buffer))
+         (window-width . ,edmacs-stack-width)
+         (preserve-size . (t . nil))
+         (window-parameters . ((no-delete-other-windows . t)
+                                (no-other-window . t)
+                                (edmacs-windmove-reachable . t)))))))
 
 (defun claude-term--pop-to-side-window (buffer)
   "Display BUFFER in a side window via `claude-term--display-buffer' and select it.
