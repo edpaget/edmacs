@@ -182,26 +182,27 @@ nil otherwise."
     (error nil)))
 
 (defun claude-usage-meters (cached-util)
-  "Transform parsed cachedUsageUtilization into an ordered list of meter plists.
+  "Transform cachedUsageUtilization into meter plists.
 
 CACHED-UTIL is the full `cachedUsageUtilization' object from
-`claude-usage--read-cache', containing fetchedAtMs, accountUuid, and utilization.
+`claude-usage--read-cache', with fetchedAtMs, accountUuid, and
+utilization fields.
 
 Returns a list of plists, one per limit entry.
 Each plist contains: :id KIND :label LABEL :percent PERCENT
 :severity SEVERITY :resets-at ISO8601 :model MODEL
 
-Meters are extracted from the `limits' array if present, or falls back
-to the legacy `five_hour' and `seven_day' entries.
+If `limits' array is present, extracts meters from it; otherwise
+falls back to legacy `five_hour' and `seven_day' entries.
 
-Maps limit `kind' to human-readable label:
+Maps limit `kind' to a human-readable label:
   - \"session\" -> \"Session (5h)\"
   - \"weekly_all\" -> \"Week (all)\"
   - \"weekly_scoped\" -> \"Week (<model>)\"
 
 For limits[], reads `percent' (already 0-100) directly.
-For five_hour/seven_day fallback, reads `utilization' (already 0-100).
-Preserves `severity' string, and extracts model name from
+For fallback, reads `utilization' (already 0-100). Preserves
+`severity' string, and extracts model name from
 `scope.model.display_name' when present."
   (let* ((meters '())
          (utilization (alist-get 'utilization cached-util))
