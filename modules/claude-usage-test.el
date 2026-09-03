@@ -29,6 +29,21 @@
 ;; buffer/mode, batch-rendered fixture text (full/stale/missing-field/
 ;; absent-cache), and g/q keybinding resolution through the real evil
 ;; keymaps.
+;;
+;; Also cover the live-fetch source added on top of the cache: keychain
+;; token extraction against fixture JSON strings (never the real
+;; keychain); non-leakage of a sentinel token across every fetch-failure
+;; path (buffer text, *Messages*, and any caught error payload); the
+;; captured-response HTTP parse path feeding `claude-usage-meters'
+;; unchanged; source precedence (`claude-usage--apply-refresh-result')
+;; across fetch-success, fallback-to-cache, and neither-available; the
+;; header's source+age label for both the live and cache cases; that
+;; `claude-usage--ensure-buffer' never touches `call-process',
+;; `accept-process-output', or `sit-for' before its synchronous render
+;; completes; and single-flight/idle-timer de-duplication across a
+;; double module load. None of this suite ever spawns a real `security'
+;; process or makes a real network request -- `claude-usage--access-token'
+;; and `url-retrieve' are always stubbed at the function-entry level.
 
 ;;; Code:
 
@@ -569,6 +584,388 @@ real key lookup in motion state -- see the identical rationale on
                                  (or (eq face 'shadow)
                                      (and (listp face) (memq 'shadow face)))))
                              (number-sequence 0 (1- (length fresh)))))))
+
+    ;; ==========================================================================
+    ;; AC1 -- keychain token extraction, fixture-driven only
+    ;; ==========================================================================
+
+    (defconst claude-usage-test--fixture-token-valid
+      "{\"claudeAiOauth\":{\"accessToken\":\"tok-123\",\"refreshToken\":\"rt-456\"}}"
+      "A well-shaped credentials blob, as the CLI itself writes it.")
+
+    (defconst claude-usage-test--fixture-token-missing-access-token
+      "{\"claudeAiOauth\":{\"refreshToken\":\"rt-456\"}}"
+      "claudeAiOauth present, but its accessToken key is absent.")
+
+    (defconst claude-usage-test--fixture-token-missing-oauth-key
+      "{\"someOtherKey\":\"value\"}"
+      "Valid JSON object, but the claudeAiOauth key itself is absent.")
+
+    (defconst claude-usage-test--fixture-token-empty-string
+      ""
+      "Empty keychain blob -- as if the entry exists but holds nothing.")
+
+    (defconst claude-usage-test--fixture-token-non-json
+      "not json at all {{{"
+      "Plain garbage, not parseable as JSON.")
+
+    (defconst claude-usage-test--fixture-token-json-array
+      "[\"claudeAiOauth\", \"accessToken\"]"
+      "Syntactically valid JSON, but an array rather than an object.")
+
+    (defconst claude-usage-test--fixture-token-json-null
+      "null"
+      "Syntactically valid JSON `null' as the whole document.")
+
+    (ert-deftest claude-usage-test-extract-access-token-valid ()
+      "A well-shaped blob yields its accessToken string."
+      (should (string-equal
+               (claude-usage--extract-access-token claude-usage-test--fixture-token-valid)
+               "tok-123")))
+
+    (ert-deftest claude-usage-test-extract-access-token-rejects-malformed-input ()
+      "Every malformed/wrong-shaped/absent fixture yields nil, never a signal,
+and never grows *Messages* -- none of this ever touches the real keychain."
+      (let ((messages-before (claude-usage-test--messages-string)))
+        (dolist (fixture (list claude-usage-test--fixture-token-missing-access-token
+                               claude-usage-test--fixture-token-missing-oauth-key
+                               claude-usage-test--fixture-token-empty-string
+                               claude-usage-test--fixture-token-non-json
+                               claude-usage-test--fixture-token-json-array
+                               claude-usage-test--fixture-token-json-null
+                               nil))
+          (should (null (claude-usage--extract-access-token fixture))))
+        (should (string-equal messages-before (claude-usage-test--messages-string)))))
+
+    ;; ==========================================================================
+    ;; Shared helpers for the live-fetch tests below
+    ;; ==========================================================================
+
+    (defun claude-usage-test--messages-string ()
+      "Return the current contents of the real `*Messages*' buffer."
+      (with-current-buffer (messages-buffer) (buffer-string)))
+
+    (defconst claude-usage-test--sentinel-token "SENTINEL-DO-NOT-LEAK-89f2"
+      "Never a real token -- stands in for one to prove a fetch-failure path
+never renders the token it used into a buffer, a message, or an error.")
+
+    (defun claude-usage-test--stub-url-retrieve-once (setup-fn status)
+      "Return a function usable as `url-retrieve', invoking its CALLBACK
+synchronously with STATUS once `current-buffer' -- a fresh temp buffer
+that SETUP-FN populates first -- mirrors the response buffer the real
+`url-retrieve' hands its callback."
+      (lambda (_url callback &optional _cbargs &rest _more)
+        (let ((buf (generate-new-buffer " *claude-usage-test-fake-response*")))
+          (with-current-buffer buf
+            (funcall setup-fn)
+            (funcall callback status)))))
+
+    (defmacro claude-usage-test--assert-no-leak (sentinel &rest body)
+      "Run BODY, then assert SENTINEL appears in none of: any caught error's
+`error-message-string', the `*claude-usage*' buffer text (if live), or
+`*Messages*'. An unexpected signal is still re-raised, after the leak
+check, so this never silently hides a real bug."
+      (declare (indent 1))
+      `(let (claude-usage-test--caught-error)
+         (condition-case err
+             (progn ,@body)
+           (error (setq claude-usage-test--caught-error err)))
+         (when claude-usage-test--caught-error
+           (should-not (string-match-p
+                        (regexp-quote ,sentinel)
+                        (error-message-string claude-usage-test--caught-error))))
+         (let ((buf (get-buffer "*claude-usage*")))
+           (when (buffer-live-p buf)
+             (should-not (string-match-p (regexp-quote ,sentinel)
+                                          (with-current-buffer buf (buffer-string))))))
+         (should-not (string-match-p (regexp-quote ,sentinel)
+                                      (claude-usage-test--messages-string)))
+         (when claude-usage-test--caught-error
+           (signal (car claude-usage-test--caught-error)
+                   (cdr claude-usage-test--caught-error)))))
+
+    ;; ==========================================================================
+    ;; AC2 -- the token never leaks, across every fetch-failure path
+    ;; ==========================================================================
+
+    (ert-deftest claude-usage-test-no-leak-network-error ()
+      "A `url-retrieve' status carrying :error never renders the sentinel."
+      (let ((claude-usage--refresh-in-flight nil)
+            (claude-usage--state-envelope nil)
+            (claude-usage--state-source nil))
+        (cl-letf (((symbol-function 'claude-usage--access-token)
+                   (lambda () claude-usage-test--sentinel-token))
+                  ((symbol-function 'url-retrieve)
+                   (claude-usage-test--stub-url-retrieve-once
+                    (lambda () nil)
+                    (list :error '(error (http error)))))
+                  ((symbol-function 'claude-usage--read-cache) (lambda () nil)))
+          (claude-usage-test--assert-no-leak claude-usage-test--sentinel-token
+            (claude-usage--refresh)))))
+
+    (ert-deftest claude-usage-test-no-leak-unparseable-body ()
+      "An HTTP 200 with an unparseable body never renders the sentinel."
+      (let ((claude-usage--refresh-in-flight nil)
+            (claude-usage--state-envelope nil)
+            (claude-usage--state-source nil))
+        (cl-letf (((symbol-function 'claude-usage--access-token)
+                   (lambda () claude-usage-test--sentinel-token))
+                  ((symbol-function 'url-retrieve)
+                   (claude-usage-test--stub-url-retrieve-once
+                    (lambda ()
+                      (insert "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nnot json at all"))
+                    nil))
+                  ((symbol-function 'claude-usage--read-cache) (lambda () nil)))
+          (claude-usage-test--assert-no-leak claude-usage-test--sentinel-token
+            (claude-usage--refresh)))))
+
+    (ert-deftest claude-usage-test-no-leak-non-200-status ()
+      "An HTTP 401 response never renders the sentinel."
+      (let ((claude-usage--refresh-in-flight nil)
+            (claude-usage--state-envelope nil)
+            (claude-usage--state-source nil))
+        (cl-letf (((symbol-function 'claude-usage--access-token)
+                   (lambda () claude-usage-test--sentinel-token))
+                  ((symbol-function 'url-retrieve)
+                   (claude-usage-test--stub-url-retrieve-once
+                    (lambda ()
+                      (insert "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n{\"error\":\"invalid_token\"}"))
+                    nil))
+                  ((symbol-function 'claude-usage--read-cache) (lambda () nil)))
+          (claude-usage-test--assert-no-leak claude-usage-test--sentinel-token
+            (claude-usage--refresh)))))
+
+    ;; ==========================================================================
+    ;; AC3 -- the captured-response parse path feeds `claude-usage-meters'
+    ;; unchanged
+    ;; ==========================================================================
+
+    ;; Captured shape: the phase that added this fetch verified (2026-09-03,
+    ;; against the real endpoint) that a live response is the bare
+    ;; utilization object -- the same normalized `limits[]' array
+    ;; `claude-usage--read-cache' already reads out of the on-disk cache.
+    ;; This fixture's bytes are reconstructed to match that verified shape
+    ;; (three `limits[]' entries, one carrying `scope.model.display_name')
+    ;; rather than pasted from a live capture: this dispatch has neither
+    ;; keychain nor network access. Capture-date lineage: 2026-09-03.
+    (defconst claude-usage-test--fixture-real-response
+      (concat
+       "HTTP/1.1 200 OK\r\n"
+       "Content-Type: application/json\r\n"
+       "\r\n"
+       "{\"limits\":["
+       "{\"kind\":\"session\",\"percent\":45,\"severity\":\"normal\","
+       "\"resets_at\":\"2026-09-03T20:00:00Z\",\"limit_dollars\":10.0,"
+       "\"used_dollars\":4.5,\"remaining_dollars\":5.5},"
+       "{\"kind\":\"weekly_all\",\"percent\":62,\"severity\":\"warning\","
+       "\"resets_at\":\"2026-09-07T00:00:00Z\",\"limit_dollars\":100.0,"
+       "\"used_dollars\":62.0,\"remaining_dollars\":38.0},"
+       "{\"kind\":\"weekly_scoped\",\"percent\":88,\"severity\":\"critical\","
+       "\"resets_at\":\"2026-09-07T00:00:00Z\",\"limit_dollars\":50.0,"
+       "\"used_dollars\":44.0,\"remaining_dollars\":6.0,"
+       "\"scope\":{\"model\":{\"id\":\"claude-opus-4-1\","
+       "\"display_name\":\"Claude 3.5 Opus\"}}}"
+       "],\"extra_usage\":0.0,\"spend\":110.5}")
+      "A captured-shape HTTP response from GET /api/oauth/usage. See the
+comment above for capture-date lineage and reconstruction rationale.")
+
+    (ert-deftest claude-usage-test-parse-fetch-buffer-feeds-meters-unchanged ()
+      "`claude-usage--parse-fetch-buffer's own parse path, run against the
+captured-shape fixture and wrapped in the synthesized envelope, produces
+exactly what `claude-usage-meters' and `claude-usage--redraw' already
+expect from the on-disk cache -- unchanged."
+      (let* ((body (with-temp-buffer
+                     (insert claude-usage-test--fixture-real-response)
+                     (claude-usage--parse-fetch-buffer (current-buffer))))
+             ;; `claude-usage-stale-p' always reads the real clock (it has
+             ;; no injectable `now'), so this must be genuinely recent --
+             ;; see `claude-usage-test--fresh-and-stale-fixtures' for the
+             ;; identical rationale.
+             (fetched-ms (round (* 1000 (float-time (current-time)))))
+             (now-time (seconds-to-time (/ fetched-ms 1000.0)))
+             (envelope (list (cons 'fetchedAtMs fetched-ms)
+                              (cons 'accountUuid nil)
+                              (cons 'utilization body)))
+             (meters (claude-usage-meters envelope)))
+        (should (= (length meters) 3))
+        (should (eq (plist-get (nth 0 meters) :id) 'session))
+        (should (= (plist-get (nth 0 meters) :percent) 45))
+        (should (eq (plist-get (nth 1 meters) :id) 'weekly_all))
+        (should (= (plist-get (nth 1 meters) :percent) 62))
+        (should (eq (plist-get (nth 2 meters) :id) 'weekly_scoped))
+        (should (string-equal (plist-get (nth 2 meters) :model) "Claude 3.5 Opus"))
+        (let ((text (claude-usage--render-to-string envelope now-time 'live)))
+          (should (string-match-p "Session (5h)" text))
+          (should (string-match-p "45%" text))
+          (should (string-match-p "Claude 3.5 Opus" text))
+          (should (string-match-p (regexp-quote "Claude Usage (live, now)") text)))))
+
+    ;; ==========================================================================
+    ;; AC4 -- source precedence
+    ;; ==========================================================================
+
+    (ert-deftest claude-usage-test-apply-refresh-result-fetch-wins ()
+      "A successful fetch wins outright -- the cache is never even consulted."
+      (let ((claude-usage--state-envelope nil)
+            (claude-usage--state-source nil))
+        (cl-letf (((symbol-function 'claude-usage--read-cache)
+                   (lambda () (error "cache must not be consulted when fetch succeeds"))))
+          (let ((result (claude-usage--apply-refresh-result
+                         claude-usage-test--fixture-full-payload)))
+            (should (eq (cdr result) 'live))
+            (should (equal (car result) claude-usage-test--fixture-full-payload))
+            (should (eq claude-usage--state-source 'live))
+            (should (equal claude-usage--state-envelope
+                           claude-usage-test--fixture-full-payload))))))
+
+    (ert-deftest claude-usage-test-apply-refresh-result-falls-back-to-cache ()
+      "A nil fetch result (standing in for every failure mode -- no token,
+network error, non-200, unparseable body all collapse to nil before
+reaching this function) falls back to the cache."
+      (let ((claude-usage--state-envelope nil)
+            (claude-usage--state-source nil))
+        (cl-letf (((symbol-function 'claude-usage--read-cache)
+                   (lambda () claude-usage-test--fixture-fallback-payload)))
+          (let ((result (claude-usage--apply-refresh-result nil)))
+            (should (eq (cdr result) 'cache))
+            (should (equal (car result) claude-usage-test--fixture-fallback-payload))
+            (should (eq claude-usage--state-source 'cache))))))
+
+    (ert-deftest claude-usage-test-apply-refresh-result-neither-available ()
+      "With neither a fetch nor a cache, state resolves to nil/nil and the
+buffer falls through to the existing \"No usage data\" render branch."
+      (let ((claude-usage--state-envelope 'stale-marker)
+            (claude-usage--state-source 'stale-marker))
+        (cl-letf (((symbol-function 'claude-usage--read-cache) (lambda () nil)))
+          (let ((result (claude-usage--apply-refresh-result nil)))
+            (should (null (car result)))
+            (should (null (cdr result)))
+            (should (null claude-usage--state-envelope))
+            (should (null claude-usage--state-source))))
+        (should (string-equal (claude-usage--render-to-string nil) "No usage data\n"))))
+
+    ;; ==========================================================================
+    ;; AC5 -- header states source and age
+    ;; ==========================================================================
+
+    (ert-deftest claude-usage-test-render-header-shows-live-source ()
+      "A fresh, live-sourced envelope's header reads \"Claude Usage (live, now)\"."
+      ;; `claude-usage-stale-p' always reads the real clock, so `fetched-ms'
+      ;; must be genuinely recent -- see
+      ;; `claude-usage-test--fresh-and-stale-fixtures' for the identical
+      ;; rationale.
+      (let* ((fetched-ms (round (* 1000 (float-time (current-time)))))
+             (now-time (seconds-to-time (/ fetched-ms 1000.0)))
+             (envelope `((fetchedAtMs . ,fetched-ms) (utilization (limits . nil))))
+             (text (claude-usage--render-to-string envelope now-time 'live)))
+        (should (string-match-p (regexp-quote "Claude Usage (live, now)") text))))
+
+    (ert-deftest claude-usage-test-render-header-shows-cache-source-when-stale ()
+      "A stale, cache-sourced envelope's header names the source and carries
+the existing STALE+age marker -- so a fallback can never look live."
+      (let* ((fetched-ms (round (- (* 1000 (float-time (current-time))) (* 7200 1000))))
+             (now-time (seconds-to-time (+ (/ fetched-ms 1000.0) 7200))) ; 2h later
+             (envelope `((fetchedAtMs . ,fetched-ms) (utilization (limits . nil))))
+             (text (claude-usage--render-to-string envelope now-time 'cache)))
+        (should (string-match-p "cache" text))
+        (should (string-match-p (regexp-quote claude-usage--stale-marker) text))
+        (should (string-match-p "2h ago" text))))
+
+    ;; ==========================================================================
+    ;; AC6 -- opening the buffer never blocks
+    ;; ==========================================================================
+
+    (defvar claude-usage-test--blocking-calls nil
+      "Invocations of `call-process'/`accept-process-output'/`sit-for'
+recorded by `claude-usage-test--with-blocking-guard' during a test.")
+
+    (defmacro claude-usage-test--with-blocking-guard (&rest body)
+      "Run BODY with `call-process', `accept-process-output', and `sit-for'
+each recording their invocation into `claude-usage-test--blocking-calls'
+before delegating to the real function -- records and continues, so any
+legitimate use elsewhere in BODY (there should be none) is undisturbed
+rather than made to signal."
+      (declare (indent 0))
+      `(cl-letf* ((claude-usage-test--orig-call-process (symbol-function 'call-process))
+                  (claude-usage-test--orig-accept-process-output
+                   (symbol-function 'accept-process-output))
+                  (claude-usage-test--orig-sit-for (symbol-function 'sit-for))
+                  ((symbol-function 'call-process)
+                   (lambda (&rest args)
+                     (push (cons 'call-process args) claude-usage-test--blocking-calls)
+                     (apply claude-usage-test--orig-call-process args)))
+                  ((symbol-function 'accept-process-output)
+                   (lambda (&rest args)
+                     (push (cons 'accept-process-output args) claude-usage-test--blocking-calls)
+                     (apply claude-usage-test--orig-accept-process-output args)))
+                  ((symbol-function 'sit-for)
+                   (lambda (&rest args)
+                     (push (cons 'sit-for args) claude-usage-test--blocking-calls)
+                     (apply claude-usage-test--orig-sit-for args))))
+         ,@body))
+
+    (ert-deftest claude-usage-test-ensure-buffer-never-blocks-with-cache ()
+      "With a populated cache, `claude-usage--ensure-buffer' shows the Limits
+section immediately and trips no blocking-call guard before returning."
+      (setq claude-usage-test--blocking-calls nil)
+      (cl-letf (((symbol-function 'claude-usage--read-cache)
+                 (lambda () claude-usage-test--fixture-full-payload)))
+        (let ((claude-usage--state-envelope nil)
+              (claude-usage--state-source nil))
+          (claude-usage-test--with-blocking-guard
+            (unwind-protect
+                (let ((buf (claude-usage--ensure-buffer)))
+                  (with-current-buffer buf
+                    (should (string-match-p "Limits" (buffer-string))))
+                  (should (null claude-usage-test--blocking-calls)))
+              (let ((buf (get-buffer "*claude-usage*")))
+                (when (buffer-live-p buf) (kill-buffer buf))))))))
+
+    (ert-deftest claude-usage-test-ensure-buffer-never-blocks-with-empty-cache ()
+      "With no cache at all, `claude-usage--ensure-buffer' shows the
+\"No usage data\" line immediately and still trips no blocking-call guard."
+      (setq claude-usage-test--blocking-calls nil)
+      (cl-letf (((symbol-function 'claude-usage--read-cache) (lambda () nil)))
+        (let ((claude-usage--state-envelope nil)
+              (claude-usage--state-source nil))
+          (claude-usage-test--with-blocking-guard
+            (unwind-protect
+                (let ((buf (claude-usage--ensure-buffer)))
+                  (with-current-buffer buf
+                    (should (string-match-p "No usage data" (buffer-string))))
+                  (should (null claude-usage-test--blocking-calls)))
+              (let ((buf (get-buffer "*claude-usage*")))
+                (when (buffer-live-p buf) (kill-buffer buf))))))))
+
+    ;; ==========================================================================
+    ;; AC7 -- single-flight refresh and idle-timer de-duplication
+    ;; ==========================================================================
+
+    (ert-deftest claude-usage-test-refresh-single-flight ()
+      "Three back-to-back refreshes, with the fetch never completing (as if
+still in flight), invoke the fetch exactly once."
+      (let ((claude-usage--refresh-in-flight nil)
+            (call-count 0))
+        (cl-letf (((symbol-function 'claude-usage--fetch)
+                   (lambda (_callback) (setq call-count (1+ call-count)))))
+          (claude-usage--refresh)
+          (claude-usage--refresh)
+          (claude-usage--refresh)
+          (should (= call-count 1)))))
+
+    (ert-deftest claude-usage-test-idle-timer-dedup-after-double-load ()
+      "Reloading claude-usage.el twice more still leaves exactly one live
+periodic idle timer driving `claude-usage--refresh' -- one-shot open-buffer
+timers (no repeat delay) elsewhere in `timer-idle-list' don't count."
+      (let ((file (expand-file-name "modules/claude-usage.el" default-directory)))
+        (load file nil t)
+        (load file nil t)
+        (let ((matches (cl-remove-if-not
+                        (lambda (tm)
+                          (and (eq (timer--function tm) #'claude-usage--refresh)
+                               (timer--repeat-delay tm)))
+                        timer-idle-list)))
+          (should (= (length matches) 1)))))
 
     )) ; end of build-root-found branch
 

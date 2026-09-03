@@ -8,17 +8,37 @@
 
 ;;; Commentary:
 
-;; Pure Emacs Lisp normalization layer for parsing the Claude CLI's cached usage
-;; metrics from ~/.claude.json. Transforms the CLI's cachedUsageUtilization JSON
-;; into an ordered list of meter plists (:id :label :percent :severity :resets-at :model),
-;; along with helper functions for formatting and staleness checks.
+;; Pure Emacs Lisp normalization layer for parsing Claude CLI usage metrics.
+;; Transforms a `cachedUsageUtilization'-shaped envelope (fetchedAtMs,
+;; accountUuid, utilization) into an ordered list of meter plists
+;; (:id :label :percent :severity :resets-at :model), along with helper
+;; functions for formatting and staleness checks.
 ;;
-;; No network, subprocess, or UI concerns — this is the single testable surface
-;; for usage cache normalization.
+;; Two sources feed that envelope, resolved in one place
+;; (`claude-usage--apply-refresh-result') with a strict precedence:
+;;
+;; 1. `claude-usage--fetch' -- an async GET of the CLI's own
+;;    https://api.anthropic.com/api/oauth/usage endpoint, bearer-authed
+;;    from a token read out of the login keychain
+;;    (`claude-usage--access-token'). This is the primary source: the CLI
+;;    itself only trusts its on-disk cache for one hour.
+;; 2. `claude-usage--read-cache' -- ~/.claude.json's `cachedUsageUtilization',
+;;    used only when the live fetch fails (no token, network error, non-200,
+;;    unparseable body).
+;;
+;; The keychain read and the network call both happen only inside the
+;; deferred refresh path (`claude-usage--refresh', single-flight guarded,
+;; triggered from a 0-second idle timer after buffer open, from `g', and
+;; from a periodic idle timer) -- never from the synchronous buffer-open
+;; path, so opening `*claude-usage*' never blocks on an unlock prompt or
+;; the network. The access token itself never reaches a buffer, a message,
+;; or an error payload.
 
 ;;; Code:
 
 (require 'json)
+(require 'url)
+(require 'url-http)
 
 ;; `modules/git.el's `use-package magit :commands (...)' only activates
 ;; magit's autoloads file, which does not autoload `magit-section-mode',
@@ -54,6 +74,24 @@ Expanded via `expand-file-name`."
 (defcustom claude-usage-stale-threshold 3600
   "Seconds until cached usage data is considered stale.
 Default: 3600 (one hour)."
+  :type 'integer
+  :group 'claude-usage)
+
+(defcustom claude-usage-keychain-service "Claude Code-credentials"
+  "macOS login-keychain service name holding the Claude CLI's OAuth token.
+
+The CLI computes this name itself: it is exactly \"Claude Code-credentials\"
+only when neither CLAUDE_SECURESTORAGE_CONFIG_DIR nor CLAUDE_CONFIG_DIR is
+set in its environment; otherwise it appends \"-<first 8 hex chars of
+sha256(config dir)>\". Set this to match if either variable is set for
+your `claude' invocations -- a wrong service name is indistinguishable
+from \"no token\" and silently falls back to the on-disk cache."
+  :type 'string
+  :group 'claude-usage)
+
+(defcustom claude-usage-idle-refresh-delay 300
+  "Seconds of Emacs idle time between automatic usage refreshes.
+Default: 300 (five minutes), matching the CLI's own write throttle."
   :type 'integer
   :group 'claude-usage)
 
@@ -98,6 +136,52 @@ Never signals an error."
                                                :null-object nil)))
                 (alist-get 'cachedUsageUtilization parsed)))
           (error nil))))))
+
+;; ============================================================================
+;; Keychain token
+;; ============================================================================
+
+(defun claude-usage--extract-access-token (raw)
+  "Parse RAW, a keychain password blob, and return its access token.
+
+RAW is expected to be the JSON credentials blob the CLI itself writes:
+`{\"claudeAiOauth\": {\"accessToken\": \"...\", ...}}'. Returns the token
+string, or nil for nil/empty/non-JSON/wrong-shaped input. Never signals."
+  (when (and (stringp raw) (not (string-empty-p (string-trim raw))))
+    (condition-case nil
+        (let* ((parsed (json-parse-string raw :object-type 'alist
+                                           :array-type 'list
+                                           :null-object nil))
+               (oauth (and (listp parsed) (alist-get 'claudeAiOauth parsed)))
+               (token (and (listp oauth) (alist-get 'accessToken oauth))))
+          (and (stringp token) token))
+      (error nil))))
+
+(defun claude-usage--read-keychain-secret (service)
+  "Return the raw stdout of the macOS keychain lookup for SERVICE, or nil.
+Runs `security find-generic-password -s SERVICE -w', discarding stderr.
+Never signals -- a missing `security' binary, a missing entry, or any
+other failure all resolve to nil."
+  (condition-case nil
+      (with-temp-buffer
+        (let ((exit-code (call-process "security" nil (list t nil) nil
+                                        "find-generic-password" "-s" service "-w")))
+          (and (eql exit-code 0) (buffer-string))))
+    (error nil)))
+
+(defun claude-usage--access-token ()
+  "Return the Claude CLI's OAuth access token from the login keychain.
+
+Reads the `claude-usage-keychain-service' entry via `security
+find-generic-password'. Returns nil on any failure and never signals.
+
+The returned token (like the raw keychain blob it is parsed from) must
+never reach a buffer, the echo area, `message', a log, or an error
+payload. Call this only from inside the deferred refresh path -- never
+from a display entry point -- a locked keychain can block on an
+unlock/ACL prompt."
+  (claude-usage--extract-access-token
+   (claude-usage--read-keychain-secret claude-usage-keychain-service)))
 
 (defun claude-usage--severity-face (severity percent)
   "Map usage severity string or percent threshold to a face name.
@@ -299,6 +383,151 @@ For fallback, reads `utilization' (already 0-100). Preserves
     (nreverse meters)))
 
 ;; ============================================================================
+;; Live fetch
+;; ============================================================================
+
+(defconst claude-usage--endpoint-url "https://api.anthropic.com/api/oauth/usage"
+  "The Claude CLI's own live usage-utilization endpoint.
+Returns the bare utilization object -- `claude-usage--read-cache's
+`cachedUsageUtilization' is that same object wrapped with fetchedAtMs
+and accountUuid, so `claude-usage--fetch' synthesizes an identical
+envelope around it.")
+
+(defun claude-usage--parse-fetch-buffer (buf)
+  "Parse BUF, a raw HTTP response, into a utilization alist or nil.
+
+BUF holds a full HTTP/1.x response: status line, headers, a blank line,
+then the JSON body -- exactly what `url-retrieve' hands its callback, and
+also the shape of a fixture built from a captured real response. Parses
+the body with `json-parse-buffer' using alist objects, list arrays, and a
+nil null-object -- load-bearing: any other option set makes a hash table
+and `claude-usage-meters' then signals `wrong-type-argument listp'.
+Returns that parsed body only when the status line reports 200; nil on
+any other status or parse failure. Never signals."
+  (condition-case nil
+      (with-current-buffer buf
+        (goto-char (point-min))
+        (when (looking-at "HTTP/[0-9.]+ \\([0-9]+\\)")
+          (let ((status (string-to-number (match-string 1))))
+            (when (and (= status 200)
+                       (re-search-forward "\r?\n\r?\n" nil t))
+              (json-parse-buffer :object-type 'alist
+                                  :array-type 'list
+                                  :null-object nil)))))
+    (error nil)))
+
+(defun claude-usage--fetch (callback)
+  "Asynchronously GET the live usage endpoint; call CALLBACK with the result.
+
+CALLBACK is invoked with a synthesized envelope alist (fetchedAtMs,
+accountUuid, utilization) on success, or nil on any failure: no token,
+a network error, a non-200 status, or an unparseable body. Never blocks
+the caller and never signals into it -- CALLBACK always runs, exactly
+once, with nil standing in for every failure mode."
+  (let ((token (claude-usage--access-token)))
+    (if (null token)
+        (funcall callback nil)
+      (let ((url-request-method "GET")
+            (url-request-extra-headers
+             (list (cons "Authorization" (concat "Bearer " token)))))
+        (condition-case nil
+            (url-retrieve
+             claude-usage--endpoint-url
+             (lambda (status)
+               (let ((buf (current-buffer))
+                     (fetch-time-ms (* 1000.0 (float-time (current-time)))))
+                 (unwind-protect
+                     (let ((body (unless (plist-get status :error)
+                                   (claude-usage--parse-fetch-buffer buf))))
+                       (funcall callback
+                                (and body
+                                     (list (cons 'fetchedAtMs fetch-time-ms)
+                                           (cons 'accountUuid nil)
+                                           (cons 'utilization body)))))
+                   (when (buffer-live-p buf) (kill-buffer buf)))))
+             nil t t)
+          (error (funcall callback nil)))))))
+
+;; ============================================================================
+;; Source precedence and refresh
+;; ============================================================================
+
+(defvar claude-usage--state-envelope nil
+  "The most recently resolved usage envelope, or nil.
+Set only by `claude-usage--apply-refresh-result'; every display surface
+reads this rather than re-resolving the fetch/cache precedence itself.")
+
+(defvar claude-usage--state-source nil
+  "The source of `claude-usage--state-envelope': `live', `cache', or nil.")
+
+(defvar claude-usage--refresh-in-flight nil
+  "Non-nil while a `claude-usage--refresh' fetch is outstanding.
+Guards against overlapping refreshes from the open-buffer timer, `g',
+and the periodic idle timer all firing close together.")
+
+(defvar claude-usage--idle-timer nil
+  "The periodic idle timer driving automatic refreshes, or nil.
+Recreated (cancel-then-recreate) by `claude-usage--setup-idle-timer' on
+every load of this file, so reloading never leaves a duplicate running.")
+
+(defun claude-usage--apply-refresh-result (fetch-envelope)
+  "Resolve source precedence from FETCH-ENVELOPE and update module state.
+
+FETCH-ENVELOPE is the result of a `claude-usage--fetch' callback: a
+synthesized envelope on success, nil on any failure. A non-nil
+FETCH-ENVELOPE always wins; on nil, `claude-usage--read-cache' is
+consulted; when both are nil, state resolves to nil/nil, and the
+existing \"No usage data\" render branch applies.
+
+Returns (ENVELOPE . SOURCE) after setting `claude-usage--state-envelope'
+and `claude-usage--state-source' to the same values."
+  (let* ((envelope (or fetch-envelope (claude-usage--read-cache)))
+         (source (cond (fetch-envelope 'live)
+                       (envelope 'cache)
+                       (t nil))))
+    (setq claude-usage--state-envelope envelope
+          claude-usage--state-source source)
+    (cons envelope source)))
+
+(defun claude-usage--sync-render ()
+  "Redraw the current buffer synchronously, touching neither keychain nor network.
+Reuses already-resolved state when present; otherwise reads the on-disk
+cache fresh. Called from the buffer-open path, which must never block."
+  (if claude-usage--state-envelope
+      (claude-usage--redraw claude-usage--state-envelope nil claude-usage--state-source)
+    (let ((cached (claude-usage--read-cache)))
+      (claude-usage--redraw cached nil (and cached 'cache)))))
+
+(defun claude-usage--refresh ()
+  "Refresh usage state via a single-flight guarded async fetch.
+No-ops immediately if a refresh is already in flight. On completion,
+resolves source precedence (`claude-usage--apply-refresh-result') and
+redraws the `*claude-usage*' buffer if it is still live."
+  (unless claude-usage--refresh-in-flight
+    (setq claude-usage--refresh-in-flight t)
+    (claude-usage--fetch
+     (lambda (fetch-envelope)
+       (unwind-protect
+           (progn
+             (claude-usage--apply-refresh-result fetch-envelope)
+             (let ((buf (get-buffer "*claude-usage*")))
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (claude-usage--sync-render)))))
+         (setq claude-usage--refresh-in-flight nil))))))
+
+(defun claude-usage--setup-idle-timer ()
+  "(Re)create the periodic idle-refresh timer.
+Cancels any existing `claude-usage--idle-timer' first, so reloading this
+file (e.g. during interactive development) never leaves a second timer
+running alongside the first."
+  (when (timerp claude-usage--idle-timer)
+    (cancel-timer claude-usage--idle-timer))
+  (setq claude-usage--idle-timer
+        (run-with-idle-timer claude-usage-idle-refresh-delay t
+                              #'claude-usage--refresh)))
+
+;; ============================================================================
 ;; Major mode
 ;; ============================================================================
 
@@ -363,22 +592,25 @@ percent, and (when `:resets-at' is missing) reset columns instead."
                        (propertize percent-str 'face face)
                        reset-str)))))
 
-(defun claude-usage--redraw (cached-util &optional now)
+(defun claude-usage--redraw (cached-util &optional now source)
   "Erase the current buffer and redraw it from CACHED-UTIL.
 
 CACHED-UTIL is a `cachedUsageUtilization' alist as returned by
-`claude-usage--read-cache', or nil when the cache is absent entirely.
-NOW, if given, is threaded through to `claude-usage--format-age' and
-`claude-usage--format-reset' for deterministic rendering in tests --
-`claude-usage-stale-p' has no such parameter and always reads the real
-clock.
+`claude-usage--read-cache' or synthesized by `claude-usage--fetch', or
+nil when neither is available. NOW, if given, is threaded through to
+`claude-usage--format-age' and `claude-usage--format-reset' for
+deterministic rendering in tests -- `claude-usage-stale-p' has no such
+parameter and always reads the real clock. SOURCE, if given, is `live'
+or `cache' and is shown in the header so a fallback to a stale cache can
+never be mistaken for a live reading.
 
-Inserts a header section (title plus cache age, or a plain \"No usage
-data\" line when CACHED-UTIL is nil) and, when CACHED-UTIL is non-nil, a
-Limits section with one row per `claude-usage-meters' entry. When the
-cache is stale, the age is prefixed with `claude-usage--stale-marker' and
-the whole Limits section is dimmed with the `shadow' face, so an aged
-number can never be mistaken for a live one."
+Inserts a header section (title plus source and cache age, or a plain
+\"No usage data\" line when CACHED-UTIL is nil) and, when CACHED-UTIL is
+non-nil, a Limits section with one row per `claude-usage-meters' entry.
+When the cache is stale, the age is prefixed with
+`claude-usage--stale-marker' and the whole Limits section is dimmed with
+the `shadow' face, so an aged number can never be mistaken for a live
+one."
   (let ((inhibit-read-only t)
         (fetched-at-ms (and cached-util (alist-get 'fetchedAtMs cached-util))))
     (erase-buffer)
@@ -388,7 +620,8 @@ number can never be mistaken for a live one."
           (if (null cached-util)
               (insert "No usage data\n")
             (magit-insert-heading
-              (format "Claude Usage (%s%s)"
+              (format "Claude Usage (%s%s%s)"
+                      (if source (format "%s, " (symbol-name source)) "")
                       (if stale claude-usage--stale-marker "")
                       (claude-usage--format-age fetched-at-ms now)))))
         (when cached-util
@@ -403,13 +636,13 @@ number can never be mistaken for a live one."
               (when stale
                 (add-face-text-property section-start (point) 'shadow)))))))))
 
-(defun claude-usage--render-to-string (cached-util &optional now)
+(defun claude-usage--render-to-string (cached-util &optional now source)
   "Render CACHED-UTIL as `claude-usage--redraw' would, returning a string.
-NOW is passed through unchanged. Runs in a temp buffer, so tests need
-neither a display nor the real `claude-usage-cache-file'."
+NOW and SOURCE are passed through unchanged. Runs in a temp buffer, so
+tests need neither a display nor the real `claude-usage-cache-file'."
   (with-temp-buffer
     (claude-usage-mode)
-    (claude-usage--redraw cached-util now)
+    (claude-usage--redraw cached-util now source)
     (buffer-string)))
 
 ;; ============================================================================
@@ -417,23 +650,35 @@ neither a display nor the real `claude-usage-cache-file'."
 ;; ============================================================================
 
 (defun claude-usage--ensure-buffer ()
-  "Return the `*claude-usage*' buffer, creating and (re)populating it."
+  "Return the `*claude-usage*' buffer, creating and (re)populating it.
+
+Renders synchronously from already-resolved state or the on-disk cache
+only -- never the keychain or network, so this never blocks -- then
+schedules a deferred refresh via a 0-second idle timer, which fires only
+once the current command finishes and Emacs goes idle."
   (let ((buf (get-buffer-create "*claude-usage*")))
     (with-current-buffer buf
       (unless (derived-mode-p 'claude-usage-mode)
         (claude-usage-mode))
-      (claude-usage--redraw (claude-usage--read-cache)))
+      (claude-usage--sync-render))
+    (run-with-idle-timer 0 nil #'claude-usage--refresh)
     buf))
 
 (defun claude-usage--revert (&rest _ignore)
-  "`revert-buffer-function' for `claude-usage-mode': re-read and redraw."
-  (claude-usage--redraw (claude-usage--read-cache)))
+  "`revert-buffer-function' for `claude-usage-mode': trigger a refresh.
+Redraws immediately from current state as a stopgap, then lets
+`claude-usage--refresh's own callback redraw again once its fetch (or
+fallback) resolves."
+  (claude-usage--sync-render)
+  (claude-usage--refresh))
 
 ;;;###autoload
 (defun claude-usage ()
   "Show the `*claude-usage*' buffer, creating or reverting it first."
   (interactive)
   (pop-to-buffer (claude-usage--ensure-buffer)))
+
+(claude-usage--setup-idle-timer)
 
 (provide 'claude-usage)
 
