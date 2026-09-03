@@ -139,11 +139,20 @@ restore bridge."
 (defun edmacs-sidebar--ensure-buffer (frame)
   "Return a live, freshly redrawn sidebar buffer for FRAME.
 Creates one, lazily, the first time FRAME needs it -- not eagerly for
-every frame at load time."
-  (let ((buf (edmacs-sidebar--buffer frame)))
-    (unless (buffer-live-p buf)
-      (setq buf (generate-new-buffer
-                 (format "*sidebar: %s*" (frame-parameter frame 'name))))
+every frame at load time. Renames an already-live buffer whose name has
+drifted from FRAME's current `name' parameter: on a daemon-boot
+frameset restore, `edmacs-sidebar--on-desktop-read' shows every frame's
+sidebar synchronously, before `edmacs-sessions--finish-frameset-restore'
+(deferred a tick later) has regenerated that frame's real title from its
+`edmacs-repo' -- so a restored frame's sidebar buffer was reproduced
+live coming back permanently mis-named after the daemon's generic
+default frame name (e.g. \"*sidebar: F1*\") instead of its repo."
+  (let* ((buf (edmacs-sidebar--buffer frame))
+         (expected (format "*sidebar: %s*" (frame-parameter frame 'name))))
+    (if (buffer-live-p buf)
+        (unless (equal (buffer-name buf) expected)
+          (with-current-buffer buf (rename-buffer expected t)))
+      (setq buf (generate-new-buffer expected))
       (set-frame-parameter frame 'edmacs-sidebar-buffer buf)
       (with-current-buffer buf
         (edmacs-sidebar-mode)))

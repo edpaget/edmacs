@@ -274,6 +274,37 @@ every restored frame but the one already selected."
           (should (string-match-p (regexp-quote dir) (nth 1 (car warnings))))
           (should (eq (nth 2 (car warnings)) :warning)))))
 
+    (ert-deftest edmacs-sessions-test-regenerate-title-uses-frames-own-buffer-not-ambient-current-buffer ()
+      "`with-selected-frame' alone does not change `current-buffer' --
+confirmed live against a real daemon restart: a restore timer's own
+ambient buffer stayed current while the frame being processed kept
+showing its own buffer in its own selected window. `edmacs-sessions--
+tab-name' reads `default-directory', a buffer-local variable that
+tracks *current buffer*, not the selected window -- so deriving it
+without first making FRAME's own window buffer current renamed every
+restored frame's tab from whatever buffer the timer happened to have
+current instead of that frame's own, corrupting tab names across a
+multi-frame restore (reproduced live before this fix)."
+      (let* ((frame (selected-frame))
+             (dir (file-name-as-directory (make-temp-file "edmacs-sessions-test-" t)))
+             (frame-buf (generate-new-buffer "edmacs-sessions-test-frame-buffer"))
+             (ambient-buf (generate-new-buffer "edmacs-sessions-test-ambient-buffer"))
+             (renamed-with nil))
+        (unwind-protect
+            (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
+              (set-frame-parameter frame 'edmacs-repo dir)
+              (set-window-buffer (frame-selected-window frame) frame-buf)
+              (with-current-buffer ambient-buf
+                (cl-letf (((symbol-function 'edmacs-sessions--tab-name)
+                           (lambda () (buffer-name (current-buffer))))
+                          ((symbol-function 'tab-bar-rename-tab)
+                           (lambda (name &rest _) (setq renamed-with name))))
+                  (edmacs-sessions--regenerate-frame-title frame))
+                (should (equal renamed-with "edmacs-sessions-test-frame-buffer"))))
+          (delete-directory dir t)
+          (kill-buffer frame-buf)
+          (kill-buffer ambient-buf))))
+
     ;; ==========================================================================
     ;; AC1 -- edmacs-sessions--ensure-worktree-tracking
     ;; ==========================================================================
@@ -338,12 +369,21 @@ colour `:never's, the `edmacs-repo' pin) accidentally widening to catch
     ;; AC1/AC2 -- edmacs-sessions--ensure-sidebar / --finish-frameset-restore
     ;; ==========================================================================
 
-    (ert-deftest edmacs-sessions-test-ensure-sidebar-skips-frame-with-window ()
+    (ert-deftest edmacs-sessions-test-ensure-sidebar-always-shows-even-with-window ()
+      "A stale sidebar buffer -- mis-named because `edmacs-sidebar--on-
+desktop-read' (sidebar.el) shows every frame's sidebar synchronously at
+desktop-read time, before this frame's title has been regenerated from
+its `edmacs-repo' -- is only ever fixed by `edmacs-sidebar-show' (via
+`edmacs-sidebar--ensure-buffer''s rename-if-stale check). Skipping the
+call whenever a window already exists (the old behavior) meant that fix
+never ran for an already-windowed frame; reproduced live via a real
+multi-frame daemon restart, where such a frame's sidebar buffer kept
+the wrong name forever."
       (let ((show-calls nil))
         (cl-letf (((symbol-function 'edmacs-sidebar--window) (lambda (_) 'a-window))
                   ((symbol-function 'edmacs-sidebar-show) (lambda (f) (push f show-calls))))
           (edmacs-sessions--ensure-sidebar (selected-frame))
-          (should-not show-calls))))
+          (should (equal show-calls (list (selected-frame)))))))
 
     (ert-deftest edmacs-sessions-test-ensure-sidebar-shows-frame-without-window ()
       (let ((show-calls nil))
@@ -353,6 +393,10 @@ colour `:never's, the `edmacs-repo' pin) accidentally widening to catch
           (should (equal show-calls (list (selected-frame)))))))
 
     (ert-deftest edmacs-sessions-test-finish-restore-shows-sidebar-for-every-live-frame ()
+      "Every live frame gets `edmacs-sidebar-show' called on it, regardless
+of whether `edmacs-sidebar--window' already finds one -- see
+`edmacs-sessions-test-ensure-sidebar-always-shows-even-with-window' for
+why skipping an already-windowed frame is wrong."
       (let* ((f1 (selected-frame))
              (f2 (edmacs-sessions-test--make-second-frame-or-skip))
              (show-calls nil))
@@ -366,7 +410,7 @@ colour `:never's, the `edmacs-repo' pin) accidentally widening to catch
                        (lambda (frame) (push frame show-calls))))
               (edmacs-sessions--finish-frameset-restore)
               (should (member f1 show-calls))
-              (should-not (member f2 show-calls)))
+              (should (member f2 show-calls)))
           (when (frame-live-p f2) (delete-frame f2)))))
 
     (ert-deftest edmacs-sessions-test-finish-restore-tracks-worktrees-for-every-repo-frame ()

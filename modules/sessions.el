@@ -226,14 +226,28 @@ for a tab on the repo's main worktree and would clobber any other
 worktree tab's disambiguating name -- so a tab named before this
 frame's `edmacs-repo' was backfilled (and thus still carrying a
 now-redundant prefix) gets relabeled consistently with every tab
-`frames.el' creates going forward."
+`frames.el' creates going forward.
+
+`with-selected-frame' alone does not make `edmacs-sessions--tab-name''s
+`project-current' read FRAME's own tab: `project-current' resolves via
+`default-directory', a buffer-local variable that tracks *current
+buffer*, and selecting a frame never changes that (confirmed live: a
+frame's selected window keeps showing its own buffer while
+`current-buffer' stays whatever the caller's -- here, a restore timer's
+-- own buffer happened to be). Multi-frame restore called this once per
+restored frame from the same timer callback, so every frame after the
+first got its current tab renamed from some OTHER frame's (or the
+timer's ambient) project instead of its own -- reproduced live via a
+real multi-frame daemon restart, fixed by explicitly making the
+frame's own selected window's buffer current too."
   (when-let* ((common (frame-parameter frame 'edmacs-repo)))
     (if (file-directory-p common)
         (progn
           (set-frame-parameter frame 'edmacs-repo-missing nil)
           (set-frame-parameter frame 'name (edmacs-git-common-dir-repo-name common))
           (with-selected-frame frame
-            (ignore-errors (tab-bar-rename-tab (edmacs-sessions--tab-name)))))
+            (with-current-buffer (window-buffer (selected-window))
+              (ignore-errors (tab-bar-rename-tab (edmacs-sessions--tab-name))))))
       (set-frame-parameter frame 'edmacs-repo-missing t)
       (set-frame-parameter
        frame 'name (format "MISSING: %s" (edmacs-git-common-dir-repo-name common)))
@@ -243,12 +257,23 @@ now-redundant prefix) gets relabeled consistently with every tab
        :warning))))
 
 (defun edmacs-sessions--ensure-sidebar (frame)
-  "Show FRAME's sidebar if it doesn't already have a visible one.
-Defense-in-depth alongside sidebar.el's own `after-make-frame-functions'
-hook: their relative ordering rests on same-tick `run-at-time 0'
-registration order, not a documented guarantee."
-  (unless (edmacs-sidebar--window frame)
-    (edmacs-sidebar-show frame)))
+  "Show or refresh FRAME's sidebar.
+Always calls through to `edmacs-sidebar-show': `display-buffer-in-side-
+window' reuses an existing matching side window rather than duplicating
+it, so this is cheap even when sidebar.el's own `after-make-frame-
+functions' hook already displayed one -- their relative ordering rests
+on same-tick `run-at-time 0' registration order, not a documented
+guarantee, so this is defense-in-depth either way.
+
+Must not skip the call just because `edmacs-sidebar--window' already
+finds one: `edmacs-sidebar--on-desktop-read' (sidebar.el) shows every
+frame's sidebar synchronously at desktop-read time, before this
+function's caller has regenerated FRAME's real title from its
+`edmacs-repo' -- reproduced live, that race first-names the sidebar
+buffer after the daemon's generic default frame name, and only
+`edmacs-sidebar-show' (via `edmacs-sidebar--ensure-buffer''s rename-if-
+stale check) ever revisits it to fix that."
+  (edmacs-sidebar-show frame))
 
 (defun edmacs-sessions--ensure-worktree-tracking (frame)
   "Warm FRAME's repo worktree cache and arm its file-notify watch.

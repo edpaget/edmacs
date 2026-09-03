@@ -770,6 +770,29 @@ model \"freshly restored, buffer excluded from the save\" rather than
                   (should (= 2 (length (split-string (buffer-string) "\n" t)))))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
+    (ert-deftest edmacs-sidebar-test-ensure-buffer-renames-stale-buffer-name ()
+      "A restored frame's sidebar buffer can be created before the frame's
+real title is regenerated -- exactly the daemon-boot frameset-restore
+race `edmacs-sessions--ensure-sidebar' (sessions.el) documents, and
+reproduced live via a real multi-frame daemon restart: the sidebar
+buffer's own name locked in as the frame's stale/generic name and never
+caught up once the frame was correctly retitled. `edmacs-sidebar--
+ensure-buffer' must rename an already-live buffer to match, not just
+leave a stale name on an otherwise-correct buffer."
+      (let ((frame (selected-frame))
+            (original-name (frame-parameter (selected-frame) 'name)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar--ensure-buffer frame)
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (rename-buffer "*sidebar: stale-name*" t))
+              (set-frame-parameter frame 'name "real-repo-name")
+              (edmacs-sidebar--ensure-buffer frame)
+              (should (equal (buffer-name (edmacs-sidebar--buffer frame))
+                              "*sidebar: real-repo-name*")))
+          (set-frame-parameter frame 'name original-name)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
     (ert-deftest edmacs-sidebar-test-regenerate-after-frame-shows-sidebar-once-deferred ()
       "Direct regression test for the daemon-restart path's own function
 \(`edmacs-sidebar--regenerate-after-frame', registered on
