@@ -26,12 +26,18 @@
 ;; straight source tree first -- it is deliberately NOT passed on the
 ;; invocation line above, the same treatment AC4 gives `modules/sidebar.el'.
 ;; See that section's own comments for the straight-bootstrap skip condition.
+;;
+;; The "Persistence" section's lowest-free-slot test, like the AC5 width
+;; test above, skips unless `modules/claude-term.el' is also passed on the
+;; command line -- see that test's own Commentary note for the exact
+;; invocation.
 
 ;;; Code:
 
 (require 'ert)
 (require 'subr-x)
 (require 'tab-bar)
+(require 'cl-lib)
 
 ;; ============================================================================
 ;; AC1 -- edmacs-window-promote swaps buffers for the three layouts
@@ -154,10 +160,12 @@
       (unwind-protect
           (progn
             ;; `tab-bar-new-tab' runs `delete-other-windows' on a fresh
-            ;; window configuration -- the new tab inherits no main claim.
+            ;; window configuration, but `edmacs-windows--on-tab-open' (this
+            ;; phase's `tab-bar-tab-post-open-functions' hook) designates the
+            ;; new tab's sole window as main immediately.
             (tab-bar-new-tab)
-            (should-not (seq-find (lambda (w) (window-parameter w 'edmacs-main))
-                                   (window-list nil 'no-minibuf)))
+            (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
+                               (window-list nil 'no-minibuf)))
             (tab-bar-switch-to-prev-tab)
             (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
                                (window-list nil 'no-minibuf))))
@@ -469,6 +477,27 @@ buffer gets killed."
         (should-not (window-live-p win))
         (should (eq (selected-window) main))
         (should-not (buffer-live-p buf))))))
+
+(ert-deftest edmacs-windows-test-quit-restore-window-killing-does-not-kill-buffer ()
+  "Regression: stock `quit-restore-window' distinguishes BURY-OR-KILL
+`kill' from `killing' -- `killing' means the caller (e.g.
+`quit-windows-on', `replace-buffer-in-windows') will kill the buffer
+itself, and `quit-restore-window' must not kill it first. Conflating
+the two breaks callers such as `quit-windows-on' that process
+multiple windows for the same buffer."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((main (edmacs-main-window))
+           (buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
+      (unwind-protect
+          (let ((win (display-buffer buf)))
+            (select-window win)
+            (quit-restore-window win 'killing)
+            (should-not (window-live-p win))
+            (should (eq (selected-window) main))
+            (should (buffer-live-p buf)))
+        (kill-buffer buf)))))
 
 ;; ---------------------------------------------------------------------------
 ;; AC5 -- every right-edge window's width tracks `edmacs-stack-width' live
@@ -909,5 +938,170 @@ binding just to make a direct lookup succeed."
     (should (eq (lookup-key keymap (kbd "SPC w s")) 'split-window-below))
     (should (eq (lookup-key keymap (kbd "SPC w v")) 'split-window-right))
     (should (eq (lookup-key keymap (kbd "SPC w t e")) 'edmacs-window-promote))))
+
+;; ============================================================================
+;; Persistence: tab-bar hooks, dead-pane sweep, lowest-free-slot allocation
+;; (this phase)
+;; ============================================================================
+
+;; ---------------------------------------------------------------------------
+;; AC1 -- tab-bar-new-tab designates main immediately, no stale side windows
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-new-tab-designates-main-no-stale-panes ()
+  "A fresh tab has exactly one non-side window, carrying `edmacs-main', and
+no stale RIGHT stack windows. Not asserted as \"exactly one window total\":
+when this file's own AC4 load-order section below has loaded the real
+`modules/sidebar.el' (this checkout has a bootstrapped straight build),
+that module's own independent `tab-bar-tab-post-open-functions' hook
+correctly re-shows a LEFT sidebar window in the same new tab -- see this
+phase's own Context on the two hooks coordinating, not colliding."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((tabs-before (length (tab-bar-tabs))))
+      (unwind-protect
+          (progn
+            (tab-bar-new-tab)
+            (should (= (edmacs-windows-test--nonside-count) 1))
+            (should (window-parameter (selected-window) 'edmacs-main))
+            (should (null (edmacs-stack-windows))))
+        (while (> (length (tab-bar-tabs)) tabs-before)
+          (tab-bar-close-tab))))))
+
+;; ---------------------------------------------------------------------------
+;; AC2 -- main and stack (slot . buffer-name) pairs round-trip across
+;; tab-bar-switch-to-next/prev-tab, as set equality
+;; ---------------------------------------------------------------------------
+
+(defun edmacs-windows-test--stack-pairs ()
+  "Return the selected frame's stack as (slot . buffer-name) pairs."
+  (mapcar (lambda (w) (cons (window-parameter w 'window-slot)
+                             (buffer-name (window-buffer w))))
+          (edmacs-stack-windows)))
+
+(ert-deftest edmacs-windows-test-stack-round-trips-next-prev-tab ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((tabs-before (length (tab-bar-tabs)))
+           (main1-buf (generate-new-buffer "ewt-persist-main-1"))
+           (pane1a (generate-new-buffer "ewt-persist-pane-1a"))
+           (pane1b (generate-new-buffer "ewt-persist-pane-1b"))
+           (main2-buf (generate-new-buffer "ewt-persist-main-2"))
+           (pane2a (generate-new-buffer "ewt-persist-pane-2a")))
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) main1-buf)
+            (edmacs-window-set-main (selected-window))
+            (edmacs-windows-test--display-claude-term-shaped-pane pane1a 0)
+            (edmacs-windows-test--display-claude-term-shaped-pane pane1b 1)
+            (let ((tab1-pairs (edmacs-windows-test--stack-pairs)))
+              (tab-bar-new-tab)
+              (set-window-buffer (selected-window) main2-buf)
+              (edmacs-window-set-main (selected-window))
+              (edmacs-windows-test--display-claude-term-shaped-pane pane2a 0)
+              (let ((tab2-pairs (edmacs-windows-test--stack-pairs)))
+                (tab-bar-switch-to-prev-tab)
+                (should (eq (window-buffer (edmacs-main-window)) main1-buf))
+                (should (seq-set-equal-p (edmacs-windows-test--stack-pairs) tab1-pairs #'equal))
+                (tab-bar-switch-to-next-tab)
+                (should (eq (window-buffer (edmacs-main-window)) main2-buf))
+                (should (seq-set-equal-p (edmacs-windows-test--stack-pairs) tab2-pairs #'equal)))))
+        (while (> (length (tab-bar-tabs)) tabs-before)
+          (tab-bar-close-tab))
+        (dolist (b (list main1-buf pane1a pane1b main2-buf pane2a))
+          (when (buffer-live-p b) (kill-buffer b)))))))
+
+;; ---------------------------------------------------------------------------
+;; AC3 -- edmacs-stack-sweep-stale-panes deletes dead/stale panes, keeps
+;; live popups, re-designates main when missing
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-sweep-deletes-dead-buffer-window ()
+  "Killing a dedicated side window's buffer through normal `kill-buffer'
+deletes the window automatically (verified empirically -- see
+claude-term-test.el's own Commentary on the same point), so the 'dead
+buffer, window still live' state this test covers is fabricated via
+`cl-letf' on `buffer-live-p' rather than reproduced through a literal
+kill-buffer call."
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((buf (generate-new-buffer "ewt-sweep-dead"))
+           (win (edmacs-windows-test--display-claude-term-shaped-pane buf 0))
+           (orig-live-p (symbol-function 'buffer-live-p)))
+      (unwind-protect
+          (progn
+            (should (window-live-p win))
+            (cl-letf (((symbol-function 'buffer-live-p)
+                       (lambda (b) (if (eq b buf) nil (funcall orig-live-p b)))))
+              (edmacs-stack-sweep-stale-panes))
+            (should-not (window-live-p win)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest edmacs-windows-test-sweep-deletes-stale-agent-pane ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((buf (generate-new-buffer "ewt-sweep-agent"))
+           (win (edmacs-windows-test--display-claude-term-shaped-pane buf 0)))
+      (unwind-protect
+          (let ((edmacs-stack-agent-pane-p (lambda (w) (eq w win))))
+            (should (window-live-p win))
+            (edmacs-stack-sweep-stale-panes)
+            (should-not (window-live-p win)))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-sweep-keeps-live-popup-pane ()
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((win (display-buffer-in-side-window
+                (get-buffer "*Messages*")
+                '((side . right) (slot . -1)))))
+      (unwind-protect
+          (progn
+            (should (window-live-p win))
+            (edmacs-stack-sweep-stale-panes)
+            (should (window-live-p win))
+            (should (eq (window-buffer win) (get-buffer "*Messages*"))))
+        (when (window-live-p win) (delete-window win))))))
+
+(ert-deftest edmacs-windows-test-sweep-redesignates-main-when-missing ()
+  (save-window-excursion
+    (delete-other-windows)
+    (dolist (w (window-list nil 'no-minibuf))
+      (set-window-parameter w 'edmacs-main nil))
+    (should-not (seq-find (lambda (w) (window-parameter w 'edmacs-main))
+                           (window-list nil 'no-minibuf)))
+    (edmacs-stack-sweep-stale-panes)
+    (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
+                       (window-list nil 'no-minibuf)))))
+
+;; ---------------------------------------------------------------------------
+;; AC4 -- claude-term--allocate-slot reuses the lowest free slot
+;; ---------------------------------------------------------------------------
+;; Guarded like AC5's width test above: skips unless `modules/claude-term.el'
+;; is also on the command line. Run this one test (or the whole file) with:
+;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/claude-term.el \
+;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
+
+(ert-deftest edmacs-windows-test-allocate-slot-reuses-lowest-free-slot ()
+  (if (not (fboundp 'claude-term--display-buffer))
+      (ert-skip "modules/claude-term.el not loaded -- see this test's Commentary")
+    (save-window-excursion
+      (delete-other-windows)
+      (let ((buf0 (generate-new-buffer "ewt-slot-reuse-0"))
+            (buf1 (generate-new-buffer "ewt-slot-reuse-1"))
+            (buf2 (generate-new-buffer "ewt-slot-reuse-2"))
+            (buf3 (generate-new-buffer "ewt-slot-reuse-3")))
+        (unwind-protect
+            (progn
+              (let ((win0 (claude-term--display-buffer buf0))
+                    (win1 (claude-term--display-buffer buf1))
+                    (win2 (claude-term--display-buffer buf2)))
+                (should (equal (window-parameter win0 'window-slot) 0))
+                (should (equal (window-parameter win1 'window-slot) 1))
+                (should (equal (window-parameter win2 'window-slot) 2))
+                (delete-window win1))
+              (should (equal (claude-term--allocate-slot buf3) 1)))
+          (dolist (b (list buf0 buf1 buf2 buf3))
+            (when (buffer-live-p b) (kill-buffer b))))))))
 
 ;;; windows-test.el ends here

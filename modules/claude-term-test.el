@@ -111,25 +111,37 @@ keymap machinery at all."
 ;; These tests create REAL windows through `display-buffer-in-side-window',
 ;; which works fine under plain `emacs -Q --batch' with no display and no
 ;; ghostel or straight bootstrap needed (verified empirically before
-;; writing these).  Each test resets the monotonic slot counter to 0 via
+;; writing these).  Each test starts from a clean window layout via
 ;; `claude-term-test--with-fresh-slots' and kills every buffer it creates
 ;; in an `unwind-protect', which also tears down the side window showing
 ;; it -- confirmed live: killing a side window's buffer deletes the
 ;; window automatically, no explicit `delete-window' needed.
 
 (defmacro claude-term-test--with-fresh-slots (&rest body)
-  "Run BODY with a fresh `claude-term--next-slot' counter."
+  "Run BODY with a clean window layout: no stray right side windows.
+`claude-term--allocate-slot' scans live windows directly (see
+`claude-term--occupied-slots') rather than a counter, so a fresh
+allocation only needs an empty starting layout."
   (declare (indent 0))
-  `(let ((claude-term--next-slot 0))
+  `(save-window-excursion
+     (delete-other-windows)
+     (dolist (w (window-list nil 'no-minibuf))
+       (when (eq (window-parameter w 'window-side) 'right)
+         (ignore-errors (delete-window w))))
      ,@body))
 
-(ert-deftest claude-term-test-allocate-slot-stable-and-monotonic ()
+(ert-deftest claude-term-test-allocate-slot-stable-and-reused ()
   (claude-term-test--with-fresh-slots
-    (let ((buf1 (generate-new-buffer "claude-term-test-slot-1"))
+    (let ((window-sides-slots '(nil nil 3 nil))
+          (buf1 (generate-new-buffer "claude-term-test-slot-1"))
           (buf2 (generate-new-buffer "claude-term-test-slot-2")))
       (unwind-protect
           (progn
-            (should (equal (claude-term--allocate-slot buf1) 0))
+            ;; buf1 must actually occupy a window -- the allocator now
+            ;; scans live windows, not a counter, so an un-displayed
+            ;; buffer never occupies a slot.
+            (let ((win1 (claude-term--display-buffer buf1)))
+              (should (equal (window-parameter win1 'window-slot) 0)))
             ;; Re-allocating for the same buffer returns the same slot
             ;; rather than drawing a fresh one.
             (should (equal (claude-term--allocate-slot buf1) 0))
@@ -137,6 +149,31 @@ keymap machinery at all."
             (should (equal (claude-term--allocate-slot buf2) 1)))
         (kill-buffer buf1)
         (kill-buffer buf2)))))
+
+(ert-deftest claude-term-test-allocate-slot-reuses-lowest-free-slot-after-close ()
+  "Closing the pane at slot 1 frees it for the next allocation, instead of
+the column growing forever -- the fix for plan-review task
+`window-stack-slot-counter-and-eviction'. `delete-window', not
+`kill-buffer': `edmacs-stack-close' (modules/windows.el) never kills an
+agent pane's buffer, only its window."
+  (claude-term-test--with-fresh-slots
+    (let ((window-sides-slots '(nil nil 3 nil))
+          (buf0 (generate-new-buffer "claude-term-test-reuse-0"))
+          (buf1 (generate-new-buffer "claude-term-test-reuse-1"))
+          (buf2 (generate-new-buffer "claude-term-test-reuse-2"))
+          (buf3 (generate-new-buffer "claude-term-test-reuse-3")))
+      (unwind-protect
+          (progn
+            (let ((win0 (claude-term--display-buffer buf0))
+                  (win1 (claude-term--display-buffer buf1))
+                  (win2 (claude-term--display-buffer buf2)))
+              (should (equal (window-parameter win0 'window-slot) 0))
+              (should (equal (window-parameter win1 'window-slot) 1))
+              (should (equal (window-parameter win2 'window-slot) 2))
+              (delete-window win1))
+            (should (equal (claude-term--allocate-slot buf3) 1)))
+        (dolist (b (list buf0 buf1 buf2 buf3))
+          (when (buffer-live-p b) (kill-buffer b)))))))
 
 (ert-deftest claude-term-test-display-buffer-three-agents-stacked ()
   (claude-term-test--with-fresh-slots

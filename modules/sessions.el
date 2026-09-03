@@ -29,6 +29,7 @@
 
 ;; Available via init.el's `load-module' order, not a `require'.
 (declare-function edmacs-git-common-dir "git-common-dir")
+(declare-function edmacs-stack-sweep-stale-panes "windows")
 
 (defun edmacs-sessions--tab-name ()
   "Name the current tab after its project/worktree, falling back sanely.
@@ -156,7 +157,12 @@ timer so the frame is fully created before frameset-restore touches it."
                      (when (frame-live-p frame)
                        (let ((desktop-saved-frameset frameset))
                          (with-selected-frame frame
-                           (desktop-restore-frameset)))))))))
+                           (desktop-restore-frameset)
+                           ;; An agent pane's process cannot survive a
+                           ;; restart and a popup's buffer may not have
+                           ;; been saved at all; sweep those stale right
+                           ;; stack windows rather than show them.
+                           (edmacs-stack-sweep-stale-panes frame)))))))))
 
 (add-hook 'after-make-frame-functions #'edmacs-sessions--restore-pending-frameset)
 

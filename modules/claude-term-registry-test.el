@@ -519,7 +519,6 @@ touches its last-used time. Wires the separately-tested
 of which was previously exercised by any test calling `claude-term-jump'
 itself."
   (let ((claude-term-registry--table (make-hash-table :test #'equal))
-        (claude-term--next-slot 0)
         (window-sides-slots '(nil nil 3 nil))
         (buf (generate-new-buffer "*claude-term:jump-leaf*"))
         (root "/tmp/ctr-jump-root/"))

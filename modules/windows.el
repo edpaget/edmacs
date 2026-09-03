@@ -33,6 +33,7 @@
 ;; keeps the `setq' below from tripping the byte-compiler's
 ;; free-variable check.
 (require 'window-x)
+(require 'tab-bar)
 
 ;; ============================================================================
 ;; Main window: explicit state via a window parameter
@@ -73,6 +74,17 @@ frame first, so exactly one window ever carries it."
     (dolist (w (window-list (window-frame window) 'no-minibuf))
       (set-window-parameter w 'edmacs-main nil))
     (set-window-parameter window 'edmacs-main t)))
+
+(defun edmacs-windows--on-tab-open (_tab)
+  "Designate the new tab's sole window as main.
+`tab-bar-new-tab' runs `delete-other-windows' before post-open hooks
+fire, so a fresh tab already starts with zero right-side windows; this
+only needs to stamp `edmacs-main'. A second, independent hook on the
+same variable -- `modules/sidebar.el's `edmacs-sidebar--on-tab-open' --
+re-shows the left sidebar."
+  (edmacs-window-set-main (selected-window)))
+
+(add-hook 'tab-bar-tab-post-open-functions #'edmacs-windows--on-tab-open)
 
 (defun edmacs--swap-window-buffers (w1 w2)
   "Exchange the buffers shown in W1 and W2.
@@ -329,8 +341,11 @@ Two different popups sharing slot -1 in succession leave a stale
 fallback and resurrect the first popup instead of deleting the pane.
 Popup windows -- tagged `edmacs-stack-popup' by `edmacs-stack--popup-alist'
 -- never want that: `q' always deletes the window and returns to main.
-BURY-OR-KILL is still honored: `kill'/`killing' (e.g. `C-u q') kills the
-buffer after the window is gone, matching stock `quit-restore-window'."
+BURY-OR-KILL is still honored: `kill' (e.g. `C-u q') kills the buffer
+after the window is gone, matching stock `quit-restore-window'. `killing'
+means the buffer will be killed elsewhere (e.g. by `quit-windows-on' or
+`replace-buffer-in-windows', per their docstrings) -- this function must
+not kill it itself, only stock `kill' does that."
   (let ((window (window-normalize-window window)))
     (if (and (eq (window-parameter window 'window-side) 'right)
              (window-parameter window 'edmacs-stack-popup))
@@ -338,7 +353,7 @@ buffer after the window is gone, matching stock `quit-restore-window'."
               (buf (window-buffer window)))
           (delete-window window)
           (when main (select-window main))
-          (when (memq bury-or-kill '(kill killing))
+          (when (eq bury-or-kill 'kill)
             (kill-buffer buf)))
       (funcall orig-fn window bury-or-kill))))
 
@@ -448,6 +463,38 @@ window."
   "Toggle visibility of the frame's side windows."
   (interactive)
   (window-toggle-side-windows))
+
+;; ============================================================================
+;; Persistence: the desktop-restore dead-pane sweep
+;; ============================================================================
+
+(defvar edmacs-stack-agent-pane-p #'ignore
+  "Predicate for a right stack window whose agent session has died.
+Called with one live right side window; a non-nil return means
+`edmacs-stack-sweep-stale-panes' should delete it rather than show it as
+a stale pane. Default `#\\='ignore' never matches, which keeps this
+module free of any claude-term dependency; `modules/claude-term-registry.el'
+wires the real liveness check (buffer-shaped-like-an-agent-pane plus a
+dead process) onto this variable at load time.")
+
+(defun edmacs-stack-sweep-stale-panes (&optional frame)
+  "Delete FRAME's (default the selected frame) dead right stack windows.
+Meant to run right after a desktop restore: `window-state-put' recreates
+whatever side windows the saved frameset had, but an agent pane's
+process cannot survive a restart and a popup's buffer may not have been
+saved at all, so a plain state restore alone can leave stale panes
+behind. Deletes a right stack window whose buffer is no longer live, or
+for which `edmacs-stack-agent-pane-p' reports its session has died;
+every other stack window -- a popup with a live buffer -- is left alone.
+Finishes by calling `edmacs-main-window', which re-designates main when
+the `edmacs-main' parameter did not survive the restore."
+  (with-selected-frame (or frame (selected-frame))
+    (dolist (w (edmacs-stack-windows))
+      (when (and (window-live-p w)
+                 (or (not (buffer-live-p (window-buffer w)))
+                     (funcall edmacs-stack-agent-pane-p w)))
+        (ignore-errors (delete-window w))))
+    (edmacs-main-window)))
 
 ;; ============================================================================
 ;; Window Rotation (tmux layout replacement)

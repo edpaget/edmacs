@@ -224,14 +224,6 @@ Sticking to one slot for the life of a buffer (via
 live session (toggling back to it, restarting it) from grabbing a fresh
 slot instead of its own.")
 
-(defvar claude-term--next-slot 0
-  "Counter for the next unassigned side-window slot.
-Monotonically increasing and never recycled -- a killed session's old
-slot is not reclaimed by the next fresh buffer.  `window-sides-slots'
-right element is nil (edmacs-window-management/phase-1-layout-model), so
-a fresh slot always creates a new window rather than ever reusing/evicting
-an existing pane; nothing bounds the column but screen height.")
-
 ;; ============================================================================
 ;; Buffer naming
 ;; ============================================================================
@@ -609,17 +601,41 @@ everything else from the dead session."
 ;; `windmove-find-other-window' for the mechanism and why the blunter
 ;; `windmove-allow-all-windows' can't express this per-window.
 
+(defun claude-term--occupied-slots ()
+  "Return the selected frame's occupied right-column slot numbers.
+Scans live windows directly rather than delegating to
+`edmacs-stack-windows' (modules/windows.el): claude-term-test.el's own
+documented invocation never loads windows.el, and this function must
+stay usable on its own, mirroring this file's existing standalone
+fallback for `edmacs-stack-width'."
+  (delq nil
+        (mapcar (lambda (w)
+                  (and (eq (window-parameter w 'window-side) 'right)
+                       (window-parameter w 'window-slot)))
+                (window-list nil 'no-minibuf))))
+
+(defun claude-term--lowest-free-slot ()
+  "Return the smallest non-negative integer not in `claude-term--occupied-slots'.
+Popup/pin slots are negative (see `edmacs-stack--popup-alist' and
+`edmacs-stack-pin' in modules/windows.el) and never appear here, so they
+can never collide with or block agent-pane slot reuse."
+  (let ((occupied (claude-term--occupied-slots))
+        (slot 0))
+    (while (memq slot occupied)
+      (cl-incf slot))
+    slot))
+
 (defun claude-term--allocate-slot (buffer)
   "Return the side-window slot assigned to BUFFER, assigning one if needed.
 Reuses BUFFER's existing `claude-term--slot' when already set, so
 repeated display calls for the same live session -- a toggle, a
-restart -- keep the same slot rather than drawing a fresh one from
-`claude-term--next-slot'."
+restart -- keep the same slot rather than drawing a fresh one. A fresh
+allocation always takes the lowest free non-negative slot -- see
+`claude-term--lowest-free-slot' -- so a killed session's slot is
+reclaimed by the next agent pane instead of the column growing forever."
   (with-current-buffer buffer
     (or claude-term--slot
-        (setq claude-term--slot
-              (prog1 claude-term--next-slot
-                (cl-incf claude-term--next-slot))))))
+        (setq claude-term--slot (claude-term--lowest-free-slot)))))
 
 (defun claude-term--display-buffer (buffer)
   "Display BUFFER in a stacked right-side window and return that window.

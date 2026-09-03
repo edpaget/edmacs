@@ -207,6 +207,24 @@ attention-ordered comparator (waiting > done > working > idle) without
 touching `claude-term--read-session's body.")
 
 ;; ============================================================================
+;; windows.el's dead-agent-pane sweep predicate
+;; ============================================================================
+;; `modules/windows.el's `edmacs-stack-agent-pane-p' is a swappable seam
+;; (default `#\='ignore') that keeps windows.el free of any claude-term
+;; dependency; wired to the real liveness check here. The bare `defvar'
+;; is byte-compile hygiene only, matching `(defvar ghostel--process)'
+;; above -- windows.el always loads before this file in the real init
+;; order and establishes the real variable first.
+
+(defvar edmacs-stack-agent-pane-p)
+
+(setq edmacs-stack-agent-pane-p
+      (lambda (w)
+        (let ((buf (window-buffer w)))
+          (and (claude-term--parse-buffer-name (buffer-name buf))
+               (not (process-live-p (claude-term-registry--process-of buf)))))))
+
+;; ============================================================================
 ;; Repo name / elapsed time / label
 ;; ============================================================================
 ;; The git-common-dir resolution itself (TRAMP-safe `process-file' call,
