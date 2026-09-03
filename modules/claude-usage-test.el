@@ -750,48 +750,48 @@ check, so this never silently hides a real bug."
     ;; response is the bare utilization object, carrying `five_hour',
     ;; `seven_day', the per-model `seven_day_*' keys, AND the same
     ;; normalized `limits[]' array `claude-usage--read-cache' already reads
-    ;; from the on-disk cache -- this fixture now includes all of those
-    ;; top-level keys, not just `limits[]', so the parse path is exercised
-    ;; against the full verified shape. What it is still not: bytes pasted
-    ;; from an actual response. Producing that requires a real bearer token
-    ;; off the login keychain, and this suite runs inside an automated
-    ;; dispatch whose auto-mode classifier hard-denies keychain reads
-    ;; (`security find-generic-password ...') outright -- the same
-    ;; restriction `claude-usage--access-token's docstring calls out for
-    ;; the deferred-refresh path, but here it blocks the *test author* too.
-    ;; Swapping in a literal capture (`curl -sD- -H "Authorization: Bearer
-    ;; $TOKEN" https://api.anthropic.com/api/oauth/usage`, run by hand with
-    ;; a real unlocked keychain) and updating this comment with the true
-    ;; capture date remains outstanding manual work; see the commit message.
+    ;; from the on-disk cache. This is a literal capture: the body below is
+    ;; the verbatim bytes of `GET /api/oauth/usage' on the date in the
+    ;; docstring, with only the status/header lines reconstructed (the parse
+    ;; path reads past them to the blank line). It carries no credential
+    ;; material -- percentages, reset timestamps and model display names.
     (defconst claude-usage-test--fixture-real-response
       (concat
        "HTTP/1.1 200 OK\r\n"
        "Content-Type: application/json\r\n"
        "\r\n"
-       "{\"five_hour\":{\"utilization\":45,\"severity\":\"normal\","
-       "\"resets_at\":\"2026-09-03T20:00:00Z\",\"limit_dollars\":10.0,"
-       "\"used_dollars\":4.5,\"remaining_dollars\":5.5},"
-       "\"seven_day\":{\"utilization\":62,\"severity\":\"warning\","
-       "\"resets_at\":\"2026-09-07T00:00:00Z\",\"limit_dollars\":100.0,"
-       "\"used_dollars\":62.0,\"remaining_dollars\":38.0},"
-       "\"seven_day_opus\":null,\"seven_day_sonnet\":null,"
-       "\"limits\":["
-       "{\"kind\":\"session\",\"percent\":45,\"severity\":\"normal\","
-       "\"resets_at\":\"2026-09-03T20:00:00Z\",\"limit_dollars\":10.0,"
-       "\"used_dollars\":4.5,\"remaining_dollars\":5.5},"
-       "{\"kind\":\"weekly_all\",\"percent\":62,\"severity\":\"warning\","
-       "\"resets_at\":\"2026-09-07T00:00:00Z\",\"limit_dollars\":100.0,"
-       "\"used_dollars\":62.0,\"remaining_dollars\":38.0},"
-       "{\"kind\":\"weekly_scoped\",\"percent\":88,\"severity\":\"critical\","
-       "\"resets_at\":\"2026-09-07T00:00:00Z\",\"limit_dollars\":50.0,"
-       "\"used_dollars\":44.0,\"remaining_dollars\":6.0,"
-       "\"scope\":{\"model\":{\"id\":\"claude-opus-4-1\","
-       "\"display_name\":\"Claude 3.5 Opus\"}}}"
-       "],\"extra_usage\":0.0,\"spend\":110.5}")
-      "A reconstructed (not literally captured) HTTP response from GET
-/api/oauth/usage, covering the full verified shape (five_hour, seven_day,
-seven_day_opus, seven_day_sonnet, limits). See the comment above for why
-it is not a literal capture and what remains outstanding.")
+       "{\"five_hour\":{\"utilization\":24.0,\"resets_at\":\"2026-09-03T22:30:00.134085"
+       "+00:00\",\"limit_dollars\":null,\"used_dollars\":null,\"remaining_dollars\":nul"
+       "l,\"locked_reason\":null},\"seven_day\":{\"utilization\":83.0,\"resets_at\":\"202"
+       "6-09-04T12:00:00.134101+00:00\",\"limit_dollars\":null,\"used_dollars\":null,"
+       "\"remaining_dollars\":null,\"locked_reason\":null},\"seven_day_oauth_apps\":nu"
+       "ll,\"seven_day_opus\":null,\"seven_day_sonnet\":null,\"seven_day_cowork\":null"
+       ",\"seven_day_omelette\":null,\"tangelo\":null,\"iguana_necktie\":null,\"omelett"
+       "e_promotional\":null,\"nimbus_quill\":{\"utilization\":0.0,\"resets_at\":null,\""
+       "limit_dollars\":null,\"used_dollars\":null,\"remaining_dollars\":null,\"locked"
+       "_reason\":null},\"cinder_cove\":null,\"amber_ladder\":null,\"juniper_tide\":nul"
+       "l,\"extra_usage\":{\"is_enabled\":false,\"monthly_limit\":null,\"used_credits\":"
+       "null,\"utilization\":null,\"currency\":null,\"decimal_places\":null,\"disabled_"
+       "reason\":null,\"user_disabled\":true,\"spend_limit_reached\":false,\"credits_e"
+       "ver_enabled\":true,\"daily\":null,\"weekly\":null},\"limits\":[{\"kind\":\"session"
+       "\",\"group\":\"session\",\"percent\":24,\"severity\":\"normal\",\"resets_at\":\"2026-0"
+       "9-03T22:30:00.134085+00:00\",\"scope\":null,\"is_active\":false},{\"kind\":\"wee"
+       "kly_all\",\"group\":\"weekly\",\"percent\":83,\"severity\":\"warning\",\"resets_at\":"
+       "\"2026-09-04T12:00:00.134101+00:00\",\"scope\":null,\"is_active\":true},{\"kind"
+       "\":\"weekly_scoped\",\"group\":\"weekly\",\"percent\":36,\"severity\":\"normal\",\"res"
+       "ets_at\":\"2026-09-04T12:00:00.134259+00:00\",\"scope\":{\"model\":{\"id\":null,\""
+       "display_name\":\"Fable\"},\"surface\":null},\"is_active\":false}],\"spend\":{\"use"
+       "d\":{\"amount_minor\":0,\"currency\":\"USD\",\"exponent\":2},\"limit\":null,\"percen"
+       "t\":0,\"severity\":\"normal\",\"enabled\":false,\"disabled_reason\":null,\"cap\":nu"
+       "ll,\"balance\":null,\"auto_reload\":null,\"disclaimer\":\"Usage credits cover y"
+       "ou when you hit your plan limits. [Learn more](https://support.claude.co"
+       "m/articles/12429409)\",\"can_purchase_credits\":false,\"can_toggle\":false},\""
+       "member_dashboard_available\":false}")
+      "A literal capture of the response body from GET /api/oauth/usage,
+taken 2026-09-03. Covers the full verified shape: five_hour, seven_day,
+the null per-model seven_day_* keys, and the normalized limits[] array
+with a weekly_scoped entry carrying scope.model.display_name. Note
+limit_dollars/used_dollars are null on a subscription plan.")
 
     (ert-deftest claude-usage-test-parse-fetch-buffer-feeds-meters-unchanged ()
       "`claude-usage--parse-fetch-buffer's own parse path, run against the
@@ -820,15 +820,15 @@ expect from the on-disk cache -- unchanged."
         (should (null (alist-get 'seven_day_opus body)))
         (should (= (length meters) 3))
         (should (eq (plist-get (nth 0 meters) :id) 'session))
-        (should (= (plist-get (nth 0 meters) :percent) 45))
+        (should (= (plist-get (nth 0 meters) :percent) 24))
         (should (eq (plist-get (nth 1 meters) :id) 'weekly_all))
-        (should (= (plist-get (nth 1 meters) :percent) 62))
+        (should (= (plist-get (nth 1 meters) :percent) 83))
         (should (eq (plist-get (nth 2 meters) :id) 'weekly_scoped))
-        (should (string-equal (plist-get (nth 2 meters) :model) "Claude 3.5 Opus"))
+        (should (string-equal (plist-get (nth 2 meters) :model) "Fable"))
         (let ((text (claude-usage--render-to-string envelope now-time 'live)))
           (should (string-match-p "Session (5h)" text))
-          (should (string-match-p "45%" text))
-          (should (string-match-p "Claude 3.5 Opus" text))
+          (should (string-match-p "24%" text))
+          (should (string-match-p "Fable" text))
           (should (string-match-p (regexp-quote "Claude Usage (live, now)") text)))))
 
     ;; ==========================================================================
