@@ -12,14 +12,14 @@
 (use-package general
   :config
   (general-create-definer leader-def
-    :states '(normal visual insert emacs)
+    :states '(normal visual insert emacs motion)
     :keymaps 'override
     :prefix "SPC"
     :global-prefix "C-SPC")
 
   ;; Set up local leader (for mode-specific bindings)
   (general-create-definer local-leader-def
-    :states '(normal visual)
+    :states '(normal visual motion)
     :keymaps 'override
     :prefix ","
     :global-prefix "C-,"))
