@@ -110,8 +110,10 @@ other transition -- including a `done'-to-`done' timestamp-only
 refresh -- preserves OLD-UNREAD unchanged. OLD-STATUS is nil for a
 fresh row with no prior state, which behaves like any other non-`done'
 predecessor: fresh-into-`done' sets UNREAD, fresh-into-anything-else
-does not. Every writer -- `edmacs-agents-set-status' and
-`edmacs-agents--upsert' -- calls this instead of re-encoding the rule."
+does not. Every writer -- currently only `edmacs-agents-set-status' --
+calls this instead of re-encoding the rule; `edmacs-agents--upsert'
+itself performs no such computation and trusts its caller to have done
+so."
   (cond
    ((memq new-status '(working waiting)) nil)
    ((and (eq new-status 'done) (not (eq old-status 'done))) t)
