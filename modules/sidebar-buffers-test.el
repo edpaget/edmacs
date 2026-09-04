@@ -330,3 +330,30 @@ rather than silently doing nothing."
           (should-error (edmacs-sidebar-buffers-visit) :type 'user-error))))
 
     ))
+
+(ert-deftest edmacs-sidebar-buffers-test-excluded-p-drops-chrome ()
+  "The sidebar's own buffer, which-key, and space-prefixed internals never list."
+  (let ((sidebar (generate-new-buffer "*sidebar: edmacs - Emacs*"))
+        (wk (generate-new-buffer "*which-key*"))
+        (internal (generate-new-buffer " *hidden*"))
+        (real (generate-new-buffer "notes.md")))
+    (unwind-protect
+        (progn
+          (with-current-buffer sidebar (setq major-mode 'edmacs-sidebar-mode))
+          (should (edmacs-sidebar-buffers--excluded-p sidebar))
+          (should (edmacs-sidebar-buffers--excluded-p wk))
+          (should (edmacs-sidebar-buffers--excluded-p internal))
+          (should-not (edmacs-sidebar-buffers--excluded-p real)))
+      (mapc #'kill-buffer (list sidebar wk internal real)))))
+
+(ert-deftest edmacs-sidebar-buffers-test-excluded-p-is-customisable ()
+  "Both exclusion customs are honoured, and an empty pair excludes nothing extra."
+  (let ((buf (generate-new-buffer "*custom-thing*")))
+    (unwind-protect
+        (progn
+          (let ((edmacs-sidebar-buffers-exclude-name-regexps '("\\`\\*custom-thing\\*\\'")))
+            (should (edmacs-sidebar-buffers--excluded-p buf)))
+          (let ((edmacs-sidebar-buffers-exclude-name-regexps nil)
+                (edmacs-sidebar-buffers-exclude-modes nil))
+            (should-not (edmacs-sidebar-buffers--excluded-p buf))))
+      (kill-buffer buf))))

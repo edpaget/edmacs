@@ -117,6 +117,38 @@ nerd-icon when available and not forced off by
 ;; Buffer classification
 ;; ============================================================================
 
+(defcustom edmacs-sidebar-buffers-exclude-modes '(edmacs-sidebar-mode)
+  "Major modes whose buffers never appear in a worktree's buffer list.
+The sidebar's own buffer is excluded by default: `bufferlo' associates
+it with the tab like any other, so without this the sidebar lists
+itself."
+  :type '(repeat symbol)
+  :group 'edmacs-sidebar)
+
+(defcustom edmacs-sidebar-buffers-exclude-name-regexps
+  '("\\`\\*which-key\\*\\'")
+  "Buffer-name regexps that never appear in a worktree's buffer list.
+For transient UI surfaces that are not worth a row -- they are chrome
+the user is looking at, not work they navigate between. Prefer
+`edmacs-sidebar-buffers-exclude-modes' when the buffer has a mode of
+its own; a regexp is the fallback for one that does not."
+  :type '(repeat regexp)
+  :group 'edmacs-sidebar)
+
+(defun edmacs-sidebar-buffers--excluded-p (buf)
+  "Non-nil when BUF must not appear in a worktree's buffer list.
+Three rules: a mode in `edmacs-sidebar-buffers-exclude-modes', a name
+matching `edmacs-sidebar-buffers-exclude-name-regexps', or a name
+starting with a space -- Emacs's own convention for an internal buffer
+the user never asked for."
+  (or (not (buffer-live-p buf))
+      (let ((name (buffer-name buf)))
+        (or (string-prefix-p " " name)
+            (seq-some (lambda (re) (string-match-p re name))
+                      edmacs-sidebar-buffers-exclude-name-regexps)))
+      (memq (buffer-local-value 'major-mode buf)
+            edmacs-sidebar-buffers-exclude-modes)))
+
 (defun edmacs-sidebar-buffers--file-like-p (buf)
   "Non-nil when BUF is file-visiting or a `dired-mode' buffer.
 Everything else -- `*Messages*', magit-status, compilation, Help, ... --
@@ -530,7 +562,8 @@ own TAB-NUMBER convention (like every other consumer of this hook) is
   (when has-tab
     (edmacs-sidebar-buffers--ensure-cleared-this-pass)
     (let* ((tab (edmacs-frames--tab-for-root root frame))
-           (bufs (bufferlo-buffer-list frame (1- tab-number)))
+           (bufs (seq-remove #'edmacs-sidebar-buffers--excluded-p
+                              (bufferlo-buffer-list frame (1- tab-number))))
            (prev-names (edmacs-sidebar-buffers--main-window-prev-names frame tab))
            (is-current (and tab (eq (car tab) 'current-tab)))
            (flat (frame-parameter frame 'edmacs-sidebar-buffers-flat)))
