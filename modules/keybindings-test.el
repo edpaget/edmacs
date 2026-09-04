@@ -7,16 +7,12 @@
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/keybindings-test.el \
 ;;         -f ert-run-tests-batch-and-exit
-;;
-;; This file loads real evil.el and general.el from the straight build tree,
-;; then loads modules/keybindings.el. If straight has not been bootstrapped
-;; in this checkout (or its sibling main checkout), the tests skip cleanly
-;; rather than erroring out on file load.
 
 ;;; Code:
 
 (require 'ert)
 (require 'subr-x)
+(require 'seq)
 
 (defun edmacs-keybindings-test--locate-straight-repos-root ()
   "Return this checkout's `straight/repos' directory, or nil.
@@ -69,24 +65,44 @@ has never bootstrapped straight locally, so callers can `ert-skip'."
 
 (ert-deftest edmacs-keybindings-test-leader-motion-state-override-map ()
   "Verify that SPC reaches the leader keymap in motion state via the
-override keymap. This is essential for motion-state buffers like the
-sidebar to access the leader key. The override keymap mechanism is the
-same as documented in windows-test.el's spc-w tests."
+override keymap. This test checks that general-override-mode-map has
+an auxiliary keymap for motion state containing leader bindings."
   (unless (edmacs-keybindings-test--ensure-keybindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
   ;; Verify the override keymap exists and is a keymap
   (should (keymapp (evil-get-auxiliary-keymap general-override-mode-map 'motion)))
   ;; Verify that a leader binding resolves through the motion-state override keymap.
   ;; SPC f f is bound to find-file in keybindings.el, so we verify it resolves
-  ;; through the motion-state override keymap, not evil-motion-state-map directly.
+  ;; through the motion-state override keymap.
   (let ((motion-keymap (evil-get-auxiliary-keymap general-override-mode-map 'motion)))
     (should (functionp (lookup-key motion-keymap (kbd "SPC f f"))))))
+
+(ert-deftest edmacs-keybindings-test-leader-motion-state-end-to-end ()
+  "End-to-end test: verify SPC leader bindings work in a motion-state buffer.
+This test activates motion state on a real buffer and uses the full keymap
+stack to verify that SPC leader bindings resolve correctly. This proves
+the fix (adding motion to leader-def's :states) works in practice."
+  (unless (edmacs-keybindings-test--ensure-keybindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (with-temp-buffer
+    ;; Enable evil mode and activate motion state
+    (evil-local-mode 1)
+    (evil-motion-state)
+    ;; Verify motion state is active
+    (should (eq evil-state 'motion))
+    ;; Get the composed keymap stack for motion state
+    (let* ((maps (mapcar #'cdr (evil-state-keymaps 'motion)))
+           (composed (make-composed-keymap maps)))
+      ;; Verify that SPC f f (find-file) resolves through the keymap stack
+      (should (functionp (lookup-key composed (kbd "SPC f f"))))
+      ;; Verify the resolved binding is find-file
+      (should (eq (lookup-key composed (kbd "SPC f f")) 'find-file)))))
 
 (ert-deftest edmacs-keybindings-test-leader-motion-state-not-in-base-evil-map ()
   "Documents that SPC leader bindings in motion state come through the
 override auxiliary keymap mechanism, not a direct mutation of
-`evil-motion-state-map'. This proves the fix (adding motion to leader-def's
-:states) uses general.el's override mechanism, not evil's base state map."
+`evil-motion-state-map'. This proves the fix uses general.el's override
+mechanism, not evil's base state map."
   (unless (edmacs-keybindings-test--ensure-keybindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
   ;; In evil.el, SPC in motion state is bound to evil-forward-char by default.
@@ -97,14 +113,44 @@ override auxiliary keymap mechanism, not a direct mutation of
   ;; have the original SPC binding, while the override keymap shadows it.
   (should (eq (lookup-key evil-motion-state-map (kbd "SPC")) 'evil-forward-char)))
 
-(ert-deftest edmacs-keybindings-test-local-leader-motion-state-override-map ()
-  "Verify that local-leader-def (comma prefix) also reaches its keymap
-in motion state, for consistency with leader-def. This enables mode-specific
-leader bindings in motion-state buffers."
+(ert-deftest edmacs-keybindings-test-local-leader-motion-state-binding ()
+  "Verify that local-leader-def (comma prefix) reaches its keymap in motion state.
+This test binds a test key through local-leader-def and verifies it's
+accessible in a motion-state buffer, proving local-leader-def's motion state
+works correctly."
   (unless (edmacs-keybindings-test--ensure-keybindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
-  ;; Verify the override keymap exists for local-leader in motion state
-  (should (keymapp (evil-get-auxiliary-keymap general-override-mode-map 'motion))))
+  ;; Bind a test key through local-leader-def
+  (local-leader-def
+    "t" '(ignore :which-key "test local-leader motion binding"))
+  ;; Verify the binding exists in the motion-state override keymap
+  (let ((motion-keymap (evil-get-auxiliary-keymap general-override-mode-map 'motion)))
+    (should (keymapp motion-keymap))
+    ;; Check that the test binding resolves
+    (should (functionp (lookup-key motion-keymap (kbd ", t"))))))
+
+(ert-deftest edmacs-keybindings-test-local-leader-motion-state-end-to-end ()
+  "End-to-end test: verify comma (local-leader) bindings work in a motion-state buffer.
+This test activates motion state on a real buffer and verifies that a
+local-leader binding resolves through the full keymap stack."
+  (unless (edmacs-keybindings-test--ensure-keybindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  ;; Bind a test key through local-leader-def
+  (local-leader-def
+    "m" '(ignore :which-key "test motion local-leader"))
+  (with-temp-buffer
+    ;; Enable evil mode and activate motion state
+    (evil-local-mode 1)
+    (evil-motion-state)
+    ;; Verify motion state is active
+    (should (eq evil-state 'motion))
+    ;; Get the composed keymap stack for motion state
+    (let* ((maps (mapcar #'cdr (evil-state-keymaps 'motion)))
+           (composed (make-composed-keymap maps)))
+      ;; Verify that , m (comma + m) resolves through the keymap stack
+      (should (functionp (lookup-key composed (kbd ", m"))))
+      ;; Verify the resolved binding is ignore (our test binding)
+      (should (eq (lookup-key composed (kbd ", m")) 'ignore)))))
 
 (provide 'keybindings-test)
 ;;; keybindings-test.el ends here
