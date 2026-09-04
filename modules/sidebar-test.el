@@ -2018,6 +2018,158 @@ preventing it from leaking onto the buffer that replaces the sidebar."
                   (should-not (window-parameter released 'mode-line-format)))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
+    ;; ==========================================================================
+    ;; AC1 -- worktree-section-functions body-inserts inside the row's own
+    ;; section, so a contributed section is a real child, not a sibling
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-redraw-worktrees-hook-runs-inside-row-section ()
+      "A function on `edmacs-sidebar-worktree-section-functions' inserts a
+child section from inside the callback the row hands it -- the
+resulting section's PARENT is the row's own `edmacs-sidebar-tab'
+section, not `magit-root-section', proving the hook now runs inside the
+row's body rather than after it closes."
+      (let* ((current (tab-bar--current-tab-find))
+             (root-alist (list (cons current "/repo/wt/")))
+             (worktrees '(("wt" . "/repo/wt/")))
+             (child-section nil)
+             (edmacs-sidebar-worktree-section-functions
+              (list (lambda (_root _has-tab _frame _tab-number)
+                      (setq child-section
+                            (magit-insert-section (edmacs-sidebar-test-child nil)
+                              (magit-insert-heading "  test child")))))))
+        (edmacs-sidebar-test--stub-worktree-lookup root-alist
+          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
+            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
+              (unwind-protect
+                  (progn
+                    (edmacs-sidebar-show (selected-frame))
+                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                      (should child-section)
+                      (let ((parent (oref child-section parent)))
+                        (should parent)
+                        (should (eq (oref parent type) 'edmacs-sidebar-tab))
+                        (should (equal (car (oref parent value)) "/repo/wt/")))))
+                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+
+    (ert-deftest edmacs-sidebar-test-redraw-worktrees-hook-runs-inside-tabless-row-section ()
+      "Same contract on a tab-less (dimmed) worktree row: the hook still
+fires (HAS-TAB nil), and its contributed section still nests under
+that row rather than the root."
+      (let* ((root-alist nil)
+             (worktrees '(("wt" . "/repo/wt/")))
+             (child-section nil)
+             (edmacs-sidebar-worktree-section-functions
+              (list (lambda (_root _has-tab _frame _tab-number)
+                      (setq child-section
+                            (magit-insert-section (edmacs-sidebar-test-child nil)
+                              (magit-insert-heading "  test child")))))))
+        (edmacs-sidebar-test--stub-worktree-lookup root-alist
+          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
+            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
+              (unwind-protect
+                  (progn
+                    (edmacs-sidebar-show (selected-frame))
+                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                      (should child-section)
+                      (let ((parent (oref child-section parent)))
+                        (should parent)
+                        (should (eq (oref parent type) 'edmacs-sidebar-tab))
+                        (should (equal (car (oref parent value)) "/repo/wt/"))
+                        (should (null (cdr (oref parent value)))))))
+                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+
+    ;; ==========================================================================
+    ;; AC2 -- visit/close/rename/toggle all resolve through one shared
+    ;; enclosing-worktree parent walk, so they work from any nested row
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-close-worktree-from-nested-row ()
+      "`d' with point on an agent leaf nested two levels under its
+worktree row (tab-row > agents-group > agent) closes the ENCLOSING
+worktree row's tab -- proof `edmacs-sidebar--enclosing-worktree' walks
+past more than one level, unlike the old bespoke single-level walks."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let (agent-section)
+          (let ((inhibit-read-only t))
+            (magit-insert-section (edmacs-sidebar-root)
+              (magit-insert-section (edmacs-sidebar-tab (cons "/repo/wt/" 3))
+                (magit-insert-heading "tab row")
+                (magit-insert-section (edmacs-sidebar-agents-group nil)
+                  (magit-insert-heading "  agents group")
+                  (setq agent-section
+                        (magit-insert-section (edmacs-sidebar-agent "fake-agent")
+                          (magit-insert-heading "    an agent row")))))))
+          (goto-char (oref agent-section start))
+          (should (eq (magit-current-section) agent-section))
+          (let (closed)
+            (cl-letf (((symbol-function 'tab-bar-close-tab) (lambda (n) (push n closed))))
+              (edmacs-sidebar-close-worktree))
+            (should (equal closed '(3)))))))
+
+    (ert-deftest edmacs-sidebar-test-rename-at-point-from-nested-buffer-row ()
+      "`r' with point on a buffer-file leaf nested under a `buffers'
+heading under its worktree row renames the ENCLOSING worktree row's
+tab -- the generic (non-agent) branch of the shared walk."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let (buf-section)
+          (let ((inhibit-read-only t))
+            (magit-insert-section (edmacs-sidebar-root)
+              (magit-insert-section (edmacs-sidebar-tab (cons "/repo/wt/" 2))
+                (magit-insert-heading "tab row")
+                (magit-insert-section (edmacs-sidebar-buffers-root (cons "/repo/wt/" 2))
+                  (magit-insert-heading "  buffers")
+                  (setq buf-section
+                        (magit-insert-section (edmacs-sidebar-buffers-file (current-buffer))
+                          (magit-insert-heading "    a buffer row")))))))
+          (goto-char (oref buf-section start))
+          (should (eq (magit-current-section) buf-section))
+          (let (renamed
+                (tab-bar-tabs-function
+                 (lambda () (list '((name . "first")) '((name . "old-name"))))))
+            (cl-letf (((symbol-function 'tab-bar-rename-tab)
+                       (lambda (name n) (push (cons name n) renamed)))
+                      ((symbol-function 'read-from-minibuffer)
+                       (lambda (&rest _) "edmacs-sidebar-test-nested-rename")))
+              (edmacs-sidebar-rename-at-point))
+            (should (equal renamed '(("edmacs-sidebar-test-nested-rename" . 2))))))))
+
+    ;; ==========================================================================
+    ;; AC3 -- point-identity keys a worktree row on its root, surviving a
+    ;; redraw that changes the row's own rendered label
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-point-survives-redraw-through-label-change ()
+      "Point starts on a tab-less worktree row (label ends in \" (no
+tab)\"); the same root then gains an open tab -- a different label,
+glyph, and face -- and a direct `--redraw' call still resolves point
+back to that same worktree afterward instead of falling to `point-min'.
+Keying identity on the rendered label (as before this phase) would have
+missed this, since the label itself is what changed."
+      (let* ((current (tab-bar--current-tab-find))
+             (root-alist nil)
+             (worktrees '(("wt" . "/repo/wt/"))))
+        (edmacs-sidebar-test--stub-worktree-lookup root-alist
+          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
+            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
+              (unwind-protect
+                  (progn
+                    (edmacs-sidebar-show (selected-frame))
+                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                      (goto-char (point-min))
+                      (should (string-match-p "no tab" (buffer-string)))
+                      (should (equal (edmacs-sidebar--point-identity) (cons 'worktree "/repo/wt/")))
+                      ;; The root now has an open tab -- a differently
+                      ;; shaped label, no " (no tab)" suffix.
+                      (push (cons current "/repo/wt/") root-alist)
+                      (edmacs-sidebar--redraw (selected-frame))
+                      (should-not (string-match-p "no tab" (buffer-string)))
+                      (should (equal (oref (magit-current-section) value) (cons "/repo/wt/" 1)))
+                      (should (equal (edmacs-sidebar--point-identity) (cons 'worktree "/repo/wt/")))))
+                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-test.el ends here
