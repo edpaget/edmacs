@@ -32,6 +32,12 @@
 ;; harness) -- the same harmless failure claude-term-test.el's own
 ;; Commentary documents for `use-package ghostel'.
 ;;
+;; Everything here stubs the frames.el side of the boundary, so the walk's
+;; own eligibility gate and call ORDER are what this file pins -- not what a
+;; restored tab ends up carrying. `modules/sessions-live-test.el' covers
+;; that end to end, driving a real `desktop-restore-frameset' with the real
+;; frames.el loaded.
+;;
 ;; None of frames.el or sidebar.el is loaded here: the functions under
 ;; test call across that module boundary
 ;; (`edmacs-frames--tab-root'/`edmacs-frames--repo-of'/

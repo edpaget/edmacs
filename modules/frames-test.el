@@ -285,6 +285,61 @@ first spare every `emacsclient -e'-driven open would find and adopt."
     (should-not (edmacs-frames--spare-frame))))
 
 ;; ============================================================================
+;; edmacs-frames--make-frame -- the daemon's GUI-frame dispatch
+;; ============================================================================
+;; The counterpart to excluding the tty placeholder from spare adoption:
+;; with no spare left to adopt, `edmacs-frames-open' falls through to this,
+;; and a bare `make-frame' under a daemon (`window-system' nil) would build
+;; exactly the frame that exclusion exists to keep repos off.
+
+(ert-deftest edmacs-frames-test-make-frame-uses-the-gui-maker-under-a-daemon ()
+  "Under a daemon the frame must come from sessions.el's GUI maker.
+`make-frame' is not merely a worse choice there -- it names no window
+system, so it yields another tty placeholder, and an `emacsclient -e'
+open would stamp its repo onto a frame that can display nothing."
+  (let (calls)
+    (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
+              ((symbol-function 'edmacs-sessions--make-gui-frame)
+               (lambda () (push 'gui calls) 'gui-frame))
+              ((symbol-function 'make-frame)
+               (lambda (&rest _) (push 'bare calls) 'tty-frame)))
+      (should (eq (edmacs-frames--make-frame) 'gui-frame)))
+    ;; Not just "returned the right frame" -- `make-frame' was never reached.
+    (should (equal calls '(gui)))))
+
+(ert-deftest edmacs-frames-test-make-frame-falls-back-to-plain-make-frame ()
+  "Outside a daemon `window-system' is already right, so nothing is consulted."
+  (let (calls)
+    (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) nil))
+              ((symbol-function 'edmacs-sessions--make-gui-frame)
+               (lambda () (push 'gui calls) 'gui-frame))
+              ((symbol-function 'make-frame)
+               (lambda (&rest _) (push 'bare calls) 'tty-frame)))
+      (should (eq (edmacs-frames--make-frame) 'tty-frame)))
+    (should (equal calls '(bare)))))
+
+(ert-deftest edmacs-frames-test-make-frame-falls-back-when-gui-maker-is-absent ()
+  "frames.el must stay loadable without sessions.el -- this very suite
+loads it that way -- so the daemon branch is `fboundp'-guarded."
+  (let ((saved (and (fboundp 'edmacs-sessions--make-gui-frame)
+                    (symbol-function 'edmacs-sessions--make-gui-frame))))
+    (unwind-protect
+        (progn
+          (fmakunbound 'edmacs-sessions--make-gui-frame)
+          (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
+                    ((symbol-function 'make-frame) (lambda (&rest _) 'tty-frame)))
+            (should (eq (edmacs-frames--make-frame) 'tty-frame))))
+      (when saved (fset 'edmacs-sessions--make-gui-frame saved)))))
+
+(ert-deftest edmacs-frames-test-make-frame-falls-back-when-gui-maker-fails ()
+  "`edmacs-sessions--make-gui-frame' warns and returns nil when the window
+system refuses the frame; a repo frame is still better than none."
+  (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
+            ((symbol-function 'edmacs-sessions--make-gui-frame) (lambda () nil))
+            ((symbol-function 'make-frame) (lambda (&rest _) 'tty-frame)))
+    (should (eq (edmacs-frames--make-frame) 'tty-frame))))
+
+;; ============================================================================
 ;; edmacs-frames-for-repo -- healthy first, duplicates reconciled
 ;; ============================================================================
 
