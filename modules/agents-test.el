@@ -1,12 +1,18 @@
 ;;; agents-test.el --- Tests for agents.el -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; Pure-function coverage only -- no real subprocess, timer, or watch
+;; Mostly pure-function coverage -- no real subprocess, timer, or watch
 ;; is involved. `edmacs-agents-init' is exercised directly here (it is
-;; a no-op splice, safe to call repeatedly): every test let-binds
+;; idempotent, safe to call repeatedly): every test let-binds
 ;; `edmacs-agents--table' to a fresh hash table, the same isolation
 ;; convention `claude-term-registry-test.el' uses for its own table, so
 ;; no test reads or mutates any real state.
+;;
+;; The mode-line construct-level tests are the exception: they load the
+;; real `nano-modeline' package dynamically from the straight build
+;; root (this checkout's, falling back to the sibling main checkout's),
+;; the same convention `claude-usage-test.el' uses, and `ert-skip' with
+;; a clear message when neither is populated.
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/agents.el -l modules/agents-test.el \
@@ -17,6 +23,60 @@
 (require 'ert)
 (require 'subr-x)
 (require 'cl-lib)
+
+;; ============================================================================
+;; nano-modeline straight-build helpers (mirrors
+;; claude-usage-test--locate-straight-build-root /
+;; claude-usage-test--ensure-nano-modeline / claude-usage-test--construct-has-segment-p
+;; -- no shared test-helper module exists in this repo, so every
+;; *-test.el duplicates its own copy by convention)
+;; ============================================================================
+
+(defun edmacs-agents-test--locate-straight-build-root ()
+  "Return this checkout's `straight/build' directory, or nil.
+Tries this checkout's own `straight/build' first, then falls back to the
+sibling main `edmacs' checkout's `straight/build' -- see
+`edmacs-sidebar-test--locate-straight-build-root' for the identical
+worktree-vs-sibling-main-checkout rationale."
+  (or
+   (let ((here (expand-file-name "straight/build" default-directory)))
+     (and (file-directory-p here) here))
+   (let* ((root (directory-file-name (expand-file-name default-directory)))
+          (worktrees-dir (directory-file-name (file-name-directory root))))
+     (when (string-suffix-p "__worktrees" worktrees-dir)
+       (let* ((projects-dir (file-name-directory worktrees-dir))
+              (repo-name (string-remove-suffix
+                          "__worktrees" (file-name-nondirectory worktrees-dir)))
+              (main-build (expand-file-name
+                           (concat repo-name "/straight/build") projects-dir)))
+         (and (file-directory-p main-build) main-build))))))
+
+(defun edmacs-agents-test--ensure-nano-modeline ()
+  "Load the real `nano-modeline', skipping the calling test if unavailable.
+nano-modeline needs only `cl-lib' beyond Emacs core, so a single
+`load-path' entry under the straight build root is enough."
+  (unless (featurep 'nano-modeline)
+    (let* ((root (edmacs-agents-test--locate-straight-build-root))
+           (dir (and root (expand-file-name "nano-modeline" root))))
+      (unless (and dir (file-directory-p dir))
+        (ert-skip (format "nano-modeline's straight build was not found at \
+%s; bootstrap straight once (open this worktree in a real Emacs session) to \
+enable this test" (or dir "<no straight build root>"))))
+      (let ((load-path (cons dir load-path)))
+        (require 'nano-modeline)))))
+
+(defun edmacs-agents-test--construct-has-segment-p (form)
+  "Non-nil when FORM contains a cons `equal' to
+`(edmacs-agents-mode-line-segment)'. Structural rather than evaluated,
+for lines that cannot be rendered
+outside their own major mode -- `nano-modeline-term-shell-mode' calls
+`term-in-char-mode', which needs a live term buffer."
+  (cond
+   ((equal form '(edmacs-agents-mode-line-segment)) t)
+   ((consp form)
+    (or (edmacs-agents-test--construct-has-segment-p (car form))
+        (edmacs-agents-test--construct-has-segment-p (cdr form))))
+   (t nil)))
 
 (defmacro edmacs-agents-test--with-clean-state (&rest body)
   "Run BODY with a fresh agent table and changed hook."
@@ -206,33 +266,98 @@ empty once the table has none of those."
     (clrhash edmacs-agents--table)
     (should (equal (edmacs-agents--mode-line-string-compute) ""))))
 
-(ert-deftest edmacs-agents-test-ensure-mode-line-splices-and-updates ()
-  "`edmacs-agents--ensure-mode-line' is the function that actually wires
-the roll-up into the visible mode-line, as opposed to
-`edmacs-agents-test-mode-line-string' above, which only covers the pure
-string computation. This exercises the splice itself: the symbol lands
-in `global-mode-string' exactly once even across repeated calls, and a
-subsequent `edmacs-agents-changed-hook' firing (as any `edmacs-agents--upsert'
-or `edmacs-agents--remove' does in production) recomputes the cached
-string with no direct call to the refresh function from the test."
+(defmacro edmacs-agents-test--with-mode-line-state (&rest body)
+  "Run BODY with the real mode-line globals saved and restored, and the
+`:filter-args' advice + changed-hook removed afterward regardless of
+how BODY exits."
+  (declare (indent 0))
+  `(let ((edmacs-agents-test--saved-string edmacs-agents--mode-line-string)
+         (edmacs-agents-test--saved-default (default-value 'mode-line-format)))
+     (unwind-protect
+         (progn ,@body)
+       (advice-remove 'nano-modeline-footer
+                       #'edmacs-agents--nano-modeline-footer-filter-args)
+       (remove-hook 'edmacs-agents-changed-hook #'edmacs-agents--refresh-mode-line)
+       (setq-default mode-line-format edmacs-agents-test--saved-default)
+       (setq edmacs-agents--mode-line-string edmacs-agents-test--saved-string))))
+
+(ert-deftest edmacs-agents-test-mode-line-reaches-nano-construct ()
+  "`edmacs-agents--ensure-mode-line' wires the roll-up into the real
+nano-modeline `:eval' construct: in the default line (re-baked at
+install time, since ui.el bakes it long before `edmacs-agents-init'
+runs), and in a plain buffer that was already alive before install and
+never baked a mode-line of its own -- dired, magit, the sidebar,
+`*claude-usage*' all fall in that second category, inheriting whatever
+`(default-value \\='mode-line-format)' holds rather than freezing their
+own copy -- rather than merely landing a symbol in `global-mode-string',
+a channel nano-modeline never reads (asserted unchanged below).
+
+`format-mode-line' cannot be used here: it returns \"\" under `--batch',
+so every assertion evaluates `(cadr ...)' of the construct directly."
+  (edmacs-agents-test--ensure-nano-modeline)
   (edmacs-agents-test--with-clean-state
-    (let ((global-mode-string nil)
-          (edmacs-agents--mode-line-string ""))
+    (let ((buf (generate-new-buffer " *edmacs-agents-test-pre-existing*"))
+          (nano-modeline-position #'nano-modeline-footer)
+          (global-mode-string 'edmacs-agents-test--untouched-sentinel))
       (unwind-protect
-          (progn
+          (edmacs-agents-test--with-mode-line-state
             (edmacs-agents--ensure-mode-line)
-            (should (memq 'edmacs-agents--mode-line-string global-mode-string))
-            (should (equal edmacs-agents--mode-line-string ""))
-            ;; Re-arming (e.g. reloading this file interactively) must not
-            ;; insert a second copy.
-            (edmacs-agents--ensure-mode-line)
-            (should (= 1 (cl-count 'edmacs-agents--mode-line-string global-mode-string)))
-            ;; A table mutation fires the changed hook, which must recompute
-            ;; the cached string with no direct call from this test.
-            (edmacs-agents-set-status
-             (make-temp-file "edmacs-agents-test-root-" t) 'waiting)
-            (should (equal edmacs-agents--mode-line-string "[1💬]")))
-        (remove-hook 'edmacs-agents-changed-hook #'edmacs-agents--refresh-mode-line)))))
+            ;; Never wrote to the dead channel.
+            (should (eq global-mode-string 'edmacs-agents-test--untouched-sentinel))
+            ;; Plant a sentinel after install: the changed-hook recompute
+            ;; would otherwise clobber it the other way round.
+            (setq edmacs-agents--mode-line-string "ZZAGENTSZZ")
+            ;; A second buffer, baked fresh after install.
+            (with-temp-buffer (nano-modeline-text-mode t))
+            (should (string-match-p
+                     "ZZAGENTSZZ" (eval (cadr (default-value 'mode-line-format)) t)))
+            (with-current-buffer buf
+              (should (string-match-p "ZZAGENTSZZ" (eval (cadr mode-line-format) t)))))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest edmacs-agents-test-filter-args-two-argument-and-idempotent ()
+  "The `:filter-args' function handles the two-argument `nano-modeline-footer'
+call -- the shape `edmacs-modeline-ghostel-mode',
+`nano-modeline-message-mode' and `nano-modeline-term-mode' all use --
+without mutating the shared RIGHT literal, and re-applying it to its
+own output is a no-op (no doubled element across a re-install)."
+  (let* ((right (list '(nano-modeline-window-dedicated)))
+         (right-before (copy-tree right))
+         (out (edmacs-agents--nano-modeline-footer-filter-args
+               (list (list '(nano-modeline-buffer-status)) right))))
+    (should (= (length out) 3))
+    (should (equal (nth 1 out)
+                   '((nano-modeline-window-dedicated)
+                     (edmacs-agents-mode-line-segment))))
+    (should (null (nth 2 out)))
+    (should (equal right right-before))
+    (should (equal (edmacs-agents--nano-modeline-footer-filter-args out) out))))
+
+(ert-deftest edmacs-agents-test-mode-line-in-ghostel-and-term-lines ()
+  "The roll-up reaches `nano-modeline-message-mode' and
+`nano-modeline-term-mode', both of which call `nano-modeline-footer'
+with no DEFAULT argument -- the same two-argument shape
+`edmacs-modeline-ghostel-mode' (ui.el's wrapper for every claude-term
+agent pane, the exact buffers this roll-up summarizes) uses; ui.el
+itself is not loaded here since it bootstraps straight's `use-package'
+machinery, so it is exercised opportunistically when already loaded
+rather than required for this test to pass."
+  (edmacs-agents-test--ensure-nano-modeline)
+  (edmacs-agents-test--with-clean-state
+    (let ((nano-modeline-position #'nano-modeline-footer))
+      (edmacs-agents-test--with-mode-line-state
+        (edmacs-agents--ensure-mode-line)
+        (setq edmacs-agents--mode-line-string "ZZAGENTSZZ")
+        (with-temp-buffer
+          (nano-modeline-message-mode)
+          (should (string-match-p "ZZAGENTSZZ" (eval (cadr mode-line-format) t))))
+        (with-temp-buffer
+          (nano-modeline-term-mode)
+          (should (edmacs-agents-test--construct-has-segment-p mode-line-format)))
+        (when (fboundp 'edmacs-modeline-ghostel-mode)
+          (with-temp-buffer
+            (edmacs-modeline-ghostel-mode)
+            (should (string-match-p "ZZAGENTSZZ" (eval (cadr mode-line-format) t)))))))))
 
 ;; ============================================================================
 ;; Tabulated-list view

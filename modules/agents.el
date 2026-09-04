@@ -34,6 +34,9 @@
 (require 'subr-x)
 (require 'tabulated-list)
 
+(declare-function edmacs-modeline-text-mode "ui" (&optional default))
+(declare-function nano-modeline-text-mode "nano-modeline" (&optional default))
+
 ;; ============================================================================
 ;; Struct and table
 ;; ============================================================================
@@ -221,22 +224,65 @@ redisplay.")
                " ")))))
 
 (defun edmacs-agents--refresh-mode-line (&rest _keys)
-  "Recompute and cache the mode-line roll-up string.
+  "Recompute and cache the mode-line roll-up string, and repaint.
 Wired onto `edmacs-agents-changed-hook'; ignores the hook's KEYS
-argument since every recompute walks the whole table regardless."
-  (setq edmacs-agents--mode-line-string (edmacs-agents--mode-line-string-compute)))
+argument since every recompute walks the whole table regardless.
+`force-mode-line-update' is required here: under the `:eval'
+construct, nothing else notices this cached string changed."
+  (setq edmacs-agents--mode-line-string (edmacs-agents--mode-line-string-compute))
+  (force-mode-line-update t))
+
+(defun edmacs-agents-mode-line-segment ()
+  "Return the cached roll-up string, already \"\" when empty.
+Nullary and allocation-free: this is the literal element `apply'd on
+every mode-line render by nano-modeline's `:eval' construct."
+  edmacs-agents--mode-line-string)
+
+(defun edmacs-agents--nano-modeline-footer-filter-args (args)
+  "Append the roll-up segment to `nano-modeline-footer's RIGHT element list.
+ARGS is (LEFT [RIGHT [DEFAULT]]); the two-argument shape is the
+mainline one for every claude-term ghostel pane
+(`edmacs-modeline-ghostel-mode'), `nano-modeline-message-mode' and
+`nano-modeline-term-mode'. The element must be a list, not a bare
+symbol: `nano-modeline--make' `apply's its car to its cdr. RIGHT is a
+shared quoted literal inside nano-modeline, so it is appended to,
+never mutated, and the `member' check keeps a re-bake from doubling
+it."
+  (let ((element '(edmacs-agents-mode-line-segment))
+        (right (nth 1 args)))
+    (list (nth 0 args)
+          (if (member element right) right (append right (list element)))
+          (nth 2 args))))
+
+(defun edmacs-agents--install-mode-line-advice ()
+  "Splice the roll-up segment into every nano-modeline footer.
+Targets `nano-modeline-footer' because ui.el binds
+`nano-modeline-position' to it; a switch to `nano-modeline-header'
+there would silently drop the segment. The default line is then
+re-baked because ui.el bakes it long before `edmacs-agents-init'
+loads -- through ui.el's own wrapper when present, since re-baking
+with plain `nano-modeline-text-mode' would strip that line's filtered
+buffer name and diagnostics."
+  (advice-add 'nano-modeline-footer :filter-args
+              #'edmacs-agents--nano-modeline-footer-filter-args)
+  (when (and (consp (default-value 'mode-line-format))
+             (eq (car (default-value 'mode-line-format)) :eval))
+    (with-temp-buffer
+      (cond ((fboundp 'edmacs-modeline-text-mode) (edmacs-modeline-text-mode t))
+            ((fboundp 'nano-modeline-text-mode) (nano-modeline-text-mode t))))))
 
 (defun edmacs-agents--ensure-mode-line ()
-  "Splice the cached roll-up string into `global-mode-string' once.
-Checks membership in the actual list (not a separate flag) so
-reloading this file during interactive development never inserts a
-second copy."
+  "Wire the cached roll-up string into the real nano-modeline construct.
+Installs `:filter-args' advice on `nano-modeline-footer' rather than
+splicing into `global-mode-string' -- nano-modeline never reads that
+variable, so a splice there rendered nothing. Not a bare `advice-add':
+advising an undefined `nano-modeline-footer' succeeds and defines its
+function cell, making `fboundp' lie, so the install stays inside
+`with-eval-after-load'."
   (edmacs-agents--refresh-mode-line)
   (add-hook 'edmacs-agents-changed-hook #'edmacs-agents--refresh-mode-line)
-  (unless (memq 'edmacs-agents--mode-line-string global-mode-string)
-    (setq global-mode-string
-          (append (or global-mode-string '(""))
-                  (list 'edmacs-agents--mode-line-string)))))
+  (with-eval-after-load 'nano-modeline
+    (edmacs-agents--install-mode-line-advice)))
 
 ;; ============================================================================
 ;; Tabulated-list view
@@ -288,7 +334,7 @@ sidebar's own ALL AGENTS section."
 ;; ============================================================================
 
 (defun edmacs-agents-init ()
-  "Idempotent one-time setup: splice the mode-line roll-up in.
+  "Idempotent one-time setup: wire the mode-line roll-up into nano-modeline.
 
 Deliberately NOT called at this file's own top level: init.el calls it
 once, right after `(load-module \"agents\")', so that merely loading
