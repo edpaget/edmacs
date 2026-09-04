@@ -224,18 +224,19 @@ An `:around' advice body for `evil-window-DIRECTION'. windmove signals a
 `user-error' rather than returning nil when it is blocked at a
 `no-other-window' boundary, so ORIG-FN's error is caught, not just its
 return value inspected. The retry -- `window-in-direction' with IGNORE
-non-nil -- only runs when the selected window is exactly what it was
-before ORIG-FN ran: a multi-count motion that moved partway before
-erroring, or a plain nonexistent-direction error with no neighbour at
-all, both re-signal ORIG-FN's original error unchanged rather than being
-silently swallowed."
+non-nil -- only runs when ORIG-FN actually errored and left the selected
+window exactly what it was before: a zero-count motion (`C-w 0 h') never
+calls windmove at all and must stay a no-op, a multi-count motion that
+moved partway before erroring, or a plain nonexistent-direction error
+with no neighbour at all, all re-signal ORIG-FN's original error
+unchanged rather than being silently swallowed or misread as a block."
   (let ((before (selected-window))
         handled
         signalled)
     (condition-case err
         (apply orig-fn args)
       (error (setq signalled err)))
-    (when (eq (selected-window) before)
+    (when (and signalled (eq (selected-window) before))
       (let ((target (window-in-direction direction before t)))
         (when target
           (select-window target)

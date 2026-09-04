@@ -287,6 +287,24 @@ it into a silent no-op."
     (delete-other-windows)
     (should-error (evil-window-left 1))))
 
+(ert-deftest edmacs-windows-test-evil-window-left-zero-count-stays-put ()
+  "A zero-repetition motion (`C-w 0 h' via `evil-window-digit-argument', or
+`C-u 0 C-w h') never calls windmove at all -- `(dotimes (_ 0) ...)' is a
+no-op -- so it must stay on MAIN rather than being misread as \"blocked\"
+and force-jumped into the `no-other-window' neighbour. The advice's retry
+must gate on ORIG-FN actually signalling, not merely on the selected
+window matching its starting value."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((main (selected-window))
+           (neighbor (split-window main nil 'left)))
+      (set-window-parameter neighbor 'no-other-window t)
+      (select-window main)
+      (evil-window-left 0)
+      (should (eq (selected-window) main)))))
+
 (ert-deftest edmacs-windows-test-evil-window-left-reaches-no-other-window-after-state-round-trip ()
   "The reachability fix survives a `window-state-get'/`window-state-put'
 round trip -- the shape a daemon restart or `desktop.el' actually
