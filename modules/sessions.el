@@ -469,6 +469,17 @@ Under the daemon a deleted last frame would drop Emacs out of the Dock."
   "Tabs, layout persistence, and the launchd daemon's lifecycle."
   :group 'convenience)
 
+;; Dock-launch-while-daemon-down decision (daemon-and-Dock-frame phase, AC3):
+;; an `emacsclient -c -a ""' wrapper .app was considered and rejected. It
+;; would need to replace the Dock's Emacs tile, which moves Dock/LaunchServices
+;; identity onto the wrapper's own client processes and defeats Finding 1 --
+;; the daemon can no longer piggyback on the OS's native single-instance/
+;; hide-show behavior once something else owns the tile. Instead: unconditional
+;; `KeepAlive' (below) keeps the daemon relaunching on any exit or crash, and
+;; `edmacs-sessions--warn-on-shadow-daemon-process' surfaces -- non-fatally,
+;; detection only -- the case that slips through anyway: a Dock click landing
+;; between login and the daemon's first `server-start', or during launchd's
+;; backoff after a crash-loop.
 (defcustom edmacs-sessions-launchd-service "emacs-plus@31"
   "Homebrew service name for the launchd-managed Emacs daemon.
 Read only by `edmacs-stop-daemon'.  The plist this names sets
@@ -545,10 +556,62 @@ login."
   (interactive "e")
   (edmacs-ns-close-frame (posn-window (event-start event))))
 
-(when (and (daemonp) (eq system-type 'darwin))
+(defun edmacs-sessions--shadow-daemon-processes ()
+  "Return PIDs of other running processes sharing this daemon's executable.
+Finding 1 of the daemon-and-Dock-frame phase: the launchd daemon and a
+Dock-launched Emacs.app are the very same binary, so a second process
+running it is exactly the silent-drift failure (a Dock click launching a
+serverless Emacs instead of raising this one) that phase exists to catch.
+Shells out to `pgrep' rather than `list-system-processes' +
+`process-attributes', which on macOS cannot read another process's
+command line without it being owned by the same user, and even then not
+reliably for an app-bundle launch."
+  (let* ((exe (expand-file-name invocation-name invocation-directory))
+         (self (number-to-string (emacs-pid)))
+         (pgrep (executable-find "pgrep")))
+    (when pgrep
+      (with-temp-buffer
+        (call-process pgrep nil t nil "-f" (regexp-quote exe))
+        (seq-remove (lambda (pid) (string= pid self))
+                    (split-string (buffer-string) "\n" t))))))
+
+(defun edmacs-sessions--warn-on-shadow-daemon-process ()
+  "Warn (non-fatally) if another process shares this daemon's executable.
+Detection only, by design: never signals or kills the other process,
+since telling a stale/duplicate instance from a legitimate one apart
+safely is out of scope for an automatic action -- see the launchd-vs-
+wrapper-.app tradeoff recorded above `edmacs-sessions-launchd-service'.
+Errors are swallowed rather than surfaced: this is a best-effort warning
+running from `emacs-startup-hook', not a boot-critical check."
+  (when-let* ((pids (ignore-errors (edmacs-sessions--shadow-daemon-processes))))
+    (display-warning
+     'edmacs-sessions
+     (format "another process (pid%s %s) is running this daemon's own \
+executable -- possibly a Dock-launched Emacs.app instead of/alongside \
+the launchd daemon; see Finding 1 of the daemon-and-Dock-frame phase"
+             (if (cdr pids) "s" "") (string-join pids ", "))
+     :warning)))
+
+(defun edmacs-sessions--install-macos-close-frame-bindings ()
+  "Install the daemon's macOS close-frame bindings and startup checks.
+Extracted from the `when' guard below so a test can call it directly:
+`(daemonp)' is nil in every batch test's load environment, so the guard
+itself never runs there.
+
+Both the close button (`special-event-map') and `C-x 5 0'/`edmacs-quit'
+(`[remap delete-frame]') are wired to `edmacs-ns-close-frame' -- they are
+the same intent (\"get this frame off my screen\") and share one
+behavior deliberately. `:q'/`:wq'/`:x'/`ZQ'/`C-w q' need no wiring here:
+`edmacs-quit-window-or-buffer' (windows.el) already overrides `evil-quit'
+to close a window or kill a buffer, never a frame, so they never reach
+`delete-frame' at all."
   (define-key global-map [remap delete-frame] #'edmacs-ns-close-frame)
   (define-key special-event-map [delete-frame] #'edmacs-ns-handle-delete-frame)
-  (add-hook 'emacs-startup-hook #'edmacs-sessions--ensure-gui-frame))
+  (add-hook 'emacs-startup-hook #'edmacs-sessions--ensure-gui-frame)
+  (add-hook 'emacs-startup-hook #'edmacs-sessions--warn-on-shadow-daemon-process))
+
+(when (and (daemonp) (eq system-type 'darwin))
+  (edmacs-sessions--install-macos-close-frame-bindings))
 
 ;; ============================================================================
 ;; Bufferlo - per-tab buffer lists (desktop.el deliberately omits these)

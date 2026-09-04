@@ -33,6 +33,13 @@
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
 ;;         -l modules/sessions-live-test.el -f ert-run-tests-batch-and-exit
+;;
+;; None of this exercises the launchd daemon, the Dock, or NS hide/show --
+;; those need a real GUI login session and are not ERT-testable. The
+;; daemon-and-Dock-frame roadmap phase's AC4 is the manual checklist that
+;; covers them (daemon-starts-at-login, close-hides-instead-of-quits,
+;; Dock-click-restores, `emacsclient -c' behavior, and restart-restores-
+;; session); see that phase for the pass/fail steps.
 
 ;;; Code:
 

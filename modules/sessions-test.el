@@ -848,6 +848,69 @@ this orchestrator only mutates already-live frames."
                   ((symbol-function 'call-process)
                    (lambda (&rest args) (setq call args) 0)))
           (should-error (edmacs-stop-daemon) :type 'user-error)
-          (should-not call))))))
+          (should-not call))))
+
+    ;; ============================================================================
+    ;; edmacs-sessions--install-macos-close-frame-bindings -- extracted so it is
+    ;; directly callable regardless of the ambient `daemonp', which is nil in
+    ;; every test's batch load environment.
+    ;; ============================================================================
+
+    (ert-deftest edmacs-sessions-test-install-macos-close-frame-bindings ()
+      "Installs the close-button and remapped-delete-frame bindings."
+      (let ((prior-remap (lookup-key global-map [remap delete-frame]))
+            (prior-special (lookup-key special-event-map [delete-frame]))
+            (emacs-startup-hook nil))
+        (unwind-protect
+            (progn
+              (edmacs-sessions--install-macos-close-frame-bindings)
+              (should (eq (lookup-key global-map [remap delete-frame])
+                          #'edmacs-ns-close-frame))
+              (should (eq (lookup-key special-event-map [delete-frame])
+                          #'edmacs-ns-handle-delete-frame))
+              (should (memq #'edmacs-sessions--ensure-gui-frame emacs-startup-hook))
+              (should (memq #'edmacs-sessions--warn-on-shadow-daemon-process
+                            emacs-startup-hook)))
+          (define-key global-map [remap delete-frame] prior-remap)
+          (define-key special-event-map [delete-frame] prior-special))))
+
+    ;; ============================================================================
+    ;; edmacs-sessions--warn-on-shadow-daemon-process -- detection-only, never
+    ;; touches the other process.
+    ;; ============================================================================
+
+    (ert-deftest edmacs-sessions-test-shadow-daemon-warns-when-found ()
+      "Surfaces a non-fatal warning naming the other PID(s) it found."
+      (let (warned)
+        (cl-letf (((symbol-function 'edmacs-sessions--shadow-daemon-processes)
+                   (lambda () '("4242")))
+                  ((symbol-function 'display-warning)
+                   (lambda (type message &rest _)
+                     (setq warned (cons type message)))))
+          (edmacs-sessions--warn-on-shadow-daemon-process)
+          (should warned)
+          (should (eq (car warned) 'edmacs-sessions))
+          (should (string-match-p "4242" (cdr warned))))))
+
+    (ert-deftest edmacs-sessions-test-shadow-daemon-silent-when-alone ()
+      "No other process sharing the executable means no warning at all."
+      (let (warned)
+        (cl-letf (((symbol-function 'edmacs-sessions--shadow-daemon-processes)
+                   (lambda () nil))
+                  ((symbol-function 'display-warning)
+                   (lambda (&rest _) (setq warned t))))
+          (edmacs-sessions--warn-on-shadow-daemon-process)
+          (should-not warned))))
+
+    (ert-deftest edmacs-sessions-test-shadow-daemon-errors-swallowed ()
+      "A failure probing for other processes must not escape as an error --
+    this runs from `emacs-startup-hook' and must never block boot."
+      (let (warned)
+        (cl-letf (((symbol-function 'edmacs-sessions--shadow-daemon-processes)
+                   (lambda () (error "pgrep exploded")))
+                  ((symbol-function 'display-warning)
+                   (lambda (&rest _) (setq warned t))))
+          (edmacs-sessions--warn-on-shadow-daemon-process)
+          (should-not warned))))))
 
 ;;; sessions-test.el ends here
