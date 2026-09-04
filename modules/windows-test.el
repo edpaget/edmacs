@@ -1768,6 +1768,30 @@ two windows, left first. Callers run inside `save-window-excursion'."
     (set-window-parameter right 'window-slot 0)
     (list left right)))
 
+(defun edmacs-windows-test--make-dedicated-wedged-frame ()
+  "Like `edmacs-windows-test--make-wedged-frame', but the selected window is
+a DEDICATED left side window and two undedicated right side windows sit
+beside it -- the real-world shape, where repair picks one of the others as
+its survivor and deletes the window the command was invoked from.
+Returns the three windows, left first."
+  (delete-other-windows)
+  (let* ((left (selected-window))
+         (right (split-window left nil 'right))
+         (right2 (split-window right nil 'below)))
+    (dolist (w (list left right right2))
+      (set-window-parameter w 'edmacs-main nil))
+    (set-window-parameter left 'window-side 'left)
+    (set-window-parameter left 'window-slot 0)
+    (set-window-parameter left 'no-other-window t)
+    (set-window-parameter left 'no-delete-other-windows t)
+    (set-window-dedicated-p left t)
+    (set-window-parameter right 'window-side 'right)
+    (set-window-parameter right 'window-slot 0)
+    (set-window-parameter right2 'window-side 'right)
+    (set-window-parameter right2 'window-slot 1)
+    (select-window left)
+    (list left right right2)))
+
 (ert-deftest edmacs-windows-test-core-sides-check-passes-a-mainless-frame ()
   "Pins why an edmacs-side guard is needed at all: core reads a frame of
 nothing but side windows as a VALID side-window configuration.
@@ -1919,6 +1943,23 @@ point in a `no-other-window' side window with no way back."
       (edmacs-windows-test--make-wedged-frame)
       (funcall command)
       (should (edmacs-main-window))
+      (should-not (edmacs-windows-frame-wedged-p)))))
+
+(ert-deftest edmacs-windows-test-degraded-paths-from-the-dedicated-sidebar ()
+  "The same three commands invoked from the window repair is about to
+delete. Each resolves main BEFORE reading `selected-window', so none of
+them acts on a stale window object: reading it first left
+`edmacs-window-delete-or-demote' comparing a dead window against the new
+main, taking the delete branch, and signalling on the repaired main
+window itself."
+  (dolist (command '(edmacs-stack-close
+                     edmacs-window-delete-or-demote
+                     edmacs-stack-toggle))
+    (save-window-excursion
+      (edmacs-windows-test--make-dedicated-wedged-frame)
+      (funcall command)
+      (should (edmacs-main-window))
+      (should (window-live-p (edmacs-main-window)))
       (should-not (edmacs-windows-frame-wedged-p)))))
 
 (ert-deftest edmacs-windows-test-switch-to-buffer-in-dedicated-window-is-pop ()

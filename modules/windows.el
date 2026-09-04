@@ -667,11 +667,15 @@ selects main."
 Replaces plain `delete-window' on `SPC w d': deleting `edmacs-main-window'
 outright would leave the frame without one, so main demotes instead."
   (interactive)
-  (if (eq (selected-window) (or (edmacs-main-window) (edmacs-windows-repair-frame)))
-      (if (edmacs--center-split-p)
-          (edmacs-window-demote)
-        (message "edmacs-window-delete-or-demote: no center split to demote into"))
-    (delete-window)))
+  ;; Resolve main before reading `selected-window': repairing a wedged frame
+  ;; can delete the window that was selected when the command was invoked.
+  (let* ((main (or (edmacs-main-window) (edmacs-windows-repair-frame)))
+         (window (selected-window)))
+    (if (eq window main)
+        (if (edmacs--center-split-p)
+            (edmacs-window-demote)
+          (message "edmacs-window-delete-or-demote: no center split to demote into"))
+      (ignore-errors (delete-window window)))))
 
 ;; ============================================================================
 ;; Quitting: `:q' closes a buffer, never the frame
