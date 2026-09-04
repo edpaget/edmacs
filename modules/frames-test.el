@@ -8,8 +8,14 @@
 ;; this suite runs under plain `-Q --batch' with no pty.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el -l modules/frames.el \
+;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/windows.el -l modules/frames.el \
 ;;         -l modules/frames-test.el -f ert-run-tests-batch-and-exit
+;;
+;; `modules/windows.el' is on that line because `edmacs-frames--reset-to-spare'
+;; now calls `edmacs-windows-repair-frame' to get a non-side reset target;
+;; without it the reset test below fails with a void-function rather than
+;; skipping.
 
 ;;; Code:
 
@@ -680,6 +686,75 @@ policy is applied from `emacs-startup-hook' as well."
 (ert-deftest edmacs-frames-test-fullscreen-is-wired-to-both-hooks ()
   (should (memq #'edmacs-frames-apply-fullscreen after-make-frame-functions))
   (should (memq #'edmacs-frames--apply-fullscreen-at-startup emacs-startup-hook)))
+
+
+;; ============================================================================
+;; edmacs-frames--reset-to-spare -- the last-tab reset completes
+;; ============================================================================
+
+(ert-deftest edmacs-frames-test-close-last-tab-reset-completes-from-a-side-window ()
+  "With the sidebar selected, the old reset ran `switch-to-buffer' against
+a dedicated window (which pops into a right side window) and then
+`delete-other-windows' from a side window, signalling \"Cannot make side
+window the only window\" -- abandoning `edmacs-repo', the frame name and
+the tab rename half-done. State is now cleared first and the window reset
+targets a repaired main window."
+  (let* ((frame (selected-frame))
+         (original-name (frame-parameter frame 'name))
+         (renamed nil))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (set-frame-parameter frame 'edmacs-repo "/repo/.git")
+          (set-frame-parameter frame 'name "repo")
+          (let ((window (selected-window)))
+            (set-window-parameter window 'window-side 'left)
+            (set-window-parameter window 'window-slot 0)
+            (set-window-dedicated-p window t))
+          (cl-letf (((symbol-function 'edmacs-frames--only-frame-p) (lambda (_f) t))
+                    ((symbol-function 'edmacs-frames--maybe-teardown-watch-for-frame)
+                     #'ignore)
+                    ((symbol-function 'tab-bar-rename-tab)
+                     (lambda (name &optional _n) (setq renamed name))))
+            (edmacs-frames--close-last-tab nil))
+          (should-not (frame-parameter frame 'edmacs-repo))
+          ;; Clearing `name' hands the frame back to Emacs' own auto-naming
+          ;; ("F1", "F2", ...); what matters is that "repo" is gone.
+          (should-not (equal (frame-parameter frame 'name) "repo"))
+          (should (equal renamed "emacs"))
+          (let ((main (edmacs-main-window)))
+            (should (window-live-p main))
+            (should-not (window-parameter main 'window-side))
+            (should-not (window-dedicated-p main))
+            (should (equal (buffer-name (window-buffer main)) "*scratch*"))))
+      (set-frame-parameter frame 'edmacs-repo nil)
+      (set-frame-parameter frame 'name original-name))))
+
+(ert-deftest edmacs-frames-test-close-last-tab-clears-state-even-if-windows-fail ()
+  "The state clearing must not be hostage to the window work: a signalling
+repair is warned about, not propagated, and the three frame-level
+resets have already landed by then."
+  (let* ((frame (selected-frame))
+         (original-name (frame-parameter frame 'name))
+         (renamed nil))
+    (unwind-protect
+        (save-window-excursion
+          (set-frame-parameter frame 'edmacs-repo "/repo/.git")
+          (set-frame-parameter frame 'name "repo")
+          (cl-letf (((symbol-function 'edmacs-frames--only-frame-p) (lambda (_f) t))
+                    ((symbol-function 'edmacs-frames--maybe-teardown-watch-for-frame)
+                     #'ignore)
+                    ((symbol-function 'tab-bar-rename-tab)
+                     (lambda (name &optional _n) (setq renamed name)))
+                    ((symbol-function 'edmacs-windows-repair-frame)
+                     (lambda (&optional _frame) (error "boom")))
+                    ((symbol-function 'display-warning) #'ignore))
+            (edmacs-frames--close-last-tab nil))
+          (should-not (frame-parameter frame 'edmacs-repo))
+          (should-not (equal (frame-parameter frame 'name) "repo"))
+          (should (equal renamed "emacs")))
+      (set-frame-parameter frame 'edmacs-repo nil)
+      (set-frame-parameter frame 'name original-name))))
 
 (provide 'frames-test)
 ;;; frames-test.el ends here

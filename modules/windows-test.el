@@ -858,6 +858,7 @@ has never bootstrapped straight locally, so callers can `ert-skip'."
     (">" . edmacs-stack-widen)
     ("<" . edmacs-stack-narrow)
     ("S" . edmacs-stack-toggle)
+    ("r" . edmacs-windows-repair-frame)
     ("d" . edmacs-window-delete-or-demote)
     ("=" . edmacs-stack-balance-center))
   "This phase's new/changed `SPC w' leaves, key -> intended command.")
@@ -1740,5 +1741,191 @@ stock `quit-restore-window', which can resurrect a stale prior buffer."
             (should (eq (selected-window) (edmacs-main-window)))))
       (dolist (name '("ewt-rt-sidebar" "*Embark Collect Live*"))
         (when (get-buffer name) (kill-buffer name))))))
+
+
+;; ============================================================================
+;; Shape repair -- a frame with nothing but side windows
+;; ============================================================================
+;; The batch frame is effectively 80x25 for splitting purposes no matter
+;; what `set-frame-width' reports, so a sized `(split-window w 40 'right)'
+;; signals "Window ... too small for splitting". Every helper below uses
+;; sizeless splits only.
+
+(defun edmacs-windows-test--make-wedged-frame ()
+  "Turn the selected frame into [left-side | right-side], zero non-side
+windows -- the shape `edmacs-main-window' reports nil for. Returns the
+two windows, left first. Callers run inside `save-window-excursion'."
+  (delete-other-windows)
+  (let* ((left (selected-window))
+         (right (split-window left nil 'right)))
+    (dolist (w (list left right))
+      (set-window-parameter w 'edmacs-main nil))
+    (set-window-parameter left 'window-side 'left)
+    (set-window-parameter left 'window-slot 0)
+    (set-window-parameter left 'no-other-window t)
+    (set-window-parameter left 'no-delete-other-windows t)
+    (set-window-parameter right 'window-side 'right)
+    (set-window-parameter right 'window-slot 0)
+    (list left right)))
+
+(ert-deftest edmacs-windows-test-core-sides-check-passes-a-mainless-frame ()
+  "Pins why an edmacs-side guard is needed at all: core reads a frame of
+nothing but side windows as a VALID side-window configuration.
+`window-main-window' falls back to `frame-root-window' rather than
+returning nil, so `window--sides-check-failed's own \"no main window\"
+branch is unreachable and `window--sides-check' resets nothing --
+while `edmacs-main-window', which only counts leaf non-side windows,
+correctly reports nil."
+  (save-window-excursion
+    (cl-destructuring-bind (left right) (edmacs-windows-test--make-wedged-frame)
+      (should-not (window--sides-check-failed (selected-frame)))
+      (window--sides-check (selected-frame))
+      (should (eq (window-parameter left 'window-side) 'left))
+      (should (eq (window-parameter right 'window-side) 'right))
+      (should (eq (window-main-window) (frame-root-window)))
+      (should (window-main-window))
+      (should-not (edmacs-main-window))
+      (should (edmacs-windows-frame-wedged-p)))))
+
+(ert-deftest edmacs-windows-test-repair-frame-rebuilds-main-from-wedged-tree ()
+  "Both wedged windows lose their side parameters; the survivor becomes an
+ordinary main window. A left side window may legitimately be back
+afterwards -- `edmacs-windows-frame-repaired-functions' re-shows the
+sidebar whenever `modules/sidebar.el' is loaded into the session -- so
+the assertions are about the repaired main window, not about the frame
+being side-window-free."
+  (save-window-excursion
+    (cl-destructuring-bind (_left right) (edmacs-windows-test--make-wedged-frame)
+      (let ((main (edmacs-windows-repair-frame)))
+        (should (window-live-p main))
+        (should (eq main (edmacs-main-window)))
+        (should-not (window-live-p right))
+        (dolist (parameter '(window-side window-slot
+                             no-other-window no-delete-other-windows))
+          (should-not (window-parameter main parameter)))
+        (should-not (window-dedicated-p main))
+        (should-not (edmacs-windows-frame-wedged-p))
+        ;; Idempotent: a second call is the healthy-frame no-op.
+        (should (eq (edmacs-windows-repair-frame) main))))))
+
+(ert-deftest edmacs-windows-test-repair-frame-evicts-a-dedicated-only-buffer ()
+  "When every window was dedicated, the survivor is holding a buffer that
+belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
+  (save-window-excursion
+    (let ((buf (generate-new-buffer "ewt-wedged-dedicated")))
+      (unwind-protect
+          (cl-destructuring-bind (left right)
+              (edmacs-windows-test--make-wedged-frame)
+            (set-window-buffer left buf)
+            (dolist (w (list left right)) (set-window-dedicated-p w t))
+            (let ((main (edmacs-windows-repair-frame)))
+              (should (window-live-p main))
+              (should-not (eq (window-buffer main) buf))
+              (should (equal (buffer-name (window-buffer main)) "*scratch*"))))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-repair-frame-runs-the-repaired-hook ()
+  (save-window-excursion
+    (let* ((seen nil)
+           (edmacs-windows-frame-repaired-functions
+            (list (lambda (frame) (push frame seen)))))
+      (edmacs-windows-test--make-wedged-frame)
+      (edmacs-windows-repair-frame)
+      (should (equal seen (list (selected-frame))))
+      ;; A healthy frame does not re-run it.
+      (edmacs-windows-repair-frame)
+      (should (equal seen (list (selected-frame)))))))
+
+(ert-deftest edmacs-windows-test-repair-frame-is-a-no-op-when-reentrant ()
+  "The hook may itself reach repair; the guard must make that a no-op
+rather than a recursion."
+  (save-window-excursion
+    (edmacs-windows-test--make-wedged-frame)
+    (let ((edmacs-windows--repairing t))
+      (should-not (edmacs-windows-repair-frame))
+      (should (edmacs-windows-frame-wedged-p)))))
+
+(ert-deftest edmacs-windows-test-wedged-p-excludes-child-and-minibuffer-frames ()
+  "A corfu-style child frame and a minibuffer-only frame are never wedged:
+neither is expected to hold a main window, and repairing one would
+collapse a popup. Batch cannot make either kind (`make-frame' has no
+terminal, and `parent-frame' cannot name the frame itself), so the two
+frame parameters are stubbed instead."
+  (save-window-excursion
+    (edmacs-windows-test--make-wedged-frame)
+    (should (edmacs-windows-frame-wedged-p))
+    (let ((real (symbol-function 'frame-parameter)))
+      (dolist (stub '((parent-frame . t) (minibuffer . only)))
+        (cl-letf (((symbol-function 'frame-parameter)
+                   (lambda (frame parameter)
+                     (if (eq parameter (car stub))
+                         (cdr stub)
+                       (funcall real frame parameter)))))
+          (should-not (edmacs-windows-frame-wedged-p))
+          ;; And repair is the healthy-frame no-op on such a frame.
+          (should-not (edmacs-windows-repair-frame)))))
+    ;; Still wedged once the stubs are gone -- nothing was repaired.
+    (should (edmacs-windows-frame-wedged-p))))
+
+(ert-deftest edmacs-windows-test-display-buffer-on-mainless-frame-lands-in-center ()
+  "The wedge's real symptom: `display-buffer' used to hand an unrouted
+buffer a THIRD side window (or, on the sole-sidebar shape, a whole new
+frame) because `display-buffer-in-side-window' always succeeds."
+  (save-window-excursion
+    (let ((buf (generate-new-buffer "ewt-unrouted"))
+          (frames (length (frame-list))))
+      (unwind-protect
+          (progn
+            (edmacs-windows-test--make-wedged-frame)
+            (let ((win (display-buffer buf)))
+              (should (window-live-p win))
+              (should-not (window-parameter win 'window-side))
+              (should (eq win (edmacs-main-window)))
+              (should (eq (window-buffer win) buf))
+              (should (= (length (frame-list)) frames))
+              (should (zerop (edmacs-windows-test--right-windows-count)))))
+        (kill-buffer buf)))))
+
+(defun edmacs-windows-test--right-windows-count ()
+  "Number of right side windows on the selected frame."
+  (length (seq-filter (lambda (w) (eq (window-parameter w 'window-side) 'right))
+                      (window-list nil 'no-minibuf))))
+
+(ert-deftest edmacs-windows-test-display-buffer-on-healthy-frame-still-stacks ()
+  "The recover action must be invisible on a frame that has a main window."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "ewt-routed")))
+      (unwind-protect
+          (let ((win (display-buffer buf '(nil (inhibit-same-window . t)))))
+            (should (eq (window-parameter win 'window-side) 'right)))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-sweep-stale-panes-repairs-a-wedged-frame ()
+  (save-window-excursion
+    (edmacs-windows-test--make-wedged-frame)
+    (let ((main (edmacs-stack-sweep-stale-panes)))
+      (should (window-live-p main))
+      (should (eq main (edmacs-main-window)))
+      (should-not (edmacs-windows-frame-wedged-p)))))
+
+(ert-deftest edmacs-windows-test-degraded-paths-never-leave-main-nil ()
+  "Each of these used to no-op or signal on a mainless frame, stranding
+point in a `no-other-window' side window with no way back."
+  (dolist (command '(edmacs-stack-close
+                     edmacs-window-delete-or-demote
+                     edmacs-stack-toggle))
+    (save-window-excursion
+      (edmacs-windows-test--make-wedged-frame)
+      (funcall command)
+      (should (edmacs-main-window))
+      (should-not (edmacs-windows-frame-wedged-p)))))
+
+(ert-deftest edmacs-windows-test-switch-to-buffer-in-dedicated-window-is-pop ()
+  "Read only by `switch-to-buffer's interactive spec: nil hard-errors in
+the sidebar and every stack pane while the non-interactive call already
+falls through to `pop-to-buffer'. The other values un-dedicate the
+target window, which would break the sidebar's own contract."
+  (should (eq switch-to-buffer-in-dedicated-window 'pop)))
 
 ;;; windows-test.el ends here

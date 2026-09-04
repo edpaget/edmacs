@@ -78,6 +78,7 @@
   "w>" '(edmacs-stack-widen :which-key "widen stack")
   "w<" '(edmacs-stack-narrow :which-key "narrow stack")
   "wS" '(edmacs-stack-toggle :which-key "toggle side windows")
+  "wr" '(edmacs-windows-repair-frame :which-key "repair frame layout")
 
   ;; Window rotation (tmux layout replacement)
   "wt" '(:ignore t :which-key "rotate")

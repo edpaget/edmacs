@@ -1686,6 +1686,111 @@ sidebar must not keep truncating to the old default."
                 (should (= width (length (edmacs-sidebar--truncate-label long frame))))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
+
+    ;; ==========================================================================
+    ;; The sidebar is never a frame's sole or root window
+    ;; ==========================================================================
+
+    (defun edmacs-sidebar-test--make-sole-sidebar-window (frame)
+      "Leave FRAME with one window: a dedicated left side window showing the
+sidebar buffer. That is the shape whose `delete-window' signals \"Attempt
+to delete minibuffer or sole ordinary window\", because the window has no
+parent -- reproduced by hand rather than via `edmacs-sidebar-show', which
+now repairs it."
+      (delete-other-windows)
+      (let ((window (selected-window)))
+        (set-window-buffer window (edmacs-sidebar--ensure-buffer frame))
+        (set-window-parameter window 'window-side 'left)
+        (set-window-parameter window 'window-slot 0)
+        (set-window-parameter window 'no-other-window t)
+        (set-window-parameter window 'no-delete-other-windows t)
+        (set-window-dedicated-p window t)
+        window))
+
+    (ert-deftest edmacs-sidebar-test-hide-on-sole-window-frame-does-not-signal ()
+      "`edmacs-sidebar-hide' used to call `delete-window' unconditionally, so
+the frame's sole window signalled. It now releases the window in place."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (let ((window (edmacs-sidebar-test--make-sole-sidebar-window frame)))
+                (should (eq (edmacs-sidebar-hide frame) window))
+                (should (window-live-p window))
+                (should-not (eq (window-buffer window)
+                                (edmacs-sidebar--buffer frame)))
+                (should-not (window-dedicated-p window))
+                (dolist (parameter '(window-side window-slot
+                                     no-other-window no-delete-other-windows))
+                  (should-not (window-parameter window parameter)))
+                (should-not (edmacs-sidebar--window frame))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-hide-in-ordinary-window-keeps-the-window ()
+      "`edmacs-sidebar--window' matches on buffer identity, so it also finds
+the sidebar buffer in an ordinary window -- a window the sidebar does not
+own and must not delete."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (delete-other-windows)
+              (let* ((main (selected-window))
+                     (other (split-window main nil 'below)))
+                (set-window-buffer other (edmacs-sidebar--ensure-buffer frame))
+                (should (eq (edmacs-sidebar-hide frame) other))
+                (should (window-live-p other))
+                (should (window-live-p main))
+                (should-not (eq (window-buffer other)
+                                (edmacs-sidebar--buffer frame)))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-hide-deletes-a-real-side-window ()
+      "The normal case is unchanged: a side window with a parent is deleted."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (delete-other-windows)
+              (let ((window (edmacs-sidebar-show frame)))
+                (should (window-live-p window))
+                (should (window-parent window))
+                (should-not (edmacs-sidebar-hide frame))
+                (should-not (window-live-p window))
+                (should-not (edmacs-sidebar--window frame))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-show-into-mainless-frame-yields-side-window-and-main ()
+      "Without the repair, `display-buffer-in-side-window' just reuses the
+existing slot-0 left window and the frame stays wedged."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (edmacs-sidebar-test--make-sole-sidebar-window frame)
+              (should (edmacs-windows-frame-wedged-p frame))
+              (let ((window (edmacs-sidebar-show frame)))
+                (should (window-live-p window))
+                (should (eq (window-parameter window 'window-side) 'left))
+                (should-not (edmacs-windows-frame-wedged-p frame))
+                (let ((main (edmacs-main-window)))
+                  (should (window-live-p main))
+                  (should-not (eq main window))
+                  (should-not (window-parameter main 'window-side)))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-show-is-registered-on-the-repaired-hook ()
+      "Repair hands the frame back a main window but no sidebar; this hook
+membership is what puts one back."
+      (should (memq #'edmacs-sidebar-show edmacs-windows-frame-repaired-functions)))
+
+    (ert-deftest edmacs-sidebar-test-side-window-accessor-ignores-ordinary-windows ()
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (delete-other-windows)
+              (let ((other (split-window (selected-window) nil 'below)))
+                (set-window-buffer other (edmacs-sidebar--ensure-buffer frame))
+                (should (eq (edmacs-sidebar--window frame) other))
+                (should-not (edmacs-sidebar--side-window frame))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-test.el ends here

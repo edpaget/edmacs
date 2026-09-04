@@ -166,14 +166,8 @@ mark the selected window as that tab's main window."
               (kill-buffer buf))))))
 
     (defun edmacs-sidebar-buffers-live-test--reset-frame (frame)
-      "Undo every frame-level trace this suite's scenarios leave behind.
-`edmacs-sidebar-hide' is best-effort: on a real (non-batch-skip) second
-frame whose sidebar is its only ordinary window, `delete-window'
-refuses (\"Attempt to delete minibuffer or sole ordinary window\") --
-harmless here, since every caller either reuses this same frame for a
-fresh scenario next (a redraw replaces the buffer anyway) or is about
-to `delete-frame' it outright."
-      (ignore-errors (edmacs-sidebar-hide frame))
+      "Undo every frame-level trace this suite's scenarios leave behind."
+      (edmacs-sidebar-hide frame)
       (let ((buf (edmacs-sidebar--buffer frame)))
         (when (buffer-live-p buf) (kill-buffer buf))
         (set-frame-parameter frame 'edmacs-sidebar-buffer nil))

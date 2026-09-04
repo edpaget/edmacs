@@ -61,6 +61,11 @@
 (declare-function edmacs-git-common-dir-repo-name "git-common-dir")
 (declare-function edmacs-sidebar-show "sidebar")
 (declare-function edmacs-sidebar--redraw "sidebar")
+
+;; windows.el loads BEFORE frames.el, so these resolve at real load time;
+;; declared for frames-test.el's standalone `-Q --batch' harness.
+(declare-function edmacs-main-window "windows")
+(declare-function edmacs-windows-repair-frame "windows")
 (defvar edmacs-git-common-dir-cache)
 
 ;; `general' loads only in a real init.el session; declared here so the
@@ -660,6 +665,36 @@ which then re-fires this via the hook) is harmless."
 
 (add-hook 'delete-frame-functions #'edmacs-frames--maybe-teardown-watch-for-frame)
 
+(defun edmacs-frames--reset-to-spare (frame)
+  "Reset FRAME to an adoptable spare: no repo, no name, one scratch window.
+Clears the frame state FIRST and rebuilds the windows LAST, so a failure
+in the window work can no longer strand `edmacs-repo', the frame name and
+the tab name half-cleared.
+
+The window reset goes through `edmacs-windows-repair-frame' rather than
+`switch-to-buffer' + `delete-other-windows': called with the sidebar
+selected, that pair put *scratch* into a right side window (a
+non-interactive `switch-to-buffer' on a dedicated window falls through to
+`pop-to-buffer') and then signalled \"Cannot make side window the only
+window\". Repairing first guarantees a non-side, undedicated target, which
+makes that signal structurally unreachable; the sidebar the repair hook
+re-shows survives `delete-other-windows' via `no-delete-other-windows',
+leaving FRAME in the normal shape the next `edmacs-frames-open' adopts."
+  (set-frame-parameter frame 'edmacs-repo nil)
+  (set-frame-parameter frame 'name nil)
+  (tab-bar-rename-tab "emacs")
+  (condition-case err
+      (with-selected-frame frame
+        (let ((main (or (edmacs-windows-repair-frame frame) (edmacs-main-window))))
+          (when (window-live-p main)
+            (set-window-buffer main (get-buffer-create "*scratch*"))
+            (select-window main)
+            (delete-other-windows main))))
+    (error
+     (display-warning 'edmacs-frames
+                      (format "reset-to-spare: %s" (error-message-string err))
+                      :warning))))
+
 (defun edmacs-frames--close-last-tab (_tab)
   "`tab-bar-close-last-tab-choice' handler for a repo frame's last tab.
 Deletes the frame, unless it is the only frame left in the whole
@@ -679,12 +714,7 @@ why this teardown call is not redundant with that hook."
   (let* ((frame (selected-frame)))
     (edmacs-frames--maybe-teardown-watch-for-frame frame)
     (if (edmacs-frames--only-frame-p frame)
-        (progn
-          (switch-to-buffer (get-buffer-create "*scratch*"))
-          (delete-other-windows)
-          (set-frame-parameter frame 'edmacs-repo nil)
-          (set-frame-parameter frame 'name nil)
-          (tab-bar-rename-tab "emacs"))
+        (edmacs-frames--reset-to-spare frame)
       (delete-frame))))
 
 (setq tab-bar-close-last-tab-choice #'edmacs-frames--close-last-tab)

@@ -847,11 +847,21 @@ confirming), else close the worktree row's tab exactly as before."
      (t (edmacs-sidebar-close-worktree)))))
 
 (defun edmacs-sidebar--window (frame)
-  "Return FRAME's visible sidebar window, or nil."
+  "Return FRAME's visible sidebar window, or nil.
+Matches on buffer identity alone, so this also finds the sidebar buffer
+sitting in an ordinary window -- a window the sidebar does not own and
+must not delete. Use `edmacs-sidebar--side-window' where side-ness, not
+mere presence, is the question."
   (let ((buf (edmacs-sidebar--buffer frame)))
     (when (buffer-live-p buf)
       (seq-find (lambda (w) (eq (window-buffer w) buf))
                  (window-list frame 'never)))))
+
+(defun edmacs-sidebar--side-window (frame)
+  "Return FRAME's sidebar window only when it really is a left side window."
+  (let ((window (edmacs-sidebar--window frame)))
+    (when (and window (eq (window-parameter window 'window-side) 'left))
+      window)))
 
 ;; ============================================================================
 ;; Manual resize survives a hide/show cycle (AC3)
@@ -895,9 +905,8 @@ exist) is not a real sidebar width and must never be persisted. The
 stashed value itself is clamped via `edmacs-sidebar--clamp-width'."
   (remhash frame edmacs-sidebar--resize-debounce-timers)
   (when (frame-live-p frame)
-    (let ((window (edmacs-sidebar--window frame)))
+    (let ((window (edmacs-sidebar--side-window frame)))
       (when (and (window-live-p window)
-                 (window-parameter window 'window-side)
                  (> (length (window-list frame 'never)) 1))
         (set-frame-parameter
          frame 'edmacs-sidebar-remembered-width
@@ -944,7 +953,9 @@ live, non-nil window that is not a left side window, that window is
 deleted and treated as nil for the rest of this function -- nothing is
 dedicated. This mirrors `claude-term--pop-to-window's own nil
 guard for the ordinary `display-buffer-in-side-window' returns-nil
-case (slot exhausted, frame too small).
+case (slot exhausted, frame too small). A frame with no non-side window
+is repaired first, since otherwise the existing slot-0 left window is
+simply reused and the frame stays without a main window.
 
 Uses FRAME's remembered width (see above) when it has one, else
 `edmacs-sidebar-width', so a manual resize survives a hide/show cycle.
@@ -953,37 +964,80 @@ here, at read time -- this is what makes a value already poisoned in a
 live frame parameter or a restored desktop self-heal on the very next
 show, rather than only ever being prevented on write."
   (interactive)
-  (let* ((frame (or frame (selected-frame)))
-         (buf (edmacs-sidebar--ensure-buffer frame))
-         (width (edmacs-sidebar--clamp-width
-                 (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
-                     edmacs-sidebar-width)
-                 frame))
-         (window (with-selected-frame frame
-                   (display-buffer-in-side-window
-                    buf
-                    `((side . left)
-                      (slot . 0)
-                      (window-width . ,width)
-                      (preserve-size . (t . nil))
-                      (window-parameters . ((no-delete-other-windows . t)
-                                             (no-other-window . t))))))))
-    (cond
-     ((null window) nil)
-     ((not (eq (window-parameter window 'window-side) 'left))
-      (delete-window window)
-      nil)
-     (t
-      (set-window-dedicated-p window t)
-      window))))
+  (let ((frame (or frame (selected-frame))))
+    ;; A frame with no non-side window would otherwise just have its
+    ;; existing slot-0 left window reused, leaving it wedged.
+    (when (edmacs-windows-frame-wedged-p frame)
+      (edmacs-windows-repair-frame frame))
+    (let* ((buf (edmacs-sidebar--ensure-buffer frame))
+           (width (edmacs-sidebar--clamp-width
+                   (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
+                       edmacs-sidebar-width)
+                   frame))
+           (window (with-selected-frame frame
+                     (display-buffer-in-side-window
+                      buf
+                      `((side . left)
+                        (slot . 0)
+                        (window-width . ,width)
+                        (preserve-size . (t . nil))
+                        (window-parameters . ((no-delete-other-windows . t)
+                                               (no-other-window . t))))))))
+      (cond
+       ((null window) nil)
+       ((not (eq (window-parameter window 'window-side) 'left))
+        ;; This call is what produced WINDOW, so deleting it is the right
+        ;; cleanup -- except on the one shape `delete-window' refuses, a
+        ;; window with no parent, which is released in place instead.
+        (if (window-parent window)
+            (delete-window window)
+          (edmacs-sidebar--release-window window frame))
+        nil)
+       (t
+        (set-window-dedicated-p window t)
+        window)))))
+
+(defun edmacs-sidebar--release-window (window frame)
+  "Stop WINDOW on FRAME being the sidebar's, without ever signalling.
+`delete-window' is only correct for a side window that has a parent.
+The sidebar buffer in an ordinary window sits in a window the sidebar
+does not own, and a window with no parent is the frame's sole window,
+whose `delete-window' signals \"Attempt to delete minibuffer or sole
+ordinary window\" -- both are released in place instead: side and
+protection parameters cleared, dedication dropped, and another buffer
+shown. Returns WINDOW when it survived, nil when it was deleted."
+  (when (window-live-p window)
+    (if (and (window-parameter window 'window-side) (window-parent window))
+        (progn (delete-window window) nil)
+      (dolist (parameter '(window-side window-slot
+                           no-other-window no-delete-other-windows))
+        (set-window-parameter window parameter nil))
+      (set-window-dedicated-p window nil)
+      (let* ((sidebar (window-buffer window))
+             (other (other-buffer sidebar t frame)))
+        (set-window-buffer window
+                           (if (eq other sidebar)
+                               (get-buffer-create "*scratch*")
+                             other)))
+      window)))
 
 (defun edmacs-sidebar-hide (&optional frame)
-  "Hide FRAME's sidebar window, if shown. Only the window is deleted."
+  "Hide FRAME's sidebar window, if shown.
+Deletes the window when the sidebar genuinely owns one; otherwise
+releases it in place rather than signalling -- see
+`edmacs-sidebar--release-window'. Returns the surviving window, or nil."
   (interactive)
   (let* ((frame (or frame (selected-frame)))
          (window (edmacs-sidebar--window frame)))
     (when window
-      (delete-window window))))
+      (edmacs-sidebar--release-window window frame))))
+
+;; The repaired frame has a main window again but no sidebar; this is the
+;; hook `edmacs-windows-repair-frame' runs to put one back. Safe as a hook
+;; member because `edmacs-sidebar-show' reaches
+;; `display-buffer-in-side-window' directly rather than through
+;; `display-buffer' -- see its docstring.
+(add-hook 'edmacs-windows-frame-repaired-functions #'edmacs-sidebar-show)
 
 ;;;###autoload
 (defun edmacs-sidebar-toggle ()

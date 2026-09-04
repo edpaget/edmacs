@@ -752,7 +752,11 @@ still excludes it."
               (should (= (1- count-before) (length (frame-list)))))))))
 
     (ert-deftest edmacs-frames-live-test-close-last-tab-resets-sole-frame ()
-      "On the daemon's only frame, closing its last tab leaves a scratch tab."
+      "On the daemon's only frame, closing its last tab leaves a scratch tab.
+Driven from the SIDEBAR window, which is the shape that used to abandon
+the reset half-done: a non-interactive `switch-to-buffer' against that
+dedicated window popped *scratch* into a right side window, and the
+`delete-other-windows' that followed signalled from a side window."
       (edmacs-frames-live-test--with-sandbox sandbox
         (let* ((repo (expand-file-name "repoA" sandbox))
                (edmacs-git-common-dir-cache (make-hash-table :test #'equal)))
@@ -760,10 +764,16 @@ still excludes it."
           (cl-letf (((symbol-function 'frame-list) (lambda () (list (selected-frame)))))
             (edmacs-frames-open repo)
             (should (= 1 (length (tab-bar-tabs))))
+            (let ((sidebar (edmacs-sidebar-show (selected-frame))))
+              (should (window-live-p sidebar))
+              (select-window sidebar))
             (tab-bar-close-tab)
             (should (= 1 (length (tab-bar-tabs))))
             (should-not (frame-parameter nil 'edmacs-repo))
-            (should (equal (buffer-name (window-buffer (selected-window))) "*scratch*"))
+            (let ((main (edmacs-main-window)))
+              (should (window-live-p main))
+              (should-not (window-parameter main 'window-side))
+              (should (equal (buffer-name (window-buffer main)) "*scratch*")))
             (let ((buf (edmacs-sidebar--buffer (selected-frame))))
               (when (buffer-live-p buf) (kill-buffer buf)))))))
 

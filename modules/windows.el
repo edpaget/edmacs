@@ -27,6 +27,13 @@
 ;; any popup delete the pane and return to `edmacs-main-window' rather than
 ;; risk restoring a stale prior popup.
 ;;
+;; `edmacs-windows-repair-frame' exists because core's own guard cannot
+;; fire on the one shape that matters here: `window-main-window' falls back
+;; to `frame-root-window', so it never returns nil and `window--sides-check'
+;; reads a frame whose every window is a side window as a VALID side
+;; configuration.  Repair applies core's own remedy -- reset every
+;; `window-side' -- and re-designates main.
+;;
 ;; Run the ERT suite with:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
 ;;         -l modules/claude-term.el -l modules/windows.el \
@@ -61,12 +68,18 @@
                      window-slot))
   (add-to-list 'window-persistent-parameters (cons parameter 'writable)))
 
+(defun edmacs-windows--non-side-windows (&optional frame start)
+  "Return FRAME's live, non-minibuffer windows that are not side windows.
+START, when given, is the window `window-list' walks from, which is how
+`edmacs--topleft-window' gets frame order rather than cycle order."
+  (seq-remove (lambda (w) (window-parameter w 'window-side))
+              (window-list frame 'no-minibuf start)))
+
 (defun edmacs--topleft-window ()
   "Return the frame's top-left window that is not a side window.
 Used only as `edmacs-main-window's fallback designation target when no
 window in the frame yet carries the `edmacs-main' parameter."
-  (seq-find (lambda (w) (not (window-parameter w 'window-side)))
-            (window-list nil 'no-minibuf (frame-first-window))))
+  (car (edmacs-windows--non-side-windows nil (frame-first-window))))
 
 (defun edmacs-main-window ()
   "Return the selected frame's main window.
@@ -283,8 +296,13 @@ selected when the triggering command ran."
       (window--display-buffer buffer main 'reuse alist))))
 
 (defconst edmacs-windows--center-reuse-action
-  '((display-buffer-reuse-window edmacs-windows--reuse-main-window))
-  "Action alist for the `main' placement role.")
+  '((display-buffer-reuse-window
+     edmacs-windows--reuse-main-window
+     edmacs-windows--display-buffer-in-recovered-main))
+  "Action alist for the `main' placement role.
+The recover action is what keeps `find-file'/dired/magit-status out of
+the stack on a frame that has no main window left: without it
+`edmacs-windows--reuse-main-window' silently no-ops on its nil `main'.")
 
 ;; ============================================================================
 ;; The placement registry: one declaration point for "where does buffer X go"
@@ -328,11 +346,11 @@ Tracked by identity so a re-sync removes only its own entries.")
   edmacs-windows--placements)
 
 (defun edmacs-windows--redundant-p (placement)
-  "Non-nil when PLACEMENT's resolved action is what the default already does.
-A plain `stack' placement with no slot, height or extra parameters
-resolves to exactly `display-buffer-base-action', so its
-`display-buffer-alist' entry buys nothing -- unless `:override' says the
-entry itself is the point."
+  "Non-nil when PLACEMENT's resolved action adds nothing over the default.
+A plain `stack' placement with no slot, height or extra parameters lands
+buffers in the same side window `display-buffer-base-action' already
+sends them to, so its `display-buffer-alist' entry buys nothing -- unless
+`:override' says the entry itself is the point."
   (let ((spec (cdr placement)))
     (and (eq (plist-get spec :as) 'stack)
          (null (plist-get spec :slot))
@@ -402,13 +420,17 @@ Declaration order is precedence order -- the first matching entry wins."
 ;; ============================================================================
 
 ;; The fallback chain for any unrouted `display-buffer' call: reuse a window
-;; already showing the buffer, else create it in the shared stack slot.
+;; already showing the buffer, recover a center window when the frame has no
+;; non-side window left, else create it in the shared stack slot.
 ;; `display-buffer-pop-up-window' never appears here, so an ordinary popup
-;; can no longer split the center -- and because
-;; `display-buffer-in-side-window' always succeeds (RIGHT is uncapped),
-;; Emacs's own `display-buffer-fallback-action' is never reached either.
+;; can no longer split the center. The recover action is also what keeps
+;; Emacs's own `display-buffer-fallback-action' out of reach: a healthy
+;; frame never gets past `display-buffer-in-side-window', and a mainless one
+;; used to fall through as far as `display-buffer-pop-up-frame'.
 (setq display-buffer-base-action
-      (cons (list #'display-buffer-reuse-window #'display-buffer-in-side-window)
+      (cons (list #'display-buffer-reuse-window
+                  #'edmacs-windows--display-buffer-in-recovered-main
+                  #'display-buffer-in-side-window)
             (cdr (edmacs-stack--popup-alist))))
 
 ;; Flipping this to t would route `switch-to-buffer' through
@@ -416,6 +438,13 @@ Declaration order is precedence order -- the first matching entry wins."
 ;; instead of swapping it in place -- pinned at the Emacs default so that
 ;; can't happen by drift.
 (setq switch-to-buffer-obey-display-actions nil)
+
+;; Read only by `switch-to-buffer's interactive spec. Left nil, `:b' and
+;; `SPC b b' hard-error in the sidebar and in every stack pane, while the
+;; non-interactive call already falls through to `pop-to-buffer'; `pop'
+;; makes the two agree. The other values un-dedicate the target window --
+;; `prompt' after asking -- which would break the sidebar's own contract.
+(setq switch-to-buffer-in-dedicated-window 'pop)
 
 ;; ============================================================================
 ;; This module's placements (most-specific-first)
@@ -622,8 +651,8 @@ Never acts on `edmacs-main-window' itself. Deletes the window -- an
 agent pane's live session buffer, in particular, is never killed -- then
 selects main."
   (interactive)
-  (let ((window (selected-window))
-        (main (edmacs-main-window)))
+  (let* ((main (or (edmacs-main-window) (edmacs-windows-repair-frame)))
+         (window (selected-window)))
     (when (and (not (eq window main)) (window-live-p window))
       (ignore-errors (delete-window window)))
     (when (and main (window-live-p main))
@@ -631,16 +660,14 @@ selects main."
 
 (defun edmacs--center-split-p ()
   "Return non-nil when the frame has more than one non-side window."
-  (> (length (seq-filter (lambda (w) (not (window-parameter w 'window-side)))
-                          (window-list nil 'no-minibuf)))
-     1))
+  (> (length (edmacs-windows--non-side-windows)) 1))
 
 (defun edmacs-window-delete-or-demote ()
   "On main, demote if a center split exists, else message; elsewhere, delete.
 Replaces plain `delete-window' on `SPC w d': deleting `edmacs-main-window'
 outright would leave the frame without one, so main demotes instead."
   (interactive)
-  (if (eq (selected-window) (edmacs-main-window))
+  (if (eq (selected-window) (or (edmacs-main-window) (edmacs-windows-repair-frame)))
       (if (edmacs--center-split-p)
           (edmacs-window-demote)
         (message "edmacs-window-delete-or-demote: no center split to demote into"))
@@ -734,9 +761,18 @@ window."
       (balance-windows root))))
 
 (defun edmacs-stack-toggle ()
-  "Toggle visibility of the frame's side windows."
+  "Toggle visibility of the frame's side windows.
+Repairs a mainless frame first: `window-toggle-side-windows's delete
+branch runs `delete-other-windows' on `window-main-window', which on such
+a frame is the root rather than a real main window -- so it deletes
+nothing while still stashing the broken tree for the next toggle to
+restore. The restore branch's own \"no side windows state\" signal is
+reported rather than propagated."
   (interactive)
-  (window-toggle-side-windows))
+  (edmacs-windows-repair-frame)
+  (condition-case err
+      (window-toggle-side-windows)
+    (error (message "edmacs-stack-toggle: %s" (error-message-string err)))))
 
 ;; ============================================================================
 ;; Persistence: the desktop-restore dead-pane sweep
@@ -762,8 +798,13 @@ window -- agent panes are ordinary windows, so this is not restricted to
 the stack -- for which `edmacs-stack-agent-pane-p' reports its session
 has died; everything else, a popup with a live buffer included, is left
 alone.
-Finishes by calling `edmacs-main-window', which re-designates main when
-the `edmacs-main' parameter did not survive the restore."
+Finishes by calling `edmacs-windows-repair-frame', which re-designates
+main when the `edmacs-main' parameter did not survive the restore and
+rebuilds the tree outright when the restore left FRAME with no non-side
+window to designate. This is the single entry point for \"an external
+process left this frame in an unknown state\"; callers that only need the
+shape repaired -- and must not delete a dead agent pane -- call
+`edmacs-windows-repair-frame' directly instead."
   (with-selected-frame (or frame (selected-frame))
     (dolist (w (window-list nil 'no-minibuf))
       (when (and (window-live-p w)
@@ -771,7 +812,112 @@ the `edmacs-main' parameter did not survive the restore."
                           (not (buffer-live-p (window-buffer w))))
                      (funcall edmacs-stack-agent-pane-p w)))
         (ignore-errors (delete-window w))))
-    (edmacs-main-window)))
+    (edmacs-windows-repair-frame)))
+
+;; ============================================================================
+;; Shape repair: a frame must always have a main window
+;; ============================================================================
+
+;; Core detects an invalid side-window configuration and self-heals it, but
+;; not this one. `window-main-window' (window.el) walks for a non-side
+;; window with a side-window sibling and, finding none, falls back to
+;; `frame-root-window' -- so it never returns nil, which makes
+;; `window--sides-check-failed's own "Frame %s has no main window" branch
+;; unreachable. Its remaining clauses only check side-parameter
+;; CONSISTENCY, which a frame of nothing but side windows satisfies, so
+;; `window--sides-check' reports that frame valid and resets nothing.
+;; Two things compound it: the check runs only from `window--check'
+;; (`delete-window', `split-window', `window-state-put' ...), never at side
+;; window creation, and every construction path binds
+;; `window--sides-inhibit-check' while it builds. `edmacs-main-window'
+;; returns nil on exactly the frames core calls healthy, so the guard has
+;; to live here.
+
+(defvar edmacs-windows-frame-repaired-functions nil
+  "Abnormal hook run with the repaired FRAME by `edmacs-windows-repair-frame'.
+The extension point for anything that must be re-established once a frame
+regains a main window -- `modules/sidebar.el' joins it to re-show the left
+sidebar. A hook function must not call `display-buffer': repair can run
+from inside a `display-buffer' action function, so a member that re-enters
+`display-buffer' recurses. Calling `display-buffer-in-side-window'
+directly, as `edmacs-sidebar-show' does, is safe.")
+
+(defvar edmacs-windows--repairing nil
+  "Non-nil while `edmacs-windows-repair-frame' is rebuilding a frame.
+Makes a nested repair -- from the repaired hook, or from a
+`display-buffer' the hook triggers -- return the frame unchanged.")
+
+(defun edmacs-windows-frame-wedged-p (&optional frame)
+  "Non-nil when FRAME (default the selected frame) has no main window.
+True exactly when every window on FRAME is a side window, which is when
+`edmacs-main-window' returns nil: nothing can be designated main, and
+`display-buffer' has nowhere to put a buffer but another side window.
+Child frames (corfu-style popups) and minibuffer-only frames are never
+wedged -- neither is expected to hold a main window."
+  (let ((frame (or frame (selected-frame))))
+    (and (frame-live-p frame)
+         (null (frame-parameter frame 'parent-frame))
+         (not (eq (frame-parameter frame 'minibuffer) 'only))
+         (null (edmacs-windows--non-side-windows frame)))))
+
+(defun edmacs-windows-repair-frame (&optional frame)
+  "Give FRAME back a main window and return it.
+The remedy for the shape core reads as valid (see above): every window a
+side window, so `edmacs-main-window' is nil and `display-buffer' can only
+add more side windows. Applies core's own `window--sides-check' remedy --
+reset every `window-side' -- then collapses the frame to one ordinary,
+undedicated window and designates it main via `edmacs-window-set-main'.
+
+Destructive to slot layout: `window-slot' is cleared along with the side
+parameters, so a pinned stack pane loses its slot. The frame was already
+unusable, and `edmacs-stack--next-pin-slot' is not rewound, so later pins
+still allocate fresh slots.
+
+A no-op returning `edmacs-main-window' unchanged on a healthy frame, on a
+child or minibuffer-only frame, and re-entrantly. Finishes by running
+`edmacs-windows-frame-repaired-functions' with FRAME."
+  (interactive)
+  (let ((frame (or frame (selected-frame))))
+    (cond
+     ((not (frame-live-p frame)) nil)
+     ((or edmacs-windows--repairing (not (edmacs-windows-frame-wedged-p frame)))
+      (when (called-interactively-p 'interactive)
+        (message "edmacs-windows-repair-frame: layout is healthy"))
+      (with-selected-frame frame (edmacs-main-window)))
+     (t
+      (let ((edmacs-windows--repairing t))
+        (with-selected-frame frame
+          (let* ((windows (window-list frame 'no-minibuf))
+                 (free (seq-find (lambda (w) (not (window-dedicated-p w))) windows))
+                 (survivor (or free (car windows)))
+                 (ignore-window-parameters t)
+                 (window--sides-inhibit-check t))
+            (dolist (w windows)
+              (dolist (parameter '(window-side window-slot
+                                   no-other-window no-delete-other-windows))
+                (set-window-parameter w parameter nil)))
+            (set-window-dedicated-p survivor nil)
+            ;; Every window was dedicated, so the survivor is holding a
+            ;; buffer that belongs somewhere else -- the sidebar's, usually,
+            ;; which the repaired hook is about to re-show in a side window.
+            (unless free
+              (set-window-buffer survivor (get-buffer-create "*scratch*")))
+            (delete-other-windows survivor)
+            (edmacs-window-set-main survivor))
+          (run-hook-with-args 'edmacs-windows-frame-repaired-functions frame)
+          (edmacs-main-window)))))))
+
+(defun edmacs-windows--display-buffer-in-recovered-main (buffer alist)
+  "Display BUFFER in a main window recovered from a wedged frame.
+Returns nil on any frame that still has a non-side window, which is what
+leaves every existing routing decision untouched: this only ever fires on
+the frame `edmacs-windows-frame-wedged-p' reports, where the alternative
+is `display-buffer-in-side-window' adding yet another side window to a
+frame that has nothing else. ALIST is the `display-buffer' action alist."
+  (when (edmacs-windows-frame-wedged-p)
+    (let ((main (edmacs-windows-repair-frame)))
+      (when (window-live-p main)
+        (window--display-buffer buffer main 'reuse alist)))))
 
 ;; ============================================================================
 ;; Window Rotation (tmux layout replacement)
