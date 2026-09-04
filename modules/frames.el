@@ -385,6 +385,18 @@ desktop file written before the stamp was mandatory simply reads nil
 until it is selected once, which is deliberately preferred to guessing."
   (alist-get 'edmacs-root tab))
 
+(defun edmacs-frames-tab-root-live-p (root)
+  "Return non-nil when ROOT is a stamp whose directory still exists.
+A stamp is not self-validating: a tab restored from a desktop keeps
+pointing at whatever worktree it was saved on, and that directory may
+since have been removed. `edmacs-git-common-dir' returns nil for a path
+that is gone, and `edmacs-sessions--frame-tab-roots' turns a single
+unresolvable tab into nil for the whole frame -- which leaves
+`edmacs-repo' unset and drops the sidebar to its flat tab list with no
+worktrees in it. Treating a dead stamp as no stamp lets
+`edmacs-frames-stamp-frame-tabs' re-derive and heal it."
+  (and root (file-directory-p root) (edmacs-git-common-dir root) t))
+
 (defun edmacs-frames-stamp-frame-tabs (frame)
   "Stamp every tab of FRAME that carries no `edmacs-root'.
 A background tab has no live window to derive from, so each unstamped

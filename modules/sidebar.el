@@ -1211,7 +1211,11 @@ back out to `edmacs-sidebar--min-width'."
       (edmacs-windows-repair-frame frame))
     (let* ((buf (edmacs-sidebar--ensure-buffer frame))
            (width (if (frame-parameter frame 'edmacs-sidebar-collapsed)
-                      edmacs-sidebar--collapsed-width
+                      ;; +1: the placement keeps a column of chrome, so a
+                      ;; request of N yields a body of N-1 (measured live:
+                      ;; total 32 -> body 31). The constant is the body
+                      ;; width the producers are formatted for.
+                      (1+ edmacs-sidebar--collapsed-width)
                     (edmacs-sidebar--clamp-width
                      (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
                          edmacs-sidebar-width)

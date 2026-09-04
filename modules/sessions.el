@@ -47,6 +47,7 @@
 (declare-function edmacs-frames--ensure-repo-tracking "frames")
 (declare-function edmacs-frames-frame-usable-p "frames")
 (declare-function edmacs-frames-stamp-frame-tabs "frames")
+(declare-function edmacs-frames-tab-root-live-p "frames")
 (declare-function edmacs-sidebar-show "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 
@@ -229,6 +230,23 @@ rather than whatever the caller happened to have selected."
             (push repo roots)))
         (nreverse roots)))))
 
+(defun edmacs-sessions--drop-dead-tab-roots (frame)
+  "Clear FRAME's tab stamps that point at a directory which is gone.
+A stamp is not self-validating: a tab restored from a desktop keeps
+pointing at whatever worktree it was saved on, and that worktree may
+since have been removed. `edmacs-git-common-dir' returns nil for a path
+that no longer exists, and `edmacs-sessions--frame-tab-roots' turns one
+unresolvable tab into nil for the whole frame -- so a single stale tab
+leaves `edmacs-repo' unset and drops the sidebar to its flat tab list
+with no worktrees in it at all. Clearing the dead stamp lets
+`edmacs-frames-stamp-frame-tabs', which runs straight after this,
+re-derive a live one from the tab's own window."
+  (when (frame-live-p frame)
+    (dolist (tab (tab-bar-tabs frame))
+      (let ((root (alist-get 'edmacs-root tab)))
+        (when (and root (not (edmacs-frames-tab-root-live-p root)))
+          (setf (alist-get 'edmacs-root tab nil t) nil))))))
+
 (defun edmacs-sessions--backfill-repo-param (frame)
   "Set FRAME's `edmacs-repo' from its tabs when it has none yet.
 Only when every tab's own resolved repo agrees -- a frame with no tabs,
@@ -342,6 +360,7 @@ restored from a desktop file written before the stamp was mandatory are
 only there once `edmacs-frames-stamp-frame-tabs' has written them."
   (dolist (frame (frame-list))
     (when (edmacs-sessions--restorable-frame-p frame)
+      (edmacs-sessions--drop-dead-tab-roots frame)
       (edmacs-frames-stamp-frame-tabs frame)
       (edmacs-sessions--backfill-repo-param frame)
       (edmacs-sessions--regenerate-frame-title frame)

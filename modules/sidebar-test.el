@@ -1708,7 +1708,7 @@ pre-collapse remembered width -- possible only because
                 ;; column narrower than requested on a re-ask, exactly like
                 ;; `edmacs-sidebar-reset-width's own live-width assertion --
                 ;; see `edmacs-sidebar--remember-width's docstring.
-                (should (= (1- edmacs-sidebar--collapsed-width)
+                (should (= edmacs-sidebar--collapsed-width
                            (window-width (edmacs-sidebar--window frame))))
                 (edmacs-sidebar-expand frame)
                 (should (= pre-collapse (window-width (edmacs-sidebar--window frame))))))
@@ -1730,7 +1730,7 @@ collapsed width instead of full width followed by a flash-resize."
               (should-not (edmacs-sidebar--window frame))
               (edmacs-sidebar-collapse frame)
               (should (frame-parameter frame 'edmacs-sidebar-collapsed))
-              (should (= (1- edmacs-sidebar--collapsed-width)
+              (should (= edmacs-sidebar--collapsed-width
                          (window-width (edmacs-sidebar--window frame)))))
           (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
