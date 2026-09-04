@@ -705,6 +705,7 @@ fallback) resolves."
 
 (claude-usage--setup-idle-timer)
 
+
 ;; ============================================================================
 ;; Cheap surfaces: nano-modeline segment and sidebar section
 ;; ============================================================================
@@ -1004,8 +1005,35 @@ usage state has been resolved yet."
 ;; `add-hook' creates the variable when sidebar.el has not loaded yet, so
 ;; this file needs no `(require 'sidebar)' and the dependency stays
 ;; one-way: sidebar.el owns the hook and never mentions claude-usage.
+;; APPEND (the trailing t): `add-hook' prepends by default, which put this
+;; section above sidebar-agents' ALL AGENTS block.  Appending keeps usage at
+;; the bottom of the sidebar, which is where it is meant to sit.
 (add-hook 'edmacs-sidebar-extra-section-functions
-          #'claude-usage--insert-sidebar-section)
+          #'claude-usage--insert-sidebar-section
+          t)
+
+;; Seed synchronously from the on-disk cache so the sidebar section has
+;; figures the moment Emacs starts, rather than only once an async fetch
+;; resolves.  `--apply-refresh-result' with nil means "no live result": it
+;; falls back to the cache, marks the source `cache', and updates both
+;; surfaces.  A file read only -- no keychain, no network -- so it is safe
+;; on init's load path.
+;; `noninteractive' guard: batch is where the ERT suites live, and they own
+;; module state through their own fixtures.  Seeding from the real
+;; `~/.claude.json' there would leak this machine's figures into their
+;; assertions -- which is exactly what phase 1's "no reads of the real
+;; ~/.claude.json" criterion forbids.
+(unless noninteractive
+  (claude-usage--apply-refresh-result nil))
+
+;; Then upgrade to live.  The periodic timer above needs
+;; `claude-usage-idle-refresh-delay' seconds of continuous idleness before
+;; its first fire, so without this the figures stay cache-sourced until
+;; `*claude-usage*' is opened.  Deferred through a 0-second idle timer
+;; because the token read is a subprocess and the fetch is network, neither
+;; of which may run on init's own load path.
+(unless noninteractive
+  (run-with-idle-timer 0 nil #'claude-usage--refresh))
 
 (provide 'claude-usage)
 
