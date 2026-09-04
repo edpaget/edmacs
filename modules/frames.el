@@ -386,14 +386,26 @@ until it is selected once, which is deliberately preferred to guessing."
   (alist-get 'edmacs-root tab))
 
 (defun edmacs-frames-stamp-frame-tabs (frame)
-  "Stamp FRAME's current tab with a derived root when it carries none.
-Background tabs are left alone: their own stamp round-trips through the
-desktop file (`frameset-filter-tabs' strips only the `wc' family), and a
-tab that was never switched to has no live window to derive from."
-  (when (and (frame-live-p frame)
-             (not (edmacs-frames--tab-root (edmacs-frames--current-tab frame))))
-    (when-let* ((root (edmacs-frames--derive-root frame)))
-      (edmacs-frames--stamp-current-tab-root root frame))))
+  "Stamp every tab of FRAME that carries no `edmacs-root'.
+A background tab has no live window to derive from, so each unstamped
+tab is selected in turn, stamped, and the original selection restored.
+This is the migration path for a desktop written before the stamp was
+mandatory: without it every tab reads nil, no repo is resolved,
+`edmacs-sessions--backfill-repo-param' leaves `edmacs-repo' unset, and
+the sidebar silently falls back to the flat tab list with no worktrees
+in it at all."
+  (when (frame-live-p frame)
+    (with-selected-frame frame
+      (let ((original (tab-bar--current-tab-index))
+            (count (length (tab-bar-tabs frame))))
+        (unwind-protect
+            (dotimes (i count)
+              (unless (edmacs-frames--tab-root (nth i (tab-bar-tabs frame)))
+                (tab-bar-select-tab (1+ i))
+                (when-let* ((root (edmacs-frames--derive-root frame)))
+                  (edmacs-frames--stamp-current-tab-root root frame))))
+          (when (and original (< original count))
+            (tab-bar-select-tab (1+ original))))))))
 
 (defun edmacs-frames--find-tab-by-root (root &optional frame)
   "Return the tab in FRAME (default selected) whose root equals ROOT, or nil."

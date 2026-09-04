@@ -62,6 +62,7 @@
 (declare-function edmacs-main-window "windows")
 (declare-function edmacs-window-pop-buffer-to-main "windows")
 (declare-function edmacs-sidebar--buffer "sidebar")
+(declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar--goto-identity "sidebar")
 (declare-function nerd-icons-octicon "nerd-icons")
@@ -424,8 +425,13 @@ visible/selected without any extra current-tab check needed here."
 
 (defun edmacs-sidebar-buffers--on-window-change (frame)
   "Registered on the two high-frequency window hooks (AC4): cheap,
-immediate, marker-only -- never a full rebuild."
-  (edmacs-sidebar-buffers--refresh-markers frame))
+immediate, marker-only -- never a full rebuild.
+No-ops when the sidebar window itself is what became selected: moving
+point there with an evil motion changes the selected window, and the
+refresh it would otherwise drive re-places point, which reads as the
+cursor jumping around under navigation."
+  (unless (eq (selected-window) (edmacs-sidebar--window frame))
+    (edmacs-sidebar-buffers--refresh-markers frame)))
 
 (add-hook 'window-selection-change-functions #'edmacs-sidebar-buffers--on-window-change)
 (add-hook 'window-buffer-change-functions #'edmacs-sidebar-buffers--on-window-change)

@@ -736,6 +736,21 @@ supplies (sidebar-agents.el's repo-wide roll-up, by default none)."
     (propertize (concat (edmacs-sidebar--header-line-name frame) (or suffix ""))
                 'face 'edmacs-sidebar-header-face)))
 
+(defun edmacs-sidebar--strip-width (frame)
+  "Return the collapsed strip's real usable text width on FRAME.
+`edmacs-sidebar--collapsed-width' is what `edmacs-sidebar-show' asks
+`display-buffer-in-side-window' for, never what the window ends up
+with: the placement returns a column less, and a GUI frame's fringes
+cost more again. A producer handed the constant fits to a width the
+window does not have, so its own truncation never fires and the window
+clips instead -- dropping a percentage's low-order digits with no
+ellipsis to show anything was lost. Falls back to the constant only
+when no live window exists to measure."
+  (let ((window (edmacs-sidebar--window frame)))
+    (if (window-live-p window)
+        (max 1 (window-body-width window))
+      edmacs-sidebar--collapsed-width)))
+
 (defun edmacs-sidebar--redraw (frame)
   "Redraw FRAME's sidebar buffer from its current `tab-bar-tabs'.
 No-ops when FRAME has no live sidebar buffer -- callers such as the
@@ -763,7 +778,7 @@ section ahead of everything else when `edmacs-repo-missing' is set."
           (magit-insert-section (edmacs-sidebar-root)
             (if collapsed
                 (run-hook-with-args 'edmacs-sidebar-collapsed-section-functions
-                                     frame edmacs-sidebar--collapsed-width)
+                                     frame (edmacs-sidebar--strip-width frame))
               (progn
                 (when (frame-parameter frame 'edmacs-repo-missing)
                   (edmacs-sidebar--insert-missing-repo-warning))
@@ -1223,6 +1238,9 @@ back out to `edmacs-sidebar--min-width'."
         nil)
        (t
         (set-window-dedicated-p window t)
+        ;; Fringes cost roughly two columns of a four-column strip.
+        (when (frame-parameter frame 'edmacs-sidebar-collapsed)
+          (set-window-fringes window 0 0))
         window)))))
 
 (defun edmacs-sidebar--release-window (window frame)
