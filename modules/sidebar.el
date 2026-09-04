@@ -1011,7 +1011,8 @@ shown. Returns WINDOW when it survived, nil when it was deleted."
     (if (and (window-parameter window 'window-side) (window-parent window))
         (progn (delete-window window) nil)
       (dolist (parameter '(window-side window-slot
-                           no-other-window no-delete-other-windows))
+                           no-other-window no-delete-other-windows
+                           mode-line-format))
         (set-window-parameter window parameter nil))
       (set-window-dedicated-p window nil)
       (let* ((sidebar (window-buffer window))

@@ -1705,6 +1705,7 @@ now repairs it."
         (set-window-parameter window 'window-slot 0)
         (set-window-parameter window 'no-other-window t)
         (set-window-parameter window 'no-delete-other-windows t)
+        (set-window-parameter window 'mode-line-format 'none)
         (set-window-dedicated-p window t)
         window))
 
@@ -1724,7 +1725,8 @@ leaving the frame with a real main window rather than a wedged one."
                                 (edmacs-sidebar--buffer frame)))
                 (should-not (window-dedicated-p window))
                 (dolist (parameter '(window-side window-slot
-                                     no-other-window no-delete-other-windows))
+                                     no-other-window no-delete-other-windows
+                                     mode-line-format))
                   (should-not (window-parameter window parameter)))
                 (should-not (edmacs-sidebar--window frame))
                 (should-not (edmacs-windows-frame-wedged-p frame))
@@ -1892,6 +1894,24 @@ its raw buffer name."
               (let ((window (edmacs-sidebar-show frame)))
                 (should (window-live-p window))
                 (should (eq (window-parameter window 'mode-line-format) 'none))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-mode-line-format-clears-on-release ()
+      "When the sidebar window is released (as in a sole-window frame),
+the mode-line-format parameter set at sidebar creation is cleared,
+preventing it from leaking onto the buffer that replaces the sidebar."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              ;; Create a sole sidebar window manually with mode-line-format set
+              (let ((window (edmacs-sidebar-test--make-sole-sidebar-window frame)))
+                (should (edmacs-windows-frame-wedged-p frame))
+                (should (eq (window-parameter window 'mode-line-format) 'none))
+                ;; Hide/release the window, which should clear mode-line-format
+                (let ((released (edmacs-sidebar-hide frame)))
+                  (should (window-live-p released))
+                  ;; Verify mode-line-format was cleared
+                  (should-not (window-parameter released 'mode-line-format)))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     )) ; end of build-root-found branch
