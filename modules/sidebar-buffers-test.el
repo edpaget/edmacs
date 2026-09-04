@@ -329,6 +329,67 @@ rather than silently doing nothing."
           (goto-char (point-min))
           (should-error (edmacs-sidebar-buffers-visit) :type 'user-error))))
 
+    ;; ==========================================================================
+    ;; Frame-locality: every `set-frame-parameter'/`frame-parameter' call
+    ;; the toggle and the per-worktree render make is explicitly scoped to
+    ;; the frame it was handed, never an implicit `(selected-frame)'/nil
+    ;; fallback. Durable, environment-independent coverage of the same
+    ;; invariant sidebar-buffers-live-test.el's `toggle-is-frame-local'/
+    ;; `per-frame-isolation' exercise with a real second tty frame (see
+    ;; that file's own Commentary for why those two need `script' and are
+    ;; excused there) -- simulated here with two distinct sentinel "frame"
+    ;; objects (never real frame values, so no controlling terminal is
+    ;; needed) by fully replacing `frame-parameter'/`set-frame-parameter'
+    ;; rather than delegating to the real primitives, which would reject a
+    ;; non-live-frame argument outright.
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-test-toggle-flat-scopes-every-call-to-selected-frame ()
+      "`edmacs-sidebar-buffers-toggle-flat' reads `(selected-frame)' once and
+must thread that exact value into every `frame-parameter',
+`set-frame-parameter', and `edmacs-sidebar--redraw' call it makes --
+never falling back to an implicit nil/selected-frame default partway
+through."
+      (dolist (sentinel (list (make-symbol "frame-a") (make-symbol "frame-b")))
+        (let (calls)
+          (cl-letf (((symbol-function 'selected-frame) (lambda () sentinel))
+                    ((symbol-function 'frame-parameter)
+                     (lambda (frame param) (push (list 'frame-parameter frame param) calls) nil))
+                    ((symbol-function 'set-frame-parameter)
+                     (lambda (frame param value)
+                       (push (list 'set-frame-parameter frame param value) calls) value))
+                    ((symbol-function 'edmacs-sidebar--redraw)
+                     (lambda (frame) (push (list 'redraw frame) calls) nil)))
+            (edmacs-sidebar-buffers-toggle-flat)
+            (should calls)
+            (dolist (call calls)
+              (should (eq (nth 1 call) sentinel)))))))
+
+    (ert-deftest edmacs-sidebar-buffers-test-on-worktree-section-scopes-frame-parameter-to-explicit-frame ()
+      "`edmacs-sidebar-buffers--on-worktree-section' takes FRAME as an
+explicit argument (unlike the interactive toggle, it has no
+`(selected-frame)' of its own to fall back to) and its `frame-parameter'
+read of the flat flag must use exactly that argument, for either of two
+distinct simulated frames -- catching a hop that silently swapped in nil
+or a module-global instead of the FRAME actually passed in."
+      (dolist (sentinel (list (make-symbol "frame-a") (make-symbol "frame-b")))
+        (let (calls)
+          (cl-letf (((symbol-function 'frame-parameter)
+                     (lambda (frame param) (push (list frame param) calls) nil))
+                    ((symbol-function 'bufferlo-buffer-list) (lambda (&rest _) nil))
+                    ((symbol-function 'edmacs-frames--tab-for-root) (lambda (&rest _) nil)))
+            (edmacs-sidebar-buffers-test--with-sidebar-buffer
+              ;; Nested under an outer root, matching how the real
+              ;; `edmacs-sidebar--redraw' always wraps this call -- called
+              ;; bare, this section IS the magit root and a non-current
+              ;; tab's `hidden' slot then hits `magit-section-hide's
+              ;; "cannot hide root section" guard.
+              (magit-insert-section (edmacs-sidebar-root nil nil)
+                (edmacs-sidebar-buffers--on-worktree-section "/tmp/edmacs-sb-test-root" t sentinel 1)))
+            (should calls)
+            (dolist (call calls)
+              (should (eq (car call) sentinel)))))))
+
     ))
 
 (ert-deftest edmacs-sidebar-buffers-test-listable-p-admits-work ()

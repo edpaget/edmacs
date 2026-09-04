@@ -33,19 +33,47 @@
 ;; following sidebar-test.el's own documented convention; that plain
 ;; invocation is this file's primary, CI-equivalent check.
 ;; `script -q /dev/null' remains genuinely useful for developing the
-;; per-frame paths interactively, but two real tty frames sharing one
-;; pty inside `script' do not isolate the way two real frames do, and
-;; both of those tests fail there reproducibly for reasons outside this
-;; module. Only these two exact assertions are excused, so a different
-;; failure under `script' is a real signal:
+;; per-frame paths interactively, but both of those tests fail there
+;; reproducibly for reasons outside this module. Only these two exact
+;; assertions are excused, so a different failure under `script' is a
+;; real signal:
 ;;
 ;;   per-frame-isolation:   `(should-not (string-match-p "q.el" text1))'
-;;     -- bufferlo does not keep the second frame's file buffer out of
-;;     the first frame's buffer list when both frames share one pty.
-;;   toggle-is-frame-local: `(should-not (frame-parameter f2 ...))' on a
-;;     `#<dead frame>' -- the second frame is gone before the assertion
-;;     reads it; `make-frame'/`delete-frame' lifecycle under `script' is
-;;     not reliable across a 14-test run.
+;;   toggle-is-frame-local: `(should-not (frame-parameter f2 ...))'
+;;
+;; Root-caused (edmacs-sidebar-polish phase 14, after this Commentary's
+;; earlier "bufferlo pty sharing" / "`#<dead frame>' lifecycle" guesses
+;; turned out both wrong -- f2 is alive and its parameters ARE correctly
+;; isolated; see below): `--make-second-frame-or-skip's `(make-frame ...)'
+;; call SELECTS the frame it creates -- confirmed by wrapping the real
+;; `make-frame' with an `:around' advice during an actual `script'-driven
+;; run of this file and printing `(eq new-frame (selected-frame))'
+;; immediately after each of these two tests' own call, which read `t'
+;; both times. Neither test's body re-selects the original frame
+;; afterward, so for the rest of each test `f2' and `(selected-frame)'
+;; name the SAME frame object, not two distinct ones:
+;; `toggle-is-frame-local' toggles `(selected-frame)' (=f2) and then
+;; reads that exact toggle back off `f2', so the `should-not' fails by
+;; construction; `per-frame-isolation' does all of its "frame 1" setup
+;; and its final `(edmacs-sidebar-show (selected-frame))' against that
+;; same aliased frame, so `text1' and `text2' inevitably render the
+;; identical single frame. This is a property of `make-frame' on a new
+;; tty in `--batch' generally, not of `script' sharing one pty with the
+;; caller specifically -- confirmed independently with two frames on two
+;; separately-allocated ptys (no shared session at all): each `make-frame'
+;; call still selected the frame it had just created, while every
+;; `frame-parameter'/`set-frame-parameter' call this module's real
+;; `edmacs-sidebar-buffers-toggle-flat'/`edmacs-sidebar-show' made across
+;; those two genuinely independent frames stayed perfectly isolated
+;; (flat toggled on one left the other's parameter nil; each frame's
+;; rendered buffer list showed only its own file). So: a test-harness
+;; artifact of this second-frame technique under `--batch', not a defect
+;; in this module's frame scoping -- sidebar-buffers-test.el's
+;; `toggle-flat-scopes-every-call-to-selected-frame' and
+;; `on-worktree-section-scopes-frame-parameter-to-explicit-frame' now
+;; carry this as durable, environment-independent regression coverage of
+;; the same invariant, simulating two frames without needing a real
+;; second tty frame at all.
 ;;
 ;; Neither originates in `edmacs-sidebar-hide' -- the "Attempt to delete
 ;; minibuffer or sole ordinary window" signal these tests once worked
