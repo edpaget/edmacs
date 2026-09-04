@@ -119,6 +119,34 @@ the config by asking it for something the config sets, e.g. appending
 `--eval '(princ (format "%S\n" custom-enabled-themes))'` -- `nil` means init
 never ran.
 
+#### Checking a worktree's modules
+
+The command above can only ever test the main checkout, because
+`--init-directory` sets `user-emacs-directory` and `init.el` resolves both
+straight's bootstrap *and* every `load-module` against it. That leaves a
+worktree's changes unverifiable without copying them into the main checkout,
+which races every other session working there.
+
+`scripts/startup-check.sh` splits those two roles apart -- module sources from
+one checkout, package tree from another:
+
+```bash
+scripts/startup-check.sh                  # this checkout's modules, main's packages
+scripts/startup-check.sh <module-root> <package-root>
+```
+
+Run from a worktree it defaults `package-root` to the sibling `edmacs` main
+checkout, and it refuses to start Emacs at all if that resolves somewhere
+without a bootstrapped straight tree -- so it cannot bootstrap a second one.
+Set `STARTUP_CHECK_EVAL` to an elisp form to assert module state after init;
+lines it prints beginning `assert:` are echoed back and excluded from the
+error grep:
+
+```bash
+STARTUP_CHECK_EVAL='(princ (format "assert: %S\n" window-sides-slots))' \
+  scripts/startup-check.sh
+```
+
 ## Worktrees
 
 rdm roadmaps and tasks get their own git worktree under
@@ -145,17 +173,22 @@ checkout's `straight/build/` full of symlinks into
 cleaned or removed. Every package file then dangles and the daemon fails to
 start on its next launch.
 
-So: any command that loads the real config -- the startup check above, and
-every script under `scripts/` -- runs from the main checkout, even when the
-change under test lives in a worktree. Each `scripts/*.sh` defaults
-`REPO_ROOT` to its own location, so running a worktree's copy points it at
-the worktree. The `verify-*.sh` four take an explicit root as `$1`; pass the
-main checkout. `startup-bench.sh` and `gc-session-bench.sh` do not, so run
-those from the main checkout after copying the change over.
+So: any command that loads the real config -- the bare startup check above,
+and every script under `scripts/` except `startup-check.sh` -- runs from the
+main checkout, even when the change under test lives in a worktree. Each
+`scripts/*.sh` defaults `REPO_ROOT` to its own location, so running a
+worktree's copy points it at the worktree. The `verify-*.sh` four take an
+explicit root as `$1`; pass the main checkout. `startup-bench.sh` and
+`gc-session-bench.sh` do not, so run those from the main checkout after
+copying the change over.
 
 Safe from anywhere, because `-Q` skips init entirely and never touches
 straight: the ERT suites and `batch-byte-compile`. Those are the normal way
 to verify a module change from inside a worktree.
+`scripts/startup-check.sh` is safe from anywhere too, for a different reason
+-- it keeps `user-emacs-directory` on the main checkout no matter which
+checkout supplies the modules, and refuses to run if it cannot find a
+bootstrapped straight tree there.
 
 ### If the package tree is already poisoned
 
