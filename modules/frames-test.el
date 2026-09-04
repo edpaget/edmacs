@@ -726,7 +726,15 @@ targets a repaired main window."
             (should (window-live-p main))
             (should-not (window-parameter main 'window-side))
             (should-not (window-dedicated-p main))
-            (should (equal (buffer-name (window-buffer main)) "*scratch*"))))
+            (should (equal (buffer-name (window-buffer main)) "*scratch*")))
+          ;; The old pair's two failure modes, asserted structurally: a
+          ;; non-interactive `switch-to-buffer' on the dedicated sidebar
+          ;; popped *scratch* into a RIGHT side window, and the
+          ;; `delete-other-windows' that followed ran from a side window.
+          (should (zerop (length (seq-filter
+                                  (lambda (w)
+                                    (eq (window-parameter w 'window-side) 'right))
+                                  (window-list frame 'no-minibuf))))))
       (set-frame-parameter frame 'edmacs-repo nil)
       (set-frame-parameter frame 'name original-name))))
 
@@ -750,6 +758,37 @@ resets have already landed by then."
                      (lambda (&optional _frame) (error "boom")))
                     ((symbol-function 'display-warning) #'ignore))
             (edmacs-frames--close-last-tab nil))
+          (should-not (frame-parameter frame 'edmacs-repo))
+          (should-not (equal (frame-parameter frame 'name) "repo"))
+          (should (equal renamed "emacs")))
+      (set-frame-parameter frame 'edmacs-repo nil)
+      (set-frame-parameter frame 'name original-name))))
+
+(ert-deftest edmacs-frames-test-reset-to-spare-warns-instead-of-propagating ()
+  "The `condition-case' around the window work must report through
+`display-warning' rather than let the signal escape into
+`tab-bar-close-last-tab-choice', and the three frame-level resets ahead
+of it must already have landed by the time it fires."
+  (let* ((frame (selected-frame))
+         (original-name (frame-parameter frame 'name))
+         (renamed nil)
+         (warnings nil))
+    (unwind-protect
+        (save-window-excursion
+          (set-frame-parameter frame 'edmacs-repo "/repo/.git")
+          (set-frame-parameter frame 'name "repo")
+          (cl-letf (((symbol-function 'tab-bar-rename-tab)
+                     (lambda (name &optional _n) (setq renamed name)))
+                    ((symbol-function 'edmacs-windows-repair-frame)
+                     (lambda (&optional _frame) (error "boom")))
+                    ((symbol-function 'display-warning)
+                     (lambda (type message &optional _level &rest _)
+                       (push (cons type message) warnings))))
+            (edmacs-frames--reset-to-spare frame))
+          (should (= (length warnings) 1))
+          (should (eq (car (car warnings)) 'edmacs-frames))
+          (should (string-match-p "reset-to-spare" (cdr (car warnings))))
+          (should (string-match-p "boom" (cdr (car warnings))))
           (should-not (frame-parameter frame 'edmacs-repo))
           (should-not (equal (frame-parameter frame 'name) "repo"))
           (should (equal renamed "emacs")))

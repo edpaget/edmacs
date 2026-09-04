@@ -1767,20 +1767,103 @@ own and must not delete."
 
     (ert-deftest edmacs-sidebar-test-show-into-mainless-frame-yields-side-window-and-main ()
       "Without the repair, `display-buffer-in-side-window' just reuses the
-existing slot-0 left window and the frame stays wedged."
+existing slot-0 left window and the frame stays wedged. The unchanged
+frame count is what proves repair rebuilt this frame rather than
+escaping to a new one."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (let ((frames (length (frame-list))))
+                (edmacs-sidebar-test--make-sole-sidebar-window frame)
+                (should (edmacs-windows-frame-wedged-p frame))
+                (should-not (edmacs-main-window))
+                (let ((window (edmacs-sidebar-show frame)))
+                  (should (window-live-p window))
+                  (should (eq (window-parameter window 'window-side) 'left))
+                  (should (window-dedicated-p window))
+                  (should-not (edmacs-windows-frame-wedged-p frame))
+                  (should (= (length (frame-list)) frames))
+                  (let ((main (edmacs-main-window)))
+                    (should (window-live-p main))
+                    (should-not (eq main window))
+                    (should-not (window-parameter main 'window-side))))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-show-returns-nil-when-the-left-slot-is-forbidden ()
+      "With no left slot available `display-buffer-in-side-window' returns
+nil, and `edmacs-sidebar-show' must return nil rather than fall through
+to splitting the widest window -- which is what would put the sidebar on
+the right of a wide frame. The frame keeps its main window either way."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (delete-other-windows)
+              (edmacs-window-set-main (selected-window))
+              (let ((window-sides-slots '(0 nil nil nil)))
+                (should-not (edmacs-sidebar-show frame)))
+              (should-not (edmacs-sidebar--side-window frame))
+              (should (window-live-p (edmacs-main-window)))
+              (should-not (edmacs-windows-frame-wedged-p frame)))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-hide-twice-is-idempotent ()
+      "The second call finds no window at all -- `edmacs-sidebar--window'
+matches on buffer identity and the buffer is gone from the frame -- so
+it returns nil without signalling or re-wedging."
       (let ((frame (selected-frame)))
         (unwind-protect
             (save-window-excursion
               (edmacs-sidebar-test--make-sole-sidebar-window frame)
-              (should (edmacs-windows-frame-wedged-p frame))
+              (should (edmacs-sidebar-hide frame))
+              (should-not (edmacs-sidebar-hide frame))
+              (should-not (edmacs-windows-frame-wedged-p frame))
+              (should (window-live-p (edmacs-main-window))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-release-window-deletes-a-parented-side-window ()
+      "The one shape `delete-window' is correct for."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (delete-other-windows)
               (let ((window (edmacs-sidebar-show frame)))
-                (should (window-live-p window))
-                (should (eq (window-parameter window 'window-side) 'left))
-                (should-not (edmacs-windows-frame-wedged-p frame))
-                (let ((main (edmacs-main-window)))
-                  (should (window-live-p main))
-                  (should-not (eq main window))
-                  (should-not (window-parameter main 'window-side)))))
+                (should (window-parent window))
+                (should-not (edmacs-sidebar--release-window window frame))
+                (should-not (window-live-p window))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-release-window-releases-an-ordinary-window-in-place ()
+      "A window the sidebar does not own is never deleted, only handed back."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (delete-other-windows)
+              (let* ((main (selected-window))
+                     (other (split-window main nil 'below))
+                     (sidebar (edmacs-sidebar--ensure-buffer frame)))
+                (set-window-buffer other sidebar)
+                (set-window-dedicated-p other t)
+                (should (eq (edmacs-sidebar--release-window other frame) other))
+                (should (window-live-p other))
+                (should-not (window-dedicated-p other))
+                (should-not (eq (window-buffer other) sidebar))
+                (dolist (parameter '(window-side window-slot
+                                     no-other-window no-delete-other-windows))
+                  (should-not (window-parameter other parameter)))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-release-window-falls-back-to-scratch ()
+      "When `other-buffer' can only offer the sidebar buffer back, the
+released window must not simply re-show it."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (let* ((window (edmacs-sidebar-test--make-sole-sidebar-window frame))
+                     (sidebar (window-buffer window)))
+                (cl-letf (((symbol-function 'other-buffer)
+                           (lambda (&rest _) sidebar)))
+                  (should (eq (edmacs-sidebar--release-window window frame) window)))
+                (should (equal (buffer-name (window-buffer window)) "*scratch*"))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-show-is-registered-on-the-repaired-hook ()

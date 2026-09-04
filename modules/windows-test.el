@@ -1233,6 +1233,15 @@ not only from a right side window."
 (ert-deftest edmacs-windows-test-base-action-fallback-excludes-pop-up-window ()
   (should-not (memq #'display-buffer-pop-up-window (car display-buffer-base-action))))
 
+(ert-deftest edmacs-windows-test-base-action-order-recovers-before-side-windows ()
+  "Order is load-bearing, not incidental: `display-buffer-in-side-window'
+always succeeds, so any recover action placed after it is dead code and
+the wedge comes straight back."
+  (should (equal (car display-buffer-base-action)
+                 (list #'display-buffer-reuse-window
+                       #'edmacs-windows--display-buffer-in-recovered-main
+                       #'display-buffer-in-side-window))))
+
 (ert-deftest edmacs-windows-test-center-reuse-p-excludes-other-window-commands ()
   (let ((this-command 'find-file-other-window))
     (should-not (edmacs-windows--center-reuse-p nil nil))))
@@ -1792,6 +1801,24 @@ Returns the three windows, left first."
     (select-window left)
     (list left right right2)))
 
+(defun edmacs-windows-test--make-sole-side-window-frame ()
+  "Turn the selected frame into ONE dedicated left side window that IS the
+frame root -- `window-parent' nil. The shape actually observed in the
+running daemon (`:nwin 1 :root-side left'), and the one the two helpers
+above cannot build: with no parent, `delete-window' signals \"Attempt to
+delete minibuffer or sole ordinary window\" and `delete-other-windows'
+is a no-op, so repair has to release the window in place rather than
+collapse onto a sibling. Returns the window."
+  (delete-other-windows)
+  (let ((window (selected-window)))
+    (set-window-parameter window 'edmacs-main nil)
+    (set-window-parameter window 'window-side 'left)
+    (set-window-parameter window 'window-slot 0)
+    (set-window-parameter window 'no-other-window t)
+    (set-window-parameter window 'no-delete-other-windows t)
+    (set-window-dedicated-p window t)
+    window))
+
 (ert-deftest edmacs-windows-test-core-sides-check-passes-a-mainless-frame ()
   "Pins why an edmacs-side guard is needed at all: core reads a frame of
 nothing but side windows as a VALID side-window configuration.
@@ -1959,6 +1986,60 @@ window itself."
       (edmacs-windows-test--make-dedicated-wedged-frame)
       (funcall command)
       (should (edmacs-main-window))
+      (should (window-live-p (edmacs-main-window)))
+      (should-not (edmacs-windows-frame-wedged-p)))))
+
+(ert-deftest edmacs-windows-test-repair-frame-rebuilds-main-from-a-sole-side-window ()
+  "Repair on the parentless shape: there is no sibling to collapse onto,
+so the sole window itself is stripped, un-dedicated and evicted to
+*scratch* -- and no new frame is popped to escape it."
+  (save-window-excursion
+    (let ((frames (length (frame-list)))
+          (window (edmacs-windows-test--make-sole-side-window-frame)))
+      (should-not (window-parent window))
+      (should (edmacs-windows-frame-wedged-p))
+      (let ((main (edmacs-windows-repair-frame)))
+        (should (window-live-p main))
+        (should (eq main (edmacs-main-window)))
+        (dolist (parameter '(window-side window-slot
+                             no-other-window no-delete-other-windows))
+          (should-not (window-parameter main parameter)))
+        (should-not (window-dedicated-p main))
+        (should (equal (buffer-name (window-buffer main)) "*scratch*"))
+        (should-not (edmacs-windows-frame-wedged-p))
+        (should (= (length (frame-list)) frames))))))
+
+(ert-deftest edmacs-windows-test-display-buffer-on-a-sole-side-window-frame-lands-in-center ()
+  "The same recovery as the two-window wedge, on the shape where
+`display-buffer-fallback-action' would otherwise reach
+`display-buffer-pop-up-frame': an unchanged frame count is what proves
+it was never reached."
+  (save-window-excursion
+    (let ((buf (generate-new-buffer "ewt-sole-unrouted"))
+          (frames (length (frame-list))))
+      (unwind-protect
+          (progn
+            (edmacs-windows-test--make-sole-side-window-frame)
+            (let ((win (display-buffer buf)))
+              (should (window-live-p win))
+              (should-not (window-parameter win 'window-side))
+              (should (eq win (edmacs-main-window)))
+              (should (eq (window-buffer win) buf))
+              (should (zerop (edmacs-windows-test--right-windows-count)))
+              (should (= (length (frame-list)) frames))))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-degraded-paths-from-a-sole-side-window ()
+  "Each of the three commands invoked on the parentless shape, where a
+bare `delete-window' signals and `delete-other-windows' is a no-op.
+Nothing here is wrapped in `ignore-errors': an uncaught signal is the
+regression this asserts against."
+  (dolist (command '(edmacs-stack-close
+                     edmacs-window-delete-or-demote
+                     edmacs-stack-toggle))
+    (save-window-excursion
+      (edmacs-windows-test--make-sole-side-window-frame)
+      (funcall command)
       (should (window-live-p (edmacs-main-window)))
       (should-not (edmacs-windows-frame-wedged-p)))))
 

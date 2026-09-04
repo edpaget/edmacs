@@ -34,13 +34,24 @@
 ;; invocation is this file's primary, CI-equivalent check.
 ;; `script -q /dev/null' remains genuinely useful for developing the
 ;; per-frame paths interactively, but two real tty frames sharing one
-;; pty inside `script' is its own source of flakiness independent of
-;; this module (observed: `edmacs-sidebar-hide' can hit "Attempt to
-;; delete minibuffer or sole ordinary window" on such a frame, and
-;; `make-frame'/`delete-frame' lifecycle under `script' is not always
-;; reliable across a 14-test run) -- so an occasional failure under
-;; `script' alone, with the plain invocation clean, is not evidence of
-;; a regression in this module's own logic.
+;; pty inside `script' do not isolate the way two real frames do, and
+;; both of those tests fail there reproducibly for reasons outside this
+;; module. Only these two exact assertions are excused, so a different
+;; failure under `script' is a real signal:
+;;
+;;   per-frame-isolation:   `(should-not (string-match-p "q.el" text1))'
+;;     -- bufferlo does not keep the second frame's file buffer out of
+;;     the first frame's buffer list when both frames share one pty.
+;;   toggle-is-frame-local: `(should-not (frame-parameter f2 ...))' on a
+;;     `#<dead frame>' -- the second frame is gone before the assertion
+;;     reads it; `make-frame'/`delete-frame' lifecycle under `script' is
+;;     not reliable across a 14-test run.
+;;
+;; Neither originates in `edmacs-sidebar-hide' -- the "Attempt to delete
+;; minibuffer or sole ordinary window" signal these tests once worked
+;; around is fixed at the source (`edmacs-sidebar--release-window'),
+;; which is why the `ignore-errors' wrapper around the hide call in
+;; `--reset-frame' is gone.
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
