@@ -378,17 +378,7 @@ live coming back permanently mis-named after the daemon's generic
 default frame name (e.g. \"*sidebar: F1*\") instead of its repo."
   (let* ((buf (edmacs-sidebar--buffer frame))
          (sanitised (edmacs-sidebar--sanitise-frame-title (or (frame-parameter frame 'name) "")))
-         ;; If sanitisation produces empty or generic name, append frame identity to avoid collisions
-         (base-name (if (string-empty-p sanitised)
-                        "sidebar"
-                      sanitised))
-         ;; Check if the candidate buffer name already exists; if so, add frame identity
-         (candidate (format "*sidebar: %s*" base-name))
-         (expected (if (and (not (eq (get-buffer candidate) buf))
-                            (get-buffer candidate))
-                       ;; Collision: append frame pointer address for uniqueness
-                       (format "*sidebar: %s-%s*" base-name (format "%x" (abs (sxhash frame))))
-                     candidate)))
+         (expected (format "*sidebar: %s*" (if (string-empty-p sanitised) "sidebar" sanitised))))
     (if (buffer-live-p buf)
         (unless (equal (buffer-name buf) expected)
           (with-current-buffer buf (rename-buffer expected t)))
