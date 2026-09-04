@@ -117,37 +117,39 @@ nerd-icon when available and not forced off by
 ;; Buffer classification
 ;; ============================================================================
 
-(defcustom edmacs-sidebar-buffers-exclude-modes '(edmacs-sidebar-mode)
-  "Major modes whose buffers never appear in a worktree's buffer list.
-The sidebar's own buffer is excluded by default: `bufferlo' associates
-it with the tab like any other, so without this the sidebar lists
-itself."
+(defcustom edmacs-sidebar-buffers-interactive-modes
+  '(comint-mode compilation-mode term-mode eshell-mode shell-mode
+    vterm-mode ghostel-mode claude-term-mode)
+  "Modes whose buffers count as interactive work worth a row.
+Listed alongside file and dired buffers by
+`edmacs-sidebar-buffers--listable-p'. Matched with
+`provided-mode-derived-p', so a derived mode counts without being named
+here; a mode absent at load time is simply never matched."
   :type '(repeat symbol)
   :group 'edmacs-sidebar)
 
-(defcustom edmacs-sidebar-buffers-exclude-name-regexps
-  '("\\`\\*which-key\\*\\'")
-  "Buffer-name regexps that never appear in a worktree's buffer list.
-For transient UI surfaces that are not worth a row -- they are chrome
-the user is looking at, not work they navigate between. Prefer
-`edmacs-sidebar-buffers-exclude-modes' when the buffer has a mode of
-its own; a regexp is the fallback for one that does not."
-  :type '(repeat regexp)
-  :group 'edmacs-sidebar)
+(defun edmacs-sidebar-buffers--listable-p (buf)
+  "Non-nil when BUF is work the user navigates between, not chrome.
+An allowlist, deliberately: `bufferlo' associates every buffer ever
+shown in a tab with that tab, so a denylist has to keep growing to name
+each new UI surface -- the sidebar's own buffer, `*which-key*',
+`*Messages*' -- while an allowlist admits only three kinds and needs no
+maintenance when a new one appears.
 
-(defun edmacs-sidebar-buffers--excluded-p (buf)
-  "Non-nil when BUF must not appear in a worktree's buffer list.
-Three rules: a mode in `edmacs-sidebar-buffers-exclude-modes', a name
-matching `edmacs-sidebar-buffers-exclude-name-regexps', or a name
-starting with a space -- Emacs's own convention for an internal buffer
-the user never asked for."
-  (or (not (buffer-live-p buf))
-      (let ((name (buffer-name buf)))
-        (or (string-prefix-p " " name)
-            (seq-some (lambda (re) (string-match-p re name))
-                      edmacs-sidebar-buffers-exclude-name-regexps)))
-      (memq (buffer-local-value 'major-mode buf)
-            edmacs-sidebar-buffers-exclude-modes)))
+Those kinds are: a file or dired buffer (`--file-like-p'), a buffer
+running a live process (a terminal, an agent pane, a REPL), and a
+buffer whose mode derives from one in
+`edmacs-sidebar-buffers-interactive-modes' (compilation output, which
+has no process once it finishes). A name starting with a space is
+Emacs's own convention for an internal buffer and never lists."
+  (and (buffer-live-p buf)
+       (not (string-prefix-p " " (buffer-name buf)))
+       (or (edmacs-sidebar-buffers--file-like-p buf)
+           (and (get-buffer-process buf) t)
+           (apply #'provided-mode-derived-p
+                  (buffer-local-value 'major-mode buf)
+                  edmacs-sidebar-buffers-interactive-modes)
+           nil)))
 
 (defun edmacs-sidebar-buffers--file-like-p (buf)
   "Non-nil when BUF is file-visiting or a `dired-mode' buffer.
@@ -562,7 +564,7 @@ own TAB-NUMBER convention (like every other consumer of this hook) is
   (when has-tab
     (edmacs-sidebar-buffers--ensure-cleared-this-pass)
     (let* ((tab (edmacs-frames--tab-for-root root frame))
-           (bufs (seq-remove #'edmacs-sidebar-buffers--excluded-p
+           (bufs (seq-filter #'edmacs-sidebar-buffers--listable-p
                               (bufferlo-buffer-list frame (1- tab-number))))
            (prev-names (edmacs-sidebar-buffers--main-window-prev-names frame tab))
            (is-current (and tab (eq (car tab) 'current-tab)))

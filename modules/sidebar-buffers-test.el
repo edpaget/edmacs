@@ -331,29 +331,29 @@ rather than silently doing nothing."
 
     ))
 
-(ert-deftest edmacs-sidebar-buffers-test-excluded-p-drops-chrome ()
-  "The sidebar's own buffer, which-key, and space-prefixed internals never list."
+(ert-deftest edmacs-sidebar-buffers-test-listable-p-admits-work ()
+  "Files, dired, live-process and compilation buffers list."
+  (let ((file (generate-new-buffer "notes.md"))
+        (comp (generate-new-buffer "*compilation*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer file (setq buffer-file-name "/tmp/notes.md"))
+          (with-current-buffer comp (setq major-mode 'compilation-mode))
+          (should (edmacs-sidebar-buffers--listable-p file))
+          (should (edmacs-sidebar-buffers--listable-p comp)))
+      (mapc (lambda (b) (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b))
+            (list file comp)))))
+
+(ert-deftest edmacs-sidebar-buffers-test-listable-p-rejects-chrome ()
+  "The sidebar's own buffer, which-key, help and internals never list."
   (let ((sidebar (generate-new-buffer "*sidebar: edmacs - Emacs*"))
         (wk (generate-new-buffer "*which-key*"))
-        (internal (generate-new-buffer " *hidden*"))
-        (real (generate-new-buffer "notes.md")))
+        (help (generate-new-buffer "*Help*"))
+        (internal (generate-new-buffer " *hidden*")))
     (unwind-protect
         (progn
           (with-current-buffer sidebar (setq major-mode 'edmacs-sidebar-mode))
-          (should (edmacs-sidebar-buffers--excluded-p sidebar))
-          (should (edmacs-sidebar-buffers--excluded-p wk))
-          (should (edmacs-sidebar-buffers--excluded-p internal))
-          (should-not (edmacs-sidebar-buffers--excluded-p real)))
-      (mapc #'kill-buffer (list sidebar wk internal real)))))
-
-(ert-deftest edmacs-sidebar-buffers-test-excluded-p-is-customisable ()
-  "Both exclusion customs are honoured, and an empty pair excludes nothing extra."
-  (let ((buf (generate-new-buffer "*custom-thing*")))
-    (unwind-protect
-        (progn
-          (let ((edmacs-sidebar-buffers-exclude-name-regexps '("\\`\\*custom-thing\\*\\'")))
-            (should (edmacs-sidebar-buffers--excluded-p buf)))
-          (let ((edmacs-sidebar-buffers-exclude-name-regexps nil)
-                (edmacs-sidebar-buffers-exclude-modes nil))
-            (should-not (edmacs-sidebar-buffers--excluded-p buf))))
-      (kill-buffer buf))))
+          (with-current-buffer help (setq major-mode 'help-mode))
+          (dolist (b (list sidebar wk help internal))
+            (should-not (edmacs-sidebar-buffers--listable-p b))))
+      (mapc #'kill-buffer (list sidebar wk help internal)))))
