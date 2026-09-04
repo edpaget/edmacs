@@ -1882,6 +1882,18 @@ membership is what puts one back."
                 (should-not (edmacs-sidebar--side-window frame))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
+    (ert-deftest edmacs-sidebar-test-window-parameter-mode-line-format-is-none ()
+      "The shown sidebar window's mode-line-format parameter is set to `none'
+to prevent it from inheriting the default mode-line format and displaying
+its raw buffer name."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (save-window-excursion
+              (let ((window (edmacs-sidebar-show frame)))
+                (should (window-live-p window))
+                (should (eq (window-parameter window 'mode-line-format) 'none))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-test.el ends here

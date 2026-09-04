@@ -982,7 +982,8 @@ show, rather than only ever being prevented on write."
                         (window-width . ,width)
                         (preserve-size . (t . nil))
                         (window-parameters . ((no-delete-other-windows . t)
-                                               (no-other-window . t))))))))
+                                               (no-other-window . t)
+                                               (mode-line-format . none))))))))
       (cond
        ((null window) nil)
        ((not (eq (window-parameter window 'window-side) 'left))
