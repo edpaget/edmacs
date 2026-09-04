@@ -864,7 +864,7 @@ mere presence, is the question."
       window)))
 
 ;; ============================================================================
-;; Manual resize survives a hide/show cycle (AC3)
+;; Manual resize survives a hide/show cycle (AC3), deliberate resizes only
 ;; ============================================================================
 ;; `preserve-size's `(t . nil)' parameter (below) blocks only AUTOMATIC
 ;; resizing -- `balance-windows', `fit-window-to-buffer' -- not an
@@ -875,6 +875,22 @@ mere presence, is the question."
 ;; window width is mirrored into a frame parameter here, debounced per
 ;; frame (mirroring `edmacs-frames--worktree-refresh-timers's shape) so
 ;; a mouse drag's stream of intermediate sizes doesn't thrash.
+;;
+;; Not every `window-size-change-functions' firing that touches the
+;; sidebar's width is a deliberate choice, though -- another window
+;; splitting or closing, a tab switch, or a frame resize can all leave
+;; the sidebar transiently wide as a side effect, and that must never
+;; be persisted (U4: a 165-column frame's transient state poisoned the
+;; remembered width to 52 against a 32-column default, then rode the
+;; desktop file into the next session). The rule: only a resize driven
+;; by `edmacs-sidebar--interactive-resize-commands' -- this config's own
+;; entry points for a user directly resizing the sidebar window -- is
+;; ever remembered. `--on-window-size-change' samples `this-command'
+;; synchronously against that allowlist, since it is still meaningful
+;; at hook-fire time; the debounced `--remember-width' callback fires
+;; ~`edmacs-sidebar-resize-debounce-seconds' later, once `this-command'
+;; has moved on to something else, so the decision is captured now and
+;; threaded through rather than re-derived at stash time.
 
 (defvar edmacs-sidebar-resize-debounce-seconds 0.2
   "Seconds a frame's sidebar-window-width changes coalesce into one
@@ -885,7 +901,19 @@ convention.")
 (defvar edmacs-sidebar--resize-debounce-timers (make-hash-table :test #'eq)
   "FRAME -> pending debounce timer for `edmacs-sidebar--on-window-size-change'.")
 
-(defun edmacs-sidebar--remember-width (frame)
+(defvar edmacs-sidebar--interactive-resize-commands
+  '(evil-window-increase-width evil-window-decrease-width mouse-drag-line)
+  "Commands that count as the user deliberately resizing the sidebar
+window: this config's own `C-w H'/`C-w L' evil bindings (see
+keybindings.el) plus a mouse-driven window-divider drag. Checked
+against `this-command' by `edmacs-sidebar--on-window-size-change' to
+decide whether a width change is worth remembering -- see the comment
+block above. Deliberately NOT an exhaustive list of every Emacs resize
+primitive, just this config's own entry points; extend it here if a
+future entry point is added, rather than scattering the rule
+elsewhere.")
+
+(defun edmacs-sidebar--remember-width (frame &optional interactive-resize)
   "Stash the `window-width' value that reproduces FRAME's current
 sidebar window width the next time `edmacs-sidebar-show' creates a
 fresh side window. `display-buffer-in-side-window's own `window-width'
@@ -897,16 +925,19 @@ already-live window, not a fresh split) has no such offset, which is
 why `--on-window-size-change's own measurement below has to go through
 this same compensation rather than stashing the raw width.
 
-Refuses to stash unless WINDOW is genuinely a side window with at
-least one sibling window in the frame -- a bare `window-width' read at
-a moment the sidebar is effectively the frame's only live window (e.g.
-`delete-other-windows', or mid-frameset-restore before other windows
-exist) is not a real sidebar width and must never be persisted. The
-stashed value itself is clamped via `edmacs-sidebar--clamp-width'."
+Refuses to stash unless INTERACTIVE-RESIZE is non-nil -- see the
+comment block above `edmacs-sidebar--interactive-resize-commands' --
+and WINDOW is genuinely a side window with at least one sibling window
+in the frame -- a bare `window-width' read at a moment the sidebar is
+effectively the frame's only live window (e.g. `delete-other-windows',
+or mid-frameset-restore before other windows exist) is not a real
+sidebar width and must never be persisted. The stashed value itself is
+clamped via `edmacs-sidebar--clamp-width'."
   (remhash frame edmacs-sidebar--resize-debounce-timers)
   (when (frame-live-p frame)
     (let ((window (edmacs-sidebar--side-window frame)))
-      (when (and (window-live-p window)
+      (when (and interactive-resize
+                 (window-live-p window)
                  (> (length (window-list frame 'never)) 1))
         (set-frame-parameter
          frame 'edmacs-sidebar-remembered-width
@@ -916,14 +947,22 @@ stashed value itself is clamped via `edmacs-sidebar--clamp-width'."
   "Registered on `window-size-change-functions': debounce-stash FRAME's
 sidebar window width, if it currently has one shown. A no-op for a
 frame with no live sidebar window at all -- most redisplay-triggering
-size changes are unrelated windows."
+size changes are unrelated windows.
+
+Whether the eventual stash is allowed to persist is decided here, not
+in the debounced callback: `this-command' is sampled against
+`edmacs-sidebar--interactive-resize-commands' now, while it still
+names whatever triggered this size change, and the resulting boolean
+is carried through to `edmacs-sidebar--remember-width' when the timer
+fires."
   (when (and (frame-live-p frame) (edmacs-sidebar--window frame))
-    (when-let* ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
-      (cancel-timer timer))
-    (puthash frame
-             (run-at-time edmacs-sidebar-resize-debounce-seconds nil
-                           #'edmacs-sidebar--remember-width frame)
-             edmacs-sidebar--resize-debounce-timers)))
+    (let ((interactive-resize (and (memq this-command edmacs-sidebar--interactive-resize-commands) t)))
+      (when-let* ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+        (cancel-timer timer))
+      (puthash frame
+               (run-at-time edmacs-sidebar-resize-debounce-seconds nil
+                             #'edmacs-sidebar--remember-width frame interactive-resize)
+               edmacs-sidebar--resize-debounce-timers))))
 
 (add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change)
 
@@ -1049,6 +1088,23 @@ releases it in place rather than signalling -- see
       (edmacs-sidebar-hide)
     (edmacs-sidebar-show)))
 
+;;;###autoload
+(defun edmacs-sidebar-reset-width (&optional frame)
+  "Clear FRAME's remembered sidebar width back to `edmacs-sidebar-width'.
+FRAME defaults to the selected frame. Only clears
+`edmacs-sidebar-remembered-width'; when the sidebar is currently shown
+on FRAME, also hides and re-shows it so the reset is visible
+immediately rather than waiting for the next hide/show cycle. A pure
+reset -- it does not touch `edmacs-sidebar--clamp-width' or the
+stash-gating rule in `edmacs-sidebar--remember-width', which prevent
+this parameter from being poisoned again going forward."
+  (interactive)
+  (let ((frame (or frame (selected-frame))))
+    (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+    (when (edmacs-sidebar--window frame)
+      (edmacs-sidebar-hide frame)
+      (edmacs-sidebar-show frame))))
+
 ;; ============================================================================
 ;; Redraw triggers
 ;; ============================================================================
@@ -1113,7 +1169,8 @@ firing and the timer executing."
   (general-define-key
    :states 'normal
    :prefix "SPC t"
-   "s" '(edmacs-sidebar-toggle :which-key "toggle sidebar")))
+   "s" '(edmacs-sidebar-toggle :which-key "toggle sidebar")
+   "S" '(edmacs-sidebar-reset-width :which-key "reset sidebar width")))
 
 ;; ============================================================================
 ;; Desktop - exclude the buffer, regenerate a live one after restore
