@@ -420,12 +420,17 @@ silent no-op rather than an error."
 (defun edmacs-sidebar-agents-visit ()
   "Visit the agent row at point: the full RET jump.
 Pulls the `edmacs-agent' struct straight off the section's own VALUE
--- see `edmacs-sidebar-agents--insert-row'."
+-- see `edmacs-sidebar-agents--insert-row'. Signals `user-error' when
+there is no section at point, or its VALUE slot is unbound or nil,
+rather than doing nothing."
   (interactive)
-  (when-let* ((section (magit-current-section))
-              (agent (and (slot-boundp section 'value) (oref section value))))
-    (edmacs-sidebar-agents--visit-common agent)
-    (edmacs-sidebar-agents--visit-source-extra agent)))
+  (let* ((section (magit-current-section))
+         (agent (and section (slot-boundp section 'value) (oref section value))))
+    (if agent
+        (progn
+          (edmacs-sidebar-agents--visit-common agent)
+          (edmacs-sidebar-agents--visit-source-extra agent))
+      (user-error "Nothing to do on this row"))))
 
 ;; ============================================================================
 ;; r -- rename an agent instance (sidebar.el's `edmacs-sidebar-rename-at-point')

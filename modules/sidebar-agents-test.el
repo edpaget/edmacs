@@ -412,6 +412,25 @@ the source-specific jump half is a no-op."
           (should (equal '("/repo/wt/") opened))
           (should (equal (edmacs-agent-key agent) marked-key)))))
 
+    (ert-deftest edmacs-sidebar-agents-test-visit-no-section-reports ()
+      "`edmacs-sidebar-agents-visit' signals `user-error' rather than doing
+nothing when there is no section at point at all -- the direct-call
+counterpart of edmacs-sidebar.el's own no-silent-no-op fix, since RET
+never reaches this function without one (`edmacs-sidebar-visit-at-point'
+only dispatches here for an `edmacs-sidebar-agent' section type)."
+      (edmacs-sidebar-agents-test--with-sidebar-buffer
+        (should-error (edmacs-sidebar-agents-visit) :type 'user-error)))
+
+    (ert-deftest edmacs-sidebar-agents-test-visit-nil-value-reports ()
+      "A section whose VALUE is nil -- `edmacs-sidebar-agents--insert-row'
+itself never constructs one this way, but a degenerate/direct-call
+construction could -- also reports rather than silently doing nothing."
+      (edmacs-sidebar-agents-test--with-sidebar-buffer
+        (magit-insert-section (edmacs-sidebar-agent nil)
+          (insert "row\n"))
+        (goto-char (point-min))
+        (should-error (edmacs-sidebar-agents-visit) :type 'user-error)))
+
     ;; ==========================================================================
     ;; SPC a TAB attention cycling (AC3)
     ;; ==========================================================================

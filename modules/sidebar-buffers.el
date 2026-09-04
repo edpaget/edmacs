@@ -574,14 +574,19 @@ frame's sidebar window."
 ;;;###autoload
 (defun edmacs-sidebar-buffers-visit ()
   "Show the buffer at point in its tab's main window, switching tab first
-if the row belongs to a different (background) tab."
+if the row belongs to a different (background) tab. Signals `user-error'
+when point is not on a buffer row, or its enclosing root section has no
+usable tab identity, rather than doing nothing."
   (interactive)
-  (when-let* ((buf (edmacs-sidebar-buffers--row-buffer-at-point))
-              (root-section (edmacs-sidebar-buffers--enclosing-root (magit-current-section)))
-              (root-tab (and (slot-boundp root-section 'value) (oref root-section value))))
-    (edmacs-sidebar-buffers--select-tab-if-needed (car root-tab) (cdr root-tab))
-    (when (buffer-live-p buf)
-      (edmacs-window-pop-buffer-to-main buf))))
+  (let* ((buf (edmacs-sidebar-buffers--row-buffer-at-point))
+         (root-section (and buf (edmacs-sidebar-buffers--enclosing-root (magit-current-section))))
+         (root-tab (and root-section (slot-boundp root-section 'value) (oref root-section value))))
+    (if (and buf root-tab)
+        (progn
+          (edmacs-sidebar-buffers--select-tab-if-needed (car root-tab) (cdr root-tab))
+          (when (buffer-live-p buf)
+            (edmacs-window-pop-buffer-to-main buf)))
+      (user-error "Nothing to do on this row"))))
 
 ;; ============================================================================
 ;; d -- kill the buffer at point

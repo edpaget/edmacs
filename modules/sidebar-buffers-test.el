@@ -293,4 +293,40 @@ since `nerd-icons' is not loaded by this standalone suite."
         (should (equal edmacs-sidebar-buffers--visible-glyph-fallback
                         (edmacs-sidebar-buffers--visible-glyph)))))
 
+    ;; ==========================================================================
+    ;; RET -- visiting a buffer row (no-silent-no-op coverage)
+    ;; ==========================================================================
+
+    (defmacro edmacs-sidebar-buffers-test--with-sidebar-buffer (&rest body)
+      "Run BODY in a fresh `magit-section-mode' temp buffer -- mirrors
+sidebar-agents-test.el's own helper of the same shape."
+      (declare (indent 0))
+      `(with-temp-buffer
+         (magit-section-mode)
+         (let ((inhibit-read-only t))
+           ,@body)))
+
+    (ert-deftest edmacs-sidebar-buffers-test-visit-no-section-reports ()
+      "`edmacs-sidebar-buffers-visit' signals `user-error' rather than doing
+nothing when there is no section at point at all -- the direct-call
+counterpart of sidebar.el's own no-silent-no-op fix, since RET never
+reaches this function without a buffer-file/-special section
+(`edmacs-sidebar-visit-at-point' gates on section type first)."
+      (edmacs-sidebar-buffers-test--with-sidebar-buffer
+        (should-error (edmacs-sidebar-buffers-visit) :type 'user-error)))
+
+    (ert-deftest edmacs-sidebar-buffers-test-visit-file-row-without-root-reports ()
+      "A buffer-file row constructed with no enclosing
+`edmacs-sidebar-buffers-root' ancestor -- a degenerate/direct-call
+construction that never occurs from the real redraw, which always wraps
+rows in a root section -- has no tab identity to resolve and reports
+rather than silently doing nothing."
+      (edmacs-sidebar-buffers-test--with-buffers
+          ((buf (edmacs-sidebar-buffers-test--file-buffer "/repo/a.el")))
+        (edmacs-sidebar-buffers-test--with-sidebar-buffer
+          (magit-insert-section (edmacs-sidebar-buffers-file buf)
+            (insert "row\n"))
+          (goto-char (point-min))
+          (should-error (edmacs-sidebar-buffers-visit) :type 'user-error))))
+
     ))

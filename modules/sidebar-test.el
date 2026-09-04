@@ -257,41 +257,61 @@ for coverage of the dispatch itself."
 
     (ert-deftest edmacs-sidebar-test-visit-at-point-dispatches-by-section-type ()
       "`edmacs-sidebar-visit-at-point' calls `edmacs-sidebar-agents-visit'
-on an `edmacs-sidebar-agent' section, and `edmacs-sidebar-activate' on
-every other section type (a plain tab row here) -- sidebar-agents.el
-itself is not loaded by this suite, so the agent-visit command is
-stubbed."
-      (let ((activate-calls 0) (agent-visit-calls 0))
+on an `edmacs-sidebar-agent' section, `edmacs-sidebar-buffers-visit' on
+an `edmacs-sidebar-buffers-file' section, and `edmacs-sidebar-activate'
+on every other section type (a plain tab row here) -- sidebar-agents.el
+and sidebar-buffers.el are not loaded by this suite, so both real visit
+commands are stubbed. This is the proof that RET on an agent or buffer
+row never reaches `edmacs-sidebar-activate' at all: the row-type-specific
+report coverage for those two (does the real, routed-to command signal
+`user-error' instead of silently doing nothing on an actionless row)
+lives with the real functions, in sidebar-agents-test.el's
+`edmacs-sidebar-agents-test-visit-no-section-reports'/
+`-visit-nil-value-reports' and sidebar-buffers-test.el's
+`edmacs-sidebar-buffers-test-visit-no-section-reports'/
+`-visit-file-row-without-root-reports'."
+      (let ((activate-calls 0) (agent-visit-calls 0) (buffer-visit-calls 0))
         (cl-letf (((symbol-function 'edmacs-sidebar-activate)
                    (lambda () (setq activate-calls (1+ activate-calls))))
                   ((symbol-function 'edmacs-sidebar-agents-visit)
-                   (lambda () (setq agent-visit-calls (1+ agent-visit-calls)))))
+                   (lambda () (setq agent-visit-calls (1+ agent-visit-calls))))
+                  ((symbol-function 'edmacs-sidebar-buffers-visit)
+                   (lambda () (setq buffer-visit-calls (1+ buffer-visit-calls)))))
           (with-temp-buffer
             (edmacs-sidebar-mode)
             (let ((inhibit-read-only t))
-              ;; Both rows nested inside one outer wrapper: an
+              ;; All three rows nested inside one outer wrapper: an
               ;; unwrapped top-level `magit-insert-section' call
               ;; becomes `magit-root-section' itself and is skipped by
               ;; `magit-section--set-section-properties' (see
               ;; magit-section.el's `magit-insert-section--finish'),
-              ;; so two sibling top-level calls here would leave
-              ;; neither row's own text actually tagged with its
-              ;; section -- exactly the real shape `--redraw' always
-              ;; produces via its own wrapping `edmacs-sidebar-root'.
+              ;; so sibling top-level calls here would leave none of the
+              ;; rows' own text actually tagged with its section --
+              ;; exactly the real shape `--redraw' always produces via
+              ;; its own wrapping `edmacs-sidebar-root'.
               (magit-insert-section (edmacs-sidebar-root)
                 (magit-insert-section (edmacs-sidebar-tab 1)
                   (magit-insert-heading "a tab row"))
                 (magit-insert-section (edmacs-sidebar-agent "fake-agent")
-                  (magit-insert-heading "an agent row"))))
+                  (magit-insert-heading "an agent row"))
+                (magit-insert-section (edmacs-sidebar-buffers-file "fake-buffer")
+                  (magit-insert-heading "a buffer row"))))
             (goto-char (point-min))
             (edmacs-sidebar-visit-at-point)
             (should (= 1 activate-calls))
             (should (= 0 agent-visit-calls))
+            (should (= 0 buffer-visit-calls))
+            (forward-line 1)
+            (edmacs-sidebar-visit-at-point)
+            (should (= 1 activate-calls))
+            (should (= 1 agent-visit-calls))
+            (should (= 0 buffer-visit-calls))
             (goto-char (point-max))
             (forward-line -1)
             (edmacs-sidebar-visit-at-point)
             (should (= 1 activate-calls))
-            (should (= 1 agent-visit-calls))))))
+            (should (= 1 agent-visit-calls))
+            (should (= 1 buffer-visit-calls))))))
 
     (ert-deftest edmacs-sidebar-test-redraw-passes-tabs-and-frame-explicitly ()
       "Regression test for the frame-mismatch fix.
@@ -539,13 +559,20 @@ directly (no worktree root involved)."
             (edmacs-sidebar-activate))
           (should (equal select-calls '(3))))))
 
-    (ert-deftest edmacs-sidebar-test-activate-agent-row-reports ()
-      "An agent row with no enclosing `edmacs-sidebar-tab' ancestor (e.g. a
-degenerate/direct-call construction, mirroring the scratch-frame
-\"no parent group\" shape used elsewhere in this file) has nothing for
-`edmacs-sidebar-activate' to act on and reports rather than silently
-doing nothing -- this is the row type the phase body calls out as
-falling through the old `cond's missing `t' clause."
+    (ert-deftest edmacs-sidebar-test-activate-called-directly-on-agent-value-reports ()
+      "A synthetic, direct call to `edmacs-sidebar-activate' -- NOT the real
+RET path, which `edmacs-sidebar-test-visit-at-point-dispatches-by-section-type'
+above proves routes an `edmacs-sidebar-agent' row to
+`edmacs-sidebar-agents-visit' before `edmacs-sidebar-activate' is ever
+reached. This is defensive coverage for `edmacs-sidebar-activate' itself
+staying honest if it is ever called some other way (bound to a key
+directly, called from a future extension point, etc.): an agent row's
+value -- neither `integerp' nor `consp' -- has nothing for it to act on
+and reports rather than silently doing nothing. The real, RET-reachable
+report coverage for an actionless agent row lives in
+sidebar-agents-test.el's `edmacs-sidebar-agents-test-visit-no-section-reports'
+and `-visit-nil-value-reports', against the real
+`edmacs-sidebar-agents-visit'."
       (with-temp-buffer
         (edmacs-sidebar-mode)
         (let ((inhibit-read-only t))
@@ -555,10 +582,19 @@ falling through the old `cond's missing `t' clause."
         (goto-char (point-min))
         (should-error (edmacs-sidebar-activate) :type 'user-error)))
 
-    (ert-deftest edmacs-sidebar-test-activate-buffer-child-row-reports ()
-      "A buffers-file row's value is a real buffer object -- neither
-`integerp' nor `consp' -- and with no enclosing `edmacs-sidebar-tab' row
-reports rather than silently doing nothing."
+    (ert-deftest edmacs-sidebar-test-activate-called-directly-on-buffer-value-reports ()
+      "A synthetic, direct call to `edmacs-sidebar-activate' -- NOT the real
+RET path, which `edmacs-sidebar-test-visit-at-point-dispatches-by-section-type'
+above proves routes an `edmacs-sidebar-buffers-file' row to
+`edmacs-sidebar-buffers-visit' before `edmacs-sidebar-activate' is ever
+reached. This is defensive coverage for `edmacs-sidebar-activate' itself:
+a buffers-file row's value is a real buffer object -- neither `integerp'
+nor `consp' -- and has nothing for it to act on, so it reports rather
+than silently doing nothing. The real, RET-reachable report coverage
+for an actionless buffer row lives in sidebar-buffers-test.el's
+`edmacs-sidebar-buffers-test-visit-no-section-reports' and
+`-visit-file-row-without-root-reports', against the real
+`edmacs-sidebar-buffers-visit'."
       (with-temp-buffer
         (edmacs-sidebar-mode)
         (let ((inhibit-read-only t)
