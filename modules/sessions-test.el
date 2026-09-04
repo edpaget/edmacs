@@ -851,6 +851,73 @@ this orchestrator only mutates already-live frames."
           (should-not call))))
 
     ;; ============================================================================
+    ;; edmacs-ns-close-frame -- the hide-vs-delete branch itself.
+    ;; Live-verified 2026-09-04 against a real `--fg-daemon' (see the
+    ;; daemon-and-Dock-frame task's live verification log for the NS-level
+    ;; hide/lsappinfo transition an ERT batch run cannot exercise); these
+    ;; pin the pure branch logic so a regression there fails in CI, not just
+    ;; on a manual pass.
+    ;; ============================================================================
+
+    (unless (fboundp 'ns-do-hide-emacs)
+      (defun ns-do-hide-emacs ()
+        "Stub for a non-NS batch build: the real primitive is NS-only."))
+
+    (ert-deftest edmacs-ns-close-frame-test-hides-the-last-visible-graphic-frame ()
+      "Under a daemon, closing the sole visible graphic frame hides Emacs
+instead of deleting it -- a deleted last frame drops the Dock tile."
+      (let (hidden deleted (frame 'the-frame))
+        (cl-letf (((symbol-function 'daemonp) (lambda () t))
+                  ((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                  ((symbol-function 'frame-visible-p) (lambda (&rest _) t))
+                  ((symbol-function 'frame-list) (lambda () (list frame)))
+                  ((symbol-function 'ns-do-hide-emacs) (lambda () (setq hidden t)))
+                  ((symbol-function 'delete-frame) (lambda (&rest _) (setq deleted t))))
+          (edmacs-ns-close-frame frame)
+          (should hidden)
+          (should-not deleted))))
+
+    (ert-deftest edmacs-ns-close-frame-test-deletes-when-another-graphic-frame-remains ()
+      "A second visible graphic frame means this one isn't the Dock tile's
+last hold on life, so the ordinary `delete-frame' applies."
+      (let (hidden deleted (frame 'the-frame))
+        (cl-letf (((symbol-function 'daemonp) (lambda () t))
+                  ((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                  ((symbol-function 'frame-visible-p) (lambda (&rest _) t))
+                  ((symbol-function 'frame-list) (lambda () (list frame 'other-frame)))
+                  ((symbol-function 'ns-do-hide-emacs) (lambda () (setq hidden t)))
+                  ((symbol-function 'delete-frame) (lambda (&rest _) (setq deleted t))))
+          (edmacs-ns-close-frame frame)
+          (should deleted)
+          (should-not hidden))))
+
+    (ert-deftest edmacs-ns-close-frame-test-deletes-outside-a-daemon ()
+      "No daemon means no Dock tile to protect, so hide never applies."
+      (let (hidden deleted (frame 'the-frame))
+        (cl-letf (((symbol-function 'daemonp) (lambda () nil))
+                  ((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                  ((symbol-function 'frame-visible-p) (lambda (&rest _) t))
+                  ((symbol-function 'frame-list) (lambda () (list frame)))
+                  ((symbol-function 'ns-do-hide-emacs) (lambda () (setq hidden t)))
+                  ((symbol-function 'delete-frame) (lambda (&rest _) (setq deleted t))))
+          (edmacs-ns-close-frame frame)
+          (should deleted)
+          (should-not hidden))))
+
+    (ert-deftest edmacs-ns-close-frame-test-deletes-a-non-graphic-frame ()
+      "A tty frame has no Dock tile either, even under a daemon."
+      (let (hidden deleted (frame 'the-frame))
+        (cl-letf (((symbol-function 'daemonp) (lambda () t))
+                  ((symbol-function 'display-graphic-p) (lambda (&rest _) nil))
+                  ((symbol-function 'frame-visible-p) (lambda (&rest _) t))
+                  ((symbol-function 'frame-list) (lambda () (list frame)))
+                  ((symbol-function 'ns-do-hide-emacs) (lambda () (setq hidden t)))
+                  ((symbol-function 'delete-frame) (lambda (&rest _) (setq deleted t))))
+          (edmacs-ns-close-frame frame)
+          (should deleted)
+          (should-not hidden))))
+
+    ;; ============================================================================
     ;; edmacs-sessions--install-macos-close-frame-bindings -- extracted so it is
     ;; directly callable regardless of the ambient `daemonp', which is nil in
     ;; every test's batch load environment.
