@@ -1700,6 +1700,7 @@ now repairs it."
       (delete-other-windows)
       (let ((window (selected-window)))
         (set-window-buffer window (edmacs-sidebar--ensure-buffer frame))
+        (set-window-parameter window 'edmacs-main nil)
         (set-window-parameter window 'window-side 'left)
         (set-window-parameter window 'window-slot 0)
         (set-window-parameter window 'no-other-window t)
@@ -1709,11 +1710,14 @@ now repairs it."
 
     (ert-deftest edmacs-sidebar-test-hide-on-sole-window-frame-does-not-signal ()
       "`edmacs-sidebar-hide' used to call `delete-window' unconditionally, so
-the frame's sole window signalled. It now releases the window in place."
+the frame's sole window signalled. It now releases the window in place,
+leaving the frame with a real main window rather than a wedged one."
       (let ((frame (selected-frame)))
         (unwind-protect
             (save-window-excursion
               (let ((window (edmacs-sidebar-test--make-sole-sidebar-window frame)))
+                (should (edmacs-windows-frame-wedged-p frame))
+                (should-not (edmacs-main-window))
                 (should (eq (edmacs-sidebar-hide frame) window))
                 (should (window-live-p window))
                 (should-not (eq (window-buffer window)
@@ -1722,7 +1726,9 @@ the frame's sole window signalled. It now releases the window in place."
                 (dolist (parameter '(window-side window-slot
                                      no-other-window no-delete-other-windows))
                   (should-not (window-parameter window parameter)))
-                (should-not (edmacs-sidebar--window frame))))
+                (should-not (edmacs-sidebar--window frame))
+                (should-not (edmacs-windows-frame-wedged-p frame))
+                (should (eq (edmacs-main-window) window))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-hide-in-ordinary-window-keeps-the-window ()
@@ -1740,7 +1746,8 @@ own and must not delete."
                 (should (window-live-p other))
                 (should (window-live-p main))
                 (should-not (eq (window-buffer other)
-                                (edmacs-sidebar--buffer frame)))))
+                                (edmacs-sidebar--buffer frame)))
+                (should (edmacs-main-window))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-hide-deletes-a-real-side-window ()
@@ -1754,7 +1761,8 @@ own and must not delete."
                 (should (window-parent window))
                 (should-not (edmacs-sidebar-hide frame))
                 (should-not (window-live-p window))
-                (should-not (edmacs-sidebar--window frame))))
+                (should-not (edmacs-sidebar--window frame))
+                (should (edmacs-main-window))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-show-into-mainless-frame-yields-side-window-and-main ()
