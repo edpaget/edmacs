@@ -216,6 +216,110 @@ themselves, so marking a window no longer changes the answer."
     (should-not (windmove-find-other-window 'right))))
 
 ;; ============================================================================
+;; evil-window-* reaches a `no-other-window' neighbour (this phase)
+;; ============================================================================
+;; `edmacs-windows--reach-no-other-window' is advice on the real
+;; `evil-window-left'/`-right'/`-up'/`-down', so these tests need real
+;; evil.el, gated behind `edmacs-windows-test--ensure-spc-w-bindings'
+;; (defined further down this file) exactly like the "SPC w" section does.
+
+(defun edmacs-windows-test--split-side (direction)
+  "Return `split-window's SIDE argument for windmove DIRECTION.
+`split-window' spells the vertical sides `above'/`below'; windmove (and
+`evil-window-up'/`-down') spell them `up'/`down'."
+  (pcase direction
+    ('up 'above)
+    ('down 'below)
+    (_ direction)))
+
+(defconst edmacs-windows-test--evil-window-direction-commands
+  '((evil-window-left . left)
+    (evil-window-right . right)
+    (evil-window-up . up)
+    (evil-window-down . down))
+  "Each evil directional window command paired with its windmove direction.")
+
+(ert-deftest edmacs-windows-test-evil-window-directions-reach-no-other-window ()
+  "Each of the four `evil-window-*' commands reaches a lone
+`no-other-window' neighbour in its own direction -- the gap this phase
+closes: plain `window-in-direction' (AC1's tests, above) never reaches
+one, but `C-w h'/`SPC w h'/`C-h' and their sibling directions must."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (dolist (pair edmacs-windows-test--evil-window-direction-commands)
+    (save-window-excursion
+      (delete-other-windows)
+      (let* ((main (selected-window))
+             (neighbor (split-window main nil
+                                      (edmacs-windows-test--split-side (cdr pair)))))
+        (set-window-parameter neighbor 'no-other-window t)
+        (select-window main)
+        (funcall (car pair) 1)
+        (should (eq (selected-window) neighbor))))))
+
+(ert-deftest edmacs-windows-test-other-window-still-skips-no-other-window ()
+  "The advice is scoped to the four evil commands: `other-window' still
+treats a frame surrounded by `no-other-window' windows as having exactly
+one reachable window, unaffected by this phase."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((main (selected-window))
+           (left (split-window main nil 'left))
+           (right (split-window main nil 'right))
+           (up (split-window main nil 'above))
+           (down (split-window main nil 'below)))
+      (dolist (w (list left right up down))
+        (set-window-parameter w 'no-other-window t))
+      (select-window main)
+      (other-window 1)
+      (should (eq (selected-window) main)))))
+
+(ert-deftest edmacs-windows-test-evil-window-left-signals-when-no-neighbour-at-all ()
+  "When there is no window at all in the requested direction -- not even
+a `no-other-window' one -- the advice's retry also finds nothing, so it
+must re-signal windmove's original `user-error' rather than swallowing
+it into a silent no-op."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (save-window-excursion
+    (delete-other-windows)
+    (should-error (evil-window-left 1))))
+
+(ert-deftest edmacs-windows-test-evil-window-left-reaches-no-other-window-after-state-round-trip ()
+  "The reachability fix survives a `window-state-get'/`window-state-put'
+round trip -- the shape a daemon restart or `desktop.el' actually
+produces (per phase 2's audit note), not just windows built directly by
+`split-window' within one test. `window-state-put' creates fresh window
+objects, so the restored left window is re-located by its parameters
+\(mirroring `edmacs-windows-test-main-survives-state-get-put', above),
+never by holding onto the pre-restore object."
+  (unless (edmacs-windows-test--ensure-spc-w-bindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((main (selected-window))
+           (left (split-window main nil 'left)))
+      (set-window-parameter left 'no-other-window t)
+      (set-window-parameter left 'window-side 'left)
+      (select-window main)
+      (let ((state (window-state-get (frame-root-window) t)))
+        (delete-other-windows)
+        (window-state-put state (frame-root-window))
+        (let ((restored-left (seq-find (lambda (w)
+                                          (and (window-parameter w 'no-other-window)
+                                               (eq (window-parameter w 'window-side) 'left)))
+                                        (window-list nil 'no-minibuf)))
+              (restored-main (seq-find (lambda (w) (not (window-parameter w 'no-other-window)))
+                                        (window-list nil 'no-minibuf))))
+          (should restored-left)
+          (should restored-main)
+          (select-window restored-main)
+          (evil-window-left 1)
+          (should (eq (selected-window) restored-left)))))))
+
+;; ============================================================================
 ;; AC4 -- load order: windows.el then sidebar.el leaves window-sides-slots
 ;; at (1 nil nil nil) -- sidebar's LEFT cap intact, this module's RIGHT nil
 ;; ============================================================================

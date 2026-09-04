@@ -210,11 +210,50 @@ slot is the inverse: it swaps the two buffers straight back."
 
 ;; `windmove-allow-all-windows' stays at its default (nil), so a window
 ;; carrying `no-other-window' -- sidebar.el's left side window is the only
-;; one left that does -- is skipped by directional moves as well as by
-;; `other-window', which sidebar.el's own acceptance criteria require.
-;; Agent panes used to need an opt-in back out of that (`edmacs-windmove-
-;; reachable', honored by an advice here); they are ordinary windows now
-;; and reachable without one.
+;; one left that does -- is skipped by `other-window' and by raw
+;; `windmove-left'/`-right'/`-up'/`-down', matching sidebar.el's own
+;; acceptance criteria. The four `evil-window-*' commands are the one
+;; exception: the advice just below retries into a `no-other-window'
+;; neighbour when the underlying windmove call left the selected window
+;; unchanged, so `C-w h'/`SPC w h'/`C-h' (all three route through
+;; `evil-window-left') can still reach the sidebar.
+
+(defun edmacs-windows--reach-no-other-window (direction orig-fn args)
+  "Run ORIG-FN with ARGS, then retry DIRECTION past a `no-other-window' block.
+An `:around' advice body for `evil-window-DIRECTION'. windmove signals a
+`user-error' rather than returning nil when it is blocked at a
+`no-other-window' boundary, so ORIG-FN's error is caught, not just its
+return value inspected. The retry -- `window-in-direction' with IGNORE
+non-nil -- only runs when the selected window is exactly what it was
+before ORIG-FN ran: a multi-count motion that moved partway before
+erroring, or a plain nonexistent-direction error with no neighbour at
+all, both re-signal ORIG-FN's original error unchanged rather than being
+silently swallowed."
+  (let ((before (selected-window))
+        handled
+        signalled)
+    (condition-case err
+        (apply orig-fn args)
+      (error (setq signalled err)))
+    (when (eq (selected-window) before)
+      (let ((target (window-in-direction direction before t)))
+        (when target
+          (select-window target)
+          (setq handled t))))
+    (when (and (not handled) signalled)
+      (signal (car signalled) (cdr signalled)))))
+
+;; `evil-window-left'/`-right' and `-up'/`-down' are the only entry points
+;; advised -- `other-window', `C-x 1' and `display-buffer' keep skipping
+;; the sidebar, matching sidebar.el's ACs.
+(with-eval-after-load 'evil
+  (dolist (pair '((evil-window-left . left)
+                  (evil-window-right . right)
+                  (evil-window-up . up)
+                  (evil-window-down . down)))
+    (advice-add (car pair) :around
+                (lambda (orig-fn &rest args)
+                  (edmacs-windows--reach-no-other-window (cdr pair) orig-fn args)))))
 
 ;; ============================================================================
 ;; The stack: the right-hand side-window column
