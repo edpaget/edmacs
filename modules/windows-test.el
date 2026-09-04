@@ -1859,6 +1859,31 @@ being side-window-free."
         ;; Idempotent: a second call is the healthy-frame no-op.
         (should (eq (edmacs-windows-repair-frame) main))))))
 
+(ert-deftest edmacs-windows-test-repair-frame-strips-every-parameter ()
+  "The survivor becomes main, so it must not keep a stack pane's styling.
+`edmacs-windows-place' declares `embark-collect' with
+`(mode-line-format . none)', and every popup carries `edmacs-stack-popup';
+both are registered in `window-persistent-parameters', so a leftover would
+re-persist through each `window-state' round trip and leave main
+mode-line-less for whatever buffer is reused into it next."
+  (save-window-excursion
+    (cl-destructuring-bind (left right) (edmacs-windows-test--make-wedged-frame)
+      ;; The popup is the undedicated window, so repair's survivor search
+      ;; prefers it over the dedicated sidebar -- it becomes main.
+      (set-window-dedicated-p left t)
+      (set-window-parameter right 'mode-line-format 'none)
+      (set-window-parameter right 'edmacs-stack-popup t)
+      (let ((main (edmacs-windows-repair-frame)))
+        (should (window-live-p main))
+        (should (eq main (edmacs-main-window)))
+        (should-not (window-parameter main 'mode-line-format))
+        (should-not (window-parameter main 'edmacs-stack-popup))
+        ;; Nothing but the designation itself survives.
+        (should (equal (mapcar #'car
+                               (seq-remove (lambda (cell) (null (cdr cell)))
+                                           (window-parameters main)))
+                       '(edmacs-main)))))))
+
 (ert-deftest edmacs-windows-test-repair-frame-evicts-a-dedicated-only-buffer ()
   "When every window was dedicated, the survivor is holding a buffer that
 belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."

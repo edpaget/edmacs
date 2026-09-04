@@ -868,14 +868,21 @@ wedged -- neither is expected to hold a main window."
   "Give FRAME back a main window and return it.
 The remedy for the shape core reads as valid (see above): every window a
 side window, so `edmacs-main-window' is nil and `display-buffer' can only
-add more side windows. Applies core's own `window--sides-check' remedy --
-reset every `window-side' -- then collapses the frame to one ordinary,
-undedicated window and designates it main via `edmacs-window-set-main'.
+add more side windows. Goes past core's own `window--sides-check' remedy
+of resetting every `window-side': clears every window parameter on every
+window, then collapses the frame to one ordinary, undedicated window and
+designates it main via `edmacs-window-set-main'.
 
-Destructive to slot layout: `window-slot' is cleared along with the side
-parameters, so a pinned stack pane loses its slot. The frame was already
-unusable, and `edmacs-stack--next-pin-slot' is not rewound, so later pins
-still allocate fresh slots.
+Clearing wholesale rather than a named few is deliberate -- the survivor
+becomes the frame's main window, and any parameter a stack placement left
+on it (`mode-line-format', `edmacs-stack-popup', anything added later)
+would otherwise style main as the popup it used to be, and re-persist
+through `window-persistent-parameters'.
+
+Destructive to slot layout: `window-slot' goes with the rest, so a pinned
+stack pane loses its slot. The frame was already unusable, and
+`edmacs-stack--next-pin-slot' is not rewound, so later pins still
+allocate fresh slots.
 
 A no-op returning `edmacs-main-window' unchanged on a healthy frame, on a
 child or minibuffer-only frame, and re-entrantly. Finishes by running
@@ -896,9 +903,12 @@ child or minibuffer-only frame, and re-entrantly. Finishes by running
                  (survivor (or free (car windows)))
                  (ignore-window-parameters t)
                  (window--sides-inhibit-check t))
+            ;; Every parameter, not a named few: a stack placement can leave
+            ;; `mode-line-format', `edmacs-stack-popup' or any later marker
+            ;; on the window that becomes main, and a popup's styling must
+            ;; not outlive the popup.
             (dolist (w windows)
-              (dolist (parameter '(window-side window-slot
-                                   no-other-window no-delete-other-windows))
+              (dolist (parameter (mapcar #'car (window-parameters w)))
                 (set-window-parameter w parameter nil)))
             (set-window-dedicated-p survivor nil)
             ;; Every window was dedicated, so the survivor is holding a
