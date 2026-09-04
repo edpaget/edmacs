@@ -31,49 +31,50 @@
 ;; --batch ...' -- so the two tests needing one (`per-frame-isolation',
 ;; `toggle-is-frame-local') skip cleanly under the plain invocation,
 ;; following sidebar-test.el's own documented convention; that plain
-;; invocation is this file's primary, CI-equivalent check.
-;; `script -q /dev/null' remains genuinely useful for developing the
-;; per-frame paths interactively, but both of those tests fail there
-;; reproducibly for reasons outside this module. Only these two exact
-;; assertions are excused, so a different failure under `script' is a
-;; real signal:
-;;
-;;   per-frame-isolation:   `(should-not (string-match-p "q.el" text1))'
-;;   toggle-is-frame-local: `(should-not (frame-parameter f2 ...))'
+;; invocation is this file's primary, CI-equivalent check. `script -q
+;; /dev/null' is what actually exercises them.
 ;;
 ;; Root-caused (edmacs-sidebar-polish phase 14, after this Commentary's
 ;; earlier "bufferlo pty sharing" / "`#<dead frame>' lifecycle" guesses
-;; turned out both wrong -- f2 is alive and its parameters ARE correctly
-;; isolated; see below): `--make-second-frame-or-skip's `(make-frame ...)'
-;; call SELECTS the frame it creates -- confirmed by wrapping the real
-;; `make-frame' with an `:around' advice during an actual `script'-driven
-;; run of this file and printing `(eq new-frame (selected-frame))'
-;; immediately after each of these two tests' own call, which read `t'
-;; both times. Neither test's body re-selects the original frame
-;; afterward, so for the rest of each test `f2' and `(selected-frame)'
-;; name the SAME frame object, not two distinct ones:
-;; `toggle-is-frame-local' toggles `(selected-frame)' (=f2) and then
-;; reads that exact toggle back off `f2', so the `should-not' fails by
-;; construction; `per-frame-isolation' does all of its "frame 1" setup
-;; and its final `(edmacs-sidebar-show (selected-frame))' against that
-;; same aliased frame, so `text1' and `text2' inevitably render the
-;; identical single frame. This is a property of `make-frame' on a new
-;; tty in `--batch' generally, not of `script' sharing one pty with the
-;; caller specifically -- confirmed independently with two frames on two
-;; separately-allocated ptys (no shared session at all): each `make-frame'
-;; call still selected the frame it had just created, while every
+;; both turned out wrong -- f2 was always alive and its parameters were
+;; always correctly isolated): `--make-second-frame-or-skip's `(make-frame
+;; ...)' call SELECTS the frame it creates -- confirmed by wrapping the
+;; real `make-frame' with an `:around' advice during an actual
+;; `script'-driven run of this file and printing `(eq new-frame
+;; (selected-frame))' immediately after each of these two tests' own
+;; call, which read `t' both times. Neither test's body used to
+;; re-select the original frame afterward, so for the rest of each test
+;; `f2' and `(selected-frame)' named the SAME frame object, not two
+;; distinct ones: `toggle-is-frame-local' toggled `(selected-frame)'
+;; (=f2) and then read that exact toggle back off `f2', so the
+;; `should-not' failed by construction; `per-frame-isolation' did all of
+;; its "frame 1" setup and its final `(edmacs-sidebar-show
+;; (selected-frame))' against that same aliased frame, so `text1' and
+;; `text2' inevitably rendered the identical single frame. This was a
+;; property of `make-frame' on a new tty in `--batch' generally, not of
+;; `script' sharing one pty with the caller specifically -- confirmed
+;; independently with two frames on two separately-allocated ptys (no
+;; shared session at all): each `make-frame' call still selected the
+;; frame it had just created, while every
 ;; `frame-parameter'/`set-frame-parameter' call this module's real
 ;; `edmacs-sidebar-buffers-toggle-flat'/`edmacs-sidebar-show' made across
 ;; those two genuinely independent frames stayed perfectly isolated
 ;; (flat toggled on one left the other's parameter nil; each frame's
 ;; rendered buffer list showed only its own file). So: a test-harness
 ;; artifact of this second-frame technique under `--batch', not a defect
-;; in this module's frame scoping -- sidebar-buffers-test.el's
+;; in this module's frame scoping.
+;;
+;; Both tests now capture the original frame BEFORE calling
+;; `--make-second-frame-or-skip' and thread that explicit variable
+;; through every subsequent read/write instead of relying on
+;; `(selected-frame)', so they genuinely exercise two distinct frames
+;; and pass under `script -q /dev/null' -- no assertion is excused here
+;; any more. sidebar-buffers-test.el's
 ;; `toggle-flat-scopes-every-call-to-selected-frame' and
-;; `on-worktree-section-scopes-frame-parameter-to-explicit-frame' now
-;; carry this as durable, environment-independent regression coverage of
-;; the same invariant, simulating two frames without needing a real
-;; second tty frame at all.
+;; `on-worktree-section-scopes-frame-parameter-to-explicit-frame' remain
+;; as a second, environment-independent line of coverage for the same
+;; invariant, simulating two frames without needing a real second tty
+;; frame at all.
 ;;
 ;; Neither originates in `edmacs-sidebar-hide' -- the "Attempt to delete
 ;; minibuffer or sole ordinary window" signal these tests once worked
@@ -594,14 +595,21 @@ state under test."
             (should (string-match-p "modules/" (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))))))
 
     (ert-deftest edmacs-sidebar-buffers-live-test-toggle-is-frame-local ()
-      (let ((f2 (edmacs-sidebar-buffers-live-test--make-second-frame-or-skip)))
+      "`make-frame' selects the frame it creates, so f1 must be captured
+before calling the helper and re-selected afterward -- otherwise f2 and
+`(selected-frame)' alias to the same frame and this test cannot fail
+regardless of whether the toggle is actually frame-local (see this
+file's own Commentary above)."
+      (let* ((f1 (selected-frame))
+             (f2 (edmacs-sidebar-buffers-live-test--make-second-frame-or-skip)))
         (unwind-protect
             (progn
+              (select-frame f1 'norecord)
               (edmacs-sidebar-buffers-toggle-flat)
-              (should (frame-parameter (selected-frame) 'edmacs-sidebar-buffers-flat))
+              (should (frame-parameter f1 'edmacs-sidebar-buffers-flat))
               (should-not (frame-parameter f2 'edmacs-sidebar-buffers-flat))
               (edmacs-sidebar-buffers-toggle-flat))
-          (edmacs-sidebar-buffers-live-test--reset-frame (selected-frame))
+          (edmacs-sidebar-buffers-live-test--reset-frame f1)
           (edmacs-sidebar-buffers-live-test--reset-frame f2)
           (delete-frame f2))))
 
@@ -741,10 +749,16 @@ ever lists the other's files, whichever tab is currently selected."
     (ert-deftest edmacs-sidebar-buffers-live-test-per-frame-isolation ()
       "Two real frames, same-numbered tabs, different files: catches a
 frame-argument mixup in the `bufferlo-buffer-list' call site that a
-single-frame test cannot."
-      (let ((f2 (edmacs-sidebar-buffers-live-test--make-second-frame-or-skip))
-            (r1 (edmacs-sidebar-buffers-live-test--make-root))
-            (r2 (edmacs-sidebar-buffers-live-test--make-root)))
+single-frame test cannot. `make-frame' selects the frame it creates, so
+f1 must be captured before calling the helper and its own setup done
+under an explicit `with-selected-frame' -- otherwise f2 and
+`(selected-frame)' alias to the same frame and \"frame 1\"'s setup below
+would silently run against f2 too (see this file's own Commentary
+above)."
+      (let* ((f1 (selected-frame))
+             (f2 (edmacs-sidebar-buffers-live-test--make-second-frame-or-skip))
+             (r1 (edmacs-sidebar-buffers-live-test--make-root))
+             (r2 (edmacs-sidebar-buffers-live-test--make-root)))
         (unwind-protect
             (let ((p (edmacs-sidebar-buffers-live-test--write-file r1 "p.el"))
                   (q (edmacs-sidebar-buffers-live-test--write-file r2 "q.el")))
@@ -752,16 +766,17 @@ single-frame test cannot."
                "/repo1/.git" (list (cons "r1" r1)))
               (edmacs-sidebar-buffers-live-test--register-worktrees
                "/repo2/.git" (list (cons "r2" r2)))
-              (set-frame-parameter (selected-frame) 'edmacs-repo "/repo1/.git")
-              (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
-              (find-file p)
+              (with-selected-frame f1
+                (set-frame-parameter f1 'edmacs-repo "/repo1/.git")
+                (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
+                (find-file p)
+                (edmacs-sidebar-show f1))
               (with-selected-frame f2
                 (set-frame-parameter f2 'edmacs-repo "/repo2/.git")
                 (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r2)
                 (find-file q)
                 (edmacs-sidebar-show f2))
-              (edmacs-sidebar-show (selected-frame))
-              (let ((text1 (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame)))
+              (let ((text1 (edmacs-sidebar-buffers-live-test--sidebar-text f1))
                     (text2 (edmacs-sidebar-buffers-live-test--sidebar-text f2)))
                 (should (string-match-p "p.el" text1))
                 (should-not (string-match-p "q.el" text1))
@@ -771,9 +786,10 @@ single-frame test cannot."
           (edmacs-sidebar-buffers-live-test--kill-buffers-under r2)
           (ignore-errors (delete-directory r1 t))
           (ignore-errors (delete-directory r2 t))
-          (edmacs-sidebar-buffers-live-test--reset-frame (selected-frame))
+          (edmacs-sidebar-buffers-live-test--reset-frame f1)
           (edmacs-sidebar-buffers-live-test--reset-frame f2)
           (delete-frame f2)
+          (select-frame f1 'norecord)
           (switch-to-buffer (get-buffer-create "*scratch*")))))
 
     ;; ==========================================================================
