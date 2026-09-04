@@ -33,6 +33,14 @@
 ;; path, so opening `*claude-usage*' never blocks on an unlock prompt or
 ;; the network. The access token itself never reaches a buffer, a message,
 ;; or an error payload.
+;;
+;; Two cheap surfaces compress that state for glancing at:
+;; `claude-usage-mode-line-mode' (a nano-modeline footer segment, spliced
+;; in by `:filter-args' advice on `nano-modeline-footer') and a sidebar
+;; section contributed through `edmacs-sidebar-extra-section-functions'
+;; (owned by sidebar.el; registered here, never touching that file). Both
+;; read only pre-rendered values off `claude-usage--state-envelope', so
+;; neither reads a file, stats a directory, or starts a process.
 
 ;;; Code:
 
@@ -59,6 +67,19 @@
 ;; result; this file does not repeat that gap.
 (declare-function evil-define-key "evil-core")
 (declare-function evil-set-initial-state "evil-core")
+
+;; Optional forward references, resolved only in a real init.el session:
+;; sidebar.el's redraw (called through `fboundp'), and the two mode-line
+;; constructors the load-time re-bake picks between.
+(declare-function edmacs-sidebar--redraw "sidebar" (frame))
+(declare-function edmacs-modeline-text-mode "ui" (&optional default))
+(declare-function nano-modeline-text-mode "nano-modeline" (&optional default))
+
+;; sidebar.el owns this hook; declared here only so the byte-compiler
+;; doesn't warn about `add-hook' on a free variable when this file is
+;; compiled standalone. `add-hook' below creates it if sidebar.el hasn't
+;; loaded yet -- the dependency stays one-way.
+(defvar edmacs-sidebar-extra-section-functions)
 
 (defgroup claude-usage nil
   "Claude usage metrics and cache integration."
@@ -480,13 +501,17 @@ consulted; when both are nil, state resolves to nil/nil, and the
 existing \"No usage data\" render branch applies.
 
 Returns (ENVELOPE . SOURCE) after setting `claude-usage--state-envelope'
-and `claude-usage--state-source' to the same values."
+and `claude-usage--state-source' to the same values, and refreshing the
+two cheap surfaces (`claude-usage--update-surfaces') -- the single funnel
+every state change already reaches, so neither surface needs a second
+call site."
   (let* ((envelope (or fetch-envelope (claude-usage--read-cache)))
          (source (cond (fetch-envelope 'live)
                        (envelope 'cache)
                        (t nil))))
     (setq claude-usage--state-envelope envelope
           claude-usage--state-source source)
+    (claude-usage--update-surfaces)
     (cons envelope source)))
 
 (defun claude-usage--sync-render ()
@@ -679,6 +704,308 @@ fallback) resolves."
   (pop-to-buffer (claude-usage--ensure-buffer)))
 
 (claude-usage--setup-idle-timer)
+
+;; ============================================================================
+;; Cheap surfaces: nano-modeline segment and sidebar section
+;; ============================================================================
+;; Both are compressions of the `*claude-usage*' buffer that must cost
+;; nothing at redisplay time, so both read pre-rendered values off
+;; `claude-usage--state-envelope' and never the on-disk cache, the
+;; keychain, or the network.
+
+(defcustom claude-usage-mode-line-format 'full
+  "How `claude-usage-mode-line-mode' renders its segment.
+`full' shows a bar and percentage per headline meter plus the next reset
+clock; `percent' shows the percentages alone."
+  :type '(choice (const :tag "Bars, percentages and next reset" full)
+                 (const :tag "Percentages only" percent))
+  :group 'claude-usage)
+
+(defcustom claude-usage-sidebar-section t
+  "Whether `edmacs-sidebar' shows a Claude usage section."
+  :type 'boolean
+  :group 'claude-usage)
+
+(defconst claude-usage--mode-line-bar-width 5
+  "Bar width, in characters, of a mode-line meter.")
+
+(defconst claude-usage--sidebar-bar-width 8
+  "Bar width, in characters, of a sidebar meter row.")
+
+(defvar claude-usage-mode-line-string nil
+  "The pre-rendered, propertized mode-line segment, or nil.
+Recomputed only when the usage state changes, so
+`claude-usage-mode-line-segment' can hand it back untouched on every
+render.")
+
+(defvar claude-usage--surface-digest 'unset
+  "What `claude-usage-mode-line-string' was last rendered from.
+Compared with `equal' to suppress redundant work when a refresh returns
+values that render identically.  The initial value is a sentinel rather
+than nil so the first update out of a nil state still counts as a
+change.")
+
+(defun claude-usage--format-reset-clock (resets-at-iso)
+  "Format RESETS-AT-ISO as a bare local wall clock like \"8:00 PM\".
+Returns \"\" for nil or unparseable input.  Deliberately absolute rather
+than relative: the mode-line string is cached between state changes, so
+a countdown baked into it would silently drift by the elapsed time."
+  (condition-case nil
+      (let ((resets-at (and (stringp resets-at-iso)
+                            (claude-usage--parse-iso8601 resets-at-iso))))
+        (if resets-at
+            (format-time-string "%-I:%M %p" resets-at (getenv "TZ"))
+          ""))
+    (error "")))
+
+(defun claude-usage--nearest-future-reset (rows)
+  "Return the soonest still-future `:resets-at' string among ROWS, or nil."
+  (let ((now (float-time (current-time)))
+        (best nil)
+        (best-secs nil))
+    (dolist (row rows)
+      (let* ((iso (plist-get row :resets-at))
+             (tm (and (stringp iso) (claude-usage--parse-iso8601 iso)))
+             (secs (and tm (float-time tm))))
+        (when (and secs (> secs now) (or (null best-secs) (< secs best-secs)))
+          (setq best iso
+                best-secs secs))))
+    best))
+
+(defun claude-usage--surface-values (&optional envelope now)
+  "Return the rendered values both cheap surfaces draw from, or nil.
+
+ENVELOPE defaults to `claude-usage--state-envelope'; the on-disk cache is
+never consulted.  NOW is threaded through the formatters for
+deterministic rendering in tests.
+
+The result is a plist (:source SYM :stale BOOL :age STR :rows ROWS),
+where ROWS holds one plist per `claude-usage-meters' entry:
+\(:id :label :percent :percent-str :bar :reset :resets-at :face).
+Returns nil when there is no envelope or it yields no meters, which both
+callers treat as \"render nothing at all\"."
+  (let* ((env (or envelope claude-usage--state-envelope))
+         (meters (and env (claude-usage-meters env))))
+    (when meters
+      (let* ((fetched-at-ms (alist-get 'fetchedAtMs env))
+             (stale (and fetched-at-ms (claude-usage-stale-p fetched-at-ms))))
+        (list
+         :source claude-usage--state-source
+         :stale stale
+         :age (if fetched-at-ms (claude-usage--format-age fetched-at-ms now) "")
+         :rows
+         (mapcar
+          (lambda (meter)
+            (let* ((percent (plist-get meter :percent))
+                   (resets-at (plist-get meter :resets-at))
+                   ;; A nil percent must never reach `claude-usage--severity-face':
+                   ;; its threshold fallback does `(>= percent 90)'.
+                   (face (if percent
+                             (claude-usage--severity-face
+                              (plist-get meter :severity) percent)
+                           'default)))
+              (list :id (plist-get meter :id)
+                    :label (plist-get meter :label)
+                    :percent percent
+                    :percent-str (if percent
+                                     (format "%d%%" percent)
+                                   claude-usage--em-dash)
+                    :bar (if percent
+                             (claude-usage--bar
+                              percent claude-usage--sidebar-bar-width)
+                           claude-usage--em-dash)
+                    :reset (if resets-at
+                               (claude-usage--format-reset resets-at now)
+                             claude-usage--em-dash)
+                    :resets-at resets-at
+                    :face face)))
+          meters))))))
+
+(defun claude-usage--escape-mode-line-percent (string)
+  "Return STRING with every \"%\" doubled.
+Display expands %-constructs in whatever an `:eval' element hands back,
+so an unescaped \"45%\" reaches the footer as \"45\" plus whatever the
+next character happens to mean to the mode line.  Escaping happens before
+`propertize' so the doubled sign keeps its severity face."
+  (replace-regexp-in-string "%" "%%" string t t))
+
+(defun claude-usage--render-mode-line (&optional values)
+  "Render VALUES, from `claude-usage--surface-values', as a mode-line string.
+Returns \"\" when VALUES is nil or carries neither headline meter."
+  (if (null values)
+      ""
+    (let ((rows (plist-get values :rows))
+          (parts nil))
+      (dolist (spec '((session . "S") (weekly_all . "W")))
+        (let ((row (catch 'found
+                     (dolist (r rows)
+                       (when (eq (plist-get r :id) (car spec))
+                         (throw 'found r))))))
+          (when (and row (plist-get row :percent))
+            (let ((face (plist-get row :face))
+                  (percent-str (claude-usage--escape-mode-line-percent
+                                (plist-get row :percent-str))))
+              (push (concat
+                     (cdr spec) " "
+                     (propertize
+                      (if (eq claude-usage-mode-line-format 'percent)
+                          percent-str
+                        (concat (claude-usage--bar
+                                 (plist-get row :percent)
+                                 claude-usage--mode-line-bar-width)
+                                percent-str))
+                      'face face))
+                    parts)))))
+      (if (null parts)
+          ""
+        (let* ((clock (if (eq claude-usage-mode-line-format 'percent)
+                          ""
+                        (claude-usage--format-reset-clock
+                         (claude-usage--nearest-future-reset rows))))
+               (rendered (concat (if (plist-get values :stale)
+                                     claude-usage--stale-marker
+                                   "")
+                                 (mapconcat #'identity (nreverse parts) " ")
+                                 (if (string-empty-p clock)
+                                     ""
+                                   (concat " →" clock)))))
+          (when (plist-get values :stale)
+            (add-face-text-property 0 (length rendered) 'shadow nil rendered))
+          rendered)))))
+
+(defun claude-usage--recompute-surfaces (values digest &optional redraw-sidebars)
+  "Rewrite the cached segment from VALUES and record DIGEST, unconditionally.
+Redraws every frame's sidebar only when REDRAW-SIDEBARS is non-nil --
+`edmacs-sidebar--redraw' already no-ops for a frame that never showed
+one.  This is the worker `claude-usage--update-surfaces' gates and the
+minor mode deliberately calls ungated."
+  (setq claude-usage-mode-line-string (claude-usage--render-mode-line values)
+        claude-usage--surface-digest digest)
+  (force-mode-line-update t)
+  (when (and redraw-sidebars (fboundp 'edmacs-sidebar--redraw))
+    (dolist (frame (frame-list))
+      (edmacs-sidebar--redraw frame))))
+
+(defun claude-usage--update-surfaces ()
+  "Refresh both cheap surfaces, skipping the work when nothing rendered moved.
+The digest compares rendered strings, not raw state, so a live fetch that
+returns unchanged percentages drives no sidebar redraw even though
+`fetchedAtMs' moved.  `claude-usage-mode-line-format' is part of it:
+changing that defcustom is not a state change but does invalidate the
+cached string."
+  (let* ((values (claude-usage--surface-values))
+         (digest (list claude-usage-mode-line-format values)))
+    (unless (equal digest claude-usage--surface-digest)
+      (claude-usage--recompute-surfaces values digest t))))
+
+;;;###autoload
+(define-minor-mode claude-usage-mode-line-mode
+  "Show the two headline Claude usage meters in the mode line.
+
+The mode-line construct itself is never touched.  The segment is spliced
+in once at module load by advice on `nano-modeline-footer', and this mode
+only changes what `claude-usage-mode-line-segment' returns -- which is why
+it takes effect in buffers created before it was enabled, and why
+toggling it leaves `mode-line-format' byte-identical."
+  :global t
+  :group 'claude-usage
+  (if claude-usage-mode-line-mode
+      (let ((values (claude-usage--surface-values)))
+        ;; Ungated on purpose: an off/on toggle is not a state change, so the
+        ;; digest would match and leave the segment blank.  REDRAW-SIDEBARS is
+        ;; nil for the same reason -- nothing about the usage state moved.
+        (claude-usage--recompute-surfaces
+         values (list claude-usage-mode-line-format values))
+        (run-with-idle-timer 0 nil #'claude-usage--refresh))
+    ;; Clear both together: the digest must always describe what the cached
+    ;; string was rendered from.
+    (setq claude-usage-mode-line-string nil
+          claude-usage--surface-digest 'unset)
+    (force-mode-line-update t)))
+
+(defun claude-usage-mode-line-segment ()
+  "Return the cached usage segment, or \"\" when the mode is off.
+Nullary and allocation-free: this runs on every mode-line render."
+  (if (and claude-usage-mode-line-mode claude-usage-mode-line-string)
+      claude-usage-mode-line-string
+    ""))
+
+(defun claude-usage--nano-modeline-footer-filter-args (args)
+  "Append the usage segment to `nano-modeline-footer's RIGHT element list.
+ARGS is (LEFT [RIGHT [DEFAULT]]); the two-argument shape is the mainline
+one for `nano-modeline-message-mode', `nano-modeline-term-mode' and
+ui.el's ghostel line.  The element must be a list, not a bare symbol:
+`nano-modeline--make' `apply's its car to its cdr.  RIGHT is a shared
+quoted literal inside nano-modeline, so it is appended to, never
+mutated, and the `member' check keeps a re-bake from doubling it."
+  (let ((element '(claude-usage-mode-line-segment))
+        (right (nth 1 args)))
+    (list (nth 0 args)
+          (if (member element right) right (append right (list element)))
+          (nth 2 args))))
+
+(defun claude-usage--install-mode-line-advice ()
+  "Splice the usage segment into every nano-modeline footer.
+Targets `nano-modeline-footer' because ui.el binds
+`nano-modeline-position' to it; a switch to `nano-modeline-header' there
+would silently drop the segment.  The default line is then re-baked
+because ui.el bakes it long before init.el loads this file -- through
+ui.el's own wrapper when present, since re-baking with plain
+`nano-modeline-text-mode' would strip that line's filtered buffer name
+and diagnostics."
+  (advice-add 'nano-modeline-footer :filter-args
+              #'claude-usage--nano-modeline-footer-filter-args)
+  (when (and (consp (default-value 'mode-line-format))
+             (eq (car (default-value 'mode-line-format)) :eval))
+    (with-temp-buffer
+      (cond ((fboundp 'edmacs-modeline-text-mode) (edmacs-modeline-text-mode t))
+            ((fboundp 'nano-modeline-text-mode) (nano-modeline-text-mode t))))))
+
+;; Not a bare `advice-add': advising an undefined `nano-modeline-footer'
+;; succeeds and defines its function cell, making `fboundp' lie.
+(with-eval-after-load 'nano-modeline
+  (claude-usage--install-mode-line-advice))
+
+(defun claude-usage--insert-sidebar-section (frame)
+  "Insert the usage section into the current sidebar buffer.
+FRAME is accepted (per `edmacs-sidebar-extra-section-functions') but
+unused: the section's content is the whole (frame-independent) usage
+state, identical on every frame. Inserts nothing at all -- not a
+heading, not a separator -- when the section is switched off or no
+usage state has been resolved yet."
+  (ignore frame)
+  (when claude-usage-sidebar-section
+    (let ((values (claude-usage--surface-values)))
+      (when values
+        (let ((start (point)))
+          (insert "\n")
+          (magit-insert-section (claude-usage-sidebar)
+            (magit-insert-heading
+              (format "Usage (%s%s%s)"
+                      (if (plist-get values :source)
+                          (format "%s, " (symbol-name (plist-get values :source)))
+                        "")
+                      (if (plist-get values :stale) claude-usage--stale-marker "")
+                      (plist-get values :age)))
+            (dolist (row (plist-get values :rows))
+              ;; Section value stays nil: `edmacs-sidebar-visit-tab' checks
+              ;; `integerp', so RET on a usage row is a no-op.
+              (magit-insert-section (claude-usage-sidebar-meter)
+                (insert (format " %-16s %s %4s  %s\n"
+                                (plist-get row :label)
+                                (propertize (plist-get row :bar)
+                                            'face (plist-get row :face))
+                                (propertize (plist-get row :percent-str)
+                                            'face (plist-get row :face))
+                                (plist-get row :reset))))))
+          (when (plist-get values :stale)
+            (add-face-text-property start (point) 'shadow)))))))
+
+;; `add-hook' creates the variable when sidebar.el has not loaded yet, so
+;; this file needs no `(require 'sidebar)' and the dependency stays
+;; one-way: sidebar.el owns the hook and never mentions claude-usage.
+(add-hook 'edmacs-sidebar-extra-section-functions
+          #'claude-usage--insert-sidebar-section)
 
 (provide 'claude-usage)
 

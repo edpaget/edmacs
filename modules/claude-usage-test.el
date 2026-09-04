@@ -1074,6 +1074,464 @@ timers (no repeat delay) elsewhere in `timer-idle-list' don't count."
                         timer-idle-list)))
           (should (= (length matches) 1)))))
 
+    ;; ==========================================================================
+    ;; Cheap surfaces -- nano-modeline segment and sidebar section
+    ;; ==========================================================================
+
+    (defun claude-usage-test--ensure-nano-modeline ()
+      "Load the real `nano-modeline', skipping the calling test if unavailable.
+nano-modeline needs only `cl-lib' beyond Emacs core, so a single
+`load-path' entry under the straight build root is enough."
+      (unless (featurep 'nano-modeline)
+        (let* ((root (or claude-usage-test--build-root
+                          (claude-usage-test--locate-straight-build-root)))
+               (dir (and root (expand-file-name "nano-modeline" root))))
+          (unless (and dir (file-directory-p dir))
+            (ert-skip (format "nano-modeline's straight build was not found at \
+%s; bootstrap straight once (open this worktree in a real Emacs session) to \
+enable this test" (or dir "<no straight build root>"))))
+          (let ((load-path (cons dir load-path)))
+            (require 'nano-modeline)))))
+
+    (defun claude-usage-test--construct-has-segment-p (form)
+      "Non-nil when FORM contains a cons `equal' to `(claude-usage-mode-line-segment)'.
+Structural rather than evaluated, for lines that cannot be rendered
+outside their own major mode -- `nano-modeline-term-shell-mode' calls
+`term-in-char-mode', which needs a live term buffer."
+      (cond
+       ((equal form '(claude-usage-mode-line-segment)) t)
+       ((consp form)
+        (or (claude-usage-test--construct-has-segment-p (car form))
+            (claude-usage-test--construct-has-segment-p (cdr form))))
+       (t nil)))
+
+    (defun claude-usage-test--cancel-pending-refresh-timers ()
+      "Cancel one-shot deferred `claude-usage--refresh' timers.
+The minor mode's enable body schedules one, and a later `sleep-for' in
+this suite would otherwise fire it for real -- reaching the keychain.
+The periodic timer (which has a repeat delay) is deliberately left
+alone, since `claude-usage-test-idle-timer-dedup-after-double-load'
+counts it."
+      (dolist (tm (append timer-list timer-idle-list))
+        (when (and (eq (timer--function tm) #'claude-usage--refresh)
+                   (null (timer--repeat-delay tm)))
+          (cancel-timer tm))))
+
+    (defun claude-usage-test--face-list (string)
+      "Return the `face' property at index 0 of STRING as a list."
+      (let ((face (get-text-property 0 'face string)))
+        (cond ((null face) nil)
+              ((listp face) face)
+              (t (list face)))))
+
+    (defun claude-usage-test--surface-fixtures ()
+      "Return (FRESH . STALE), two envelopes for the cheap-surface tests.
+Both carry the same three limits as `claude-usage-test--fixture-full-payload'
+-- session 45%, weekly_all 62%, and a weekly_scoped \"Claude 3.5 Opus\"
+at 88% -- but with `fetchedAtMs' and every `resets_at' computed relative
+to the real clock, so neither staleness nor \"the nearest still-future
+reset\" depends on the calendar date the suite happens to run on."
+      (let* ((now (float-time (current-time)))
+             (iso (lambda (offset)
+                    (format-time-string "%Y-%m-%dT%H:%M:%SZ"
+                                        (seconds-to-time (+ now offset)) t)))
+             (limits `(((kind . "session")
+                        (percent . 45) (severity . "normal")
+                        (resets_at . ,(funcall iso 3600)))
+                       ((kind . "weekly_all")
+                        (percent . 62) (severity . "warning")
+                        (resets_at . ,(funcall iso 172800)))
+                       ((kind . "weekly_scoped")
+                        (percent . 88) (severity . "critical")
+                        (resets_at . ,(funcall iso 172800))
+                        (scope (model (id . "claude-opus-4-1")
+                                      (display_name . "Claude 3.5 Opus")))))))
+        (cons `((fetchedAtMs . ,(round (* 1000 now)))
+                (accountUuid . "test-uuid-surface")
+                (utilization (limits . ,limits)))
+              `((fetchedAtMs . ,(round (* 1000 (- now 7200))))
+                (accountUuid . "test-uuid-surface")
+                (utilization (limits . ,limits))))))
+
+    (defmacro claude-usage-test--with-surface-state (&rest body)
+      "Run BODY with the mode-line surface globals saved and restored.
+Also stubs `claude-usage--refresh' to a no-op, so the enable body's
+deferred refresh can never reach the keychain, and cancels the one-shot
+timer it schedules."
+      (declare (indent 0))
+      `(let ((claude-usage-test--saved-string claude-usage-mode-line-string)
+             (claude-usage-test--saved-digest claude-usage--surface-digest)
+             (claude-usage-test--saved-default (default-value 'mode-line-format)))
+         (unwind-protect
+             (cl-letf (((symbol-function 'claude-usage--refresh) #'ignore))
+               ,@body)
+           (claude-usage-mode-line-mode -1)
+           (claude-usage-test--cancel-pending-refresh-timers)
+           (setq-default mode-line-format claude-usage-test--saved-default)
+           (setq claude-usage-mode-line-string claude-usage-test--saved-string
+                 claude-usage--surface-digest claude-usage-test--saved-digest))))
+
+    ;; --- AC2: the segment reaches the installed construct ----------------------
+
+    (ert-deftest claude-usage-test-mode-line-segment-reaches-nano-construct ()
+      "The segment renders inside nano-modeline's baked `:eval' construct --
+in the default line, in a buffer whose own line was baked *before* the
+mode was enabled, and in neither once the mode is switched off.
+
+`format-mode-line' cannot be used here: it returns \"\" under `--batch',
+so every assertion evaluates `(cadr ...)' of the construct directly."
+      (claude-usage-test--ensure-nano-modeline)
+      (let ((buf (generate-new-buffer " *claude-usage-test-pre-existing*"))
+            (nano-modeline-position #'nano-modeline-footer))
+        (unwind-protect
+            (claude-usage-test--with-surface-state
+              (claude-usage-mode-line-mode -1)
+              ;; Bake this buffer's own line while the mode is still off.
+              (with-current-buffer buf (nano-modeline-text-mode))
+              ;; Enable first, then plant the sentinel: the enable body
+              ;; recomputes the string and would clobber it the other way round.
+              (claude-usage-mode-line-mode 1)
+              (setq claude-usage-mode-line-string "ZZUSAGEZZ")
+              (with-temp-buffer (nano-modeline-text-mode t))
+              (should (string-match-p
+                       "ZZUSAGEZZ" (eval (cadr (default-value 'mode-line-format)) t)))
+              (with-current-buffer buf
+                (should (string-match-p "ZZUSAGEZZ" (eval (cadr mode-line-format) t))))
+              (claude-usage-mode-line-mode -1)
+              (should-not (string-match-p
+                           "ZZUSAGEZZ" (eval (cadr (default-value 'mode-line-format)) t)))
+              (with-current-buffer buf
+                (should-not (string-match-p "ZZUSAGEZZ" (eval (cadr mode-line-format) t)))))
+          (when (buffer-live-p buf) (kill-buffer buf)))))
+
+    (ert-deftest claude-usage-test-mode-line-segment-survives-two-argument-installers ()
+      "The `:filter-args' advice handles the two-argument `nano-modeline-footer'
+call -- the shape `nano-modeline-message-mode', `nano-modeline-term-mode'
+and ui.el's ghostel line all use -- without mutating the shared RIGHT
+literal or doubling the element on a re-bake."
+      ;; (a) Unit level; needs no nano-modeline at all.
+      (let* ((right (list '(nano-modeline-window-dedicated)))
+             (right-before (copy-tree right))
+             (out (claude-usage--nano-modeline-footer-filter-args
+                   (list (list '(nano-modeline-buffer-status)) right))))
+        (should (= (length out) 3))
+        (should (equal (nth 1 out)
+                       '((nano-modeline-window-dedicated)
+                         (claude-usage-mode-line-segment))))
+        (should (null (nth 2 out)))
+        (should (equal right right-before))
+        (should (equal (claude-usage--nano-modeline-footer-filter-args out) out)))
+      ;; (b) and (c) drive real two-argument installers.
+      (claude-usage-test--ensure-nano-modeline)
+      (let ((nano-modeline-position #'nano-modeline-footer))
+        (claude-usage-test--with-surface-state
+          (claude-usage-mode-line-mode 1)
+          (setq claude-usage-mode-line-string "ZZUSAGEZZ")
+          ;; (b) `nano-modeline-message-mode' is safe to actually render.
+          (with-temp-buffer
+            (nano-modeline-message-mode)
+            (should (string-match-p "ZZUSAGEZZ" (eval (cadr mode-line-format) t))))
+          ;; (c) The term line can only be checked structurally.
+          (with-temp-buffer
+            (nano-modeline-term-mode)
+            (should (claude-usage-test--construct-has-segment-p mode-line-format)))
+          ;; Negative control: the same construct, baked with no advice.
+          (unwind-protect
+              (progn
+                (advice-remove 'nano-modeline-footer
+                               #'claude-usage--nano-modeline-footer-filter-args)
+                (with-temp-buffer
+                  (nano-modeline-term-mode)
+                  (should-not
+                   (claude-usage-test--construct-has-segment-p mode-line-format))))
+            (advice-add 'nano-modeline-footer :filter-args
+                        #'claude-usage--nano-modeline-footer-filter-args)))))
+
+    ;; --- AC4: rendered output, staleness, and the format defcustom -------------
+
+    (ert-deftest claude-usage-test-mode-line-render-fixture-stale-and-format ()
+      "The segment renders both headline meters for a fixture envelope; the
+stale form differs visibly from the fresh one; and a non-default
+`claude-usage-mode-line-format' changes the output for the same state."
+      (let* ((fixtures (claude-usage-test--surface-fixtures))
+             (fresh-values (claude-usage--surface-values (car fixtures)))
+             (stale-values (claude-usage--surface-values (cdr fixtures)))
+             (full (claude-usage--render-mode-line fresh-values))
+             (stale (claude-usage--render-mode-line stale-values))
+             (percent (let ((claude-usage-mode-line-format 'percent))
+                        (claude-usage--render-mode-line fresh-values))))
+        ;; Fresh, `full'.
+        (should (string-prefix-p "S " full))
+        (should (string-match-p "45%%" full))
+        (should (string-match-p "W " full))
+        (should (string-match-p "62%%" full))
+        (should (string-match-p "█" full))
+        (should (string-match-p "→[0-9]+:[0-9][0-9] [AP]M" full))
+        ;; nano-modeline truncates LEFT to fit RIGHT and never the reverse, so
+        ;; an over-long segment eats the buffer name rather than eliding itself.
+        (should (< (length full) 40))
+        ;; Stale.
+        (should-not (equal full stale))
+        (should (string-prefix-p claude-usage--stale-marker stale))
+        (should (memq 'shadow (claude-usage-test--face-list stale)))
+        (should-not (memq 'shadow (claude-usage-test--face-list full)))
+        ;; `percent' format, same state.
+        (should-not (equal full percent))
+        (should (string-match-p "45%%" percent))
+        (should (string-match-p "62%%" percent))
+        (should-not (string-match-p "█" percent))
+        (should-not (string-match-p "→" percent))))
+
+    ;; --- AC3: every "%" is doubled, in both formats, both chars faced ----------
+
+    (ert-deftest claude-usage-test-mode-line-percent-signs-are-escaped ()
+      "Every \"%\" in the segment is doubled, and the doubled sign keeps its face.
+
+Display expands %-constructs in the string an `:eval' element returns, so
+a lone \"45%\" reaches a real footer as \"45\" plus whatever the following
+character means to the mode line -- \"45% W\" renders as \"45W\".  Assert
+the invariant structurally: `format-mode-line' cannot be used, since it
+returns \"\" under `--batch' for any input at all (verified)."
+      (let* ((fixtures (claude-usage-test--surface-fixtures))
+             (values (claude-usage--surface-values (car fixtures))))
+        (dolist (format '(full percent))
+          (let* ((rendered (let ((claude-usage-mode-line-format format))
+                             (claude-usage--render-mode-line values)))
+                 ;; Strip the legitimate pairs; a leftover "%" is an unescaped one.
+                 (unpaired (replace-regexp-in-string "%%" "" rendered t t)))
+            (should (string-match-p "45%%" rendered))
+            (should-not (string-match-p "%" unpaired))
+            ;; The escape runs before `propertize', so the sign is faced too.
+            (let ((at (string-match "45%%" rendered)))
+              (should (get-text-property (+ at 2) 'face rendered))
+              (should (get-text-property (+ at 3) 'face rendered)))))))
+
+    ;; --- AC5: toggling never perturbs the construct -----------------------------
+
+    (ert-deftest claude-usage-test-mode-line-mode-toggle-leaves-format-identical ()
+      "Two enable/disable cycles leave `(default-value \\='mode-line-format)'
+`equal' to what it started as, with the segment demonstrably present in
+between -- the advice is installed at module load, so the mode only ever
+changes what the segment function returns."
+      (claude-usage-test--ensure-nano-modeline)
+      (let ((nano-modeline-position #'nano-modeline-footer))
+        (claude-usage-test--with-surface-state
+          (claude-usage-mode-line-mode -1)
+          (with-temp-buffer (nano-modeline-text-mode t))
+          (let ((before (default-value 'mode-line-format)))
+            (dotimes (_ 2)
+              (claude-usage-mode-line-mode 1)
+              (setq claude-usage-mode-line-string "ZZUSAGEZZ")
+              (should (string-match-p
+                       "ZZUSAGEZZ" (eval (cadr (default-value 'mode-line-format)) t)))
+              (claude-usage-mode-line-mode -1)
+              (should-not (string-match-p
+                           "ZZUSAGEZZ"
+                           (eval (cadr (default-value 'mode-line-format)) t))))
+            (should (equal before (default-value 'mode-line-format)))))))
+
+    (ert-deftest claude-usage-test-mode-line-mode-enable-repopulates-after-disable ()
+      "Toggling the mode off and straight back on, with no intervening state
+change at all, restores the same segment: the disable body clears the
+digest along with the string, and the enable body bypasses the digest
+gate entirely."
+      (let ((fixtures (claude-usage-test--surface-fixtures)))
+        (claude-usage-test--with-surface-state
+          (let ((claude-usage--state-envelope (car fixtures))
+                (claude-usage--state-source 'live))
+            (setq claude-usage--surface-digest 'unset)
+            (claude-usage-mode-line-mode 1)
+            (let ((first claude-usage-mode-line-string))
+              (should (string-match-p "45%%" first))
+              (claude-usage-mode-line-mode -1)
+              (should (null claude-usage-mode-line-string))
+              (should (eq claude-usage--surface-digest 'unset))
+              (should (equal "" (claude-usage-mode-line-segment)))
+              (claude-usage-mode-line-mode 1)
+              (should (equal first claude-usage-mode-line-string))
+              (should-not (equal "" (claude-usage-mode-line-segment))))))))
+
+    ;; --- AC1: the sidebar section registers on the existing hook ---------------
+
+    (ert-deftest claude-usage-test-sidebar-section-registered-on-extra-section-functions ()
+      "`claude-usage--insert-sidebar-section' is registered on the already-landed
+`edmacs-sidebar-extra-section-functions' hook -- no second, near-duplicate
+hook is added anywhere in this file."
+      (should (memq #'claude-usage--insert-sidebar-section
+                     edmacs-sidebar-extra-section-functions)))
+
+    (ert-deftest claude-usage-test-insert-sidebar-section-accepts-frame-argument ()
+      "The FRAME argument is accepted, per the hook's own calling convention,
+and ignored without erroring for an unusual or nil value."
+      (let ((fixtures (claude-usage-test--surface-fixtures))
+            (buf (generate-new-buffer " *claude-usage-test-frame-arg*")))
+        (with-current-buffer buf (claude-usage-mode))
+        (unwind-protect
+            (let ((claude-usage--state-envelope (car fixtures))
+                  (claude-usage--state-source 'live))
+              (dolist (frame (list nil 'not-a-real-frame (selected-frame)))
+                (with-current-buffer buf
+                  (let ((inhibit-read-only t))
+                    (erase-buffer)
+                    (claude-usage--insert-sidebar-section frame))
+                  (should (string-match-p "Usage" (buffer-string))))))
+          (when (buffer-live-p buf) (kill-buffer buf)))))
+
+    ;; --- AC6: sidebar section renders with data, absent without, absent off ----
+
+    (ert-deftest claude-usage-test-sidebar-section-absent-when-defcustom-off ()
+      "With usage data present but `claude-usage-sidebar-section' off, the
+section renders nothing at all -- not an empty heading."
+      (let ((fixtures (claude-usage-test--surface-fixtures))
+            (buf (generate-new-buffer " *claude-usage-test-section-off*")))
+        (with-current-buffer buf (claude-usage-mode))
+        (unwind-protect
+            (let ((claude-usage--state-envelope (car fixtures))
+                  (claude-usage--state-source 'live)
+                  (claude-usage-sidebar-section nil))
+              (with-current-buffer buf
+                (let ((inhibit-read-only t))
+                  (erase-buffer)
+                  (claude-usage--insert-sidebar-section (selected-frame)))
+                (should (equal "" (buffer-string)))))
+          (when (buffer-live-p buf) (kill-buffer buf)))))
+
+    ;; --- AC7: identical renders redraw the sidebar exactly once ----------------
+
+    (ert-deftest claude-usage-test-update-surfaces-identical-render-redraws-sidebar-exactly-once ()
+      "Two consecutive `claude-usage--update-surfaces' calls whose rendered
+values are `equal' trigger exactly one `edmacs-sidebar--redraw' call --
+the second call's digest matches and skips both the string recompute and
+the redraw."
+      ;; `edmacs-sidebar--redraw' is never `fboundp' in this suite (sidebar.el
+      ;; is not loaded), so it cannot go through `cl-letf' -- that macro
+      ;; reads the symbol's current function value to save it, which signals
+      ;; `void-function' on an unbound symbol. `fset'/`fmakunbound' instead.
+      (let* ((redraw-count 0)
+             (was-bound (fboundp 'edmacs-sidebar--redraw))
+             (old (and was-bound (symbol-function 'edmacs-sidebar--redraw))))
+        (fset 'edmacs-sidebar--redraw
+              (lambda (_frame) (setq redraw-count (1+ redraw-count))))
+        (unwind-protect
+            (cl-letf (((symbol-function 'claude-usage--surface-values)
+                       (lambda (&optional _envelope _now)
+                         (list :source 'live :stale nil :age "now" :rows nil))))
+              (let ((claude-usage--surface-digest 'unset)
+                    (claude-usage-mode-line-string nil))
+                (claude-usage--update-surfaces)
+                (claude-usage--update-surfaces)
+                (should (= redraw-count 1))))
+          (if was-bound
+              (fset 'edmacs-sidebar--redraw old)
+            (fmakunbound 'edmacs-sidebar--redraw))
+          (setq claude-usage-mode-line-string nil))))
+
+    ;; --- AC8: neither surface touches the filesystem or a process --------------
+
+    (ert-deftest claude-usage-test-cheap-surfaces-never-touch-filesystem-or-processes ()
+      "Rendering either cheap surface reads no file, stats no directory, and
+starts no process.
+
+Every guard is record-and-continue rather than signalling, so a
+violation cannot abort the render and hide the paths after it.
+`file-readable-p' and `insert-file-contents' are the load-bearing
+entries: they are what `claude-usage--read-cache' itself calls, and
+neither surface may ever reach it.  The guard cannot observe frames
+inside natively-compiled third-party code, so it is scoped to edmacs's
+own call paths.  Advising these C subrs is only safe because
+`native-comp-enable-subr-trampolines' is nil file-wide, above."
+      (let* ((fixtures (claude-usage-test--surface-fixtures))
+             (violations nil)
+             (guarded '(call-process call-process-region process-file
+                        start-process start-file-process make-process
+                        insert-file-contents file-attributes directory-files
+                        file-readable-p file-exists-p))
+             ;; Enter the mode before the guards go up: `define-derived-mode's
+             ;; own `run-mode-hooks' is not what is under test here.
+             (buf (generate-new-buffer " *claude-usage-test-sidebar*")))
+        (with-current-buffer buf (claude-usage-mode))
+        (unwind-protect
+            (claude-usage-test--with-surface-state
+              (let ((claude-usage--state-envelope (car fixtures))
+                    (claude-usage--state-source 'live)
+                    (claude-usage-cache-file
+                     "/nonexistent-edmacs-claude-usage-test/.claude.json"))
+                (claude-usage-mode-line-mode 1)
+                (dolist (fn guarded)
+                  (advice-add fn :before
+                              (lambda (&rest _) (push fn violations))
+                              `((name . ,(intern
+                                          (format "claude-usage-test--guard-%s" fn))))))
+                (dotimes (_ 50)
+                  (claude-usage-mode-line-segment)
+                  (with-current-buffer buf
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)
+                      (claude-usage--insert-sidebar-section (selected-frame)))))
+                ;; The mode's own enable path must be clean too -- the keychain
+                ;; read is deferred onto an idle timer, never done inline.
+                (claude-usage-mode-line-mode -1)
+                (claude-usage-mode-line-mode 1)
+                (sleep-for 0.2)
+                (sit-for 0)
+                (should-not violations)))
+          (dolist (fn guarded)
+            (advice-remove fn (intern (format "claude-usage-test--guard-%s" fn))))
+          (when (buffer-live-p buf) (kill-buffer buf)))))
+
+    ;; --- AC6: no usage data at all ----------------------------------------------
+
+    (ert-deftest claude-usage-test-no-usage-data-renders-nothing-on-either-surface ()
+      "With no usable usage state, neither surface shows a heading, an empty
+bar, or a separator -- and an envelope missing `fetchedAtMs' still
+renders without signalling."
+      (let ((buf (generate-new-buffer " *claude-usage-test-empty-sidebar*")))
+        (with-current-buffer buf (claude-usage-mode))
+        (unwind-protect
+            (claude-usage-test--with-surface-state
+              ;; No envelope at all, and an envelope whose limits list is empty:
+              ;; both must resolve to "render nothing", not "render a shell".
+              (dolist (envelope (list nil
+                                      '((fetchedAtMs . 1725274680000)
+                                        (utilization (limits . nil)))))
+                (let ((claude-usage--state-envelope envelope)
+                      (claude-usage--state-source (and envelope 'cache)))
+                  (should (null (claude-usage--surface-values)))
+                  (should (equal "" (claude-usage--render-mode-line
+                                     (claude-usage--surface-values))))
+                  (claude-usage-mode-line-mode 1)
+                  (should (equal "" (claude-usage-mode-line-segment)))
+                  (claude-usage-mode-line-mode -1)
+                  ;; Emptiness, not merely the absence of the word "Usage": a
+                  ;; lone blank separator or an empty heading would fail here.
+                  (should (equal ""
+                                 (with-current-buffer buf
+                                   (let ((inhibit-read-only t))
+                                     (erase-buffer)
+                                     (claude-usage--insert-sidebar-section
+                                      (selected-frame)))
+                                   (buffer-string))))))
+              ;; Meters present but no `fetchedAtMs': renders, no stale marker.
+              (let* ((claude-usage--state-envelope
+                      '((utilization
+                         (limits . (((kind . "session") (percent . 45)
+                                     (severity . "normal") (resets_at . nil)))))))
+                     (claude-usage--state-source 'cache)
+                     (values (claude-usage--surface-values)))
+                (should values)
+                (should (equal "" (plist-get values :age)))
+                (should (null (plist-get values :stale)))
+                (let ((rendered (claude-usage--render-mode-line values)))
+                  (should (string-match-p "45%%" rendered))
+                  (should-not (string-match-p claude-usage--stale-marker rendered)))
+                (with-current-buffer buf
+                  (let ((inhibit-read-only t))
+                    (erase-buffer)
+                    (claude-usage--insert-sidebar-section (selected-frame)))
+                  (should (string-match-p "Usage" (buffer-string)))
+                  (should (string-match-p claude-usage--em-dash (buffer-string))))))
+          (when (buffer-live-p buf) (kill-buffer buf)))))
+
     )) ; end of build-root-found branch
 
 (provide 'claude-usage-test)
