@@ -1020,10 +1020,10 @@ usage state has been resolved yet."
 
 (defun claude-usage--collapsed-section (frame width)
   "Insert usage data into the current buffer's collapsed sidebar strip for FRAME.
-Inserts a compact single-line summary of usage percentages, or nothing when no
-usage data is available. Measures with `string-width' to respect double-width
-nerd-font glyphs and fits within WIDTH columns using `edmacs-sidebar--fit',
-truncating model names or percentages if necessary.
+Inserts one line per headline meter (session, weekly_all), or nothing when no
+usage data is available. Each line is formatted compactly as ABBR PCT% and
+fitted independently within WIDTH columns using `edmacs-sidebar--fit'.
+Measures with `string-width' to respect double-width nerd-font glyphs.
 FRAME is currently unused (usage data is frame-independent); accepted
 for registration on `edmacs-sidebar-collapsed-section-functions' compatibility."
   (ignore frame)
@@ -1031,18 +1031,26 @@ for registration on `edmacs-sidebar-collapsed-section-functions' compatibility."
     (when values
       (let ((rows (plist-get values :rows)))
         (when rows
-          ;; Format headline meters (session, weekly_all) compactly as ID:PCT ID:PCT ...
-          (let ((parts nil))
-            (dolist (row rows)
+          ;; Filter to headline meters: session and weekly_all
+          (let ((headline-rows
+                 (seq-filter (lambda (row)
+                               (let ((id (plist-get row :id)))
+                                 (or (eq id 'session)
+                                     (eq id 'weekly_all))))
+                             rows)))
+            (dolist (row headline-rows)
               (let* ((id (plist-get row :id))
                      (percent-str (plist-get row :percent-str))
-                     (part (format "%s:%s" id percent-str))
-                     (face (plist-get row :face)))
-                (when (stringp part)
-                  (push (if face (propertize part 'face face) part) parts))))
-            ;; Fit the full line using edmacs-sidebar--fit (applies truncation with …)
-            (let ((line (string-join (nreverse parts) " ")))
-              (insert (edmacs-sidebar--fit line width) "\n"))))))))
+                     ;; Abbreviate meter kind to 1 character
+                     (abbr (if (eq id 'session) "S" "W"))
+                     ;; Format as "S 45%" or "W 60%"
+                     (line (format "%s %s" abbr percent-str))
+                     (face (plist-get row :face))
+                     ;; Fit each line independently using edmacs-sidebar--fit
+                     (fitted (edmacs-sidebar--fit line width))
+                     ;; Apply face to the fitted line
+                     (propertized (if face (propertize fitted 'face face) fitted)))
+                (insert propertized "\n")))))))))
 
 ;; Append to collapsed hook (runs after agents, which prepends)
 (add-hook 'edmacs-sidebar-collapsed-section-functions

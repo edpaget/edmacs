@@ -1566,8 +1566,9 @@ renders without signalling."
           (with-temp-buffer
             (claude-usage--collapsed-section (selected-frame) 100)
             (let ((buf-str (buffer-string)))
-              ;; Should contain both meter IDs
-              (should (string-match-p "session" buf-str))
+              ;; Should contain the abbreviated meter IDs (S and W)
+              (should (string-match-p "S " buf-str))
+              (should (string-match-p "W " buf-str))
               ;; Should contain percentages
               (should (string-match-p "45" buf-str))
               (should (string-match-p "60" buf-str)))))))
