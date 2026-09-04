@@ -1019,21 +1019,18 @@ usage state has been resolved yet."
 ;; ============================================================================
 
 (defun claude-usage--collapsed-section (frame width)
-  "Render usage data into a collapsed sidebar strip for FRAME.
-Returns a compact single-line summary of usage percentages, or
-\"\" when no usage data is available. Measures with `string-width'
-to respect double-width nerd-font glyphs and fits within WIDTH columns,
+  "Insert usage data into the current buffer's collapsed sidebar strip for FRAME.
+Inserts a compact single-line summary of usage percentages, or nothing when no
+usage data is available. Measures with `string-width' to respect double-width
+nerd-font glyphs and fits within WIDTH columns using `edmacs-sidebar--fit',
 truncating model names or percentages if necessary.
 FRAME is currently unused (usage data is frame-independent); accepted
-for registration on `edmacs-sidebar-collapsed-section-functions'
-compatibility."
+for registration on `edmacs-sidebar-collapsed-section-functions' compatibility."
   (ignore frame)
   (let ((values (claude-usage--surface-values)))
-    (if (null values)
-        ""
+    (when values
       (let ((rows (plist-get values :rows)))
-        (if (null rows)
-            ""
+        (when rows
           ;; Format headline meters (session, weekly_all) compactly as ID:PCT ID:PCT ...
           (let ((parts nil))
             (dolist (row rows)
@@ -1043,16 +1040,9 @@ compatibility."
                      (face (plist-get row :face)))
                 (when (stringp part)
                   (push (if face (propertize part 'face face) part) parts))))
+            ;; Fit the full line using edmacs-sidebar--fit (applies truncation with …)
             (let ((line (string-join (nreverse parts) " ")))
-              ;; Measure and truncate if needed
-              (if (<= (string-width line) width)
-                  line
-                ;; Truncate: drop trailing ": NN%" from parts if needed
-                (let* ((truncated (truncate-string-to-width line (max 0 (1- width))))
-                       (with-ellipsis (concat truncated "…")))
-                  (if (<= (string-width with-ellipsis) width)
-                      with-ellipsis
-                    truncated))))))))))
+              (insert (edmacs-sidebar--fit line width) "\n"))))))))
 
 ;; Append to collapsed hook (runs after agents, which prepends)
 (add-hook 'edmacs-sidebar-collapsed-section-functions
