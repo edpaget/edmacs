@@ -969,12 +969,73 @@ last hold on life, so the ordinary `delete-frame' applies."
           (edmacs-sessions--warn-on-shadow-daemon-process)
           (should-not warned))))
 
+    ;; ============================================================================
+    ;; edmacs-sessions--shadow-daemon-processes -- only a bare-argv (Dock/Finder)
+    ;; launch counts. This repo's own workflow runs `emacs --batch' off the very
+    ;; same binary all day, so matching the executable alone would fire on every
+    ;; ERT run, `batch-byte-compile' and scripts/startup-check.sh.
+    ;; ============================================================================
+
+    (defconst edmacs-sessions-test--shadow-exe
+      "/opt/homebrew/Cellar/emacs-plus@31/31.1/Emacs.app/Contents/MacOS/Emacs")
+
+    (defun edmacs-sessions-test--shadow-pids (ps-output)
+      "Run the shadow probe against synthetic PS-OUTPUT, as pid 100."
+      (cl-letf (((symbol-function 'executable-find) (lambda (_) "/bin/ps"))
+                ((symbol-function 'emacs-pid) (lambda () 100))
+                ((symbol-function 'call-process)
+                 (lambda (_program &optional _infile _dest _display &rest _args)
+                   (insert ps-output)
+                   0)))
+        (let ((invocation-name "Emacs")
+              (invocation-directory
+               (file-name-directory edmacs-sessions-test--shadow-exe)))
+          (edmacs-sessions--shadow-daemon-processes))))
+
+    (ert-deftest edmacs-sessions-test-shadow-daemon-finds-bare-launch ()
+      "A no-argument launch of the same bundle executable is the shadow case."
+      (should (equal (edmacs-sessions-test--shadow-pids
+                      (format "  100 %s --fg-daemon\n 2023 %s\n"
+                              edmacs-sessions-test--shadow-exe
+                              edmacs-sessions-test--shadow-exe))
+                     '("2023"))))
+
+    (ert-deftest edmacs-sessions-test-shadow-daemon-ignores-batch-processes ()
+      "Batch runs of the same binary are this repo's normal workflow, not shadows.
+`emacs --batch' ERT suites, `batch-byte-compile' and
+scripts/startup-check.sh all exec the daemon's own executable, and all
+carry arguments -- unlike a Dock launch."
+      (should-not (edmacs-sessions-test--shadow-pids
+                   (format (concat "  100 %s --fg-daemon\n"
+                                   " 2001 %s -Q --batch -l ert -l modules/sessions-test.el\n"
+                                   " 2002 %s -Q --batch -f batch-byte-compile modules/ui.el\n"
+                                   " 2003 %s --batch --init-directory=/Users/e/Projects/edmacs\n"
+                                   " 2004 %s --fg-daemon\n")
+                           edmacs-sessions-test--shadow-exe
+                           edmacs-sessions-test--shadow-exe
+                           edmacs-sessions-test--shadow-exe
+                           edmacs-sessions-test--shadow-exe
+                           edmacs-sessions-test--shadow-exe))))
+
+    (ert-deftest edmacs-sessions-test-shadow-daemon-ignores-self-and-others ()
+      "Skips its own PID and any process running a different executable."
+      (should-not (edmacs-sessions-test--shadow-pids
+                   (format (concat "  100 %s\n"
+                                   " 3001 /Applications/Emacs.app/Contents/MacOS/Emacs\n"
+                                   " 3002 /opt/homebrew/bin/emacsclient -c\n")
+                           edmacs-sessions-test--shadow-exe))))
+
+    (ert-deftest edmacs-sessions-test-shadow-daemon-without-ps ()
+      "No `ps' on PATH means no probe and no error."
+      (cl-letf (((symbol-function 'executable-find) (lambda (_) nil)))
+        (should-not (edmacs-sessions--shadow-daemon-processes))))
+
     (ert-deftest edmacs-sessions-test-shadow-daemon-errors-swallowed ()
       "A failure probing for other processes must not escape as an error --
     this runs from `emacs-startup-hook' and must never block boot."
       (let (warned)
         (cl-letf (((symbol-function 'edmacs-sessions--shadow-daemon-processes)
-                   (lambda () (error "pgrep exploded")))
+                   (lambda () (error "ps exploded")))
                   ((symbol-function 'display-warning)
                    (lambda (&rest _) (setq warned t))))
           (edmacs-sessions--warn-on-shadow-daemon-process)

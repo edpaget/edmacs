@@ -557,26 +557,46 @@ login."
   (edmacs-ns-close-frame (posn-window (event-start event))))
 
 (defun edmacs-sessions--shadow-daemon-processes ()
-  "Return PIDs of other running processes sharing this daemon's executable.
+  "Return PIDs of other Dock-style launches of this daemon's executable.
 Finding 1 of the daemon-and-Dock-frame phase: the launchd daemon and a
 Dock-launched Emacs.app are the very same binary, so a second process
 running it is exactly the silent-drift failure (a Dock click launching a
 serverless Emacs instead of raising this one) that phase exists to catch.
-Shells out to `pgrep' rather than `list-system-processes' +
+
+Matching the executable alone is far too loose here, because this repo's
+own workflow runs `emacs --batch' constantly (ERT suites,
+`batch-byte-compile', scripts/startup-check.sh) off that same binary. A
+LaunchServices launch is instead identifiable by its argv: double-click,
+Dock click and `open -a' all exec the bundle executable with no
+arguments at all, while every batch, `--fg-daemon' or `-Q' invocation
+carries flags. So only an exact bare-executable command line counts.
+
+Shells out to `ps' rather than `list-system-processes' +
 `process-attributes', which on macOS cannot read another process's
 command line without it being owned by the same user, and even then not
 reliably for an app-bundle launch."
   (let* ((exe (expand-file-name invocation-name invocation-directory))
-         (self (number-to-string (emacs-pid)))
-         (pgrep (executable-find "pgrep")))
-    (when pgrep
+         (self (emacs-pid))
+         (ps (executable-find "ps")))
+    (when ps
       (with-temp-buffer
-        (call-process pgrep nil t nil "-f" (regexp-quote exe))
-        (seq-remove (lambda (pid) (string= pid self))
-                    (split-string (buffer-string) "\n" t))))))
+        (call-process ps nil t nil "-xo" "pid=,command=")
+        (goto-char (point-min))
+        (let (pids)
+          (while (not (eobp))
+            (let ((line (string-trim (buffer-substring-no-properties
+                                      (line-beginning-position)
+                                      (line-end-position)))))
+              (when (string-match "\\`\\([0-9]+\\)[ \t]+\\(.*\\)\\'" line)
+                (let ((pid (string-to-number (match-string 1 line)))
+                      (command (match-string 2 line)))
+                  (when (and (/= pid self) (string= command exe))
+                    (push (number-to-string pid) pids)))))
+            (forward-line 1))
+          (nreverse pids))))))
 
 (defun edmacs-sessions--warn-on-shadow-daemon-process ()
-  "Warn (non-fatally) if another process shares this daemon's executable.
+  "Warn (non-fatally) about another Dock-style launch of this executable.
 Detection only, by design: never signals or kills the other process,
 since telling a stale/duplicate instance from a legitimate one apart
 safely is out of scope for an automatic action -- see the launchd-vs-
@@ -586,8 +606,8 @@ running from `emacs-startup-hook', not a boot-critical check."
   (when-let* ((pids (ignore-errors (edmacs-sessions--shadow-daemon-processes))))
     (display-warning
      'edmacs-sessions
-     (format "another process (pid%s %s) is running this daemon's own \
-executable -- possibly a Dock-launched Emacs.app instead of/alongside \
+     (format "another Emacs (pid%s %s) was launched from this daemon's own \
+app bundle with no arguments -- a Dock/Finder launch running alongside \
 the launchd daemon; see Finding 1 of the daemon-and-Dock-frame phase"
              (if (cdr pids) "s" "") (string-join pids ", "))
      :warning)))
