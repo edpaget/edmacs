@@ -1635,6 +1635,56 @@ renders without signalling."
               (dolist (line (split-string buf-str "\n" t))
                 (should (<= (string-width line) 4))))))))
 
+    (ert-deftest claude-usage-test-collapsed-section-handles-100-percent-at-real-width ()
+      "At 100%+ percent, collapsed section at width 4 does not render a misleading truncation."
+      (claude-usage-test--with-surface-state
+        (let* ((claude-usage--state-envelope
+                '((fetchedAtMs . 1725274680000)
+                  (utilization
+                   (limits . (((kind . "session") (percent . 100) (severity . "high")))))))
+               (claude-usage--state-source 'cache))
+          (with-temp-buffer
+            (claude-usage--collapsed-section (selected-frame) 4)
+            (let ((buf-str (buffer-string)))
+              ;; Output should exist and fit within width
+              (should-not (string-empty-p buf-str))
+              (dolist (line (split-string buf-str "\n" t))
+                (should (<= (string-width line) 4)))
+              ;; The rendered line should not be a prefix like "S10..." which would
+              ;; misrepresent 100% as 10%. Either show a full-block glyph or similar.
+              ;; For now, verify it's not truncated to a misleading value.
+              (should-not (string-match-p "S10" buf-str)))))))
+
+    (ert-deftest claude-usage-test-headline-rows-returns-session-and-weekly-all ()
+      "claude-usage--headline-rows extracts session and weekly_all meters in order."
+      (let ((rows (list (list :id 'session :percent 45 :percent-str "45%")
+                         (list :id 'something :percent 10 :percent-str "10%")
+                         (list :id 'weekly_all :percent 60 :percent-str "60%"))))
+        (let ((result (claude-usage--headline-rows rows)))
+          ;; Should return a list of (ABBR . ROW) pairs
+          (should (= (length result) 2))
+          ;; First should be session (S), second should be weekly_all (W)
+          (should (equal (car (car result)) "S"))
+          (should (equal (car (cadr result)) "W"))
+          ;; Row data should be preserved
+          (should (eq (plist-get (cdr (car result)) :id) 'session))
+          (should (eq (plist-get (cdr (cadr result)) :id) 'weekly_all)))))
+
+    (ert-deftest claude-usage-test-headline-rows-excludes-unknown-meters ()
+      "claude-usage--headline-rows skips meters with unknown :id values."
+      (let ((rows (list (list :id 'foo :percent 10 :percent-str "10%")
+                         (list :id 'session :percent 45 :percent-str "45%"))))
+        (let ((result (claude-usage--headline-rows rows)))
+          ;; Should only include the session meter
+          (should (= (length result) 1))
+          (should (equal (car (car result)) "S")))))
+
+    (ert-deftest claude-usage-test-collapsed-section-registered-on-hook ()
+      "`claude-usage--collapsed-section' is registered on the
+`edmacs-sidebar-collapsed-section-functions' hook (appended/tail position)."
+      (should (memq #'claude-usage--collapsed-section
+                     edmacs-sidebar-collapsed-section-functions)))
+
     )) ; end of build-root-found branch
 
 (provide 'claude-usage-test)

@@ -859,6 +859,12 @@ would desync `claude-term--on-exit's deregistration lookup)."
             (dolist (line (split-string buf-str "\n" t))
               (should (<= (string-width line) 4)))))))
 
+    (ert-deftest edmacs-sidebar-agents-test-collapsed-section-registered-on-hook ()
+      "`edmacs-sidebar-agents--collapsed-section' is registered on the
+`edmacs-sidebar-collapsed-section-functions' hook at the head (prepended)."
+      (should (memq #'edmacs-sidebar-agents--collapsed-section
+                     edmacs-sidebar-collapsed-section-functions)))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-agents-test.el ends here

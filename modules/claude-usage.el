@@ -837,17 +837,16 @@ Returns \"\" when VALUES is nil or carries neither headline meter."
       ""
     (let ((rows (plist-get values :rows))
           (parts nil))
-      (dolist (spec '((session . "S") (weekly_all . "W")))
-        (let ((row (catch 'found
-                     (dolist (r rows)
-                       (when (eq (plist-get r :id) (car spec))
-                         (throw 'found r))))))
-          (when (and row (plist-get row :percent))
+      ;; Use shared headline-rows helper to extract session and weekly_all meters
+      (dolist (pair (claude-usage--headline-rows rows))
+        (let* ((abbr (car pair))
+               (row (cdr pair)))
+          (when (plist-get row :percent)
             (let ((face (plist-get row :face))
                   (percent-str (claude-usage--escape-mode-line-percent
                                 (plist-get row :percent-str))))
               (push (concat
-                     (cdr spec) " "
+                     abbr " "
                      (propertize
                       (if (eq claude-usage-mode-line-format 'percent)
                           percent-str
@@ -1047,8 +1046,12 @@ for registration on `edmacs-sidebar-collapsed-section-functions' compatibility."
             (dolist (pair headline-pairs)
               (let* ((abbr (car pair))
                      (row (cdr pair))
-                     (percent-str (plist-get row :percent-str))
-                     ;; Format as "S45%" or "W60%" (fits in 4 columns)
+                     (percent (plist-get row :percent))
+                     ;; For 100%+ usage, use a special indicator instead of truncating digits
+                     (percent-str (if (>= percent 100)
+                                      "●"  ;; Bullet indicates full/overflow
+                                    (plist-get row :percent-str)))
+                     ;; Format as "S45%" or "W60%" or "S●" (all fit in 4 columns)
                      (line (format "%s%s" abbr percent-str))
                      (face (plist-get row :face))
                      ;; Fit each line independently using edmacs-sidebar--fit
