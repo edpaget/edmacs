@@ -1,19 +1,12 @@
 ;;; agents-test.el --- Tests for agents.el -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; Pure-function coverage only -- no real workmux process, tmux pane, or
-;; file-notify event is involved. `edmacs-agents-init' is never called
-;; here (and agents.el itself never calls it at load time -- see that
-;; file's Commentary): every test let-binds `edmacs-agents--table' (and
-;; `edmacs-agents--workmux-path->key' where relevant) to a fresh hash
-;; table, the same isolation convention `claude-term-registry-test.el'
-;; uses for its own table, so no test reads or mutates this machine's
-;; real `~/.local/state/workmux/agents/' state.
-;;
-;; The genuinely environment-dependent acceptance checks (this
-;; machine's real state directory, a live tmux prompt round-trip,
-;; actually killing a pane) are manual/live steps recorded in this
-;; phase's commit body instead, per the phase body's own hedge.
+;; Pure-function coverage only -- no real subprocess, timer, or watch
+;; is involved. `edmacs-agents-init' is exercised directly here (it is
+;; a no-op splice, safe to call repeatedly): every test let-binds
+;; `edmacs-agents--table' to a fresh hash table, the same isolation
+;; convention `claude-term-registry-test.el' uses for its own table, so
+;; no test reads or mutates any real state.
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/agents.el -l modules/agents-test.el \
@@ -26,64 +19,11 @@
 (require 'cl-lib)
 
 (defmacro edmacs-agents-test--with-clean-state (&rest body)
-  "Run BODY with a fresh agent table, path map, and changed hook."
+  "Run BODY with a fresh agent table and changed hook."
   (declare (indent 0))
   `(let ((edmacs-agents--table (make-hash-table :test #'equal))
-         (edmacs-agents--workmux-path->key (make-hash-table :test #'equal))
          (edmacs-agents-changed-hook nil))
      ,@body))
-
-(defun edmacs-agents-test--write-json (dir status-ts updated-ts &optional status workdir pane-id)
-  "Write one workmux-shaped JSON file under DIR and return its path."
-  (let* ((workdir (or workdir (make-temp-file "edmacs-agents-test-workdir-" t)))
-         (pane-id (or pane-id (format "%%%d" (random 100000))))
-         (path (expand-file-name (format "test-%s.json" (random 100000)) dir))
-         (json (json-serialize
-                `((pane_key . ((backend . "tmux") (instance . "/tmp/x") (pane_id . ,pane-id)))
-                  (workdir . ,workdir)
-                  (status . ,(or status "working"))
-                  (status_ts . ,status-ts)
-                  (updated_ts . ,updated-ts)
-                  (pane_title . "⠂ Claude Code")
-                  (window_name . "w1")
-                  (session_name . "s1")))))
-    (let ((coding-system-for-write 'utf-8-unix))
-      (with-temp-file path (insert json)))
-    path))
-
-;; ============================================================================
-;; Parsing
-;; ============================================================================
-
-(ert-deftest edmacs-agents-test-parse-row ()
-  "A well-formed workmux JSON file parses into an `edmacs-agent' with
-every field carried over, and the spinner glyph is stripped from the title."
-  (let* ((dir (make-temp-file "edmacs-agents-test-scan-" t))
-         (workdir (make-temp-file "edmacs-agents-test-workdir-" t))
-         (path (edmacs-agents-test--write-json dir 1000 1000 "working" workdir "%42")))
-    (let* ((json (edmacs-agents--parse-workmux-file path))
-           (row (edmacs-agents--row-from-workmux-json json)))
-      (should row)
-      (should (equal (edmacs-agent-root row) (file-truename workdir)))
-      (should (equal (edmacs-agent-instance row) "%42"))
-      (should (eq (edmacs-agent-status row) 'working))
-      (should (equal (edmacs-agent-status-ts row) 1000))
-      (should (equal (edmacs-agent-updated-ts row) 1000))
-      (should (equal (edmacs-agent-title row) "Claude Code"))
-      (should (eq (edmacs-agent-source row) 'workmux))
-      (should (equal (plist-get (edmacs-agent-locator row) :pane-id) "%42")))))
-
-(ert-deftest edmacs-agents-test-parse-malformed-ignored ()
-  "Malformed JSON is skipped without signaling, both at the parse layer
-and at the row-building layer for a well-formed-but-unrecognized status."
-  (let* ((dir (make-temp-file "edmacs-agents-test-scan-" t))
-         (bad-path (expand-file-name "bad.json" dir)))
-    (with-temp-file bad-path (insert "{ this is not json"))
-    (should-not (edmacs-agents--parse-workmux-file bad-path))
-    (should-not (edmacs-agents--intern-workmux-status "exploding"))
-    (should-not (edmacs-agents--row-from-workmux-json '((workdir . "/tmp/x")
-                                                         (status . "exploding")
-                                                         (pane_key . ((pane_id . "%1"))))))))
 
 ;; ============================================================================
 ;; edmacs-agents--compute-unread (the one shared transition rule)
@@ -114,248 +54,20 @@ refresh) preserves whatever it already was."
   (should (eq (edmacs-agents--compute-unread 'working 'idle nil) nil)))
 
 ;; ============================================================================
-;; status_ts ordering
+;; edmacs-agents-init
 ;; ============================================================================
 
-(ert-deftest edmacs-agents-test-timestamp-ordering ()
-  "A stale update (older `status_ts') is ignored; a newer one is applied."
+(ert-deftest edmacs-agents-test-init-arms-no-timer ()
+  "`edmacs-agents-init' arms no timer -- its body is exactly the
+mode-line splice, so `timer-list' is unchanged across the call."
   (edmacs-agents-test--with-clean-state
-    (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
-           (key (edmacs-agents--key root "%1")))
-      (should (edmacs-agents--apply-workmux-row
-               (make-edmacs-agent :key key :root root :instance "%1"
-                                   :status 'working :status-ts 100 :updated-ts 100
-                                   :title "t" :source 'workmux :locator nil)))
-      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'working))
-      ;; Older status_ts: ignored.
-      (should-not (edmacs-agents--apply-workmux-row
-                   (make-edmacs-agent :key key :root root :instance "%1"
-                                       :status 'done :status-ts 50 :updated-ts 200
-                                       :title "t" :source 'workmux :locator nil)))
-      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'working))
-      ;; Newer status_ts: applied.
-      (should (edmacs-agents--apply-workmux-row
-               (make-edmacs-agent :key key :root root :instance "%1"
-                                   :status 'done :status-ts 200 :updated-ts 200
-                                   :title "t" :source 'workmux :locator nil)))
-      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'done))
-      (should (edmacs-agent-unread (gethash key edmacs-agents--table))))))
-
-;; ============================================================================
-;; Load-time scan-then-sweep ordering
-;; ============================================================================
-
-(ert-deftest edmacs-agents-test-scan-then-sweep-order ()
-  "Scanning a directory with one fresh and one stale heartbeat, then
-sweeping, leaves only the fresh row -- the corrected AC1 load ordering."
-  (edmacs-agents-test--with-clean-state
-    (let* ((dir (make-temp-file "edmacs-agents-test-scan-" t))
-           (edmacs-agents-workmux-dir dir)
-           (edmacs-agents-stale-seconds 5)
-           (now (float-time)))
-      (edmacs-agents-test--write-json dir now now "working" nil "%fresh")
-      (edmacs-agents-test--write-json dir (- now 3600) (- now 3600) "done" nil "%stale")
-      (edmacs-agents--scan-workmux-dir)
-      (should (= (hash-table-count edmacs-agents--table) 2))
-      (edmacs-agents--sweep)
-      (should (= (hash-table-count edmacs-agents--table) 1))
-      (let (survivor)
-        (maphash (lambda (_k row) (setq survivor row)) edmacs-agents--table)
-        (should (equal (edmacs-agent-instance survivor) "%fresh"))))))
-
-;; ============================================================================
-;; file-notify watch callback (AC3's actual mechanism)
-;; ============================================================================
-
-(ert-deftest edmacs-agents-test-watch-callback-created-changed-deleted ()
-  "`edmacs-agents--workmux-watch-callback' -- the function `file-notify'
-actually invokes, per `edmacs-agents--ensure-workmux-watch' -- ingests on
-`created'/`changed' and forgets on `deleted', driven by real files on
-disk (no live file-notify backend involved: the EVENT tuples are
-synthesized directly, since a real backend is not guaranteed to deliver
-under `--batch' -- see modules/frames-live-test.el's own documented
-finding on this machine)."
-  (edmacs-agents-test--with-clean-state
-    (let* ((dir (make-temp-file "edmacs-agents-test-watch-" t))
-           (path (edmacs-agents-test--write-json dir 100 100 "working"))
-           (key (edmacs-agent-key (edmacs-agents--row-from-workmux-json
-                                    (edmacs-agents--parse-workmux-file path)))))
-      ;; `created': ingests the row.
-      (edmacs-agents--workmux-watch-callback (list 'desc 'created path))
-      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'working))
-      (should (equal (gethash path edmacs-agents--workmux-path->key) key))
-      ;; `changed': re-reads the same file and applies the update.
-      (let ((coding-system-for-write 'utf-8-unix))
-        (with-temp-file path
-          (insert (json-serialize
-                   `((pane_key . ((pane_id . ,(edmacs-agent-instance
-                                                (gethash key edmacs-agents--table)))))
-                     (workdir . ,(edmacs-agent-root (gethash key edmacs-agents--table)))
-                     (status . "done")
-                     (status_ts . 200)
-                     (updated_ts . 200)
-                     (pane_title . "Claude Code"))))))
-      (edmacs-agents--workmux-watch-callback (list 'desc 'changed path))
-      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'done))
-      (should (edmacs-agent-unread (gethash key edmacs-agents--table)))
-      ;; `deleted': forgets the row via the path -> key map, no rescan needed.
-      (edmacs-agents--workmux-watch-callback (list 'desc 'deleted path))
-      (should-not (gethash key edmacs-agents--table))
-      (should-not (gethash path edmacs-agents--workmux-path->key)))))
-
-(ert-deftest edmacs-agents-test-watch-callback-ignores-non-json ()
-  "A `created'/`changed' event on a file that is not a `.json' path is
-ignored, and a callback error (e.g. from a malformed event tuple) is
-caught rather than propagated -- the watch must not die on one bad event."
-  (edmacs-agents-test--with-clean-state
-    (let* ((dir (make-temp-file "edmacs-agents-test-watch-" t))
-           (txt-path (expand-file-name "not-json.txt" dir)))
-      (with-temp-file txt-path (insert "hello"))
-      (edmacs-agents--workmux-watch-callback (list 'desc 'created txt-path))
-      (should (zerop (hash-table-count edmacs-agents--table)))
-      ;; A malformed event (missing FILE) throws inside the body (a nil
-      ;; FILE reaching `string-suffix-p'); the callback's own
-      ;; `condition-case' must swallow it rather than letting it escape.
-      (should-not (condition-case nil
-                      (progn (edmacs-agents--workmux-watch-callback (list 'desc 'created))
-                             nil)
-                    (error t)))
-      (should (zerop (hash-table-count edmacs-agents--table))))))
-
-;; ============================================================================
-;; Heartbeat reaping
-;; ============================================================================
-
-(ert-deftest edmacs-agents-test-heartbeat-reap ()
-  "`edmacs-agents--sweep' removes a row whose heartbeat has aged past
-`edmacs-agents-stale-seconds', firing the changed hook exactly once
-with the removed key."
-  (edmacs-agents-test--with-clean-state
-    (let* ((edmacs-agents-stale-seconds 5)
-           (root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
-           (key (edmacs-agents--key root "%1"))
-           (fire-count 0)
-           (fired-keys nil))
-      (puthash key (make-edmacs-agent :key key :root root :instance "%1"
-                                       :status 'waiting
-                                       :status-ts (- (float-time) 3600)
-                                       :updated-ts (- (float-time) 3600)
-                                       :title "t" :source 'workmux :locator nil)
-               edmacs-agents--table)
-      (add-hook 'edmacs-agents-changed-hook
-                (lambda (keys) (cl-incf fire-count) (setq fired-keys keys)))
-      (edmacs-agents--sweep)
-      (should-not (gethash key edmacs-agents--table))
-      (should (= fire-count 1))
-      (should (equal fired-keys (list key))))))
-
-(ert-deftest edmacs-agents-test-sweep-exempts-non-workmux-source ()
-  "A row created through the public `edmacs-agents-set-status' writer
-\(SOURCE nil, no adapter re-heartbeating it\) survives the sweep no
-matter how old its heartbeat is -- only `workmux'-sourced rows are
-reaped on heartbeat age. Regression test for the finding that a
-`waiting' or unread-`done' row left untouched past
-`edmacs-agents-stale-seconds' was being silently discarded even though
-it might still be alive and blocking on the user."
-  (edmacs-agents-test--with-clean-state
-    (let* ((edmacs-agents-stale-seconds 5)
-           (root (file-truename (make-temp-file "edmacs-agents-test-root-" t))))
-      (edmacs-agents-set-status root 'waiting)
-      (let (key row)
-        (maphash (lambda (k r) (setq key k row r)) edmacs-agents--table)
-        (should-not (edmacs-agent-source row))
-        ;; Force the heartbeat far into the past, as if the row had sat
-        ;; quietly in `waiting' for hours with no further explicit call.
-        (setf (edmacs-agent-updated-ts row) (- (float-time) 3600))
-        (edmacs-agents--sweep)
-        (should (gethash key edmacs-agents--table))
-        (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'waiting))))))
-
-(ert-deftest edmacs-agents-test-heartbeat-reap-noop-when-fresh ()
-  "A row with a fresh heartbeat survives the sweep untouched."
-  (edmacs-agents-test--with-clean-state
-    (let* ((edmacs-agents-stale-seconds 300)
-           (root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
-           (key (edmacs-agents--key root "%1")))
-      (puthash key (make-edmacs-agent :key key :root root :instance "%1"
-                                       :status 'working
-                                       :status-ts (float-time) :updated-ts (float-time)
-                                       :title "t" :source 'workmux :locator nil)
-               edmacs-agents--table)
-      (edmacs-agents--sweep)
-      (should (gethash key edmacs-agents--table)))))
-
-;; ============================================================================
-;; Sweep timer actually firing (AC4's real mechanism, not just the
-;; pure edmacs-agents--sweep function above)
-;; ============================================================================
-
-(defun edmacs-agents-test--wait-until (predicate timeout)
-  "Pump the event loop until PREDICATE is non-nil or TIMEOUT seconds pass.
-`sit-for' (not `sleep-for') is what lets a pending real timer actually
-run inside `--batch'; returns PREDICATE's own final value."
-  (let ((deadline (+ (float-time) timeout)))
-    (while (and (< (float-time) deadline) (not (funcall predicate)))
-      (sit-for 0.05))
-    (funcall predicate)))
-
-(ert-deftest edmacs-agents-test-sweep-timer-fires ()
-  "`edmacs-agents--ensure-sweep-timer' arms a REAL repeating timer that
-reaps a stale row on its own, with no explicit `edmacs-agents--sweep'
-call from the test -- the literal AC4 mechanism, not the pure function
-in isolation. Real `run-with-timer' does fire under `--batch' with
-`sit-for' pumping the loop (unlike `file-notify' on this backend, per
-modules/frames-live-test.el's documented finding), so this needs no
-preflight/skip."
-  (edmacs-agents-test--with-clean-state
-    (let* ((edmacs-agents-stale-seconds 1)
-           (edmacs-agents-sweep-seconds 0.2)
-           (edmacs-agents--sweep-timer nil)
-           (root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
-           (key (edmacs-agents--key root "%1")))
-      (puthash key (make-edmacs-agent :key key :root root :instance "%1"
-                                       :status 'waiting
-                                       :status-ts (- (float-time) 3600)
-                                       :updated-ts (- (float-time) 3600)
-                                       :title "t" :source 'workmux :locator nil)
-               edmacs-agents--table)
+    (let ((global-mode-string nil)
+          (edmacs-agents--mode-line-string ""))
       (unwind-protect
-          (progn
-            (edmacs-agents--ensure-sweep-timer)
-            (should (edmacs-agents-test--wait-until
-                     (lambda () (not (gethash key edmacs-agents--table)))
-                     3.0))
-            (should-not (gethash key edmacs-agents--table)))
-        (when (timerp edmacs-agents--sweep-timer)
-          (cancel-timer edmacs-agents--sweep-timer))))))
-
-(ert-deftest edmacs-agents-test-sweep-timer-fires-ac4-literal-values ()
-  "Same mechanism as `edmacs-agents-test-sweep-timer-fires', but with the
-AC's own literal values -- `edmacs-agents-stale-seconds' bound to 5 and
-`edmacs-agents-sweep-seconds' to 2 -- rather than the faster values used
-there for everyday suite speed, so the acceptance criterion's exact
-numbers are themselves exercised by an automated test."
-  (edmacs-agents-test--with-clean-state
-    (let* ((edmacs-agents-stale-seconds 5)
-           (edmacs-agents-sweep-seconds 2)
-           (edmacs-agents--sweep-timer nil)
-           (root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
-           (key (edmacs-agents--key root "%1")))
-      (puthash key (make-edmacs-agent :key key :root root :instance "%1"
-                                       :status 'waiting
-                                       :status-ts (- (float-time) 3600)
-                                       :updated-ts (- (float-time) 3600)
-                                       :title "t" :source 'workmux :locator nil)
-               edmacs-agents--table)
-      (unwind-protect
-          (progn
-            (edmacs-agents--ensure-sweep-timer)
-            (should (edmacs-agents-test--wait-until
-                     (lambda () (not (gethash key edmacs-agents--table)))
-                     9.0))
-            (should-not (gethash key edmacs-agents--table)))
-        (when (timerp edmacs-agents--sweep-timer)
-          (cancel-timer edmacs-agents--sweep-timer))))))
+          (let ((before (copy-sequence timer-list)))
+            (edmacs-agents-init)
+            (should (equal timer-list before)))
+        (remove-hook 'edmacs-agents-changed-hook #'edmacs-agents--refresh-mode-line)))))
 
 ;; ============================================================================
 ;; edmacs-agents-set-status
@@ -387,6 +99,27 @@ under the same root signals a clear `user-error' instead of guessing."
       (should-error (edmacs-agents-set-status root 'working) :type 'user-error))))
 
 ;; ============================================================================
+;; Nothing reaps on age any more
+;; ============================================================================
+
+(ert-deftest edmacs-agents-test-no-age-based-reap ()
+  "A row created through the public `edmacs-agents-set-status' writer
+survives no matter how old its heartbeat is -- there is no sweep any
+more, so a `waiting' or unread-`done' row is never silently discarded
+for sitting quiet."
+  (edmacs-agents-test--with-clean-state
+    (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t))))
+      (edmacs-agents-set-status root 'waiting)
+      (let (key row)
+        (maphash (lambda (k r) (setq key k row r)) edmacs-agents--table)
+        ;; Force the heartbeat far into the past, as if the row had sat
+        ;; quietly in `waiting' for hours with no further explicit call.
+        (setf (edmacs-agent-updated-ts row) (- (float-time) 999999))
+        (edmacs-agents-init)
+        (should (gethash key edmacs-agents--table))
+        (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'waiting))))))
+
+;; ============================================================================
 ;; Unread transitions
 ;; ============================================================================
 
@@ -412,68 +145,41 @@ through `idle' (via `edmacs-agents-mark-read') before going `done'
 again, which IS a fresh transition and DOES re-set `unread'."
   (edmacs-agents-test--with-clean-state
     (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
-           (key (edmacs-agents--key root "%1")))
-      (should (edmacs-agents--apply-workmux-row
-               (make-edmacs-agent :key key :root root :instance "%1"
-                                   :status 'done :status-ts 100 :updated-ts 100
-                                   :title "t" :source 'workmux :locator nil)))
+           (key (edmacs-agents--key root "%1"))
+           (row (make-edmacs-agent :key key :root root :instance "%1"
+                                    :status 'done :status-ts 100 :updated-ts 100
+                                    :title "t" :source 'claude-term :locator nil
+                                    :unread (edmacs-agents--compute-unread nil 'done nil))))
+      (edmacs-agents--upsert row)
       (should (edmacs-agent-unread (gethash key edmacs-agents--table)))
       ;; Cleared by some means other than mark-read, while status stays
       ;; `done' throughout -- e.g. a future "peek" affordance.
       (setf (edmacs-agent-unread (gethash key edmacs-agents--table)) nil)
-      ;; Newer status_ts, status still `done': a refresh, not a transition.
-      (should (edmacs-agents--apply-workmux-row
-               (make-edmacs-agent :key key :root root :instance "%1"
-                                   :status 'done :status-ts 150 :updated-ts 150
-                                   :title "t" :source 'workmux :locator nil)))
+      ;; Refresh: status still `done', so this is not a fresh transition.
+      (let ((refreshed (gethash key edmacs-agents--table)))
+        (setf (edmacs-agent-status-ts refreshed) 150
+              (edmacs-agent-updated-ts refreshed) 150
+              (edmacs-agent-unread refreshed)
+              (edmacs-agents--compute-unread 'done 'done (edmacs-agent-unread refreshed)))
+        (edmacs-agents--upsert refreshed))
       (should-not (edmacs-agent-unread (gethash key edmacs-agents--table))))))
 
-(ert-deftest edmacs-agents-test-mark-read-survives-heartbeat-reapply ()
-  "A workmux row marked read stays `idle'/unread=nil across the next
-heartbeat-only file-notify re-apply of the same on-disk `done' file --
-regression test for the bug where `edmacs-agents-mark-read' left
-STATUS-TS untouched, so a same-`status_ts' re-apply (workmux's
-`updated_ts' heartbeat advances every few seconds even though
-`status_ts' does not) passed the ordering guard and silently reverted
-the row back to `done' with UNREAD re-set."
+(ert-deftest edmacs-agents-test-mark-read-bumps-status-ts ()
+  "`edmacs-agents-mark-read' clears unread, sets status to `idle', and
+bumps STATUS-TS to (approximately) now."
   (edmacs-agents-test--with-clean-state
     (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
            (key (edmacs-agents--key root "%1"))
-           ;; Anchor around the real clock, since `edmacs-agents-mark-read'
-           ;; stamps STATUS-TS with a real `(float-time)' call -- these
-           ;; values must stay ordered relative to that, not to each other
-           ;; in isolation.
-           (base (float-time)))
-      ;; The pane finishes: status_ts=BASE.
-      (should (edmacs-agents--apply-workmux-row
-               (make-edmacs-agent :key key :root root :instance "%1"
-                                   :status 'done :status-ts base :updated-ts base
-                                   :title "t" :source 'workmux :locator nil)))
-      (should (edmacs-agent-unread (gethash key edmacs-agents--table)))
-      ;; The user visits it from Emacs.
+           (row (make-edmacs-agent :key key :root root :instance "%1"
+                                    :status 'done :status-ts 100 :updated-ts 100
+                                    :title "t" :source 'claude-term :locator nil
+                                    :unread t)))
+      (edmacs-agents--upsert row)
       (edmacs-agents-mark-read key)
-      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'idle))
-      (should-not (edmacs-agent-unread (gethash key edmacs-agents--table)))
-      ;; workmux's heartbeat re-writes the same file a few seconds later:
-      ;; status is still `done' on disk, status_ts is UNCHANGED (BASE),
-      ;; only updated_ts (BASE+60) advanced. This must not resurrect
-      ;; `done' or UNREAD.
-      (should-not (edmacs-agents--apply-workmux-row
-                   (make-edmacs-agent :key key :root root :instance "%1"
-                                       :status 'done :status-ts base
-                                       :updated-ts (+ base 60)
-                                       :title "t" :source 'workmux :locator nil)))
-      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'idle))
-      (should-not (edmacs-agent-unread (gethash key edmacs-agents--table)))
-      ;; A genuine fresh `done' later (a strictly newer status_ts, well
-      ;; past mark-read's own stamp) is still honored.
-      (should (edmacs-agents--apply-workmux-row
-               (make-edmacs-agent :key key :root root :instance "%1"
-                                   :status 'done :status-ts (+ base 500)
-                                   :updated-ts (+ base 500)
-                                   :title "t" :source 'workmux :locator nil)))
-      (should (eq (edmacs-agent-status (gethash key edmacs-agents--table)) 'done))
-      (should (edmacs-agent-unread (gethash key edmacs-agents--table))))))
+      (let ((updated (gethash key edmacs-agents--table)))
+        (should (eq (edmacs-agent-status updated) 'idle))
+        (should-not (edmacs-agent-unread updated))
+        (should (< (abs (- (edmacs-agent-status-ts updated) (float-time))) 5))))))
 
 ;; ============================================================================
 ;; Mode-line roll-up
@@ -488,7 +194,7 @@ empty once the table has none of those."
                        (key (edmacs-agents--key root instance)))
                   (puthash key (make-edmacs-agent :key key :root root :instance instance
                                                    :status status :status-ts 1 :updated-ts 1
-                                                   :title "t" :source 'workmux :locator nil
+                                                   :title "t" :source 'claude-term :locator nil
                                                    :unread unread)
                            edmacs-agents--table)))))
       (funcall mk "%1" 'working nil)
@@ -543,13 +249,13 @@ rendered as a trailing `*' and a read `idle' row rendered without one."
       (puthash done-key (make-edmacs-agent
                           :key done-key :root root :instance "%1"
                           :status 'done :status-ts 1 :updated-ts 1
-                          :title "Fixing the thing" :source 'workmux
+                          :title "Fixing the thing" :source 'claude-term
                           :locator nil :unread t)
                edmacs-agents--table)
       (puthash idle-key (make-edmacs-agent
                           :key idle-key :root root :instance "%2"
                           :status 'idle :status-ts 1 :updated-ts 1
-                          :title "Already read" :source 'workmux
+                          :title "Already read" :source 'claude-term
                           :locator nil :unread nil)
                edmacs-agents--table)
       (let ((entries (edmacs-agents--list-entries)))

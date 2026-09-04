@@ -113,9 +113,9 @@ LANGUAGE should be the name without the .el extension."
 ;; tab-bar/desktop setup), and evil-config (its C-x chord registrar).
 (load-module "frames")
 ;; Standalone: no dependency on sidebar/frames yet (phase 6 wires the two
-;; together). `edmacs-agents-init' (scan, then sweep, then watch/timer/
-;; mode-line) is called here rather than at the module's own top level,
-;; so loading agents.el alone (every ERT run) has no side effects.
+;; together). `edmacs-agents-init' (splices the mode-line roll-up) is
+;; called here rather than at the module's own top level, so loading
+;; agents.el alone (every ERT run) has no side effects.
 (load-module "agents")
 (edmacs-agents-init)
 ;; Last: the phase-9 claude-term<->agents adapter needs both
