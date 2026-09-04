@@ -1018,12 +1018,23 @@ usage state has been resolved yet."
 ;; Collapsed sidebar strip: usage summary
 ;; ============================================================================
 
+(defun claude-usage--headline-rows (rows)
+  "Return headline rows from ROWS in attention order (session, weekly_all).
+Returns (ABBR . ROW) pairs where ABBR is \"S\" or \"W\"."
+  (let ((headline-pairs nil))
+    (dolist (spec '((session . "S") (weekly_all . "W")))
+      (dolist (row rows)
+        (when (eq (plist-get row :id) (car spec))
+          (push (cons (cdr spec) row) headline-pairs))))
+    (nreverse headline-pairs)))
+
 (defun claude-usage--collapsed-section (frame width)
   "Insert usage data into the current buffer's collapsed sidebar strip for FRAME.
 Inserts one line per headline meter (session, weekly_all), or nothing when no
-usage data is available. Each line is formatted compactly as ABBR PCT% and
-fitted independently within WIDTH columns using `edmacs-sidebar--fit'.
-Measures with `string-width' to respect double-width nerd-font glyphs.
+usage data is available. Each line is formatted compactly as ABBR followed by
+the percent value (e.g. \"S45%\"), fitted independently within WIDTH columns
+using `edmacs-sidebar--fit'. Measures with `string-width' to respect
+double-width nerd-font glyphs.
 FRAME is currently unused (usage data is frame-independent); accepted
 for registration on `edmacs-sidebar-collapsed-section-functions' compatibility."
   (ignore frame)
@@ -1031,20 +1042,14 @@ for registration on `edmacs-sidebar-collapsed-section-functions' compatibility."
     (when values
       (let ((rows (plist-get values :rows)))
         (when rows
-          ;; Filter to headline meters: session and weekly_all
-          (let ((headline-rows
-                 (seq-filter (lambda (row)
-                               (let ((id (plist-get row :id)))
-                                 (or (eq id 'session)
-                                     (eq id 'weekly_all))))
-                             rows)))
-            (dolist (row headline-rows)
-              (let* ((id (plist-get row :id))
+          ;; Get headline rows from surface values using shared helper
+          (let ((headline-pairs (claude-usage--headline-rows rows)))
+            (dolist (pair headline-pairs)
+              (let* ((abbr (car pair))
+                     (row (cdr pair))
                      (percent-str (plist-get row :percent-str))
-                     ;; Abbreviate meter kind to 1 character
-                     (abbr (if (eq id 'session) "S" "W"))
-                     ;; Format as "S 45%" or "W 60%"
-                     (line (format "%s %s" abbr percent-str))
+                     ;; Format as "S45%" or "W60%" (fits in 4 columns)
+                     (line (format "%s%s" abbr percent-str))
                      (face (plist-get row :face))
                      ;; Fit each line independently using edmacs-sidebar--fit
                      (fitted (edmacs-sidebar--fit line width))

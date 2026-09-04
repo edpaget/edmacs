@@ -1555,7 +1555,7 @@ renders without signalling."
             (should (equal "" (buffer-string)))))))
 
     (ert-deftest claude-usage-test-collapsed-section-formats-usage-data ()
-      "Collapsed section formats headline meters as ID:PCT pairs separated by spaces."
+      "Collapsed section formats headline meters as ABBR followed by percent value."
       (claude-usage-test--with-surface-state
         (let* ((claude-usage--state-envelope
                 '((fetchedAtMs . 1725274680000)
@@ -1566,12 +1566,9 @@ renders without signalling."
           (with-temp-buffer
             (claude-usage--collapsed-section (selected-frame) 100)
             (let ((buf-str (buffer-string)))
-              ;; Should contain the abbreviated meter IDs (S and W)
-              (should (string-match-p "S " buf-str))
-              (should (string-match-p "W " buf-str))
-              ;; Should contain percentages
-              (should (string-match-p "45" buf-str))
-              (should (string-match-p "60" buf-str)))))))
+              ;; Should contain the formatted meter data
+              (should (string-match-p "S45%" buf-str))
+              (should (string-match-p "W60%" buf-str)))))))
 
     (ert-deftest claude-usage-test-collapsed-section-respects-width ()
       "Collapsed section output fits within WIDTH columns using string-width."
@@ -1618,6 +1615,25 @@ renders without signalling."
             (let ((buf-str (buffer-string)))
               (should-not (string-empty-p buf-str))
               (should (> (length (text-properties-at 0 buf-str)) 0)))))))
+
+    (ert-deftest claude-usage-test-collapsed-section-fits-at-real-width ()
+      "At the real production collapsed width (4 columns), output is legible."
+      (claude-usage-test--with-surface-state
+        (let* ((claude-usage--state-envelope
+                '((fetchedAtMs . 1725274680000)
+                  (utilization
+                   (limits . (((kind . "session") (percent . 45) (severity . "normal"))
+                              ((kind . "weekly_all") (percent . 60) (severity . "normal")))))))
+               (claude-usage--state-source 'cache))
+          (with-temp-buffer
+            (claude-usage--collapsed-section (selected-frame) 4)
+            (let ((buf-str (buffer-string)))
+              ;; Should contain recognizable content: abbreviated ID and a digit
+              (should (string-match-p "S" buf-str))
+              (should (string-match-p "[0-9]" buf-str))
+              ;; Each line must fit within the real width
+              (dolist (line (split-string buf-str "\n" t))
+                (should (<= (string-width line) 4))))))))
 
     )) ; end of build-root-found branch
 

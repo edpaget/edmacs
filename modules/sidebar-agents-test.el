@@ -822,7 +822,7 @@ would desync `claude-term--on-exit's deregistration lookup)."
             (should (> (length (text-properties-at 0 buf-str)) 0))))))
 
     (ert-deftest edmacs-sidebar-agents-test-collapsed-section-sorts-by-attention ()
-      "Agents appear in attention order (via edmacs-sidebar-agents--compare)."
+      "Agents appear in attention order (waiting before working via --compare)."
       (edmacs-sidebar-agents-test--with-clean-state
         ;; Create agents in non-attention order to verify sorting
         (edmacs-sidebar-agents-test--put
@@ -831,8 +831,33 @@ would desync `claude-term--on-exit's deregistration lookup)."
          (edmacs-sidebar-agents-test--make-agent :root "/r2/" :instance "%1" :status 'waiting))
         (with-temp-buffer
           (edmacs-sidebar-agents--collapsed-section (selected-frame) 40)
-          ;; Just verify output is present; exact ordering depends on compare logic
-          (should-not (string-empty-p (buffer-string))))))
+          ;; Split buffer into lines and verify waiting comes before working
+          (let ((lines (split-string (buffer-string) "\n" t)))
+            (should (>= (length lines) 2))
+            ;; Find which line has waiting ("w") and which has working ("*" or "?")
+            (let ((waiting-pos (seq-position lines "w" (lambda (line str)
+                                                          (string-match-p str line))))
+                  (working-pos (seq-position lines "\\*" (lambda (line str)
+                                                           (string-match-p str line)))))
+              ;; When both are present, waiting must come before working
+              (when (and waiting-pos working-pos)
+                (should (< waiting-pos working-pos))))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-collapsed-section-fits-at-real-width ()
+      "At the real production collapsed width (4 columns), glyphs stay recognizable."
+      (edmacs-sidebar-agents-test--with-clean-state
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/r2/" :instance "%1" :status 'waiting))
+        (with-temp-buffer
+          (edmacs-sidebar-agents--collapsed-section (selected-frame) 4)
+          (let ((buf-str (buffer-string)))
+            ;; Should contain status indicators (w for waiting or other chars for working)
+            (should (string-match-p "[w*?]" buf-str))
+            ;; Each line must fit within the real width
+            (dolist (line (split-string buf-str "\n" t))
+              (should (<= (string-width line) 4)))))))
 
     )) ; end of build-root-found branch
 
