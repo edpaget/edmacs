@@ -165,9 +165,9 @@ selected frame) -- a redraw is not always on the selected frame."
 
 (defun edmacs-sidebar-buffers--ws-main-prev-buffers (ws)
   "Return (MARKED . PREV-BUFFERS) for the leaf in WS marked `edmacs-main'.
-WS is a tab's own serialized `window-state-get' tree (its `ws' field).
-Recurses through `vc'/`hc' combination nodes exactly like frames.el's
-own `edmacs-frames--ws-selected-buffer-name', falling back to the first
+WS is the STATE TREE half of a tab's serialized `ws' field -- see the
+`cdr' unwrap in `edmacs-sidebar-buffers--main-window-prev-names' below.
+Recurses through `vc'/`hc' combination nodes, falling back to the first
 leaf found when nothing is marked `edmacs-main' (a tab created before
 windows.el's convention existed, or one with no main window for any
 other reason) -- PREV-BUFFERS is a list of (NAME START POINT), the

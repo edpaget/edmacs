@@ -6,9 +6,25 @@
 ;; `edmacs-git-common-dir' caches for sessions.el and
 ;; claude-term-registry.el), titled with the repo's directory name, and
 ;; showing its sidebar (sidebar.el). Every tab inside that frame is a
-;; worktree of that repo, tagged with its own `edmacs-root' parameter so
-;; a worktree can be found by directory without re-deriving it from the
-;; tab's buffer each time.
+;; worktree of that repo, tagged with its own `edmacs-root' parameter.
+;;
+;; Identity is STAMPED, never sniffed. `edmacs-root' is written when the
+;; tab is created (`edmacs-frames--on-tab-post-open', which covers every
+;; tab-creating route including a plain `tab-bar-new-tab'), repaired when
+;; an unstamped tab is first selected (`edmacs-frames--on-tab-post-select')
+;; and re-stamped by `edmacs-frames-stamp-frame-tabs' during a desktop
+;; restore. `edmacs-frames--tab-root' is therefore a pure read: nothing
+;; derives a tab's identity from a buffer or from a serialized
+;; window-state blob, and the one place a root IS derived from a buffer
+;; (`edmacs-frames--derive-root') takes an explicit frame, so a
+;; background frame can never inherit the selected frame's answer.
+;;
+;; The same rule applies one level up: `edmacs-frames-frame-usable-p'
+;; keeps the daemon's initial tty placeholder from ever being adopted as
+;; a spare or stamped with an `edmacs-repo', mirroring
+;; `desktop--check-dont-save's own exclusion of it, and
+;; `edmacs-frames-for-repo' reconciles duplicates and returns a healthy
+;; frame rather than whichever one `frame-list' happens to yield first.
 ;;
 ;; `SPC p p' (`project-switch-project') lands in a repo's frame via
 ;; `edmacs-frames-open-project'; `SPC T p' / `C-x t p'
@@ -18,7 +34,7 @@
 ;; folded after the fact -- for any tab created through some other route
 ;; (the stock `project-other-tab-command' prefix, `M-x tab-bar-new-tab',
 ;; `other-tab-prefix' from any package) -- by
-;; `edmacs-frames--reconcile-tab-after-open' on
+;; `edmacs-frames--on-tab-post-open' on
 ;; `tab-bar-tab-post-open-functions'. That reconciliation is also this
 ;; module's fix for task `sessions-dedupe-advice-closes-live-tab': the
 ;; old around-advice on `project-other-tab-command' it replaces ran its
@@ -66,7 +82,13 @@
 ;; declared for frames-test.el's standalone `-Q --batch' harness.
 (declare-function edmacs-main-window "windows")
 (declare-function edmacs-windows-repair-frame "windows")
+(declare-function edmacs-windows-frame-wedged-p "windows")
 (defvar edmacs-git-common-dir-cache)
+
+;; sessions.el also loads before frames.el (init.el), so this resolves at
+;; real load time too; `fboundp'-guarded at its one call site for
+;; frames-test.el's standalone harness.
+(declare-function edmacs-sessions--make-gui-frame "sessions")
 
 ;; `general' loads only in a real init.el session; declared here so the
 ;; byte-compiler doesn't warn about the forward reference in the `SPC F'
@@ -96,12 +118,37 @@ repo-name disambiguation prefix at all -- it never does once the frame
 itself already names that repo."
   (and common (equal common (frame-parameter nil 'edmacs-repo))))
 
-(defun edmacs-frames-for-repo (common)
-  "Return a live frame whose `edmacs-repo' parameter equals COMMON, or nil."
-  (seq-find (lambda (frame)
-              (and (frame-live-p frame)
-                   (equal (frame-parameter frame 'edmacs-repo) common)))
+(defun edmacs-frames--graphical-session-p ()
+  "Return non-nil when this session holds at least one graphical frame."
+  (seq-some (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
             (frame-list)))
+
+(defun edmacs-frames-frame-usable-p (frame)
+  "Return non-nil when FRAME may carry an `edmacs-repo' and show its buffers.
+Excludes a child frame (a corfu-style popup, which must stay the size
+its owner gave it) and the daemon's initial tty placeholder -- the frame
+`desktop--check-dont-save' already refuses to save, which is never on
+screen and on which `select-frame-set-input-focus' is a no-op the user
+reads as \"opening a worktree did nothing\".
+
+A non-graphical frame counts as usable only while the session has no
+graphical frame at all. That disjunct is what keeps the tty-only batch
+test harnesses (and a genuinely terminal-only Emacs) working, while
+still excluding the placeholder on the real daemon, which always holds a
+GUI boot frame."
+  (and (frame-live-p frame)
+       (not (frame-parameter frame 'parent-frame))
+       (not (and (daemonp) (frame-initial-p frame)))
+       (or (display-graphic-p frame)
+           (not (edmacs-frames--graphical-session-p)))))
+
+(defun edmacs-frames--frame-healthy-p (frame)
+  "Return non-nil when FRAME is usable and can actually display a buffer.
+Unhealthy is windows.el's wedged shape: every window a side window, so
+`display-buffer' has nowhere to put a buffer but another side window."
+  (and (edmacs-frames-frame-usable-p frame)
+       (not (and (fboundp 'edmacs-windows-frame-wedged-p)
+                 (edmacs-windows-frame-wedged-p frame)))))
 
 (defun edmacs-frames--frames-for-repo-common (common)
   "Return every live frame whose `edmacs-repo' parameter equals COMMON.
@@ -114,17 +161,87 @@ not just the first one found."
                                (equal (frame-parameter f 'edmacs-repo) common)))
               (frame-list)))
 
+(defun edmacs-frames--demote-frame (frame common)
+  "Strip FRAME's repo identity so it stops answering lookups for COMMON.
+Non-destructive on purpose: a live frame can hold the user's only copy
+of a layout, so a duplicate is un-named rather than deleted. Warns
+because a demoted frame becomes adoptable as a spare again, and the next
+`edmacs-frames-open' will `dired'-visit over whatever it is showing."
+  (set-frame-parameter frame 'edmacs-repo nil)
+  (set-frame-parameter frame 'name nil)
+  (display-warning
+   'edmacs-frames
+   (format "demoted a frame that duplicated or could not display %s" common)
+   :warning))
+
+(defun edmacs-frames--better-survivor-p (a b)
+  "Return non-nil when frame A should outlive frame B as a repo's frame.
+Healthy beats wedged; between two equally healthy frames the one holding
+more tabs wins, so reconciliation never demotes the frame carrying more
+of the user's work. `sort' is stable, so an otherwise equal pair keeps
+`frame-list' order."
+  (let ((healthy-a (edmacs-frames--frame-healthy-p a))
+        (healthy-b (edmacs-frames--frame-healthy-p b)))
+    (cond ((not (eq healthy-a healthy-b)) (and healthy-a t))
+          (t (> (length (tab-bar-tabs a)) (length (tab-bar-tabs b)))))))
+
+(defun edmacs-frames--reconcile-repo-frames (common)
+  "Reduce COMMON's frames to a single survivor and return it, or nil.
+First demotes every match that can never display COMMON -- which is
+exactly what un-does a tty placeholder wrongly back-filled by a desktop
+restore -- then, if several usable frames still claim COMMON, keeps the
+best one (`edmacs-frames--better-survivor-p') and demotes the rest.
+Idempotent: a COMMON with zero or one usable frame is a no-op."
+  (let* ((frames (edmacs-frames--frames-for-repo-common common))
+         (usable (seq-filter #'edmacs-frames-frame-usable-p frames)))
+    (dolist (frame frames)
+      (unless (memq frame usable)
+        (edmacs-frames--demote-frame frame common)))
+    (when (cdr usable)
+      (let ((survivor (car (sort (copy-sequence usable)
+                                 #'edmacs-frames--better-survivor-p))))
+        (dolist (frame usable)
+          (unless (eq frame survivor)
+            (edmacs-frames--demote-frame frame common)))
+        (setq usable (list survivor))))
+    (car usable)))
+
+(defun edmacs-frames-for-repo (common)
+  "Return the one frame that owns repo COMMON, or nil.
+Never a bare first match: duplicates are reconciled first, and a frame
+that can never display COMMON is demoted out of the answer entirely
+rather than handed to `select-frame-set-input-focus'. A wedged but
+otherwise usable frame IS still returned -- repair is destructive to
+slot layout, and windows.el recovers such a frame on its next
+`display-buffer' anyway, so a lookup stays side-effect-light."
+  (and common (edmacs-frames--reconcile-repo-frames common)))
+
 (defun edmacs-frames--spare-frame ()
   "Return a live, repo-less frame available to adopt, or nil.
 The daemon's own boot frame (made frame-less at `emacs-startup-hook' in
 sessions.el) is exactly this shape from birth, as is any frame
 `edmacs-frames--close-last-tab' has reset after its last tab closed.
 Adopting one instead of always `make-frame'-ing avoids leaving an
-orphan empty frame behind after every session's first repo switch."
+orphan empty frame behind after every session's first repo switch.
+
+Gated on `edmacs-frames-frame-usable-p': the daemon's initial tty
+placeholder is repo-less by construction, so without that gate it is the
+first spare every `emacsclient -e'-driven open finds and adopts."
   (seq-find (lambda (frame)
-              (and (frame-live-p frame)
+              (and (edmacs-frames-frame-usable-p frame)
                    (not (frame-parameter frame 'edmacs-repo))))
             (frame-list)))
+
+(defun edmacs-frames--make-frame ()
+  "Create a frame fit to hold a repo.
+Under the daemon a bare `make-frame' yields another tty placeholder --
+the daemon's own `window-system' is nil -- which, now that such a frame
+is never adopted as a spare, is the only way an `emacsclient -e'-driven
+open could still build a repo frame that can show nothing."
+  (or (and (daemonp)
+           (fboundp 'edmacs-sessions--make-gui-frame)
+           (edmacs-sessions--make-gui-frame))
+      (make-frame)))
 
 ;; ============================================================================
 ;; Opening a repo's frame
@@ -160,13 +277,17 @@ display gets caught by its own still-armed enclosing override."
          (switch-to-buffer-obey-display-actions nil))
      ,@body))
 
-(defun edmacs-frames--stamp-current-tab-root (root)
-  "Stamp ROOT onto the selected frame's current tab as `edmacs-root'.
-Mutates the tab alist's cdr in place via `push', never rebinding the
-local variable -- `tab-bar.el' only persists in-place edits to the tab
-object it already holds a reference to."
-  (when-let* ((tab (tab-bar--current-tab-find)))
-    (push (cons 'edmacs-root root) (cdr tab))))
+(defun edmacs-frames--stamp-current-tab-root (root &optional frame)
+  "Stamp ROOT onto FRAME's (default the selected frame's) current tab.
+Mutates the tab alist's cdr in place -- `tab-bar.el' only persists
+in-place edits to the tab object it already holds a reference to -- but
+via `setf' rather than `push': re-stamping must REPLACE the entry.
+A `push'-shadowed stale cons survives, because `tab-bar--tab' copies
+every unrecognized tab parameter forward on each tab switch and desktop
+then persists the lot, so the duplicate would outlive the session."
+  (when-let* ((tab (tab-bar--current-tab-find nil frame)))
+    (setf (alist-get 'edmacs-root (cdr tab)) root)
+    root))
 
 (defun edmacs-frames-open (dir)
   "Raise the frame owning DIR's repo, creating one if none exists yet.
@@ -176,13 +297,18 @@ Returns the frame."
   (let* ((common (edmacs-frames--repo-of dir))
          (existing (and common (edmacs-frames-for-repo common))))
     (if existing
-        (progn (select-frame-set-input-focus existing) existing)
+        ;; `edmacs-frames-for-repo' has already reconciled duplicates and
+        ;; rejected anything that cannot display, so focus can no longer
+        ;; land on the tty placeholder or on a wedged frame.
+        (progn (edmacs-frames-stamp-frame-tabs existing)
+               (select-frame-set-input-focus existing)
+               existing)
       (let* ((main (if common
                        (edmacs-git-common-dir-main-worktree common)
                      (file-name-as-directory (expand-file-name dir))))
              (label (if common (edmacs-git-common-dir-repo-name common)
                       (file-name-nondirectory (directory-file-name main))))
-             (frame (or (edmacs-frames--spare-frame) (make-frame))))
+             (frame (or (edmacs-frames--spare-frame) (edmacs-frames--make-frame))))
         (set-frame-parameter frame 'edmacs-repo common)
         (set-frame-parameter frame 'name label)
         (when common
@@ -212,66 +338,62 @@ documented contract."
 ;; Worktree tabs -- open/raise a tab for a worktree, in its repo's frame
 ;; ============================================================================
 
-(defvar edmacs-frames--suppress-reconcile nil
-  "Non-nil while a tab this module itself is creating should skip
-`edmacs-frames--reconcile-tab-after-open'. Bound only around the brief
-window between `tab-bar-new-tab' and this module stamping/visiting the
-tab it just asked for -- that tab is not misidentified as a duplicate
-of whatever tab was selected a moment before, which the reconciliation
-hook would otherwise see (the new tab still shows the previous tab's
-buffer until this module visits it).")
+(defvar edmacs-frames--pending-tab-root nil
+  "The root the tab this module is about to create must carry.
+Bound around a `tab-bar-new-tab' this module itself drives, so
+`edmacs-frames--on-tab-post-open' stamps the INTENDED root rather than
+deriving one from the buffer the brand-new tab inherited from whichever
+tab was selected a moment before. It replaces a blanket
+\"skip reconciliation entirely\" flag, which disarmed the duplicate
+safety net for precisely the call that most needs it.")
 
-(defun edmacs-frames--ws-selected-buffer-name (ws)
-  "Return the buffer name of the selected leaf window in WS, or nil.
-WS is a `window-state-get' tree, as stored in a (non-current) tab's own
-`ws' field. Recurses through `vc'/`hc' combination nodes for the leaf
-marked `(selected . t)', falling back to the first leaf found -- a
-lone-window tab (this module never creates any other kind) has no
-`selected' marker to find."
-  (pcase ws
-    (`(leaf . ,params)
-     (let ((buf (alist-get 'buffer params)))
-       (and (consp buf) (car buf))))
-    (`(,(or 'vc 'hc) . ,rest)
-     (let (found first)
-       (dolist (child rest)
-         (when (and (consp child) (memq (car child) '(leaf vc hc)))
-           (let* ((name (edmacs-frames--ws-selected-buffer-name child))
-                  ;; `selected' lives nested inside the leaf's own `buffer'
-                  ;; entry -- `(leaf (buffer NAME (selected . t) ...))' --
-                  ;; not as a sibling of `buffer' at the leaf's own level.
-                  (buf-entry (and (eq (car child) 'leaf)
-                                  (alist-get 'buffer (cdr child))))
-                  (selected (and buf-entry (alist-get 'selected (cdr buf-entry)))))
-             (unless first (setq first name))
-             (when selected (setq found name)))))
-       (or found first)))
-    (_ nil)))
+(defun edmacs-frames--current-tab (frame)
+  "Return FRAME's current tab, without ever creating one.
+Reads the `tabs' frame parameter directly: `tab-bar--current-tab-find'
+goes through `tab-bar-tabs', which on an unset parameter creates a
+default tab AND runs `tab-bar-tab-post-open-functions' -- re-entering
+this module's own post-open hook from inside itself."
+  (assq 'current-tab (frame-parameter frame 'tabs)))
 
-(defun edmacs-frames--tab-window-buffer (tab)
-  "Return the live buffer TAB's selected window last showed, or nil.
-For the current tab this is simply the selected window's buffer; any
-other tab was never switched to, so this walks its own serialized `ws'
-\(window-state) field -- the same data `tab-bar-select-tab' itself
-restores from -- for its selected leaf's buffer name."
-  (if (eq (car tab) 'current-tab)
-      (window-buffer (selected-window))
-    (let ((name (edmacs-frames--ws-selected-buffer-name (alist-get 'ws tab))))
-      (and name (get-buffer name)))))
+(defun edmacs-frames--frame-content-window (frame)
+  "Return the window FRAME shows its content in.
+Whichever window carries windows.el's `edmacs-main' parameter, else
+FRAME's first non-side window, else its selected window. Never
+`selected-window': every caller can be running for a frame other than
+the selected one, and reading the global selection is exactly the
+cross-frame mix-up this module's stamped identity exists to rule out."
+  (or (seq-find (lambda (w) (window-parameter w 'edmacs-main))
+                (window-list frame 'no-minibuf))
+      (seq-find (lambda (w) (not (window-parameter w 'window-side)))
+                (window-list frame 'no-minibuf))
+      (frame-selected-window frame)))
+
+(defun edmacs-frames--derive-root (frame)
+  "Return the worktree root FRAME's content window is showing, or nil.
+The only place in this module a root is derived from a buffer at all,
+and frame-scoped by construction."
+  (when-let* ((window (edmacs-frames--frame-content-window frame))
+              (buffer (and (window-live-p window) (window-buffer window)))
+              (dir (buffer-local-value 'default-directory buffer)))
+    (file-truename dir)))
 
 (defun edmacs-frames--tab-root (tab)
-  "Return TAB's `edmacs-root', deriving and stamping it from its buffer if unset.
-The stored property is the fast path once any of this module's own
-tab-creation routes have stamped it. The fallback covers a tab this
-module never touched -- a plain `SPC T n', or one restored by desktop --
-by reading its own selected buffer's `default-directory', and stamps
-the result so the derivation is not repeated."
-  (or (alist-get 'edmacs-root tab)
-      (when-let* ((buf (edmacs-frames--tab-window-buffer tab))
-                  (dir (buffer-local-value 'default-directory buf)))
-        (let ((root (file-truename dir)))
-          (push (cons 'edmacs-root root) (cdr tab))
-          root))))
+  "Return TAB's `edmacs-root', or nil.
+A pure read, with no derivation and no side effect. See this module's
+Commentary for where the stamp is written; a tab restored from a
+desktop file written before the stamp was mandatory simply reads nil
+until it is selected once, which is deliberately preferred to guessing."
+  (alist-get 'edmacs-root tab))
+
+(defun edmacs-frames-stamp-frame-tabs (frame)
+  "Stamp FRAME's current tab with a derived root when it carries none.
+Background tabs are left alone: their own stamp round-trips through the
+desktop file (`frameset-filter-tabs' strips only the `wc' family), and a
+tab that was never switched to has no live window to derive from."
+  (when (and (frame-live-p frame)
+             (not (edmacs-frames--tab-root (edmacs-frames--current-tab frame))))
+    (when-let* ((root (edmacs-frames--derive-root frame)))
+      (edmacs-frames--stamp-current-tab-root root frame))))
 
 (defun edmacs-frames--find-tab-by-root (root &optional frame)
   "Return the tab in FRAME (default selected) whose root equals ROOT, or nil."
@@ -518,9 +640,11 @@ the safety net covering tabs opened through any other route."
         (let ((tab (edmacs-frames--find-tab-by-root root frame)))
           (if tab
               (tab-bar-select-tab (1+ (tab-bar--tab-index tab (tab-bar-tabs frame) frame)))
-            (let ((edmacs-frames--suppress-reconcile t))
+            ;; The post-open hook stamps ROOT from this binding, so
+            ;; reconciliation sees the INTENDED root and folds a same-root
+            ;; tab the lookup above missed instead of duplicating it.
+            (let ((edmacs-frames--pending-tab-root root))
               (tab-bar-new-tab))
-            (edmacs-frames--stamp-current-tab-root root)
             (edmacs-frames--visit-root dir)
             (tab-bar-rename-tab (file-name-nondirectory (directory-file-name dir)))))))
     frame))
@@ -530,30 +654,63 @@ the safety net covering tabs opened through any other route."
 The safety net for a tab created through any route other than
 `edmacs-frames-open-worktree-tab' -- the stock `project-other-tab-command'
 prefix, `M-x tab-bar-new-tab', `other-tab-prefix' from any package.
-Stamps TAB's own `edmacs-root' first (deriving it from its buffer, since
-it was just created and has none yet), then closes TAB itself if
+TAB is already stamped by the time this runs (see
+`edmacs-frames--on-tab-post-open'); this only closes TAB itself when
 another tab in the frame already carries that root -- safe because, at
 post-open time, TAB is unambiguously the one just added: closing it,
 never an older tab, cannot surprise a user mid-edit in some other tab."
-  (unless edmacs-frames--suppress-reconcile
-    (when-let* ((root (edmacs-frames--tab-root tab))
-                (dup (seq-find (lambda (other)
-                                 (and (not (eq other tab))
-                                      (equal (alist-get 'edmacs-root other) root)))
-                               (tab-bar-tabs))))
-      ;; Both indices are captured before any selection change: switching
-      ;; tabs replaces the outgoing tab's cons with a freshly-built one
-      ;; (see `tab-bar-select-tab's own `(from-tab (tab-bar--tab))'), so an
-      ;; `eq'-based index lookup on TAB done *after* selecting DUP would
-      ;; already be searching for an object no longer in the list -- the
-      ;; absolute position itself is unaffected by that swap, so closing
-      ;; by the position captured now still closes the right tab.
-      (let ((dup-number (1+ (tab-bar--tab-index dup)))
-            (tab-number (1+ (tab-bar--tab-index tab))))
-        (tab-bar-select-tab dup-number)
-        (tab-bar-close-tab tab-number)))))
+  (when-let* ((root (edmacs-frames--tab-root tab))
+              (dup (seq-find (lambda (other)
+                               (and (not (eq other tab))
+                                    (equal (alist-get 'edmacs-root other) root)))
+                             (tab-bar-tabs))))
+    ;; Both indices are captured before any selection change: switching
+    ;; tabs replaces the outgoing tab's cons with a freshly-built one
+    ;; (see `tab-bar-select-tab's own `(from-tab (tab-bar--tab))'), so an
+    ;; `eq'-based index lookup on TAB done *after* selecting DUP would
+    ;; already be searching for an object no longer in the list -- the
+    ;; absolute position itself is unaffected by that swap, so closing
+    ;; by the position captured now still closes the right tab.
+    (let ((dup-number (1+ (tab-bar--tab-index dup)))
+          (tab-number (1+ (tab-bar--tab-index tab))))
+      (tab-bar-select-tab dup-number)
+      (tab-bar-close-tab tab-number))))
 
-(add-hook 'tab-bar-tab-post-open-functions #'edmacs-frames--reconcile-tab-after-open)
+(defun edmacs-frames--on-tab-post-open (tab)
+  "Stamp TAB's `edmacs-root', then fold it onto an existing same-root tab.
+This module's single `tab-bar-tab-post-open-functions' entry. Stamping
+has to happen before reconciliation, and hook ordering across frames.el,
+windows.el and sidebar.el is not a guarantee, so the two are one
+function rather than two entries.
+
+The root comes from `edmacs-frames--pending-tab-root' when this module
+asked for the tab, else from the selected frame's own content window --
+but only when TAB really IS the selected frame's current tab.
+`tab-bar-tabs' also runs this hook for a default tab it auto-creates on
+a frame it never names, and stamping that one from the selected frame's
+buffer would reintroduce the cross-frame derivation this module removed."
+  (when (eq tab (edmacs-frames--current-tab (selected-frame)))
+    (when-let* ((root (or edmacs-frames--pending-tab-root
+                          (edmacs-frames--derive-root (selected-frame)))))
+      (setf (alist-get 'edmacs-root (cdr tab)) root)))
+  (edmacs-frames--reconcile-tab-after-open tab))
+
+(add-hook 'tab-bar-tab-post-open-functions #'edmacs-frames--on-tab-post-open)
+
+(defun edmacs-frames--on-tab-post-select (_from _to)
+  "Stamp the newly selected tab's root when it still carries none.
+The repair path for a tab restored from a desktop file written before
+the stamp was mandatory. The tab is looked up fresh rather than trusting
+the hook's own TO argument: `tab-bar-select-tab' rebuilds the incoming
+tab's cons before running this hook, so TO is not the object now in the
+frame's tab list."
+  (let* ((frame (selected-frame))
+         (tab (edmacs-frames--current-tab frame)))
+    (when (and tab (not (edmacs-frames--tab-root tab)))
+      (when-let* ((root (edmacs-frames--derive-root frame)))
+        (setf (alist-get 'edmacs-root (cdr tab)) root)))))
+
+(add-hook 'tab-bar-tab-post-select-functions #'edmacs-frames--on-tab-post-select)
 
 ;; ============================================================================
 ;; Stray visits -- catch a file opened in the wrong repo's frame

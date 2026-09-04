@@ -23,6 +23,14 @@
 (require 'subr-x)
 (require 'cl-lib)
 
+;; `display-graphic-p', `frame-initial-p' and `daemonp' are subrs, and
+;; `cl-letf' on a subr makes Emacs build a native trampoline whose compile
+;; fails under `-Q' when the eln-cache is not writable. Nothing here needs
+;; one -- frames.el is loaded from source, so its callers read the stub
+;; straight out of the symbol's function cell. (sessions-test.el precedent.)
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
+
 ;; ============================================================================
 ;; edmacs-frames--repo-of
 ;; ============================================================================
@@ -75,28 +83,59 @@ inside the same worktree share one cache entry."
 ;; `frame-parameter' are stubbed to treat them as an alist of parameters,
 ;; so no real frame is ever created here.
 
+(defvar edmacs-frames-test--frames nil
+  "Alist of (FRAME-SYMBOL . PARAMS) the faked frame primitives read.")
+
+(defun edmacs-frames-test--fake-param (frame key default)
+  "Return FRAME's fake KEY parameter, or DEFAULT when it carries none.
+A nil FRAME means the selected frame, matching every real frame
+primitive's own optional-FRAME convention."
+  (let ((params (cdr (assq (or frame (selected-frame))
+                           edmacs-frames-test--frames))))
+    (if (assq key params) (alist-get key params) default)))
+
 (defmacro edmacs-frames-test--with-fake-frames (alist &rest body)
   "Run BODY with frame-scanning primitives faked from ALIST.
-ALIST is a list of (FRAME-SYMBOL . PARAMS-ALIST); a PARAMS-ALIST entry
-for `visible' controls `frame-visible-p' and defaults to t when absent,
-so existing callers that never mention visibility keep behaving as a
-plain live, visible frame."
+ALIST is a list of (FRAME-SYMBOL . PARAMS-ALIST). Beyond the frame
+parameters under test, these entries drive the faked primitives, each
+with the default an existing caller that never mentions it gets:
+`visible' (`frame-visible-p', t), `graphic' (`display-graphic-p', t),
+`initial' (`frame-initial-p', nil), `wedged'
+(`edmacs-windows-frame-wedged-p', nil) and `tab-count' (the number of
+tabs `tab-bar-tabs' reports, 1). `daemonp' reports non-nil throughout,
+so `edmacs-frames-frame-usable-p's daemon-placeholder exclusion is the
+shape actually exercised rather than short-circuited.
+
+`set-frame-parameter' writes back into ALIST, so a test that drives
+reconciliation can read the demotion afterward -- pass a freshly
+consed ALIST, never a quoted literal, when BODY can mutate it."
   (declare (indent 1))
-  `(let ((frames--alist ,alist))
+  `(let ((edmacs-frames-test--frames ,alist))
      (cl-letf (((symbol-function 'frame-list)
-                (lambda () (mapcar #'car frames--alist)))
+                (lambda () (mapcar #'car edmacs-frames-test--frames)))
                ((symbol-function 'frame-live-p)
-                (lambda (f) (assq f frames--alist)))
+                (lambda (f) (assq f edmacs-frames-test--frames)))
                ((symbol-function 'frame-visible-p)
-                (lambda (f)
-                  (let ((params (cdr (assq f frames--alist))))
-                    (if (assq 'visible params) (alist-get 'visible params) t))))
+                (lambda (f) (edmacs-frames-test--fake-param f 'visible t)))
+               ((symbol-function 'display-graphic-p)
+                (lambda (&optional f) (edmacs-frames-test--fake-param f 'graphic t)))
+               ((symbol-function 'frame-initial-p)
+                (lambda (f) (edmacs-frames-test--fake-param f 'initial nil)))
+               ((symbol-function 'daemonp) (lambda (&rest _) t))
+               ((symbol-function 'edmacs-windows-frame-wedged-p)
+                (lambda (&optional f) (edmacs-frames-test--fake-param f 'wedged nil)))
+               ((symbol-function 'tab-bar-tabs)
+                (lambda (&optional f)
+                  (make-list (edmacs-frames-test--fake-param f 'tab-count 1) 'tab)))
+               ((symbol-function 'set-frame-parameter)
+                (lambda (f param value)
+                  (let ((entry (assq (or f (selected-frame))
+                                     edmacs-frames-test--frames)))
+                    (when entry (setf (alist-get param (cdr entry)) value)))))
                ((symbol-function 'frame-parameter)
-                (lambda (f param)
-                  (if f
-                      (alist-get param (cdr (assq f frames--alist)))
-                    (alist-get param (cdr (assq (selected-frame) frames--alist)))))))
+                (lambda (f param) (edmacs-frames-test--fake-param f param nil))))
        ,@body)))
+
 
 (ert-deftest edmacs-frames-test-for-repo-finds-matching-frame ()
   (edmacs-frames-test--with-fake-frames
@@ -192,46 +231,275 @@ parameter, for the rest of the session once it has ever shown once."
       (should-not (edmacs-frames--cached-common-dir "/never/looked/up/")))))
 
 ;; ============================================================================
-;; edmacs-frames--ws-selected-buffer-name / --tab-root
+;; Frame eligibility -- usable / healthy
 ;; ============================================================================
 
-(ert-deftest edmacs-frames-test-ws-selected-buffer-name-single-leaf ()
-  (should (equal (edmacs-frames--ws-selected-buffer-name
-                  '(leaf (buffer "*foo*" (selected . t))))
-                 "*foo*")))
+(ert-deftest edmacs-frames-test-frame-usable-p-excludes-daemon-placeholder ()
+  "The daemon's initial tty frame is never usable while a GUI frame exists.
+That is the frame `desktop--check-dont-save' already refuses to save and
+that nothing can ever be displayed on."
+  (edmacs-frames-test--with-fake-frames
+      '((gui . ((graphic . t)))
+        (f1 . ((graphic . nil) (initial . t))))
+    (should (edmacs-frames-frame-usable-p 'gui))
+    (should-not (edmacs-frames-frame-usable-p 'f1))))
 
-(ert-deftest edmacs-frames-test-ws-selected-buffer-name-picks-selected-leaf ()
-  (should (equal (edmacs-frames--ws-selected-buffer-name
-                  '(hc (leaf (buffer "*a*"))
-                       (leaf (buffer "*b*" (selected . t)))))
-                 "*b*")))
+(ert-deftest edmacs-frames-test-frame-usable-p-excludes-child-frame ()
+  "A corfu-style popup is a frame by construction, never a repo frame."
+  (edmacs-frames-test--with-fake-frames
+      '((gui . ((graphic . t)))
+        (popup . ((graphic . t) (parent-frame . gui))))
+    (should-not (edmacs-frames-frame-usable-p 'popup))))
 
-(ert-deftest edmacs-frames-test-ws-selected-buffer-name-falls-back-to-first ()
-  (should (equal (edmacs-frames--ws-selected-buffer-name
-                  '(vc (leaf (buffer "*a*"))
-                       (leaf (buffer "*b*"))))
-                 "*a*")))
+(ert-deftest edmacs-frames-test-frame-usable-p-allows-tty-in-a-tty-only-session ()
+  "With no graphical frame anywhere, a tty frame is still adoptable.
+The disjunct that keeps this repo's own tty-only batch harnesses (and a
+genuinely terminal-only Emacs) working."
+  (edmacs-frames-test--with-fake-frames
+      '((tty-a . ((graphic . nil)))
+        (tty-b . ((graphic . nil) (initial . t))))
+    (should (edmacs-frames-frame-usable-p 'tty-a))
+    ;; The daemon's own placeholder stays excluded even here.
+    (should-not (edmacs-frames-frame-usable-p 'tty-b))))
+
+(ert-deftest edmacs-frames-test-frame-healthy-p-rejects-a-wedged-frame ()
+  (edmacs-frames-test--with-fake-frames
+      '((ok . ((graphic . t)))
+        (wedged . ((graphic . t) (wedged . t))))
+    (should (edmacs-frames--frame-healthy-p 'ok))
+    (should-not (edmacs-frames--frame-healthy-p 'wedged))
+    ;; Wedged is still USABLE -- windows.el repairs it on its next
+    ;; `display-buffer', so a lookup may still return it as a last resort.
+    (should (edmacs-frames-frame-usable-p 'wedged))))
+
+(ert-deftest edmacs-frames-test-spare-frame-skips-tty-initial-frame ()
+  "The placeholder is repo-less, so without the usability gate it is the
+first spare every `emacsclient -e'-driven open would find and adopt."
+  (edmacs-frames-test--with-fake-frames
+      '((f1 . ((graphic . nil) (initial . t)))
+        (gui . ((graphic . t))))
+    (should (eq (edmacs-frames--spare-frame) 'gui)))
+  (edmacs-frames-test--with-fake-frames
+      '((f1 . ((graphic . nil) (initial . t)))
+        (other-gui . ((graphic . t) (edmacs-repo . "/r1/.git"))))
+    (should-not (edmacs-frames--spare-frame))))
+
+;; ============================================================================
+;; edmacs-frames-for-repo -- healthy first, duplicates reconciled
+;; ============================================================================
+
+(ert-deftest edmacs-frames-test-for-repo-prefers-healthy-graphical-frame ()
+  "Not `seq-find's first match: the tty placeholder and the wedged frame
+both come first in `frame-list' and both must lose to the healthy one."
+  (cl-letf (((symbol-function 'display-warning) #'ignore))
+    (let ((frames (list (cons 'f1 (list (cons 'edmacs-repo "/r1/.git")
+                                        (cons 'graphic nil)
+                                        (cons 'initial t)))
+                        (cons 'wedged (list (cons 'edmacs-repo "/r1/.git")
+                                            (cons 'graphic t)
+                                            (cons 'wedged t)))
+                        (cons 'healthy (list (cons 'edmacs-repo "/r1/.git")
+                                             (cons 'graphic t))))))
+      (edmacs-frames-test--with-fake-frames frames
+        (should (eq (edmacs-frames-for-repo "/r1/.git") 'healthy))
+        ;; The losers stop answering for this repo at all.
+        (should-not (alist-get 'edmacs-repo (alist-get 'f1 frames)))
+        (should-not (alist-get 'edmacs-repo (alist-get 'wedged frames)))))))
+
+(ert-deftest edmacs-frames-test-for-repo-returns-a-lone-wedged-frame ()
+  "Repair is destructive to slot layout, so a lookup returns the wedged
+frame rather than repairing it -- windows.el recovers it on its next
+`display-buffer'."
+  (edmacs-frames-test--with-fake-frames
+      (list (cons 'wedged (list (cons 'edmacs-repo "/r1/.git")
+                                (cons 'graphic t)
+                                (cons 'wedged t))))
+    (should (eq (edmacs-frames-for-repo "/r1/.git") 'wedged))))
+
+(ert-deftest edmacs-frames-test-for-repo-demotes-a-lone-unusable-frame ()
+  "The concrete U3 repair: a tty placeholder wrongly back-filled with a
+repo answers nil and loses the stamp, rather than being handed to
+`select-frame-set-input-focus'."
+  (cl-letf (((symbol-function 'display-warning) #'ignore))
+    (let ((frames (list (cons 'f1 (list (cons 'edmacs-repo "/r1/.git")
+                                        (cons 'name "r1")
+                                        (cons 'graphic nil)
+                                        (cons 'initial t)))
+                        (cons 'gui (list (cons 'graphic t))))))
+      (edmacs-frames-test--with-fake-frames frames
+        (should-not (edmacs-frames-for-repo "/r1/.git"))
+        (should-not (alist-get 'edmacs-repo (alist-get 'f1 frames)))
+        (should-not (alist-get 'name (alist-get 'f1 frames)))))))
+
+(ert-deftest edmacs-frames-test-reconcile-demotes-duplicate-repo-frames ()
+  "Two healthy frames claiming one repo: the one holding more tabs
+survives, the other is un-named rather than deleted, and a second run
+changes nothing."
+  (let ((warnings 0))
+    (cl-letf (((symbol-function 'display-warning)
+               (lambda (&rest _) (setq warnings (1+ warnings))))
+              ((symbol-function 'delete-frame)
+               (lambda (&rest _) (error "reconciliation must never delete a frame"))))
+      (let ((frames (list (cons 'one-tab (list (cons 'edmacs-repo "/r1/.git")
+                                               (cons 'name "r1")
+                                               (cons 'graphic t)
+                                               (cons 'tab-count 1)))
+                          (cons 'two-tabs (list (cons 'edmacs-repo "/r1/.git")
+                                                (cons 'name "r1")
+                                                (cons 'graphic t)
+                                                (cons 'tab-count 2))))))
+        (edmacs-frames-test--with-fake-frames frames
+          (should (eq (edmacs-frames--reconcile-repo-frames "/r1/.git") 'two-tabs))
+          (should (equal (alist-get 'edmacs-repo (alist-get 'two-tabs frames))
+                         "/r1/.git"))
+          (should-not (alist-get 'edmacs-repo (alist-get 'one-tab frames)))
+          (should-not (alist-get 'name (alist-get 'one-tab frames)))
+          (should (= warnings 1))
+          ;; Idempotent: nothing left to demote, no second warning.
+          (should (eq (edmacs-frames--reconcile-repo-frames "/r1/.git") 'two-tabs))
+          (should (= warnings 1)))))))
+
+(ert-deftest edmacs-frames-test-reconcile-is-a-no-op-for-a-single-match ()
+  (cl-letf (((symbol-function 'display-warning)
+             (lambda (&rest _) (error "nothing to demote here"))))
+    (edmacs-frames-test--with-fake-frames
+        (list (cons 'only (list (cons 'edmacs-repo "/r1/.git") (cons 'graphic t))))
+      (should (eq (edmacs-frames--reconcile-repo-frames "/r1/.git") 'only))
+      (should-not (edmacs-frames--reconcile-repo-frames "/nobody/.git")))))
+
+;; ============================================================================
+;; Stamped identity -- nothing is sniffed from a window-state blob
+;; ============================================================================
+
+(ert-deftest edmacs-frames-test-no-window-state-sniffing-remains ()
+  "Both derivations this phase deleted stay deleted.
+`edmacs-frames--ws-selected-buffer-name' pcase-matched shapes a real
+tab's `ws' field never has, and `edmacs-frames--tab-window-buffer' read
+the GLOBALLY selected window and let `edmacs-frames--tab-root' cache
+another frame's answer onto this frame's tab forever."
+  (should-not (fboundp 'edmacs-frames--ws-selected-buffer-name))
+  (should-not (fboundp 'edmacs-frames--tab-window-buffer))
+  (let ((text (with-temp-buffer
+                (insert-file-contents
+                 (expand-file-name "modules/frames.el" default-directory))
+                (buffer-string))))
+    (should-not (string-match-p "(alist-get 'ws " text))))
 
 (ert-deftest edmacs-frames-test-tab-root-stored-property-wins ()
   (let ((tab '(tab (edmacs-root . "/stored/root/"))))
     (should (equal (edmacs-frames--tab-root tab) "/stored/root/"))))
 
-(ert-deftest edmacs-frames-test-tab-root-derives-and-stamps-current-tab ()
-  (let ((buf (generate-new-buffer "*frames-test-tab-root*")))
+(ert-deftest edmacs-frames-test-tab-root-is-a-pure-read ()
+  "An unstamped tab reads nil -- no derivation, and nothing cached onto it."
+  (let ((tab (list 'current-tab (cons 'ws '((min-height . 4) (leaf))))))
+    (cl-letf (((symbol-function 'window-buffer)
+               (lambda (&rest _) (error "a tab root is never derived here"))))
+      (should-not (edmacs-frames--tab-root tab)))
+    (should-not (assq 'edmacs-root (cdr tab)))))
+
+(ert-deftest edmacs-frames-test-stamp-replaces-rather-than-shadows ()
+  "Re-stamping must REPLACE `edmacs-root', not `push' a second cons in
+front of it: `tab-bar--tab' copies every unrecognized tab parameter
+forward on each switch, so a shadowed stale entry would be duplicated
+into the desktop file forever."
+  (let* ((frame (selected-frame))
+         (saved (frame-parameter frame 'tabs))
+         (tab (list 'current-tab (cons 'edmacs-root "/old/"))))
     (unwind-protect
         (progn
-          (with-current-buffer buf (setq default-directory "/derived/root/"))
-          (cl-letf (((symbol-function 'window-buffer)
-                     (lambda (&rest _) buf)))
-            (let ((tab (list 'current-tab)))
-              (should (equal (edmacs-frames--tab-root tab) "/derived/root/"))
-              ;; Stamped in place for next time -- no re-derivation needed.
-              (should (equal (alist-get 'edmacs-root (cdr tab)) "/derived/root/")))))
-      (kill-buffer buf))))
+          (set-frame-parameter frame 'tabs (list tab))
+          (edmacs-frames--stamp-current-tab-root "/new/" frame)
+          (should (equal (alist-get 'edmacs-root (cdr tab)) "/new/"))
+          (should (= 1 (seq-count (lambda (e) (eq (car-safe e) 'edmacs-root))
+                                  (cdr tab)))))
+      (set-frame-parameter frame 'tabs saved))))
 
-(ert-deftest edmacs-frames-test-tab-root-nil-when-buffer-gone ()
-  (let ((tab '(tab (ws (leaf (buffer "*frames-test-nonexistent*"))))))
-    (should-not (edmacs-frames--tab-root tab))))
+(ert-deftest edmacs-frames-test-stamp-frame-tabs-stamps-only-an-unstamped-tab ()
+  "The restore-walk entry point: stamp a tab with no root, leave a
+stamped one strictly alone (never re-derive over a stored answer)."
+  (let* ((frame (selected-frame))
+         (saved (frame-parameter frame 'tabs))
+         (bare (list 'current-tab))
+         (stamped (list 'current-tab (cons 'edmacs-root "/kept/"))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'edmacs-frames--derive-root)
+                   (lambda (_frame) "/derived/")))
+          (set-frame-parameter frame 'tabs (list bare))
+          (edmacs-frames-stamp-frame-tabs frame)
+          (should (equal (alist-get 'edmacs-root (cdr bare)) "/derived/"))
+          (set-frame-parameter frame 'tabs (list stamped))
+          (edmacs-frames-stamp-frame-tabs frame)
+          (should (equal (alist-get 'edmacs-root (cdr stamped)) "/kept/")))
+      (set-frame-parameter frame 'tabs saved))))
+
+(ert-deftest edmacs-frames-test-post-open-stamps-the-pending-root ()
+  "When this module asked for the tab, the INTENDED root is stamped --
+never one derived from the buffer the new tab inherited."
+  (let* ((frame (selected-frame))
+         (saved (frame-parameter frame 'tabs))
+         (tab (list 'current-tab)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'edmacs-frames--derive-root)
+                   (lambda (_frame) "/inherited/"))
+                  ((symbol-function 'edmacs-frames--reconcile-tab-after-open) #'ignore))
+          (set-frame-parameter frame 'tabs (list tab))
+          (let ((edmacs-frames--pending-tab-root "/intended/"))
+            (edmacs-frames--on-tab-post-open tab))
+          (should (equal (alist-get 'edmacs-root (cdr tab)) "/intended/")))
+      (set-frame-parameter frame 'tabs saved))))
+
+(ert-deftest edmacs-frames-test-post-open-ignores-another-frames-tab ()
+  "`tab-bar-tabs' auto-creates a default tab, and runs this hook, for a
+frame it never names. Stamping that one from the SELECTED frame's
+buffer is exactly the cross-frame derivation this phase removed."
+  (let* ((frame (selected-frame))
+         (saved (frame-parameter frame 'tabs))
+         (mine (list 'current-tab (cons 'edmacs-root "/mine/")))
+         (theirs (list 'current-tab)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'edmacs-frames--derive-root)
+                   (lambda (_frame) "/selected-frames-buffer/"))
+                  ((symbol-function 'edmacs-frames--reconcile-tab-after-open) #'ignore))
+          (set-frame-parameter frame 'tabs (list mine))
+          (edmacs-frames--on-tab-post-open theirs)
+          (should-not (alist-get 'edmacs-root (cdr theirs))))
+      (set-frame-parameter frame 'tabs saved))))
+
+(ert-deftest edmacs-frames-test-post-select-repairs-an-unstamped-tab ()
+  "The repair path for a tab restored from a pre-stamp desktop file."
+  (let* ((frame (selected-frame))
+         (saved (frame-parameter frame 'tabs))
+         (bare (list 'current-tab))
+         (stamped (list 'current-tab (cons 'edmacs-root "/kept/"))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'edmacs-frames--derive-root)
+                   (lambda (_frame) "/derived/")))
+          (set-frame-parameter frame 'tabs (list bare))
+          (edmacs-frames--on-tab-post-select nil nil)
+          (should (equal (alist-get 'edmacs-root (cdr bare)) "/derived/"))
+          (set-frame-parameter frame 'tabs (list stamped))
+          (edmacs-frames--on-tab-post-select nil nil)
+          (should (equal (alist-get 'edmacs-root (cdr stamped)) "/kept/")))
+      (set-frame-parameter frame 'tabs saved))))
+
+(ert-deftest edmacs-frames-test-edmacs-root-survives-frameset-tab-filter ()
+  "The desktop half of \"every tab is stamped\": `frameset-filter-tabs'
+strips only the `wc' family on save, so a background tab's own
+`edmacs-root' (and its `ws') round-trip through the desktop file and
+need no re-derivation on restore."
+  (let* ((tabs (list (list 'tab
+                           (cons 'name "wt")
+                           (cons 'edmacs-root "/wt/")
+                           (cons 'ws '((min-height . 4) (leaf)))
+                           (cons 'wc 'unprintable)
+                           (cons 'wc-point 1)
+                           (cons 'wc-bl nil))))
+         (saved (car (frameset-filter-tabs tabs nil nil t))))
+    (should (equal (alist-get 'edmacs-root saved) "/wt/"))
+    (should (alist-get 'ws saved))
+    (should-not (assq 'wc saved))
+    (should-not (assq 'wc-point saved))
+    (should-not (assq 'wc-bl saved))))
 
 ;; ============================================================================
 ;; AC10 -- sessions.el's commentary no longer argues against frames
@@ -490,6 +758,7 @@ are themselves stubbed out, so nothing here needs a second real frame."
                    (lambda (_common) (setq watch-calls (1+ watch-calls))))
                   ((symbol-function 'edmacs-frames--visit-root) #'ignore)
                   ((symbol-function 'edmacs-frames--stamp-current-tab-root) #'ignore)
+                  ((symbol-function 'edmacs-frames-stamp-frame-tabs) #'ignore)
                   ((symbol-function 'tab-bar-rename-tab) #'ignore)
                   ((symbol-function 'edmacs-sidebar-show) #'ignore)
                   ((symbol-function 'select-frame-set-input-focus) #'ignore)

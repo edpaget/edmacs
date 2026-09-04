@@ -45,6 +45,8 @@
 (declare-function edmacs-frames--tab-root "frames")
 (declare-function edmacs-frames--repo-of "frames")
 (declare-function edmacs-frames--ensure-repo-tracking "frames")
+(declare-function edmacs-frames-frame-usable-p "frames")
+(declare-function edmacs-frames-stamp-frame-tabs "frames")
 (declare-function edmacs-sidebar-show "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 
@@ -207,13 +209,11 @@ Nil both when FRAME has no tabs and when any tab's root fails to
 resolve to a repo -- callers must not treat either case as \"every tab
 agrees\".
 
-Wrapped in `with-selected-frame': `edmacs-frames--tab-root''s fallback
-for a tab this module never stamped (`edmacs-frames--tab-window-buffer'
-in frames.el) resolves its `current-tab' case via the *globally*
-selected window/buffer, not FRAME's own -- calling it here without
-first selecting FRAME would read whatever frame the caller happened to
-have selected instead, exactly the case this backfill exists to
-handle correctly for every frame but that one."
+`edmacs-frames--tab-root' is a pure read of the tab's own stamp and
+`tab-bar-tabs' is passed FRAME explicitly, so nothing here consults the
+global selection any more; the `with-selected-frame' wrapper is kept
+purely defensively, so a future callee that does still sees FRAME
+rather than whatever the caller happened to have selected."
   (with-selected-frame frame
     (let (roots)
       (catch 'edmacs-sessions--unresolved
@@ -312,14 +312,32 @@ directory that no longer exists."
     (when (file-directory-p common)
       (edmacs-frames--ensure-repo-tracking common))))
 
+(defun edmacs-sessions--restorable-frame-p (frame)
+  "Return non-nil when the restore walk may claim FRAME as a repo frame.
+Delegates to `edmacs-frames-frame-usable-p', which mirrors
+`desktop--check-dont-save''s own exclusion of the daemon's initial tty
+placeholder: that frame is in `frame-list' but in no desktop save, is
+never on screen, and must never be stamped with an `edmacs-repo',
+renamed after a repo, given a sidebar side window, or made to hold a
+`file-notify' worktree watch for a repo it can never display."
+  (and (frame-live-p frame)
+       (edmacs-frames-frame-usable-p frame)))
+
 (defun edmacs-sessions--finish-frameset-restore ()
-  "Back-fill `edmacs-repo', title, worktree tracking, and sidebar on every
-live frame. Runs synchronously right after `desktop-restore-frameset',
-by which point `frameset-restore''s own `:reuse-frames t' (the default)
-has already reused/created every saved frame -- this never itself
-creates or deletes a frame."
+  "Back-fill tab roots, `edmacs-repo', title, tracking and sidebar per frame.
+Runs synchronously right after `desktop-restore-frameset', by which
+point `frameset-restore''s own `:reuse-frames t' (the default) has
+already reused/created every saved frame -- this never itself creates or
+deletes a frame. Frames `edmacs-sessions--restorable-frame-p' rejects
+are skipped entirely.
+
+Tab roots are stamped FIRST: `edmacs-sessions--backfill-repo-param'
+resolves a frame's repo from its tabs' own roots, which for a tab
+restored from a desktop file written before the stamp was mandatory are
+only there once `edmacs-frames-stamp-frame-tabs' has written them."
   (dolist (frame (frame-list))
-    (when (frame-live-p frame)
+    (when (edmacs-sessions--restorable-frame-p frame)
+      (edmacs-frames-stamp-frame-tabs frame)
       (edmacs-sessions--backfill-repo-param frame)
       (edmacs-sessions--regenerate-frame-title frame)
       (edmacs-sessions--ensure-worktree-tracking frame)

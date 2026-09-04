@@ -894,6 +894,116 @@ real add/remove reflection"))
                 (ignore-errors (set-frame-parameter frame 'edmacs-repo nil))))))))
 
     ;; ==========================================================================
+    ;; Stamped identity -- every tab-creating path, on real frames
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-frames-live-test-real-window-state-is-a-constraints-cons ()
+      "The shape that made the deleted `ws' sniffing unfixable-by-inspection.
+`window-state-get' always returns (CONSTRAINTS-ALIST . STATE-TREE), so a
+tab's own `ws' field never has `leaf'/`vc'/`hc' as its car -- which is
+what the deleted `edmacs-frames--ws-selected-buffer-name' pcase-matched
+on, and why it silently returned nil for every real background tab.
+Built from a REAL `window-state-get', never a synthetic literal: the old
+unit tests hid the bug behind fixtures already missing the wrapper."
+      (edmacs-frames-live-test--with-frames (frame)
+        (let ((ws (window-state-get (frame-root-window frame) 'writable)))
+          (should (consp ws))
+          (should (consp (car ws)))
+          (should-not (memq (car ws) '(leaf vc hc)))
+          (should (memq (car (cdr ws)) '(leaf vc hc))))))
+
+    (ert-deftest edmacs-frames-live-test-plain-new-tab-is-stamped ()
+      "A plain `tab-bar-new-tab' -- no route through this module at all --
+still lands a tab carrying `edmacs-root', exactly once. Exactly once is
+the assertion that pins the `setf' stamp: a `push' would leave a
+shadowed stale cons that `tab-bar--tab' copies forward on every switch."
+      (edmacs-frames-live-test--with-sandbox sandbox
+        (let* ((repo (expand-file-name "repoA" sandbox))
+               (other (expand-file-name "unrelated" sandbox))
+               (edmacs-git-common-dir-cache (make-hash-table :test #'equal)))
+          (edmacs-frames-live-test--make-git-repo repo)
+          (make-directory other t)
+          (edmacs-frames-live-test--with-frames (frame)
+            (with-selected-frame frame
+              (edmacs-frames-open repo)
+              (let ((default-directory (file-name-as-directory other)))
+                (dired other)
+                (tab-bar-new-tab))
+              (let ((tab (tab-bar--current-tab-find nil (selected-frame))))
+                (should (equal (edmacs-frames--tab-root tab)
+                               (file-truename (file-name-as-directory other))))
+                (should (= 1 (seq-count (lambda (e) (eq (car-safe e) 'edmacs-root))
+                                        (cdr tab))))))))))
+
+    (ert-deftest edmacs-frames-live-test-worktree-tab-open-is-idempotent ()
+      "Opening the same worktree twice never grows the tab list -- first via
+the pre-creation lookup, then, with that lookup neutralized to simulate
+a missed match, via the reconciliation net. That net is what the old
+`edmacs-frames--suppress-reconcile' binding disabled for precisely this
+call; the pending-root binding that replaced it re-arms it."
+      (edmacs-frames-live-test--with-sandbox raw-sandbox
+        ;; Truenamed: `git rev-parse --git-common-dir' answers a LINKED
+        ;; worktree with the resolved path and the main worktree with the
+        ;; unresolved one, so under macOS's /var -> /private/var symlink an
+        ;; un-truenamed sandbox makes one repo look like two.
+        (let* ((sandbox (file-name-as-directory (file-truename raw-sandbox)))
+               (repo (expand-file-name "repoA" sandbox))
+               (wt (expand-file-name "repoA-wt" sandbox))
+               (edmacs-git-common-dir-cache (make-hash-table :test #'equal)))
+          (edmacs-frames-live-test--make-git-repo repo)
+          (edmacs-frames-live-test--add-worktree repo wt)
+          (edmacs-frames-live-test--with-frames (frame)
+            (with-selected-frame frame
+              (let ((repo-frame (edmacs-frames-open repo)))
+                (edmacs-frames-open-worktree-tab wt)
+                (let ((count (length (tab-bar-tabs repo-frame))))
+                  (edmacs-frames-open-worktree-tab wt)
+                  (should (= count (length (tab-bar-tabs repo-frame))))
+                  (should (edmacs-frames--find-tab-by-root (file-truename wt)
+                                                           repo-frame))
+                  ;; Same call with the fast path blinded: the new tab is
+                  ;; created, stamped from the pending root, and folded.
+                  (cl-letf (((symbol-function 'edmacs-frames--find-tab-by-root)
+                             (lambda (&rest _) nil)))
+                    (edmacs-frames-open-worktree-tab wt))
+                  (should (= count (length (tab-bar-tabs repo-frame)))))))))))
+
+    (ert-deftest edmacs-frames-live-test-background-frame-tab-root-never-derives-from-selected-frame ()
+      "Two real frames: F1 selected showing /repo-a, F2 in the background
+showing /repo-b with an unstamped current tab. Nothing may hand F2's tab
+F1's answer -- the defect the deleted `edmacs-frames--tab-window-buffer'
+had, made permanent by the `push' cache that used to follow it."
+      (edmacs-frames-live-test--with-sandbox sandbox
+        (let ((dir-a (expand-file-name "repo-a" sandbox))
+              (dir-b (expand-file-name "repo-b" sandbox)))
+          (make-directory dir-a t)
+          (make-directory dir-b t)
+          (edmacs-frames-live-test--with-frames (f1 f2)
+            (with-selected-frame f2 (dired dir-b))
+            ;; F1 is selected for the rest of the test on purpose: `make-frame'
+            ;; leaves the LAST frame it made selected in this harness.
+            (select-frame f1)
+            (dired dir-a)
+            (should (eq (selected-frame) f1))
+            ;; `tab-bar-tabs' creates F2's default tab and runs the post-open
+            ;; hook for it while F1 is selected -- the exact auto-creation
+            ;; path whose tab must NOT be stamped from F1's buffer.
+            (tab-bar-tabs f2)
+            (let ((tab (assq 'current-tab (frame-parameter f2 'tabs))))
+              (should tab)
+              (should-not (edmacs-frames--tab-root tab))
+              ;; Invoking the hook directly with F2's tab, F1 still selected,
+              ;; stamps nothing at all.
+              (cl-letf (((symbol-function 'edmacs-frames--reconcile-tab-after-open)
+                         #'ignore))
+                (edmacs-frames--on-tab-post-open tab))
+              (should-not (edmacs-frames--tab-root tab))
+              ;; The frame-scoped entry point stamps F2's OWN directory.
+              (edmacs-frames-stamp-frame-tabs f2)
+              (should (equal (edmacs-frames--tab-root tab)
+                             (file-truename (file-name-as-directory dir-b)))))))))
+
+    ;; ==========================================================================
     ;; Fullscreen policy -- a real frame, through the real unstubbed hook
     ;; ==========================================================================
 

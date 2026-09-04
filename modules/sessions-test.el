@@ -149,13 +149,12 @@ emacs ...' to exercise this test): %s" e)))))
                         '("/repo/.git" "/repo/.git")))))
 
     (ert-deftest edmacs-sessions-test-frame-tab-roots-selects-target-frame ()
-      "`edmacs-frames--tab-root''s fallback for a tab this module never
-stamped resolves via the globally selected window (frames.el's
-`edmacs-frames--tab-window-buffer'), so deriving a background FRAME's
-tab roots must select FRAME first -- otherwise it would silently read
-whatever frame the caller happens to have selected instead, exactly
-the cross-frame mix-up a daemon-boot multi-frame restore hits for
-every frame but whichever one is globally selected at the time."
+      "Deriving a background FRAME's tab roots must never read whatever
+frame the caller happens to have selected -- the cross-frame mix-up a
+daemon-boot multi-frame restore hits for every frame but whichever one
+is globally selected at the time. `edmacs-frames--tab-root' is a pure
+read of the tab's own stamp now, so this pins the `with-selected-frame'
+wrapper that keeps the guarantee for any callee that is not."
       (let* ((f1 (selected-frame))
              (f2 (edmacs-sessions-test--make-second-frame-or-skip)))
         (unwind-protect
@@ -168,6 +167,57 @@ every frame but whichever one is globally selected at the time."
                 (should (equal (edmacs-sessions--frame-tab-roots f2) '("/f2/root/")))
                 (should (eq (selected-frame) f1))))
           (when (frame-live-p f2) (delete-frame f2)))))
+
+    ;; ==========================================================================
+    ;; The restore walk's own eligibility gate
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sessions-test-restorable-frame-p-delegates-to-frames ()
+      "One shared predicate, so the restore walk and spare-frame adoption
+cannot drift apart on what counts as a frame a repo may live on."
+      (cl-letf (((symbol-function 'frame-live-p) (lambda (f) (memq f '(gui f1))))
+                ((symbol-function 'edmacs-frames-frame-usable-p)
+                 (lambda (f) (eq f 'gui))))
+        (should (edmacs-sessions--restorable-frame-p 'gui))
+        (should-not (edmacs-sessions--restorable-frame-p 'f1))
+        (should-not (edmacs-sessions--restorable-frame-p 'dead))))
+
+    (ert-deftest edmacs-sessions-test-finish-frameset-restore-skips-tty-placeholder ()
+      "The daemon's initial tty frame is in `frame-list' but in no desktop
+save, and the walk must not stamp it, rename it, give it a sidebar or
+arm a `file-notify' watch on it. Observed live as a second frame named
+after a repo it could never display. The eligible frame is processed in
+full, with the tab stamp FIRST -- back-fill resolves a frame's repo from
+its tabs' own roots, which a pre-stamp desktop file does not carry until
+`edmacs-frames-stamp-frame-tabs' has written them."
+      (let (calls)
+        (cl-letf (((symbol-function 'frame-list) (lambda () '(f1 gui)))
+                  ((symbol-function 'frame-live-p) (lambda (f) (memq f '(f1 gui))))
+                  ((symbol-function 'daemonp) (lambda (&rest _) t))
+                  ((symbol-function 'display-graphic-p)
+                   (lambda (&optional f) (eq f 'gui)))
+                  ((symbol-function 'frame-initial-p) (lambda (f) (eq f 'f1)))
+                  ;; frames.el is not loaded in this harness (see Commentary);
+                  ;; this is `edmacs-frames-frame-usable-p''s own shape, and
+                  ;; frames-test.el covers the real predicate directly.
+                  ((symbol-function 'edmacs-frames-frame-usable-p)
+                   (lambda (f) (and (not (and (daemonp) (frame-initial-p f)))
+                                    (display-graphic-p f))))
+                  ((symbol-function 'edmacs-frames-stamp-frame-tabs)
+                   (lambda (f) (push (cons 'stamp f) calls)))
+                  ((symbol-function 'edmacs-sessions--backfill-repo-param)
+                   (lambda (f) (push (cons 'backfill f) calls)))
+                  ((symbol-function 'edmacs-sessions--regenerate-frame-title)
+                   (lambda (f) (push (cons 'title f) calls)))
+                  ((symbol-function 'edmacs-sessions--ensure-worktree-tracking)
+                   (lambda (f) (push (cons 'tracking f) calls)))
+                  ((symbol-function 'edmacs-sessions--ensure-sidebar)
+                   (lambda (f) (push (cons 'sidebar f) calls))))
+          (edmacs-sessions--finish-frameset-restore))
+        (setq calls (nreverse calls))
+        (should-not (seq-find (lambda (c) (eq (cdr c) 'f1)) calls))
+        (should (equal (mapcar #'car calls)
+                       '(stamp backfill title tracking sidebar)))))
 
     ;; ==========================================================================
     ;; AC1 -- edmacs-sessions--backfill-repo-param
@@ -590,6 +640,8 @@ why skipping an already-windowed frame is wrong."
             (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
                       ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
                       ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
+                      ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_) t))
+                      ((symbol-function 'edmacs-frames-stamp-frame-tabs) #'ignore)
                       ((symbol-function 'edmacs-sidebar--window)
                        (lambda (frame) (if (eq frame f2) 'has-window nil)))
                       ((symbol-function 'edmacs-sidebar-show)
@@ -614,6 +666,8 @@ until some unrelated event happens to trigger a refresh."
               (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
                         ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
                         ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
+                        ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_) t))
+                        ((symbol-function 'edmacs-frames-stamp-frame-tabs) #'ignore)
                         ((symbol-function 'edmacs-sidebar--window) (lambda (_) t))
                         ((symbol-function 'edmacs-sidebar-show) (lambda (_) nil))
                         ((symbol-function 'edmacs-frames--ensure-repo-tracking)
@@ -630,6 +684,8 @@ this orchestrator only mutates already-live frames."
       (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
                 ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
                 ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
+                ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_) t))
+                ((symbol-function 'edmacs-frames-stamp-frame-tabs) #'ignore)
                 ((symbol-function 'edmacs-sidebar--window) (lambda (_) t))
                 ((symbol-function 'edmacs-sidebar-show) (lambda (_) nil))
                 ((symbol-function 'make-frame)
