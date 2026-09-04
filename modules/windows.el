@@ -489,6 +489,54 @@ outright would leave the frame without one, so main demotes instead."
         (message "edmacs-window-delete-or-demote: no center split to demote into"))
     (delete-window)))
 
+;; ============================================================================
+;; Quitting: `:q' closes a buffer, never the frame
+;; ============================================================================
+
+(defun edmacs-quit-window-or-buffer (&optional force)
+  "Close the selected window, or kill its buffer when it is the frame's last.
+Overrides `evil-quit', so this is what `:q', `:wq', `:x', `ZQ' and
+`C-w q' all reach.
+
+Vim's `:q' closes a window, but Emacs cannot close a frame's last one,
+so `evil-quit' falls through to `delete-frame' -- which under the daemon
+takes the last visible frame, and Emacs' place in the Dock with it (see
+`edmacs-ns-close-frame'). That reads as \"Emacs quit\" rather than
+\"buffer closed\". This never deletes a frame:
+
+  - a side window (the sidebar) is closed outright;
+  - so is the selected window while a center split remains, as in vim;
+  - otherwise the frame's last ordinary window keeps its slot and its
+    buffer is killed, leaving the next buffer on display.
+
+A buffer some blocking `emacsclient FILE' is still waiting on is
+finished rather than killed -- releasing that client is the one branch
+of `evil-quit's own cascade worth keeping.
+
+FORCE (the `!' of `:q!') discards unsaved changes, and only on the
+branches that would otherwise prompt. It is read from `evil-ex-bang'
+rather than an argument because an `:override' advice supplies the
+interactive form evil's ex layer calls this through."
+  (interactive (list (bound-and-true-p evil-ex-bang)))
+  (cond
+   ((or (window-parameter (selected-window) 'window-side)
+        (edmacs--center-split-p))
+    (delete-window))
+   ((and (bound-and-true-p server-buffer-clients)
+         (fboundp 'server-edit)
+         (fboundp 'server-buffer-done))
+    (if force (server-buffer-done (current-buffer)) (server-edit)))
+   (t
+    (when force (set-buffer-modified-p nil))
+    (kill-current-buffer))))
+
+;; `:q', `:wq' and `:x' all funnel through `evil-quit', as do `ZQ' and
+;; `C-w q'; one override covers every spelling rather than redefining each
+;; ex command. `:qa' is deliberately left alone -- quitting Emacs is what it
+;; is for.
+(with-eval-after-load 'evil
+  (advice-add 'evil-quit :override #'edmacs-quit-window-or-buffer))
+
 (defun edmacs-stack--apply-width ()
   "Resize every live stack window to the current `edmacs-stack-width'."
   (dolist (w (edmacs-stack-windows))

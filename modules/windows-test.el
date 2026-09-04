@@ -1347,4 +1347,108 @@ reachable in real use via `SPC w j' -- is selected when the command runs."
         (dolist (b (list fixed-buf popup-buf))
           (when (buffer-live-p b) (kill-buffer b)))))))
 
+;; ---------------------------------------------------------------------------
+;; edmacs-quit-window-or-buffer -- `:q' closes a buffer, never the frame
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-quit-deletes-window-when-split ()
+  "With a center split `:q' behaves as vim does -- it closes the selected
+window and leaves the buffer alone."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "ewt-quit-split")))
+      (unwind-protect
+          (let ((other (split-window-right)))
+            (set-window-buffer other buf)
+            (select-window other)
+            (should (edmacs--center-split-p))
+            (edmacs-quit-window-or-buffer)
+            (should-not (window-live-p other))
+            ;; The window went; the buffer did not.
+            (should (buffer-live-p buf)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest edmacs-windows-test-quit-kills-buffer-in-last-window ()
+  "The case that sent `evil-quit' to `delete-frame': one ordinary window
+left, so there is no window to close. The buffer is killed and the
+window keeps its slot rather than the frame going away."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "ewt-quit-last"))
+          (frames (length (frame-list))))
+      (unwind-protect
+          (progn
+            (switch-to-buffer buf)
+            (should-not (edmacs--center-split-p))
+            (edmacs-quit-window-or-buffer)
+            (should-not (buffer-live-p buf))
+            (should (window-live-p (selected-window)))
+            (should (= (length (frame-list)) frames)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest edmacs-windows-test-quit-never-deletes-a-frame ()
+  "Whatever branch it takes, `:q' must not reach `delete-frame' -- that is
+what drops the daemon out of the Dock."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "ewt-quit-no-delete-frame"))
+          (deleted 0))
+      (unwind-protect
+          (cl-letf (((symbol-function 'delete-frame)
+                     (lambda (&rest _) (setq deleted (1+ deleted)))))
+            (switch-to-buffer buf)
+            (edmacs-quit-window-or-buffer)
+            (should (= deleted 0)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest edmacs-windows-test-quit-closes-a-side-window ()
+  "A sidebar is not an ordinary window and does not count toward the split
+test, so `:q' in one closes that window outright."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "ewt-quit-side")))
+      (unwind-protect
+          (let ((side (display-buffer-in-side-window
+                       buf '((side . right) (slot . 0)))))
+            (select-window side)
+            (should (window-parameter side 'window-side))
+            (edmacs-quit-window-or-buffer)
+            (should-not (window-live-p side))
+            (should (buffer-live-p buf)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest edmacs-windows-test-quit-force-discards-unsaved-changes ()
+  "`:q!' drops modifications rather than prompting, and only on the branch
+that actually kills the buffer."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "ewt-quit-force")))
+      (unwind-protect
+          (progn
+            (switch-to-buffer buf)
+            (with-current-buffer buf (insert "unsaved") (should (buffer-modified-p)))
+            (edmacs-quit-window-or-buffer t)
+            (should-not (buffer-live-p buf)))
+        (when (buffer-live-p buf)
+          (with-current-buffer buf (set-buffer-modified-p nil))
+          (kill-buffer buf))))))
+
+(ert-deftest edmacs-windows-test-quit-finishes-a-waiting-emacsclient ()
+  "A buffer a blocking `emacsclient FILE' waits on is finished, not killed
+-- that is what releases the client."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (generate-new-buffer "ewt-quit-server"))
+          (edited 0))
+      (unwind-protect
+          (cl-letf (((symbol-function 'server-edit)
+                     (lambda (&rest _) (setq edited (1+ edited))))
+                    ((symbol-function 'server-buffer-done) #'ignore))
+            (switch-to-buffer buf)
+            (with-current-buffer buf (setq-local server-buffer-clients '(t)))
+            (edmacs-quit-window-or-buffer)
+            (should (= edited 1))
+            (should (buffer-live-p buf)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
 ;;; windows-test.el ends here
