@@ -228,5 +228,30 @@ it entirely alone."
                        (tab-bar--current-tab-find nil frame)))
           (should-not (frame-parameter frame 'edmacs-repo)))))
 
+    ;; ========================================================================
+    ;; edmacs-sidebar-polish -- `edmacs-sidebar-collapsed' round-trips a real
+    ;; frameset save/restore, exactly like `edmacs-repo' above
+    ;; ========================================================================
+
+    (ert-deftest edmacs-sessions-live-test-frameset-round-trips-sidebar-collapsed ()
+      "`edmacs-sidebar-collapsed' is pinned into `frameset-filter-alist'
+alongside `edmacs-repo' (see sessions.el) with the same pass-through
+\(non-`:never') action, so it must survive the same real
+`frameset-save'/`desktop-restore-frameset' round trip `edmacs-repo'
+already does -- unlike the colour/geometry parameters this file
+deliberately drops on restore."
+      (let ((frame (selected-frame)))
+        (edmacs-sessions-live-test--with-restored-frame frame
+          (unwind-protect
+              (progn
+                (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
+                (let ((desktop-saved-frameset (frameset-save (list frame)))
+                      (desktop-restore-frames t)
+                      (desktop-restore-reuses-frames t))
+                  (with-selected-frame frame (desktop-restore-frameset)))
+                (should (frame-live-p frame))
+                (should (frame-parameter frame 'edmacs-sidebar-collapsed)))
+            (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)))))
+
     (provide 'sessions-live-test)))
 ;;; sessions-live-test.el ends here

@@ -143,6 +143,11 @@ stray-visit relocator should make rare -- still gets the prefix."
 ;; visible in source rather than an accident of frameset.el's default.
 (push (cons 'edmacs-repo nil) frameset-filter-alist)
 
+;; `edmacs-sidebar-collapsed' (sidebar.el) is a per-frame boolean, not a
+;; colour/geometry parameter -- it needs the same explicit pass-through
+;; pin as `edmacs-repo' above, not the colour filters' `:never'.
+(push (cons 'edmacs-sidebar-collapsed nil) frameset-filter-alist)
+
 ;; A restored frame lands on the current display instead of replaying the
 ;; coordinates of whichever monitor it was saved on; frames.el's fullscreen
 ;; policy then sizes it there. `width'/`height' need no filter of their own --

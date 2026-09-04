@@ -183,14 +183,21 @@ sidebar-agents.el reassigns this to append a repo-wide agent-status
 roll-up -- the same swappable-seam convention
 `edmacs-sidebar-worktree-label-suffix-function' uses.")
 
-;; Six ad-hoc extension seams now live on this file (the four above plus
-;; the collapsed-strip producer hook and phase 13's bottom-anchor hook,
-;; both still to come): considered collapsing them into one
-;; section-contribution protocol keyed by a named position/slot, but
-;; deferred -- doing that well needs to see phase 13's actual shape
-;; first, and folding it in here would grow this phase past its own
-;; seam-contract fix. Left as a decision for a later phase or a filed
-;; rdm task, not acted on now.
+(defvar edmacs-sidebar-collapsed-section-functions nil
+  "Hook run with (FRAME WIDTH) in place of every other section when
+FRAME's sidebar is collapsed (see `edmacs-sidebar--redraw') -- WIDTH is
+`edmacs-sidebar--collapsed-width'. Lets a later phase render the
+collapsed strip's own content without this file depending on it, the
+same swappable-seam convention `edmacs-sidebar-extra-section-functions'
+uses.")
+
+;; Seven ad-hoc extension seams now live on this file (the five above plus
+;; phase 13's bottom-anchor hook, still to come): considered collapsing
+;; them into one section-contribution protocol keyed by a named
+;; position/slot, but deferred -- doing that well needs to see phase 13's
+;; actual shape first, and folding it in here would grow this phase past
+;; its own seam-contract fix. Left as a decision for a later phase or a
+;; filed rdm task, not acted on now.
 
 ;; ============================================================================
 ;; Faces
@@ -263,6 +270,14 @@ floored at `edmacs-sidebar--min-width'."
   (max edmacs-sidebar--min-width
        (min width (floor (* (frame-width frame) edmacs-sidebar-max-width-fraction)))))
 
+(defvar edmacs-sidebar--collapsed-width 4
+  "Width, in columns, of the collapsed sidebar strip.
+Deliberately narrower than `edmacs-sidebar--min-width' -- a collapsed
+strip has no truncated label to fit, just a glyph or two -- so
+`edmacs-sidebar-show' branches to this value directly rather than
+routing it through `edmacs-sidebar--clamp-width', whose unconditional
+floor would otherwise widen it right back out.")
+
 (defcustom edmacs-sidebar-force-text-glyphs nil
   "Non-nil forces the plain text/Unicode marker glyphs everywhere in the
 sidebar, even when `nerd-icons' is loaded. Useful for a terminal frame
@@ -311,6 +326,7 @@ where nerd-icons's private-use-area glyphs render as unreadable boxes."
 (define-key edmacs-sidebar-mode-map (kbd "r") #'edmacs-sidebar-rename-at-point)
 (define-key edmacs-sidebar-mode-map (kbd "g r") #'edmacs-sidebar-redraw)
 (define-key edmacs-sidebar-mode-map (kbd "?") #'edmacs-sidebar-help)
+(define-key edmacs-sidebar-mode-map (kbd "z") #'edmacs-sidebar-toggle-collapse)
 ;; TAB and `C-i' are the same event in a non-GUI/tty keymap lookup, and
 ;; `evil-motion-state-map' binds `C-i' to `evil-jump-forward' regardless
 ;; of `evil-want-C-i-jump' (that variable only governs whether evil
@@ -338,6 +354,7 @@ where nerd-icons's private-use-area glyphs render as unreadable boxes."
     (kbd "r") #'edmacs-sidebar-rename-at-point
     (kbd "g r") #'edmacs-sidebar-redraw
     (kbd "?") #'edmacs-sidebar-help
+    (kbd "z") #'edmacs-sidebar-toggle-collapse
     (kbd "TAB") #'edmacs-sidebar-toggle-at-point))
 
 ;; ============================================================================
@@ -562,6 +579,23 @@ once a live, clamped window exists to measure."
         (concat (substring label 0 (max 0 (1- width))) "…")
       label)))
 
+(defun edmacs-sidebar--fit (label width)
+  "Truncate LABEL with a trailing … to fit WIDTH columns.
+Measures with `string-width', not `length' -- unlike
+`edmacs-sidebar--truncate-label', which measures the ordinary sidebar's
+ASCII-ish tab/worktree labels by character count, a collapsed strip's
+few columns make a nerd-icons glyph's double display width visible: at
+~`edmacs-sidebar--collapsed-width' columns, one such glyph can overflow
+by a whole column that `length' would never notice. WIDTH is
+defensively floored at 0, returning \"\" rather than signaling on a
+pathologically narrow strip -- mirrors `--truncate-label's own `(max 0
+...)' treatment."
+  (let ((width (max 0 width)))
+    (cond
+     ((<= width 0) "")
+     ((<= (string-width label) width) label)
+     (t (concat (truncate-string-to-width label (max 0 (1- width))) "…")))))
+
 (defun edmacs-sidebar--tab-label (tab)
   "Return TAB's marker-prefixed display label, unpropertized."
   (concat (edmacs-sidebar--glyph (if (eq (car tab) 'current-tab) 'current-tab 'open-tab))
@@ -678,27 +712,37 @@ supplies (sidebar-agents.el's repo-wide roll-up, by default none)."
 No-ops when FRAME has no live sidebar buffer -- callers such as the
 tab-bar hooks below fire for every frame regardless of whether that
 frame's sidebar has ever been shown. Point is preserved on the same
-row when possible; falls back to `point-min' otherwise. Branches on
-FRAME's `edmacs-repo' parameter: a repo frame gets the worktree-aware
-render, everything else keeps the original flat tab list. A frame
-carrying `edmacs-repo-missing' (its repo directory vanished since it
-was saved) gets a warning section ahead of everything else. Also
-(re)sets the buffer's `header-line-format' -- see `--header-line'."
+row when possible; falls back to `point-min' otherwise.
+
+When FRAME carries `edmacs-sidebar-collapsed', every other section --
+the tab/worktree render, the missing-repo warning, the extra-section
+hook -- is skipped entirely in favor of
+`edmacs-sidebar-collapsed-section-functions' run with (FRAME WIDTH),
+and the header line is nil'd; the two renders never both run against
+the same window on the same pass. Otherwise branches on FRAME's
+`edmacs-repo' parameter: a repo frame gets the worktree-aware render,
+everything else keeps the original flat tab list, with a warning
+section ahead of everything else when `edmacs-repo-missing' is set."
   (let ((buf (edmacs-sidebar--buffer frame)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
         (let* ((inhibit-read-only t)
+               (collapsed (frame-parameter frame 'edmacs-sidebar-collapsed))
                (common (frame-parameter frame 'edmacs-repo))
                (point-identity (edmacs-sidebar--point-identity)))
           (erase-buffer)
           (magit-insert-section (edmacs-sidebar-root)
-            (when (frame-parameter frame 'edmacs-repo-missing)
-              (edmacs-sidebar--insert-missing-repo-warning))
-            (if common
-                (edmacs-sidebar--redraw-worktrees frame common)
-              (edmacs-sidebar--redraw-tabs frame))
-            (run-hook-with-args 'edmacs-sidebar-extra-section-functions frame))
-          (setq header-line-format (edmacs-sidebar--header-line frame))
+            (if collapsed
+                (run-hook-with-args 'edmacs-sidebar-collapsed-section-functions
+                                     frame edmacs-sidebar--collapsed-width)
+              (progn
+                (when (frame-parameter frame 'edmacs-repo-missing)
+                  (edmacs-sidebar--insert-missing-repo-warning))
+                (if common
+                    (edmacs-sidebar--redraw-worktrees frame common)
+                  (edmacs-sidebar--redraw-tabs frame))
+                (run-hook-with-args 'edmacs-sidebar-extra-section-functions frame))))
+          (setq header-line-format (unless collapsed (edmacs-sidebar--header-line frame)))
           (edmacs-sidebar--goto-identity point-identity))))))
 
 ;; ============================================================================
@@ -879,15 +923,20 @@ instead -- via `edmacs-sidebar--ancestor-satisfying' -- exactly as the
 design table's colspan cell for `On an agent'/`On a buffer' specifies.
 Falls back to toggling SECTION itself when neither it nor any ancestor
 has children, matching plain `magit-section-toggle's own no-op/error
-behavior for the root and unparented sections."
+behavior for the root and unparented sections.
+
+On a collapsed sidebar, TAB expands it instead -- there is nothing
+meaningful to fold in the collapsed strip's own render."
   (interactive)
-  (let ((section (magit-current-section)))
-    (cond
-     ((or (null section) (eq section magit-root-section))
-      (magit-section-toggle section))
-     (t (magit-section-toggle
-         (or (edmacs-sidebar--ancestor-satisfying section (lambda (s) (oref s children)))
-             section))))))
+  (if (frame-parameter (selected-frame) 'edmacs-sidebar-collapsed)
+      (edmacs-sidebar-expand (selected-frame))
+    (let ((section (magit-current-section)))
+      (cond
+       ((or (null section) (eq section magit-root-section))
+        (magit-section-toggle section))
+       (t (magit-section-toggle
+           (or (edmacs-sidebar--ancestor-satisfying section (lambda (s) (oref s children)))
+               section)))))))
 
 ;;;###autoload
 (defun edmacs-sidebar-redraw ()
@@ -1028,10 +1077,17 @@ and WINDOW is genuinely a side window with at least one sibling window
 in the frame -- a bare `window-width' read at a moment the sidebar is
 effectively the frame's only live window (e.g. `delete-other-windows',
 or mid-frameset-restore before other windows exist) is not a real
-sidebar width and must never be persisted. The stashed value itself is
+sidebar width and must never be persisted. Also refuses outright while
+FRAME's `edmacs-sidebar-collapsed' parameter is set: the live window
+width in that state is `edmacs-sidebar--collapsed-width', not a value
+the user chose, and stashing it would overwrite the real remembered
+width out from under a debounce timer that can fire after a collapse.
+Read fresh here rather than snapshotted earlier in the call chain, so a
+collapse/expand toggle racing the debounce timer is decided by the
+state at the moment this actually runs. The stashed value itself is
 clamped via `edmacs-sidebar--clamp-width'."
   (remhash frame edmacs-sidebar--resize-debounce-timers)
-  (when (frame-live-p frame)
+  (when (and (frame-live-p frame) (not (frame-parameter frame 'edmacs-sidebar-collapsed)))
     (let ((window (edmacs-sidebar--side-window frame)))
       (when (and interactive-resize
                  (window-live-p window)
@@ -1098,7 +1154,11 @@ Uses FRAME's remembered width (see above) when it has one, else
 Either way the width is passed through `edmacs-sidebar--clamp-width'
 here, at read time -- this is what makes a value already poisoned in a
 live frame parameter or a restored desktop self-heal on the very next
-show, rather than only ever being prevented on write."
+show, rather than only ever being prevented on write. When FRAME
+carries `edmacs-sidebar-collapsed', this whole remembered-width read is
+bypassed in favor of `edmacs-sidebar--collapsed-width' directly --
+routing it through `edmacs-sidebar--clamp-width' would only widen it
+back out to `edmacs-sidebar--min-width'."
   (interactive)
   (let ((frame (or frame (selected-frame))))
     ;; A frame with no non-side window would otherwise just have its
@@ -1106,10 +1166,12 @@ show, rather than only ever being prevented on write."
     (when (edmacs-windows-frame-wedged-p frame)
       (edmacs-windows-repair-frame frame))
     (let* ((buf (edmacs-sidebar--ensure-buffer frame))
-           (width (edmacs-sidebar--clamp-width
-                   (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
-                       edmacs-sidebar-width)
-                   frame))
+           (width (if (frame-parameter frame 'edmacs-sidebar-collapsed)
+                      edmacs-sidebar--collapsed-width
+                    (edmacs-sidebar--clamp-width
+                     (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
+                         edmacs-sidebar-width)
+                     frame)))
            (window (with-selected-frame frame
                      (display-buffer-in-side-window
                       buf
@@ -1184,6 +1246,49 @@ releases it in place rather than signalling -- see
   (if (edmacs-sidebar--window (selected-frame))
       (edmacs-sidebar-hide)
     (edmacs-sidebar-show)))
+
+;;;###autoload
+(defun edmacs-sidebar-collapse (&optional frame)
+  "Narrow FRAME's sidebar to a strip, `edmacs-sidebar--collapsed-width'
+columns wide -- collapse means narrow, not hide (three other commands
+already hide: `edmacs-sidebar-hide', `edmacs-sidebar-toggle', closing
+the window directly). The `edmacs-sidebar-collapsed' frame parameter is
+set FIRST, so even a frame whose sidebar has no live window at all
+still ends up flagged for the next `edmacs-sidebar-show' (e.g. the
+tab-open hook) to open directly at the collapsed width -- no
+full-width-then-flash-resize. `edmacs-sidebar-show' picks up the new
+width and redraws its buffer via `edmacs-sidebar--ensure-buffer'; the
+explicit `edmacs-sidebar--redraw' call after it is belt-and-suspenders,
+guaranteeing the collapsed render even on a future refactor of
+`--show''s own internals."
+  (interactive)
+  (let ((frame (or frame (selected-frame))))
+    (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
+    (edmacs-sidebar-show frame)
+    (edmacs-sidebar--redraw frame)))
+
+;;;###autoload
+(defun edmacs-sidebar-expand (&optional frame)
+  "Restore FRAME's sidebar to its remembered width -- the inverse of
+`edmacs-sidebar-collapse'. `--remember-width' refuses to stash anything
+while collapsed, so the value `edmacs-sidebar-show' reads back here is
+exactly the width from before the collapse."
+  (interactive)
+  (let ((frame (or frame (selected-frame))))
+    (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+    (edmacs-sidebar-show frame)
+    (edmacs-sidebar--redraw frame)))
+
+;;;###autoload
+(defun edmacs-sidebar-toggle-collapse (&optional frame)
+  "Collapse FRAME's sidebar if expanded, else expand it.
+Unlike `edmacs-sidebar-toggle' (hide/show), this never changes whether
+the sidebar window exists at all -- only its width and render."
+  (interactive)
+  (let ((frame (or frame (selected-frame))))
+    (if (frame-parameter frame 'edmacs-sidebar-collapsed)
+        (edmacs-sidebar-expand frame)
+      (edmacs-sidebar-collapse frame))))
 
 ;;;###autoload
 (defun edmacs-sidebar-reset-width (&optional frame)
@@ -1267,7 +1372,8 @@ firing and the timer executing."
    :states 'normal
    :prefix "SPC t"
    "s" '(edmacs-sidebar-toggle :which-key "toggle sidebar")
-   "S" '(edmacs-sidebar-reset-width :which-key "reset sidebar width")))
+   "S" '(edmacs-sidebar-reset-width :which-key "reset sidebar width")
+   "c" '(edmacs-sidebar-toggle-collapse :which-key "collapse sidebar")))
 
 ;; ============================================================================
 ;; Desktop - exclude the buffer, regenerate a live one after restore

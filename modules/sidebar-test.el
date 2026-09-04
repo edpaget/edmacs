@@ -1170,6 +1170,23 @@ showing the frame's live sidebar buffer, never `*scratch*'."
     ;; Phase 8 -- J/K/r/gr/? bindings, RET user-errors, faces, resize, header-line
     ;; ==========================================================================
 
+    (ert-deftest edmacs-sidebar-test-z-resolves-through-real-evil-keymap-to-toggle-collapse ()
+      "`z' -- like RET/q/J/K/r/gr/?/TAB before it -- needs the same
+dual-binding override: `evil-motion-state-map' claims `z' as a prefix
+key (the `zz'/`zt' scrolling family), so only a real key-lookup check
+proves this reaches `edmacs-sidebar-toggle-collapse' rather than
+evil's own prefix map."
+      (edmacs-sidebar-test--ensure-real-evil)
+      (unwind-protect
+          (progn
+            (evil-mode 1)
+            (with-temp-buffer
+              (edmacs-sidebar-mode)
+              (evil-motion-state)
+              (should (eq evil-state 'motion))
+              (should (eq (key-binding (kbd "z")) #'edmacs-sidebar-toggle-collapse))))
+        (evil-mode -1)))
+
     (ert-deftest edmacs-sidebar-test-j-k-r-gr-help-resolve-through-real-evil-keymaps ()
       "Regression test mirroring `-ret-and-q-resolve-...' above, for this
 phase's own bindings: J/K/r/gr/? must resolve through real evil
@@ -1667,6 +1684,172 @@ unchanged."
           (should (= 15 (edmacs-sidebar--clamp-width 5 'fake-frame)))
           ;; Mid-range: passes through unchanged.
           (should (= 25 (edmacs-sidebar--clamp-width 25 'fake-frame))))))
+
+    ;; ==========================================================================
+    ;; edmacs-sidebar-polish -- collapse to a strip (width branch, not hide)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-collapse-expand-round-trips-width ()
+      "Collapsing narrows the live window to
+`edmacs-sidebar--collapsed-width'; expanding restores exactly the
+pre-collapse remembered width -- possible only because
+`--remember-width' (below) refuses to stash anything while collapsed."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show frame)
+              (let ((window (edmacs-sidebar--window frame)))
+                (window-resize window -5 t)
+                (edmacs-sidebar--remember-width frame t))
+              (let ((pre-collapse (window-width (edmacs-sidebar--window frame))))
+                (should (/= pre-collapse edmacs-sidebar--collapsed-width))
+                (edmacs-sidebar-collapse frame)
+                ;; `display-buffer-in-side-window' yields an actual window one
+                ;; column narrower than requested on a re-ask, exactly like
+                ;; `edmacs-sidebar-reset-width's own live-width assertion --
+                ;; see `edmacs-sidebar--remember-width's docstring.
+                (should (= (1- edmacs-sidebar--collapsed-width)
+                           (window-width (edmacs-sidebar--window frame))))
+                (edmacs-sidebar-expand frame)
+                (should (= pre-collapse (window-width (edmacs-sidebar--window frame))))))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+            (when (timerp timer) (cancel-timer timer)))
+          (remhash frame edmacs-sidebar--resize-debounce-timers)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-collapse-when-not-shown-only-sets-parameter ()
+      "Collapsing a frame with no live sidebar window at all must not
+error, and must still flag the frame so the next real
+`edmacs-sidebar-show' (e.g. a tab-open hook) opens directly at the
+collapsed width instead of full width followed by a flash-resize."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (should-not (edmacs-sidebar--window frame))
+              (edmacs-sidebar-collapse frame)
+              (should (frame-parameter frame 'edmacs-sidebar-collapsed))
+              (should (= (1- edmacs-sidebar--collapsed-width)
+                         (window-width (edmacs-sidebar--window frame)))))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-toggle-collapse-flips-both-ways ()
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show frame)
+              (should-not (frame-parameter frame 'edmacs-sidebar-collapsed))
+              (edmacs-sidebar-toggle-collapse frame)
+              (should (frame-parameter frame 'edmacs-sidebar-collapsed))
+              (edmacs-sidebar-toggle-collapse frame)
+              (should-not (frame-parameter frame 'edmacs-sidebar-collapsed)))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-remember-width-noops-while-collapsed ()
+      "A resize event firing while the sidebar is collapsed (the live
+window is at `edmacs-sidebar--collapsed-width', not a value the user
+chose) must not clobber the real remembered width stashed before the
+collapse."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show frame)
+              (let ((window (edmacs-sidebar--window frame)))
+                (window-resize window -5 t)
+                (edmacs-sidebar--remember-width frame t))
+              (let ((remembered (frame-parameter frame 'edmacs-sidebar-remembered-width)))
+                (edmacs-sidebar-collapse frame)
+                (edmacs-sidebar--remember-width frame t)
+                (should (equal remembered (frame-parameter frame 'edmacs-sidebar-remembered-width)))))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-redraw-collapsed-branch-runs-hook-and-nils-header-line ()
+      "Collapsed `--redraw' skips the normal tab/worktree render and the
+header line entirely, running only
+`edmacs-sidebar-collapsed-section-functions' with FRAME and WIDTH --
+the two renders never run against the same window on the same pass."
+      (let ((frame (selected-frame)) (calls nil))
+        (unwind-protect
+            (let ((edmacs-sidebar-collapsed-section-functions
+                   (list (lambda (f w) (push (cons f w) calls)))))
+              (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
+              (edmacs-sidebar-show frame)
+              (should (equal calls (list (cons frame edmacs-sidebar--collapsed-width))))
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (should-not header-line-format)
+                (should-not (string-match-p "no tab" (buffer-string)))))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-fit-uses-string-width-not-length ()
+      "A double-width glyph counts as two columns, so a label carrying one
+truncates a column earlier than a same-length ASCII label at the same
+WIDTH would -- `length' alone would never notice the difference."
+      (let ((wide "字bcd")    ; string-width 5, length 4
+            (ascii "wbcd"))   ; string-width 4, length 4
+        (should (= 4 (length wide)))
+        (should (= 5 (string-width wide)))
+        (should (= 4 (length ascii)))
+        (should (= 4 (string-width ascii)))
+        ;; The ASCII label fits WIDTH 4 exactly and is untouched...
+        (should (equal ascii (edmacs-sidebar--fit ascii 4)))
+        ;; ...but the equal-length wide one overflows it and gets truncated.
+        (should-not (equal wide (edmacs-sidebar--fit wide 4)))
+        (should (<= (string-width (edmacs-sidebar--fit wide 4)) 4))))
+
+    (ert-deftest edmacs-sidebar-test-fit-defends-against-non-positive-width ()
+      "Mirrors `--truncate-label's own `(max 0 ...)' treatment: a
+pathologically narrow (or negative) WIDTH returns \"\" rather than
+signaling."
+      (should (equal "" (edmacs-sidebar--fit "hello" 0)))
+      (should (equal "" (edmacs-sidebar--fit "hello" -3))))
+
+    (ert-deftest edmacs-sidebar-test-collapse-expand-adds-no-new-timer ()
+      "Collapsing/expanding calls only `set-frame-parameter',
+`edmacs-sidebar-show', and `edmacs-sidebar--redraw' -- no new timer is
+armed as a direct result; the pre-existing debounce table is
+unmodified by this feature."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show frame)
+              (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+                (when (timerp timer) (cancel-timer timer)))
+              (remhash frame edmacs-sidebar--resize-debounce-timers)
+              (edmacs-sidebar-collapse frame)
+              (should-not (gethash frame edmacs-sidebar--resize-debounce-timers))
+              (edmacs-sidebar-expand frame)
+              (should-not (gethash frame edmacs-sidebar--resize-debounce-timers)))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+            (when (timerp timer) (cancel-timer timer)))
+          (remhash frame edmacs-sidebar--resize-debounce-timers)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-toggle-at-point-expands-when-collapsed ()
+      "TAB on a collapsed sidebar expands it instead of folding a section
+-- there is nothing meaningful to fold in the collapsed strip's render."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-collapse frame)
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (edmacs-sidebar-toggle-at-point))
+              (should-not (frame-parameter frame 'edmacs-sidebar-collapsed))
+              (should (> (window-width (edmacs-sidebar--window frame))
+                          edmacs-sidebar--collapsed-width)))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-remember-width-refuses-as-sole-window ()
       "Measuring the sidebar while it is the frame's only live window must
