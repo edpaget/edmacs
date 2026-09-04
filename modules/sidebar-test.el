@@ -476,6 +476,127 @@ the SECOND entry, \"wt\", which starts with no tab of its own."
                 (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
 
     ;; ==========================================================================
+    ;; edmacs-sidebar-activate direct-call coverage, one per row-type in the
+    ;; phase body's table -- every non-acting path must report via
+    ;; `user-error' rather than silently doing nothing.
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-activate-worktree-row-tab-opens-tab ()
+      "A worktree row whose value carries an open tab number
+(`(ROOT . TAB-NUMBER)') selects that tab and never calls
+`edmacs-frames-open-worktree-tab'."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)
+            (magit-insert-section (edmacs-sidebar-tab (cons "/repo/wt/" 2))
+              (magit-insert-heading "wt row"))))
+        (goto-char (point-min))
+        (let (select-calls open-calls)
+          (cl-letf (((symbol-function 'tab-bar-select-tab)
+                     (lambda (n) (push n select-calls)))
+                    ((symbol-function 'edmacs-frames-open-worktree-tab)
+                     (lambda (root) (push root open-calls))))
+            (edmacs-sidebar-activate))
+          (should (equal select-calls '(2)))
+          (should-not open-calls))))
+
+    (ert-deftest edmacs-sidebar-test-activate-worktree-row-tabless-opens-worktree ()
+      "A worktree row with no tab yet (`(ROOT . nil)') opens one via
+`edmacs-frames-open-worktree-tab', never `tab-bar-select-tab' -- a
+direct, minimal unit test of the same dispatch already exercised
+end-to-end by
+`edmacs-sidebar-test-activate-tabless-row-opens-once-then-reselects'."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)
+            (magit-insert-section (edmacs-sidebar-tab (cons "/repo/wt/" nil))
+              (magit-insert-heading "wt row"))))
+        (goto-char (point-min))
+        (let (select-calls open-calls)
+          (cl-letf (((symbol-function 'tab-bar-select-tab)
+                     (lambda (n) (push n select-calls)))
+                    ((symbol-function 'edmacs-frames-open-worktree-tab)
+                     (lambda (root) (push root open-calls))))
+            (edmacs-sidebar-activate))
+          (should (equal open-calls '("/repo/wt/")))
+          (should-not select-calls))))
+
+    (ert-deftest edmacs-sidebar-test-activate-flat-tab-row-selects-tab ()
+      "A repo-less flat tab row's bare integer value selects that tab
+directly (no worktree root involved)."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)
+            (magit-insert-section (edmacs-sidebar-tab 3)
+              (magit-insert-heading "flat tab row"))))
+        (goto-char (point-min))
+        (let (select-calls)
+          (cl-letf (((symbol-function 'tab-bar-select-tab)
+                     (lambda (n) (push n select-calls))))
+            (edmacs-sidebar-activate))
+          (should (equal select-calls '(3))))))
+
+    (ert-deftest edmacs-sidebar-test-activate-agent-row-reports ()
+      "An agent row with no enclosing `edmacs-sidebar-tab' ancestor (e.g. a
+degenerate/direct-call construction, mirroring the scratch-frame
+\"no parent group\" shape used elsewhere in this file) has nothing for
+`edmacs-sidebar-activate' to act on and reports rather than silently
+doing nothing -- this is the row type the phase body calls out as
+falling through the old `cond's missing `t' clause."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)
+            (magit-insert-section (edmacs-sidebar-agent "fake-agent")
+              (magit-insert-heading "agent row"))))
+        (goto-char (point-min))
+        (should-error (edmacs-sidebar-activate) :type 'user-error)))
+
+    (ert-deftest edmacs-sidebar-test-activate-buffer-child-row-reports ()
+      "A buffers-file row's value is a real buffer object -- neither
+`integerp' nor `consp' -- and with no enclosing `edmacs-sidebar-tab' row
+reports rather than silently doing nothing."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t)
+              (buf (get-buffer-create "edmacs-sidebar-test-activate-buf")))
+          (unwind-protect
+              (progn
+                (magit-insert-section (edmacs-sidebar-root)
+                  (magit-insert-section (edmacs-sidebar-buffers-file buf)
+                    (magit-insert-heading "buffer row")))
+                (goto-char (point-min))
+                (should-error (edmacs-sidebar-activate) :type 'user-error))
+            (kill-buffer buf)))))
+
+    (ert-deftest edmacs-sidebar-test-activate-usage-row-reports ()
+      "A usage-meter row's section value stays nil (no value form is
+passed at the real insertion site in claude-usage.el, matching the
+class's nil initform) -- `edmacs-sidebar-activate' now reports on it
+via `user-error' instead of silently no-opping."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)
+            (magit-insert-section (claude-usage-sidebar-meter)
+              (insert "usage row\n"))))
+        (goto-char (point-min))
+        (should-error (edmacs-sidebar-activate) :type 'user-error)))
+
+    (ert-deftest edmacs-sidebar-test-activate-no-section-reports ()
+      "No section at all (an `edmacs-sidebar-mode' buffer with nothing ever
+inserted into it) reports rather than silently doing nothing -- the
+reachable form of the phase body's \"value slot unbound\" case, since a
+real EIEIO `magit-section' instance always has its `value' slot bound
+(to nil) via its `:initform'."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (should-error (edmacs-sidebar-activate) :type 'user-error)))
+
+    ;; ==========================================================================
     ;; AC4 (worktree redraw path) -- no subprocess work through the
     ;; worktree-aware render/activate/close surface
     ;; ==========================================================================

@@ -334,6 +334,88 @@ call raises that exact same one rather than creating another."
                     (when (buffer-live-p buf) (kill-buffer buf)))
                   (delete-frame frame-a))))))))
 
+    (defun edmacs-frames-live-test--sidebar-worktree-section (frame root)
+      "Return FRAME's sidebar buffer's top-level worktree section for ROOT.
+Scans `magit-root-section's direct children for the `edmacs-sidebar-tab'
+section whose value's CAR (both the `(ROOT . TAB-NUMBER)' open shape and
+the `(ROOT . nil)' tab-less shape are conses) equals ROOT. Signals if the
+sidebar buffer has not been shown, or has no root section yet."
+      (with-current-buffer (edmacs-sidebar--buffer frame)
+        (seq-find (lambda (s)
+                    (and (eq (oref s type) 'edmacs-sidebar-tab)
+                         (consp (oref s value))
+                         (equal (car (oref s value)) root)))
+                  (oref magit-root-section children))))
+
+    (ert-deftest edmacs-frames-live-test-sidebar-ret-opens-worktree-without-duplicate ()
+      "The sidebar-RET counterpart to
+`edmacs-frames-live-test-worktree-tab-routes-and-dedupes' above, which
+only ever calls `edmacs-frames-open-worktree-tab' directly. This drives
+the same open through the real sidebar buffer's own RET path
+(`edmacs-sidebar-activate' on the tab-less worktree row) instead,
+against a freshly opened repo frame with no pre-existing tab/frame
+state for it -- the \"cold daemon start\" this phase's AC names. Nothing
+here is stubbed: sidebar.el's row rendering/value shape and frames.el's
+tab-identity/reconciliation logic (phases 3/7/8) both run for real."
+      (edmacs-frames-live-test--with-sandbox sandbox
+        ;; `repo' is truenamed *before* any git call touches it: on
+        ;; macOS, `make-temp-file''s `/var/...' is a symlink to
+        ;; `/private/var/...', and `edmacs-git-common-dir-1' returns an
+        ;; already-absolute (real) path for a LINKED worktree (git
+        ;; itself resolves it) but expands the MAIN worktree's relative
+        ;; `.git' answer against whatever root string it was given --
+        ;; an un-truenamed `repo' would make the two common-dirs
+        ;; compare unequal for no reason connected to this phase.
+        (let* ((repo (file-truename (expand-file-name "repoA" sandbox)))
+               (wt (expand-file-name "repoA-wt" sandbox))
+               (edmacs-git-common-dir-cache (make-hash-table :test #'equal)))
+          (edmacs-frames-live-test--make-git-repo repo)
+          (edmacs-frames-live-test--add-worktree repo wt)
+          (let ((wt-root (file-truename (file-name-as-directory wt))))
+            (edmacs-frames-live-test--with-frames (decoy)
+              (let (frame)
+                (unwind-protect
+                    (progn
+                      ;; Cold start: the repo has never had a frame before
+                      ;; this call, so its worktree cache and tab-identity
+                      ;; state are both freshly warmed right here.
+                      (with-selected-frame decoy (edmacs-frames-open repo))
+                      (setq frame (edmacs-frames-for-repo (edmacs-frames--repo-of repo)))
+                      (should (frame-live-p frame))
+                      (edmacs-sidebar-show frame)
+                      (let ((row (edmacs-frames-live-test--sidebar-worktree-section frame wt-root)))
+                        (should row)
+                        (should-not (cdr (oref row value)))
+                        (with-current-buffer (edmacs-sidebar--buffer frame)
+                          (goto-char (oref row start))
+                          (edmacs-sidebar-activate)))
+                      ;; Exactly one tab now exists for the worktree root.
+                      (should (edmacs-frames--find-tab-by-root wt-root frame))
+                      (should (= 1 (seq-count (lambda (tab)
+                                                 (equal (edmacs-frames--tab-root tab) wt-root))
+                                               (tab-bar-tabs frame))))
+                      ;; Redraw now shows it as an open tab row, not tab-less.
+                      (edmacs-sidebar--redraw frame)
+                      (let ((row (edmacs-frames-live-test--sidebar-worktree-section frame wt-root)))
+                        (should row)
+                        (should (cdr (oref row value)))
+                        (let ((tab-count (length (tab-bar-tabs frame)))
+                              (closed-before (length tab-bar-closed-tabs))
+                              (current-index (tab-bar--current-tab-index nil frame)))
+                          ;; A second activation reselects rather than
+                          ;; duplicating: tab count and closed-tab count
+                          ;; both stay put.
+                          (with-current-buffer (edmacs-sidebar--buffer frame)
+                            (goto-char (oref row start))
+                            (edmacs-sidebar-activate))
+                          (should (= tab-count (length (tab-bar-tabs frame))))
+                          (should (= closed-before (length tab-bar-closed-tabs)))
+                          (should (= current-index (tab-bar--current-tab-index nil frame))))))
+                  (when (and frame (frame-live-p frame) (not (eq frame decoy)))
+                    (let ((buf (edmacs-sidebar--buffer frame)))
+                      (when (buffer-live-p buf) (kill-buffer buf)))
+                    (delete-frame frame)))))))))
+
     ;; ==========================================================================
     ;; AC4 -- reconciliation folds a duplicate tab opened via any other route
     ;; ==========================================================================

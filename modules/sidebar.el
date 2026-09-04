@@ -715,20 +715,24 @@ section value (the repo-less flat tab list) is already the 1-based
 tab-number `tab-bar-select-tab' expects -- it treats 0 as a \"reselect
 current tab\" sentinel, so redraw stores `(1+ index)', never the raw
 0-based index. A `(ROOT . TAB-NUMBER)' value (the worktree-aware list)
-selects TAB-NUMBER when non-nil; when nil -- no tab yet for that
-worktree -- opens one via `edmacs-frames-open-worktree-tab', which
-performs its own find-or-create dance, so a second activation of what
-is now an open row takes the tab-number branch instead and simply
-reselects, never duplicating."
+selects TAB-NUMBER when non-nil; when non-nil CAR but nil CDR -- no tab
+yet for that worktree -- opens one via `edmacs-frames-open-worktree-tab'
+(only ever called with a truthy CAR, so it can never reach
+`file-truename' with nil), which performs its own find-or-create dance,
+so a second activation of what is now an open row takes the tab-number
+branch instead and simply reselects, never duplicating.
+Every other case -- no enclosing worktree row at all, an unbound or nil
+value slot (a usage row, deliberately valueless), or a value that is
+neither an integer nor a cons with a usable CAR/CDR -- signals
+`user-error' instead of silently doing nothing."
   (interactive)
-  (when-let* ((section (edmacs-sidebar--enclosing-worktree (magit-current-section)))
-              (value (and (slot-boundp section 'value) (oref section value))))
+  (let* ((section (edmacs-sidebar--enclosing-worktree (magit-current-section)))
+         (value (and section (slot-boundp section 'value) (oref section value))))
     (cond
      ((integerp value) (tab-bar-select-tab value))
-     ((consp value)
-      (if (cdr value)
-          (tab-bar-select-tab (cdr value))
-        (edmacs-frames-open-worktree-tab (car value)))))))
+     ((and (consp value) (cdr value)) (tab-bar-select-tab (cdr value)))
+     ((and (consp value) (car value)) (edmacs-frames-open-worktree-tab (car value)))
+     (t (user-error "Nothing to do on this row")))))
 
 (defun edmacs-sidebar-visit-at-point ()
   "Act on the section at point, dispatched by its magit-section TYPE.

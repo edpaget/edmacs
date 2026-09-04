@@ -989,8 +989,10 @@ usage state has been resolved yet."
                       (if (plist-get values :stale) claude-usage--stale-marker "")
                       (plist-get values :age)))
             (dolist (row (plist-get values :rows))
-              ;; Section value stays nil: `edmacs-sidebar-visit-tab' checks
-              ;; `integerp', so RET on a usage row is a no-op.
+              ;; Section value stays nil: `edmacs-sidebar-activate' has no
+              ;; cond branch for it, so RET on a usage row signals
+              ;; user-error ("Nothing to do on this row") instead of
+              ;; silently doing nothing.
               (magit-insert-section (claude-usage-sidebar-meter)
                 (insert (format " %-16s %s %4s  %s\n"
                                 (plist-get row :label)
