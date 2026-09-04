@@ -191,13 +191,29 @@ collapsed strip's own content without this file depending on it, the
 same swappable-seam convention `edmacs-sidebar-extra-section-functions'
 uses.")
 
-;; Seven ad-hoc extension seams now live on this file (the five above plus
-;; phase 13's bottom-anchor hook, still to come): considered collapsing
+(defvar edmacs-sidebar-bottom-anchor-section-functions nil
+  "Hook run with FRAME at the end of `edmacs-sidebar--redraw', right
+after `edmacs-sidebar-extra-section-functions'. Whatever this hook
+inserts is then pinned to FRAME's sidebar window's bottom edge by
+`edmacs-sidebar--anchor-region-to-bottom' -- padded with blank filler
+when the rest of the buffer is shorter than the window, or kept in view
+by forcing `window-start' past the overflow when it is taller. Lets a
+registrant keep its own section visually anchored to the bottom of the
+sidebar without this file knowing anything about that section's content.")
+
+(defvar edmacs-sidebar-collapsed-bottom-anchor-section-functions nil
+  "Hook run with (FRAME WIDTH) at the end of the collapsed branch of
+`edmacs-sidebar--redraw', right after
+`edmacs-sidebar-collapsed-section-functions'. Same bottom-anchoring
+treatment as `edmacs-sidebar-bottom-anchor-section-functions', for the
+collapsed strip.")
+
+;; Seven ad-hoc extension seams now live on this file: the five above,
+;; plus these two bottom-anchor hooks (phase 13). Considered collapsing
 ;; them into one section-contribution protocol keyed by a named
-;; position/slot, but deferred -- doing that well needs to see phase 13's
-;; actual shape first, and folding it in here would grow this phase past
-;; its own seam-contract fix. Left as a decision for a later phase or a
-;; filed rdm task, not acted on now.
+;; position/slot, but deferred -- doing that well would grow this phase
+;; past its own seam-contract fix. Left as a decision for a later phase
+;; or a filed rdm task, not acted on now.
 
 ;; ============================================================================
 ;; Faces
@@ -750,6 +766,72 @@ when no live window exists to measure."
     (if (window-live-p window)
         (max 1 (window-body-width window))
       edmacs-sidebar--collapsed-width)))
+(defvar-local edmacs-sidebar--anchor-start nil
+  "A marker at the position where the last `edmacs-sidebar--redraw'
+pass's bottom-anchor hook began inserting, or nil when that hook
+inserted nothing. A real marker, not a plain integer, and specifically
+one whose `insertion-type' is t: `edmacs-sidebar--anchor-region-to-bottom'
+inserts blank filler at exactly this position, and a marker with this
+insertion-type moves forward past text inserted at its own position,
+so it keeps tracking the start of the hook's own content -- not the
+filler -- even across repeated reapplications. Lets
+`edmacs-sidebar--reapply-bottom-anchor' reapply the anchor later
+against a window that did not exist yet at redraw time (or against a
+window whose size changed since), without rerunning any
+section-contributing hook a second time and without miscounting
+already-inserted filler as if it were the hook's own content.")
+
+(defun edmacs-sidebar--anchor-region-to-bottom (window region-start)
+  "Pin the buffer region from REGION-START to `point-max' to WINDOW's
+bottom edge: pad it with blank lines when the rest of the buffer is
+shorter than WINDOW's body height, or force WINDOW's `window-start'
+past the overflow so the region stays in view when the buffer is
+taller. Does nothing when the two heights are exactly equal -- which
+also makes a repeated call with the same, correctly-tracking marker
+(see `edmacs-sidebar--anchor-start') a no-op once the first call has
+already padded flush to the bottom.
+
+No-ops when WINDOW is not `window-live-p' -- the very first
+`edmacs-sidebar--redraw' for a frame (from `edmacs-sidebar--ensure-buffer')
+always runs before `display-buffer-in-side-window' has created a
+window; `edmacs-sidebar--reapply-bottom-anchor' is what actually
+applies the anchor once that window exists. Operates on the current
+buffer, which callers always arrange to be the one WINDOW displays."
+  (when (window-live-p window)
+    (let* ((body-height (window-body-height window))
+           (above (count-screen-lines (point-min) region-start nil window))
+           (anchored (count-screen-lines region-start (point-max) nil window)))
+      (cond
+       ((< (+ above anchored) body-height)
+        (save-excursion
+          (goto-char region-start)
+          (insert (make-string (- body-height above anchored) ?\n))))
+       ((> (+ above anchored) body-height)
+        (let ((start (save-excursion
+                       (goto-char (point-max))
+                       (vertical-motion (- body-height) window)
+                       (point))))
+          (set-window-start window start t)
+          ;; Point may sit above the forced start (e.g. mid-navigation on a
+          ;; row that just scrolled off) -- pull it forward so the next
+          ;; redisplay cycle doesn't fight the scroll trying to keep it
+          ;; visible, which would silently undo the anchor.
+          (when (and (eq window (selected-window))
+                     (< (window-point window) start))
+            (set-window-point window start))))))))
+
+(defun edmacs-sidebar--anchor-marker-at (position)
+  "Return a marker at POSITION in the current buffer, with `insertion-type'
+t -- see `edmacs-sidebar--anchor-start's docstring for why.
+
+Deliberately takes POSITION rather than capturing point directly:
+callers create this marker AFTER the bottom-anchor hook has already run,
+passing the plain integer position recorded just before it, so the
+hook's own insertion (at that exact position) leaves the marker where
+it belongs -- at the start of the hook's content -- rather than moving
+it, which is what would happen were this marker created (with this
+same insertion-type) before the hook ran."
+  (copy-marker position t))
 
 (defun edmacs-sidebar--redraw (frame)
   "Redraw FRAME's sidebar buffer from its current `tab-bar-tabs'.
@@ -766,28 +848,75 @@ and the header line is nil'd; the two renders never both run against
 the same window on the same pass. Otherwise branches on FRAME's
 `edmacs-repo' parameter: a repo frame gets the worktree-aware render,
 everything else keeps the original flat tab list, with a warning
-section ahead of everything else when `edmacs-repo-missing' is set."
+section ahead of everything else when `edmacs-repo-missing' is set.
+
+Either branch then runs its own bottom-anchor hook
+\(`edmacs-sidebar-bottom-anchor-section-functions' or
+`edmacs-sidebar-collapsed-bottom-anchor-section-functions'\) and pins
+whatever it inserted to the window's bottom edge via
+`edmacs-sidebar--anchor-region-to-bottom' -- skipped entirely when the
+hook inserted nothing, matching the \"insert nothing when disabled\"
+contract its registrants already follow."
   (let ((buf (edmacs-sidebar--buffer frame)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
         (let* ((inhibit-read-only t)
                (collapsed (frame-parameter frame 'edmacs-sidebar-collapsed))
                (common (frame-parameter frame 'edmacs-repo))
-               (point-identity (edmacs-sidebar--point-identity)))
+               (point-identity (edmacs-sidebar--point-identity))
+               anchor-start anchor-end)
           (erase-buffer)
           (magit-insert-section (edmacs-sidebar-root)
             (if collapsed
-                (run-hook-with-args 'edmacs-sidebar-collapsed-section-functions
-                                     frame (edmacs-sidebar--strip-width frame))
+                (progn
+                  (run-hook-with-args 'edmacs-sidebar-collapsed-section-functions
+                                       frame (edmacs-sidebar--strip-width frame))
+                  (let ((anchor-start-pos (point)))
+                    (run-hook-with-args 'edmacs-sidebar-collapsed-bottom-anchor-section-functions
+                                         frame (edmacs-sidebar--strip-width frame))
+                    (setq anchor-end (point))
+                    (setq anchor-start (edmacs-sidebar--anchor-marker-at anchor-start-pos))))
               (progn
                 (when (frame-parameter frame 'edmacs-repo-missing)
                   (edmacs-sidebar--insert-missing-repo-warning))
                 (if common
                     (edmacs-sidebar--redraw-worktrees frame common)
                   (edmacs-sidebar--redraw-tabs frame))
-                (run-hook-with-args 'edmacs-sidebar-extra-section-functions frame))))
+                (run-hook-with-args 'edmacs-sidebar-extra-section-functions frame)
+                (let ((anchor-start-pos (point)))
+                  (run-hook-with-args 'edmacs-sidebar-bottom-anchor-section-functions frame)
+                  (setq anchor-end (point))
+                  (setq anchor-start (edmacs-sidebar--anchor-marker-at anchor-start-pos))))))
           (setq header-line-format (unless collapsed (edmacs-sidebar--header-line frame)))
-          (edmacs-sidebar--goto-identity point-identity))))))
+          (edmacs-sidebar--goto-identity point-identity)
+          (setq edmacs-sidebar--anchor-start (and (> anchor-end anchor-start) anchor-start))
+          (when edmacs-sidebar--anchor-start
+            (edmacs-sidebar--anchor-region-to-bottom
+             (edmacs-sidebar--window frame) edmacs-sidebar--anchor-start)))))))
+
+(defun edmacs-sidebar--reapply-bottom-anchor (frame)
+  "Reapply the bottom anchor for FRAME's sidebar against the position
+its last `edmacs-sidebar--redraw' recorded in
+`edmacs-sidebar--anchor-start', without rerunning any
+section-contributing hook a second time.
+
+`edmacs-sidebar-show' uses this as a belt-and-suspenders step once a
+freshly created window's real height is known: the buffer's own
+`edmacs-sidebar--redraw', run earlier from
+`edmacs-sidebar--ensure-buffer', necessarily ran before that window
+existed, so its own anchor application no-op'd. Safe to call any time
+since the last redraw -- neither `--redraw' nor this function edits
+the buffer between the recorded position and `point-max' except via
+`edmacs-sidebar--anchor-region-to-bottom' itself. A no-op when the last
+redraw's bottom-anchor hook inserted nothing, or FRAME has no live
+sidebar buffer."
+  (let ((buf (edmacs-sidebar--buffer frame)))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when edmacs-sidebar--anchor-start
+          (let ((inhibit-read-only t))
+            (edmacs-sidebar--anchor-region-to-bottom
+             (edmacs-sidebar--window frame) edmacs-sidebar--anchor-start)))))))
 
 ;; ============================================================================
 ;; Commands
@@ -1163,6 +1292,19 @@ fires."
 
 (add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change)
 
+(defun edmacs-sidebar--on-window-size-change-anchor (frame)
+  "Registered on `window-size-change-functions': redraw FRAME's sidebar
+so a bottom-anchored section stays pinned as the window's size changes.
+Deliberately undebounced, unlike `edmacs-sidebar--on-window-size-change'
+above -- that one decides whether to persist a remembered width, an
+unrelated concern; a redraw here is cheap (no subprocess or
+directory-stat work), so there is nothing to coalesce. A no-op for a
+frame with no live sidebar window."
+  (when (and (frame-live-p frame) (edmacs-sidebar--window frame))
+    (edmacs-sidebar--redraw frame)))
+
+(add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change-anchor)
+
 (defun edmacs-sidebar-show (&optional frame)
   "Show FRAME's sidebar window, creating and redrawing its buffer first.
 Guarantees the result is either FRAME's left side window or nil --
@@ -1245,6 +1387,16 @@ back out to `edmacs-sidebar--min-width'."
         ;; Fringes cost roughly two columns of a four-column strip.
         (when (frame-parameter frame 'edmacs-sidebar-collapsed)
           (set-window-fringes window 0 0))
+        ;; Belt-and-suspenders (matches `edmacs-sidebar-collapse's own
+        ;; docstring pattern): the buffer's very first `--redraw' ran from
+        ;; `--ensure-buffer' above, before this window existed, so any
+        ;; bottom-anchor hook it ran no-op'd against a nil window. Reapply
+        ;; the anchor now that the real window -- and its real height --
+        ;; exists, rather than waiting on the next
+        ;; `window-size-change-functions' firing. A geometry-only reapply,
+        ;; not a full `--redraw': that would rerun every section-contributing
+        ;; hook a second time on every single show, not just the first.
+        (edmacs-sidebar--reapply-bottom-anchor frame)
         window)))))
 
 (defun edmacs-sidebar--release-window (window frame)

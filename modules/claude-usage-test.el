@@ -412,24 +412,39 @@ a real Emacs session) to enable this test"))
     (should (string-equal output "2m ago"))))
 
 (ert-deftest claude-usage-test-severity-face-normal ()
-  "Severity \"normal\" maps to success face."
-  (should (eq (claude-usage--severity-face "normal" 50) 'success)))
+  "Severity \"normal\" maps to `claude-usage-ok'."
+  (should (eq (claude-usage--severity-face "normal" 50) 'claude-usage-ok)))
 
 (ert-deftest claude-usage-test-severity-face-warning ()
-  "Severity \"warning\" maps to warning face."
-  (should (eq (claude-usage--severity-face "warning" 75) 'warning)))
+  "Severity \"warning\" maps to `claude-usage-warn'."
+  (should (eq (claude-usage--severity-face "warning" 75) 'claude-usage-warn)))
 
 (ert-deftest claude-usage-test-severity-face-critical ()
-  "Severity \"critical\" maps to error face."
-  (should (eq (claude-usage--severity-face "critical" 95) 'error)))
+  "Severity \"critical\" maps to `claude-usage-crit'."
+  (should (eq (claude-usage--severity-face "critical" 95) 'claude-usage-crit)))
+
+(ert-deftest claude-usage-test-severity-face-percent-fallback-normal ()
+  "Fallback to percent: below 70% maps to `claude-usage-ok'."
+  (should (eq (claude-usage--severity-face nil 50) 'claude-usage-ok)))
 
 (ert-deftest claude-usage-test-severity-face-percent-fallback-warning ()
-  "Fallback to percent: 75% maps to warning face."
-  (should (eq (claude-usage--severity-face nil 75) 'warning)))
+  "Fallback to percent: 75% maps to `claude-usage-warn'."
+  (should (eq (claude-usage--severity-face nil 75) 'claude-usage-warn)))
 
 (ert-deftest claude-usage-test-severity-face-percent-fallback-critical ()
-  "Fallback to percent: 95% maps to error face."
-  (should (eq (claude-usage--severity-face nil 95) 'error)))
+  "Fallback to percent: 95% maps to `claude-usage-crit'."
+  (should (eq (claude-usage--severity-face nil 95) 'claude-usage-crit)))
+
+(ert-deftest claude-usage-test-severity-faces-are-real-faces ()
+  "All four `claude-usage-*' severity/staleness faces are defined, and
+none of the stock `error'/`warning'/`success' faces is returned by
+`claude-usage--severity-face' any more."
+  (dolist (face '(claude-usage-ok claude-usage-warn claude-usage-crit claude-usage-stale))
+    (should (facep face)))
+  (dolist (args '(("normal" 50) ("warning" 75) ("critical" 95)
+                   (nil 50) (nil 75) (nil 95)))
+    (should-not (memq (apply #'claude-usage--severity-face args)
+                       '(error warning success)))))
 
 (ert-deftest claude-usage-test-bar-full ()
   "Bar with 100% percent generates all full blocks."
@@ -1283,9 +1298,9 @@ stale form differs visibly from the fresh one; and a non-default
         (should (< (length full) 40))
         ;; Stale.
         (should-not (equal full stale))
-        (should (string-prefix-p claude-usage--stale-marker stale))
-        (should (memq 'shadow (claude-usage-test--face-list stale)))
-        (should-not (memq 'shadow (claude-usage-test--face-list full)))
+        (should (string-prefix-p claude-usage--stale-glyph stale))
+        (should (memq 'claude-usage-stale (claude-usage-test--face-list stale)))
+        (should-not (memq 'claude-usage-stale (claude-usage-test--face-list full)))
         ;; `percent' format, same state.
         (should-not (equal full percent))
         (should (string-match-p "45%%" percent))
@@ -1362,14 +1377,16 @@ gate entirely."
               (should (equal first claude-usage-mode-line-string))
               (should-not (equal "" (claude-usage-mode-line-segment))))))))
 
-    ;; --- AC1: the sidebar section registers on the existing hook ---------------
+    ;; --- AC1: the sidebar section registers on the bottom-anchor hook ----------
 
-    (ert-deftest claude-usage-test-sidebar-section-registered-on-extra-section-functions ()
-      "`claude-usage--insert-sidebar-section' is registered on the already-landed
-`edmacs-sidebar-extra-section-functions' hook -- no second, near-duplicate
-hook is added anywhere in this file."
+    (ert-deftest claude-usage-test-sidebar-section-registered-on-bottom-anchor-section-functions ()
+      "`claude-usage--insert-sidebar-section' is registered on
+`edmacs-sidebar-bottom-anchor-section-functions', not the plain
+`edmacs-sidebar-extra-section-functions' -- sidebar.el pins whatever
+this hook inserts to the sidebar window's bottom edge -- and no second,
+near-duplicate hook is added anywhere in this file."
       (should (memq #'claude-usage--insert-sidebar-section
-                     edmacs-sidebar-extra-section-functions)))
+                     edmacs-sidebar-bottom-anchor-section-functions)))
 
     (ert-deftest claude-usage-test-insert-sidebar-section-accepts-frame-argument ()
       "The FRAME argument is accepted, per the hook's own calling convention,
@@ -1385,7 +1402,7 @@ and ignored without erroring for an unusual or nil value."
                   (let ((inhibit-read-only t))
                     (erase-buffer)
                     (claude-usage--insert-sidebar-section frame))
-                  (should (string-match-p "Usage" (buffer-string))))))
+                  (should (string-match-p "Claude · " (buffer-string))))))
           (when (buffer-live-p buf) (kill-buffer buf)))))
 
     ;; --- AC6: sidebar section renders with data, absent without, absent off ----
@@ -1405,6 +1422,38 @@ section renders nothing at all -- not an empty heading."
                   (erase-buffer)
                   (claude-usage--insert-sidebar-section (selected-frame)))
                 (should (equal "" (buffer-string)))))
+          (when (buffer-live-p buf) (kill-buffer buf)))))
+
+    (ert-deftest claude-usage-test-sidebar-heading-carries-cache-age ()
+      "The sidebar section's own heading reads \"Claude · <age>\" for a
+fresh envelope, and \"Claude · ~<age>\" (stale-glyph-prefixed, dimmed
+with `claude-usage-stale') for a stale one -- matching the phase's own
+\"Claude · 2m ago\" example."
+      (let* ((fixtures (claude-usage-test--surface-fixtures))
+             (buf (generate-new-buffer " *claude-usage-test-heading-age*")))
+        (with-current-buffer buf (claude-usage-mode))
+        (unwind-protect
+            (progn
+              (let ((claude-usage--state-envelope (car fixtures))
+                    (claude-usage--state-source 'live))
+                (with-current-buffer buf
+                  (let ((inhibit-read-only t))
+                    (erase-buffer)
+                    (claude-usage--insert-sidebar-section (selected-frame)))
+                  (should (string-match-p "^Claude · now" (buffer-string)))
+                  (should-not (string-match-p
+                               (regexp-quote claude-usage--stale-glyph) (buffer-string)))))
+              (let ((claude-usage--state-envelope (cdr fixtures))
+                    (claude-usage--state-source 'cache))
+                (with-current-buffer buf
+                  (let ((inhibit-read-only t))
+                    (erase-buffer)
+                    (claude-usage--insert-sidebar-section (selected-frame)))
+                  (should (string-match-p
+                           (concat "^Claude · " (regexp-quote claude-usage--stale-glyph))
+                           (buffer-string)))
+                  (should (memq 'claude-usage-stale
+                                (claude-usage-test--face-list (buffer-string)))))))
           (when (buffer-live-p buf) (kill-buffer buf)))))
 
     ;; --- AC7: identical renders redraw the sidebar exactly once ----------------
@@ -1534,12 +1583,12 @@ renders without signalling."
                 (should (null (plist-get values :stale)))
                 (let ((rendered (claude-usage--render-mode-line values)))
                   (should (string-match-p "45%%" rendered))
-                  (should-not (string-match-p claude-usage--stale-marker rendered)))
+                  (should-not (string-match-p (regexp-quote claude-usage--stale-glyph) rendered)))
                 (with-current-buffer buf
                   (let ((inhibit-read-only t))
                     (erase-buffer)
                     (claude-usage--insert-sidebar-section (selected-frame)))
-                  (should (string-match-p "Usage" (buffer-string)))
+                  (should (string-match-p "Claude · " (buffer-string)))
                   (should (string-match-p claude-usage--em-dash (buffer-string))))))
           (when (buffer-live-p buf) (kill-buffer buf)))))
 
@@ -1680,10 +1729,12 @@ renders without signalling."
           (should (equal (car (car result)) "S")))))
 
     (ert-deftest claude-usage-test-collapsed-section-registered-on-hook ()
-      "`claude-usage--collapsed-section' is registered on the
-`edmacs-sidebar-collapsed-section-functions' hook (appended/tail position)."
+      "`claude-usage--collapsed-section' is registered on
+`edmacs-sidebar-collapsed-bottom-anchor-section-functions', not the
+plain `edmacs-sidebar-collapsed-section-functions' -- see the identical
+rationale on `claude-usage--insert-sidebar-section's own registration."
       (should (memq #'claude-usage--collapsed-section
-                     edmacs-sidebar-collapsed-section-functions)))
+                     edmacs-sidebar-collapsed-bottom-anchor-section-functions)))
 
     )) ; end of build-root-found branch
 

@@ -2586,6 +2586,205 @@ missed this, since the label itself is what changed."
             (edmacs-sidebar-test--cleanup-sidebar f2)
             (delete-frame f2)))))
 
+    ;; ==========================================================================
+    ;; edmacs-sidebar-polish phase 13 -- bottom-anchor the usage section
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-anchor-region-pads-short-content ()
+      "`--anchor-region-to-bottom' pads a short anchored region with blank
+lines so it starts exactly `window-body-height' rows down from the top
+-- flush with the bottom -- and leaves the anchored text itself
+untouched."
+      (with-temp-buffer
+        (insert "row one\nrow two\n")
+        (let ((region-start (point)))
+          (insert "anchored one\nanchored two\n")
+          (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 10)))
+            (edmacs-sidebar--anchor-region-to-bottom (selected-window) region-start))
+          ;; above (2) + pad (6) + anchored (2) = 10.
+          (should (equal (split-string (buffer-string) "\n")
+                          '("row one" "row two" "" "" "" "" "" ""
+                            "anchored one" "anchored two" ""))))))
+
+    (ert-deftest edmacs-sidebar-test-anchor-region-noops-when-heights-match ()
+      "`--anchor-region-to-bottom' does nothing at all when the buffer
+already exactly fills `window-body-height' -- no padding, no
+`window-start' change."
+      (with-temp-buffer
+        (insert "row one\nrow two\n")
+        (let ((region-start (point)))
+          (insert "anchored\n")
+          (let ((before (buffer-string)))
+            (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 3)))
+              (edmacs-sidebar--anchor-region-to-bottom (selected-window) region-start))
+            (should (equal before (buffer-string)))))))
+
+    (ert-deftest edmacs-sidebar-test-anchor-region-scrolls-past-overflow ()
+      "`--anchor-region-to-bottom' forces `window-start' past overflowing
+content above the anchored region, so the last `window-body-height'
+screen lines of the buffer -- which necessarily include the whole
+anchored region -- are what the window would actually show. Batch mode
+never runs real redisplay, so this is asserted via `window-start' and
+`count-screen-lines' directly rather than `pos-visible-in-window-p',
+which depends on a redisplay cycle that never happens here."
+      (let* ((original-window (selected-window))
+             (buf (generate-new-buffer " *anchor-overflow-test*"))
+             (window (split-window original-window)))
+        (unwind-protect
+            (progn
+              (set-window-buffer window buf)
+              (with-current-buffer buf
+                (dotimes (i 20) (insert (format "row %d\n" i)))
+                (let ((region-start (point)))
+                  (insert "anchored one\nanchored two\n")
+                  (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 5)))
+                    (edmacs-sidebar--anchor-region-to-bottom window region-start))
+                  (should (<= (window-start window) region-start))
+                  (should (= 5 (count-screen-lines (window-start window) (point-max) nil window))))))
+          (when (window-live-p window) (delete-window window))
+          (when (buffer-live-p buf) (kill-buffer buf)))))
+
+    (ert-deftest edmacs-sidebar-test-anchor-region-noops-on-dead-window ()
+      "`--anchor-region-to-bottom' is a no-op against a window that is not
+`window-live-p' -- the shape `edmacs-sidebar--redraw' hits on the very
+first paint, before `display-buffer-in-side-window' has created a
+window at all."
+      (with-temp-buffer
+        (insert "above\n")
+        (let ((region-start (point)))
+          (insert "anchored\n")
+          (let ((before (buffer-string)))
+            (edmacs-sidebar--anchor-region-to-bottom nil region-start)
+            (should (equal before (buffer-string)))))))
+
+    (ert-deftest edmacs-sidebar-test-bottom-anchor-section-visible-with-short-content ()
+      "A short registrant on `edmacs-sidebar-bottom-anchor-section-functions'
+is padded down to the sidebar window's bottom edge through
+`edmacs-sidebar-show', not left floating just below the tab list with
+dead space beneath it."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (let ((edmacs-sidebar-bottom-anchor-section-functions
+                   (list (lambda (_frame) (insert "ZZBOTTOMMARKERZZ\n")))))
+              (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 40)))
+                (edmacs-sidebar-show frame))
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (should (string-suffix-p "ZZBOTTOMMARKERZZ\n" (buffer-string)))
+                (should (= 40 (count-screen-lines
+                               (point-min) (point-max) nil (edmacs-sidebar--window frame))))))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-bottom-anchor-section-visible-with-overflowing-content ()
+      "The same registrant stays visible -- via a forced `window-start' --
+when the sidebar's own content overflows a short window, instead of
+scrolling off the bottom unseen."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (let ((edmacs-sidebar-bottom-anchor-section-functions
+                   (list (lambda (_frame) (insert "ZZBOTTOMMARKERZZ\n")))))
+              (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 2)))
+                (edmacs-sidebar-show frame))
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (let ((window (edmacs-sidebar--window frame)))
+                  (should (string-suffix-p "ZZBOTTOMMARKERZZ\n" (buffer-string)))
+                  (should (= 2 (count-screen-lines
+                                (window-start window) (point-max) nil window))))))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-collapsed-bottom-anchor-section-visible-with-short-content ()
+      "The collapsed strip's own bottom-anchor hook
+\(`edmacs-sidebar-collapsed-bottom-anchor-section-functions'\) is padded
+to the window's bottom edge exactly like the expanded one -- AC4's
+\"yes, anchor there too\" decision."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (let ((edmacs-sidebar-collapsed-bottom-anchor-section-functions
+                   (list (lambda (_frame _width) (insert "ZZC\n")))))
+              (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
+              (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 30)))
+                (edmacs-sidebar-show frame))
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (should (string-suffix-p "ZZC\n" (buffer-string)))
+                (should (= 30 (count-screen-lines
+                               (point-min) (point-max) nil (edmacs-sidebar--window frame))))))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-collapsed-bottom-anchor-section-visible-with-overflowing-content ()
+      "The collapsed strip's bottom-anchor hook also stays visible under
+overflow, via the same forced `window-start'."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (let ((edmacs-sidebar-collapsed-bottom-anchor-section-functions
+                   (list (lambda (_frame _width) (insert "ZZC\n")))))
+              (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
+              (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 2)))
+                (edmacs-sidebar-show frame))
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (let ((window (edmacs-sidebar--window frame)))
+                  (should (string-suffix-p "ZZC\n" (buffer-string)))
+                  (should (= 2 (count-screen-lines
+                                (window-start window) (point-max) nil window))))))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-on-window-size-change-anchor-registered ()
+      "`--on-window-size-change-anchor' is registered on
+`window-size-change-functions' alongside the pre-existing
+`--on-window-size-change', and redraws only a frame with a live sidebar
+window -- a no-op for any other frame, including one whose sidebar was
+never shown."
+      (should (memq #'edmacs-sidebar--on-window-size-change-anchor
+                     window-size-change-functions))
+      (let ((frame (selected-frame)) (redrawn nil))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show frame)
+              (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
+                         (lambda (_frame) (setq redrawn t))))
+                (edmacs-sidebar--on-window-size-change-anchor frame))
+              (should redrawn)
+              (setq redrawn nil)
+              (edmacs-sidebar-test--cleanup-sidebar frame)
+              (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
+                         (lambda (_frame) (setq redrawn t))))
+                (edmacs-sidebar--on-window-size-change-anchor frame))
+              (should-not redrawn))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-bottom-anchor-adds-no-new-timer ()
+      "Showing a sidebar with a bottom-anchor registrant, and driving a
+resize through `--on-window-size-change-anchor', arms no new timer --
+mirrors `edmacs-sidebar-test-collapse-expand-adds-no-new-timer's own
+timer-list snapshot pattern."
+      (let ((frame (selected-frame))
+            (edmacs-sidebar-bottom-anchor-section-functions
+             (list (lambda (_frame) (insert "ZZTIMERZZ\n")))))
+        (unwind-protect
+            (let ((before (length (append timer-list timer-idle-list))))
+              (edmacs-sidebar-show frame)
+              (edmacs-sidebar--redraw frame)
+              (edmacs-sidebar--on-window-size-change-anchor frame)
+              (should (= before (length (append timer-list timer-idle-list)))))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-no-reference-to-claude-usage ()
+      "sidebar.el never mentions claude-usage.el by name -- the
+bottom-anchor hooks are a generic seam, exactly like the five
+pre-existing ones; only claude-usage.el is allowed to know about the
+hook variable names."
+      (let ((source (with-temp-buffer
+                       (insert-file-contents
+                        (expand-file-name "modules/sidebar.el" default-directory))
+                       (buffer-string))))
+        (should-not (string-match-p "claude-usage" source))))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-test.el ends here

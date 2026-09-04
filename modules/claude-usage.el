@@ -37,10 +37,11 @@
 ;; Two cheap surfaces compress that state for glancing at:
 ;; `claude-usage-mode-line-mode' (a nano-modeline footer segment, spliced
 ;; in by `:filter-args' advice on `nano-modeline-footer') and a sidebar
-;; section contributed through `edmacs-sidebar-extra-section-functions'
-;; (owned by sidebar.el; registered here, never touching that file). Both
-;; read only pre-rendered values off `claude-usage--state-envelope', so
-;; neither reads a file, stats a directory, or starts a process.
+;; section contributed through `edmacs-sidebar-bottom-anchor-section-functions'
+;; (owned by sidebar.el; registered here, never touching that file), which
+;; also pins it to the sidebar window's bottom edge. Both read only
+;; pre-rendered values off `claude-usage--state-envelope', so neither reads
+;; a file, stats a directory, or starts a process.
 
 ;;; Code:
 
@@ -75,16 +76,45 @@
 (declare-function edmacs-modeline-text-mode "ui" (&optional default))
 (declare-function nano-modeline-text-mode "nano-modeline" (&optional default))
 
-;; sidebar.el owns this hook; declared here only so the byte-compiler
+;; sidebar.el owns these hooks; declared here only so the byte-compiler
 ;; doesn't warn about `add-hook' on a free variable when this file is
-;; compiled standalone. `add-hook' below creates it if sidebar.el hasn't
-;; loaded yet -- the dependency stays one-way.
-(defvar edmacs-sidebar-extra-section-functions)
+;; compiled standalone. `add-hook' below creates each if sidebar.el
+;; hasn't loaded yet -- the dependency stays one-way.
+(defvar edmacs-sidebar-bottom-anchor-section-functions)
+(defvar edmacs-sidebar-collapsed-bottom-anchor-section-functions)
 
 (defgroup claude-usage nil
   "Claude usage metrics and cache integration."
   :group 'claude
   :prefix "claude-usage-")
+
+;; ============================================================================
+;; Faces
+;; ============================================================================
+;; Hardcoded Solarized Dark hex values rather than named theme faces: the
+;; `semantic-face-vocabulary' task has not landed anywhere in this codebase
+;; (confirmed by grep) -- once it does, these should `:inherit' its
+;; severity ladder instead of naming colors directly.
+
+(defface claude-usage-ok
+  '((t :foreground "#859900"))
+  "Face for a usage meter below the warning threshold."
+  :group 'claude-usage)
+
+(defface claude-usage-warn
+  '((t :foreground "#b58900"))
+  "Face for a usage meter at or above the warning threshold."
+  :group 'claude-usage)
+
+(defface claude-usage-crit
+  '((t :foreground "#dc322f"))
+  "Face for a usage meter at or above the critical threshold."
+  :group 'claude-usage)
+
+(defface claude-usage-stale
+  '((t :foreground "#586e75"))
+  "Face for a usage reading whose cache is stale."
+  :group 'claude-usage)
 
 (defcustom claude-usage-cache-file "~/.claude.json"
   "Path to the Claude CLI's config file containing usage cache.
@@ -211,19 +241,19 @@ SEVERITY is a string: \"normal\", \"warning\", or \"critical\".
 PERCENT is a numeric utilization percentage.
 
 Returns a face name (symbol) for rendering. Falls back to thresholds:
-- >= 90%: `error' face
-- >= 70%: `warning' face
-- < 70%: `success' face
+- >= 90%: `claude-usage-crit' face
+- >= 70%: `claude-usage-warn' face
+- < 70%: `claude-usage-ok' face
 
 If SEVERITY is provided and not nil, uses it directly."
   (cond
-   ((string-equal severity "critical") 'error)
-   ((string-equal severity "warning") 'warning)
-   ((string-equal severity "normal") 'success)
+   ((string-equal severity "critical") 'claude-usage-crit)
+   ((string-equal severity "warning") 'claude-usage-warn)
+   ((string-equal severity "normal") 'claude-usage-ok)
    ;; Fallback to percent-based thresholds
-   ((>= percent 90) 'error)
-   ((>= percent 70) 'warning)
-   (t 'success)))
+   ((>= percent 90) 'claude-usage-crit)
+   ((>= percent 70) 'claude-usage-warn)
+   (t 'claude-usage-ok)))
 
 (defun claude-usage--format-reset (resets-at-iso &optional current-time-for-test)
   "Format an ISO 8601 timestamp as local time plus relative duration.
@@ -560,7 +590,14 @@ running alongside the first."
   "Placeholder for a meter field whose source value is missing.")
 
 (defconst claude-usage--stale-marker "STALE "
-  "Prefix applied to the cache-age string when the cache is stale.")
+  "Prefix applied to the cache-age string when the cache is stale.
+Used only by the standalone `*claude-usage*' buffer's own header
+(`claude-usage--redraw'); the mode-line segment and the sidebar section
+heading use `claude-usage--stale-glyph' instead.")
+
+(defconst claude-usage--stale-glyph "~"
+  "Tilde prefix applied to a stale reading on the mode-line segment and
+the sidebar section heading, paired with the `claude-usage-stale' face.")
 
 (define-derived-mode claude-usage-mode magit-section-mode "Claude-Usage"
   "Major mode for the `*claude-usage*' buffer, showing Claude CLI usage meters."
@@ -863,14 +900,14 @@ Returns \"\" when VALUES is nil or carries neither headline meter."
                         (claude-usage--format-reset-clock
                          (claude-usage--nearest-future-reset rows))))
                (rendered (concat (if (plist-get values :stale)
-                                     claude-usage--stale-marker
+                                     claude-usage--stale-glyph
                                    "")
                                  (mapconcat #'identity (nreverse parts) " ")
                                  (if (string-empty-p clock)
                                      ""
                                    (concat " →" clock)))))
           (when (plist-get values :stale)
-            (add-face-text-property 0 (length rendered) 'shadow nil rendered))
+            (add-face-text-property 0 (length rendered) 'claude-usage-stale nil rendered))
           rendered)))))
 
 (defun claude-usage--recompute-surfaces (values digest &optional redraw-sidebars)
@@ -968,9 +1005,9 @@ and diagnostics."
 
 (defun claude-usage--insert-sidebar-section (frame)
   "Insert the usage section into the current sidebar buffer.
-FRAME is accepted (per `edmacs-sidebar-extra-section-functions') but
-unused: the section's content is the whole (frame-independent) usage
-state, identical on every frame. Inserts nothing at all -- not a
+FRAME is accepted (per `edmacs-sidebar-bottom-anchor-section-functions')
+but unused: the section's content is the whole (frame-independent)
+usage state, identical on every frame. Inserts nothing at all -- not a
 heading, not a separator -- when the section is switched off or no
 usage state has been resolved yet."
   (ignore frame)
@@ -981,11 +1018,8 @@ usage state has been resolved yet."
           (insert "\n")
           (magit-insert-section (claude-usage-sidebar)
             (magit-insert-heading
-              (format "Usage (%s%s%s)"
-                      (if (plist-get values :source)
-                          (format "%s, " (symbol-name (plist-get values :source)))
-                        "")
-                      (if (plist-get values :stale) claude-usage--stale-marker "")
+              (format "Claude · %s%s"
+                      (if (plist-get values :stale) claude-usage--stale-glyph "")
                       (plist-get values :age)))
             (dolist (row (plist-get values :rows))
               ;; Section value stays nil: `edmacs-sidebar-activate' has no
@@ -1001,17 +1035,17 @@ usage state has been resolved yet."
                                             'face (plist-get row :face))
                                 (plist-get row :reset))))))
           (when (plist-get values :stale)
-            (add-face-text-property start (point) 'shadow)))))))
+            (add-face-text-property start (point) 'claude-usage-stale)))))))
 
 ;; `add-hook' creates the variable when sidebar.el has not loaded yet, so
 ;; this file needs no `(require 'sidebar)' and the dependency stays
 ;; one-way: sidebar.el owns the hook and never mentions claude-usage.
-;; APPEND (the trailing t): `add-hook' prepends by default, which put this
-;; section above sidebar-agents' ALL AGENTS block.  Appending keeps usage at
-;; the bottom of the sidebar, which is where it is meant to sit.
-(add-hook 'edmacs-sidebar-extra-section-functions
-          #'claude-usage--insert-sidebar-section
-          t)
+;; Registered on the bottom-anchor hook, not `edmacs-sidebar-extra-section-functions':
+;; sidebar.el pins whatever this hook inserts to the window's bottom edge, so
+;; ordering relative to other `edmacs-sidebar-extra-section-functions'
+;; registrants (e.g. sidebar-agents.el's ALL AGENTS block) no longer matters.
+(add-hook 'edmacs-sidebar-bottom-anchor-section-functions
+          #'claude-usage--insert-sidebar-section)
 
 ;; ============================================================================
 ;; Collapsed sidebar strip: usage summary
@@ -1035,7 +1069,8 @@ the percent value (e.g. \"S45%\"), fitted independently within WIDTH columns
 using `edmacs-sidebar--fit'. Measures with `string-width' to respect
 double-width nerd-font glyphs.
 FRAME is currently unused (usage data is frame-independent); accepted
-for registration on `edmacs-sidebar-collapsed-section-functions' compatibility."
+for registration on `edmacs-sidebar-collapsed-bottom-anchor-section-functions'
+compatibility."
   (ignore frame)
   (let ((values (claude-usage--surface-values)))
     (when values
@@ -1060,10 +1095,12 @@ for registration on `edmacs-sidebar-collapsed-section-functions' compatibility."
                      (propertized (if face (propertize fitted 'face face) fitted)))
                 (insert propertized "\n")))))))))
 
-;; Append to collapsed hook (runs after agents, which prepends)
-(add-hook 'edmacs-sidebar-collapsed-section-functions
-          #'claude-usage--collapsed-section
-          t)
+;; Registered on the collapsed bottom-anchor hook, not
+;; `edmacs-sidebar-collapsed-section-functions': see the identical
+;; ordering-no-longer-matters comment above `--insert-sidebar-section's
+;; own registration.
+(add-hook 'edmacs-sidebar-collapsed-bottom-anchor-section-functions
+          #'claude-usage--collapsed-section)
 
 ;; Seed synchronously from the on-disk cache so the sidebar section has
 ;; figures the moment Emacs starts, rather than only once an async fetch
