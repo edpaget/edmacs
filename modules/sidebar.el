@@ -377,7 +377,18 @@ sidebar synchronously, before `edmacs-sessions--finish-frameset-restore'
 live coming back permanently mis-named after the daemon's generic
 default frame name (e.g. \"*sidebar: F1*\") instead of its repo."
   (let* ((buf (edmacs-sidebar--buffer frame))
-         (expected (format "*sidebar: %s*" (frame-parameter frame 'name))))
+         (sanitised (edmacs-sidebar--sanitise-frame-title (or (frame-parameter frame 'name) "")))
+         ;; If sanitisation produces empty or generic name, append frame identity to avoid collisions
+         (base-name (if (string-empty-p sanitised)
+                        "sidebar"
+                      sanitised))
+         ;; Check if the candidate buffer name already exists; if so, add frame identity
+         (candidate (format "*sidebar: %s*" base-name))
+         (expected (if (and (not (eq (get-buffer candidate) buf))
+                            (get-buffer candidate))
+                       ;; Collision: append frame pointer address for uniqueness
+                       (format "*sidebar: %s-%s*" base-name (format "%x" (abs (sxhash frame))))
+                     candidate)))
     (if (buffer-live-p buf)
         (unless (equal (buffer-name buf) expected)
           (with-current-buffer buf (rename-buffer expected t)))
@@ -690,14 +701,42 @@ FRAME's `edmacs-repo-missing' parameter -- see AC3."
     (magit-insert-heading
       (propertize "repo missing" 'face 'edmacs-sidebar-missing-repo-face))))
 
+(defun edmacs-sidebar--sanitise-frame-title (title)
+  "Sanitise a frame TITLE for use as a sidebar buffer name.
+Strips leading/trailing `*...*' earmuffs (e.g., `*Minibuf-1*' → empty),
+removes trailing ` - Emacs' pattern, collapses whitespace, and returns
+the cleaned string. Returns empty string if nothing usable remains."
+  (if (null title)
+      ""
+    (let* (;; Remove trailing ` - Emacs' suffix first
+           (without-emacs-suffix
+            (if (string-match "^\\(.*?\\)\\s-*-\\s-*Emacs\\s-*$" title)
+                (match-string 1 title)
+              title))
+           ;; Strip and remove leading/trailing *...*earmuffs iteratively
+           (step1 (string-trim without-emacs-suffix))
+           ;; Remove leading *...*
+           (step2
+            (if (string-match "^\\*[^*]*\\*\\s-*\\(.*\\)$" step1)
+                (string-trim (match-string 1 step1))
+              step1))
+           ;; Remove trailing *...*
+           (step3
+            (if (string-match "^\\(.*?\\)\\s-*\\*[^*]*\\*\\s-*$" step2)
+                (string-trim (match-string 1 step2))
+              step2))
+           ;; Collapse internal whitespace
+           (collapsed (replace-regexp-in-string "\\s-+" " " step3)))
+      (string-trim collapsed))))
+
 (defun edmacs-sidebar--header-line-name (frame)
   "Return FRAME's own identity string for the header line: its repo's
 bare leaf directory name if it carries an `edmacs-repo' parameter, else
-its frame `name' parameter (the repo-less flat-tab-list case)."
+its sanitised frame `name' parameter (the repo-less flat-tab-list case)."
   (let ((common (frame-parameter frame 'edmacs-repo)))
     (if common
         (edmacs-git-common-dir-repo-name common)
-      (or (frame-parameter frame 'name) ""))))
+      (edmacs-sidebar--sanitise-frame-title (or (frame-parameter frame 'name) "")))))
 
 (defun edmacs-sidebar--header-line (frame)
   "Return FRAME's sidebar header-line string: its own repo/frame

@@ -2510,6 +2510,82 @@ missed this, since the label itself is what changed."
                       (should (equal (edmacs-sidebar--point-identity) (cons 'worktree "/repo/wt/")))))
                 (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
 
+    ;; ==========================================================================
+    ;; Sanitiser and collision prevention for repo-less frames
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-minibuf-example ()
+      "The canonical broken case: *Minibuf-1* - Emacs should sanitise to empty."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "*Minibuf-1* - Emacs") "")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-earmuff-only ()
+      "Frame title with only earmuffs and Emacs suffix sanitises to empty."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "*foo* - Emacs") "")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-content-with-suffix ()
+      "Frame title with content and Emacs suffix strips the suffix."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "Foo - Emacs") "Foo")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-content-only ()
+      "Frame title with content and no Emacs suffix is preserved."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "Foo") "Foo")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-multiple-earmuffs ()
+      "Multiple earmuffs followed by Emacs suffix sanitise to empty."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "  *a* *b*  - Emacs") "")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-empty-string ()
+      "Empty string remains empty."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "") "")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-whitespace-only ()
+      "Whitespace-only string becomes empty."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "   ") "")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-nil ()
+      "Nil is handled gracefully and returns empty string."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title nil) "")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-with-internal-whitespace ()
+      "Internal whitespace is collapsed."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "My   Frame   Name") "My Frame Name")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-leading-earmuff ()
+      "Leading earmuff is stripped."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "*buffer* My Frame") "My Frame")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-trailing-earmuff ()
+      "Trailing earmuff is stripped."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "My Frame *buffer*") "My Frame")))
+
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-my-frame-emacs ()
+      "Real example: My Frame - Emacs → My Frame."
+      (should (string-equal (edmacs-sidebar--sanitise-frame-title "My Frame - Emacs") "My Frame")))
+
+    (ert-deftest edmacs-sidebar-test-buffer-name-collision-prevention ()
+      "Two repo-less frames get distinct sidebar buffer names even with same sanitised title."
+      (let* ((f1 (selected-frame))
+             (f2 (edmacs-sidebar-test--make-second-frame-or-skip)))
+        (unwind-protect
+            (progn
+              ;; Set both frames to have the same raw name
+              (set-frame-parameter f1 'name "*Minibuf-0* - Emacs")
+              (set-frame-parameter f2 'name "*Minibuf-1* - Emacs")
+              ;; Remove edmacs-repo so they're treated as repo-less
+              (set-frame-parameter f1 'edmacs-repo nil)
+              (set-frame-parameter f2 'edmacs-repo nil)
+              ;; Ensure buffers are created for both frames
+              (let ((buf1 (edmacs-sidebar--ensure-buffer f1))
+                    (buf2 (edmacs-sidebar--ensure-buffer f2)))
+                (should (buffer-live-p buf1))
+                (should (buffer-live-p buf2))
+                ;; Buffer names should be distinct even though sanitised names are empty
+                (should-not (string-equal (buffer-name buf1) (buffer-name buf2)))))
+          (edmacs-sidebar-test--cleanup-sidebar f1)
+          (when (frame-live-p f2)
+            (edmacs-sidebar-test--cleanup-sidebar f2)
+            (delete-frame f2)))))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-test.el ends here
