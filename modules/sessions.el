@@ -141,6 +141,14 @@ stray-visit relocator should make rare -- still gets the prefix."
 ;; visible in source rather than an accident of frameset.el's default.
 (push (cons 'edmacs-repo nil) frameset-filter-alist)
 
+;; A restored frame lands on the current display instead of replaying the
+;; coordinates of whichever monitor it was saved on; frames.el's fullscreen
+;; policy then sizes it there. `width'/`height' need no filter of their own --
+;; `frameset--restore-frame' already drops both (and `visibility') from the
+;; config of any frame saved carrying a `fullscreen' parameter.
+(dolist (param '(left top))
+  (push (cons param :never) frameset-filter-alist))
+
 (desktop-save-mode 1)
 
 ;; ----------------------------------------------------------------------------
@@ -159,12 +167,27 @@ Non-nil only between a daemon's `desktop-read' (which cannot restore
 frames onto its placeholder initial frame) and the first `emacsclient'
 frame attaching.")
 
+(defun edmacs-sessions--frameset-has-frames-p (fs)
+  "Return non-nil when FS is a frameset carrying at least one frame state.
+An *empty* frameset is the poison this guards against, on both the save
+and the restore side. `desktop--check-dont-save' deliberately excludes
+the daemon's initial frame, so a session ending with no GUI frame writes
+a frameset object with zero states -- still a non-nil object, so a bare
+non-nil test happily stashes it. Handing that to `frameset-restore' is
+destructive rather than inert: `:reuse-frames t' marks every live frame
+`:ignored', no state ever reassigns one, and the `:cleanup-frames t'
+pass then deletes every ignored frame except the daemon's initial one --
+including the frame the restore was handed. The session is left with no
+GUI frame, so its own next save is empty too, and the loop perpetuates
+itself across restarts."
+  (and (frameset-p fs) (consp (frameset-states fs)) t))
+
 (defun edmacs-sessions--stash-frameset-for-daemon ()
   "Stash `desktop-saved-frameset' when daemon boot skipped restoring it.
 Runs on `desktop-after-read-hook', which fires after the frameset is
 loaded but before `desktop-read' unconditionally nils it back out."
   (when (and (daemonp)
-             desktop-saved-frameset
+             (edmacs-sessions--frameset-has-frames-p desktop-saved-frameset)
              (not (desktop-restoring-frameset-p)))
     (setq edmacs-sessions--pending-frameset desktop-saved-frameset)))
 
@@ -302,27 +325,81 @@ creates or deletes a frame."
       (edmacs-sessions--ensure-worktree-tracking frame)
       (edmacs-sessions--ensure-sidebar frame))))
 
+(defun edmacs-sessions--gui-frame-parameters ()
+  "Parameters `edmacs-sessions--make-gui-frame' creates a frame with.
+A daemon's `window-system' is nil, so the window system has to be named
+explicitly or `make-frame' produces another tty placeholder rather than
+the graphical frame every caller here is asking for. Only the macOS
+daemon this config actually runs under needs naming; elsewhere the
+ambient default already yields a graphical frame."
+  (and (eq system-type 'darwin) '((window-system . ns))))
+
+(defun edmacs-sessions--make-gui-frame ()
+  "Create a graphical frame, returning nil rather than signalling on failure.
+Never let an error out: under a frameless daemon one reaching top level
+exits Emacs 255 (see core.el). The previous `ignore-errors' here made
+that failure silent as well as survivable, which is how a boot frame
+deleted out from under the daemon went unnoticed -- warn instead."
+  (condition-case err
+      (make-frame (edmacs-sessions--gui-frame-parameters))
+    (error
+     (display-warning 'edmacs-sessions
+                      (format "could not create a GUI frame: %s" err)
+                      :warning)
+     nil)))
+
+(defun edmacs-sessions--ensure-gui-frame ()
+  "Create a graphical frame when the session has none left.
+The net under every path that can end with a frameless daemon -- most
+of all `frameset-restore', which deletes the very frame it was handed
+when the frameset it replays has no state to reassign to it. A daemon
+with no GUI frame saves an empty frameset, which poisons its own next
+boot (see `edmacs-sessions--frameset-has-frames-p'), so restoring one
+here is what keeps a single bad restore from becoming permanent."
+  (unless (seq-find (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
+                    (frame-list))
+    (edmacs-sessions--make-gui-frame)))
+
 (defun edmacs-sessions--restore-pending-frameset (frame)
   "Restore a daemon-boot-stashed frameset onto FRAME, the first GUI frame.
 Runs from `after-make-frame-functions' so it covers the boot frame,
 emacsclient frames, and the Dock's reopen event alike.
 `desktop-restore-reuses-frames' (default t) reuses FRAME. Deferred by a
 timer so the frame is fully created before frameset-restore touches it."
-  (when (and edmacs-sessions--pending-frameset (display-graphic-p frame))
+  (when (and (edmacs-sessions--frameset-has-frames-p
+              edmacs-sessions--pending-frameset)
+             (display-graphic-p frame))
     (let ((frameset edmacs-sessions--pending-frameset))
       (setq edmacs-sessions--pending-frameset nil)
       (run-at-time 0 nil
                    (lambda ()
-                     (when (frame-live-p frame)
-                       (let ((desktop-saved-frameset frameset))
-                         (with-selected-frame frame
-                           (desktop-restore-frameset)
-                           ;; An agent pane's process cannot survive a
-                           ;; restart and a popup's buffer may not have
-                           ;; been saved at all; sweep those stale right
-                           ;; stack windows rather than show them.
-                           (edmacs-stack-sweep-stale-panes frame)))
-                       (edmacs-sessions--finish-frameset-restore)))))))
+                     ;; Both the restore and the sweep run guarded: an error
+                     ;; escaping here would skip the net below and leave the
+                     ;; daemon frameless, which is the state that saves an
+                     ;; empty frameset and poisons the next boot.
+                     (condition-case err
+                         (when (frame-live-p frame)
+                           (let ((desktop-saved-frameset frameset))
+                             (with-selected-frame frame
+                               (desktop-restore-frameset))
+                             ;; FRAME is gone whenever `frameset-restore''s
+                             ;; cleanup pass found no saved state to reassign
+                             ;; to it -- the sweep would signal on it.
+                             (when (frame-live-p frame)
+                               ;; An agent pane's process cannot survive a
+                               ;; restart and a popup's buffer may not have
+                               ;; been saved at all; sweep those stale right
+                               ;; stack windows rather than show them.
+                               (edmacs-stack-sweep-stale-panes frame))))
+                       (error
+                        (display-warning 'edmacs-sessions
+                                         (format "frameset restore failed: %s" err)
+                                         :warning)))
+                     ;; Outside the guard above, and before the back-fill, so
+                     ;; a frame created here to replace one `frameset-restore'
+                     ;; deleted gets its sidebar and title like any other.
+                     (edmacs-sessions--ensure-gui-frame)
+                     (edmacs-sessions--finish-frameset-restore))))))
 
 (add-hook 'after-make-frame-functions #'edmacs-sessions--restore-pending-frameset)
 
@@ -429,10 +506,7 @@ login."
 (when (and (daemonp) (eq system-type 'darwin))
   (define-key global-map [remap delete-frame] #'edmacs-ns-close-frame)
   (define-key special-event-map [delete-frame] #'edmacs-ns-handle-delete-frame)
-  (add-hook 'emacs-startup-hook
-            (lambda ()
-              ;; Never let a headless daemon die here (see core.el on exit 255).
-              (ignore-errors (make-frame '((window-system . ns)))))))
+  (add-hook 'emacs-startup-hook #'edmacs-sessions--ensure-gui-frame))
 
 ;; ============================================================================
 ;; Bufferlo - per-tab buffer lists (desktop.el deliberately omits these)

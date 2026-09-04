@@ -349,21 +349,207 @@ directory no longer exists."
             (should-not tracked)))))
 
     ;; ==========================================================================
-    ;; AC1 -- saved frame position (`left'/`top') must survive restore
+    ;; Frame position (`left'/`top') is deliberately NOT restored
     ;; ==========================================================================
 
-    (ert-deftest edmacs-sessions-test-frameset-filter-preserves-frame-position ()
-      "AC1 requires saved window positions to be honoured on restore.
-`frameset-restore' owns that: `frameset-filter-alist''s own default
-action for `left'/`top' is `frameset-filter-shelve-param', which only
-shelves a parameter when switching a GUI frame to a tty (never a plain
-GUI-to-GUI restore, confirmed by reading its docstring) -- unlike
-`name', which frameset.el marks `:never' outright. This guards against
-a future edit to this file's own `frameset-filter-alist' pushes (the
-colour `:never's, the `edmacs-repo' pin) accidentally widening to catch
-`left'/`top' too, the way they deliberately do for frame colours."
+    (ert-deftest edmacs-sessions-test-frameset-filter-drops-frame-position ()
+      "Supersedes the earlier AC1, which wanted saved positions honoured.
+Every graphical frame now opens fullscreen (frames.el's
+`edmacs-frames-fullscreen'), so there is no position worth replaying --
+only the hazard that `frameset-filter-alist''s default action for
+`left'/`top' (`frameset-filter-shelve-param', which passes both through
+verbatim on a GUI-to-GUI restore) puts a restored frame back at the
+coordinates of whichever monitor it was saved on, which may not be
+attached any more. `:never' makes it land on the current display and
+fullscreen there instead.
+
+`width'/`height' need no filter of their own: `frameset--restore-frame'
+already drops both, and `visibility', from the config of any frame
+saved carrying a `fullscreen' parameter."
       (dolist (param '(left top))
-        (should-not (eq (cdr (assq param frameset-filter-alist)) :never))))
+        (should (eq (cdr (assq param frameset-filter-alist)) :never))))
+
+    ;; ==========================================================================
+    ;; Empty-frameset guard -- the self-perpetuating frameless-daemon loop
+    ;; ==========================================================================
+
+    (defun edmacs-sessions-test--frameset (states)
+      "Return a frameset carrying STATES, shaped the way desktop.el writes one."
+      (frameset--make :version 1 :timestamp '(0 0 0 0)
+                      :app '(desktop . "208") :name "test"
+                      :states states))
+
+    (defvar edmacs-sessions-test--one-state
+      (list (cons (list (cons 'name "a-frame")) nil))
+      "One (FRAME-PARAMETERS . WINDOW-STATE) item -- a frameset with a frame in it.")
+
+    (ert-deftest edmacs-sessions-test-frameset-has-frames-p-rejects-empty ()
+      "The literal shape found in a poisoned `.emacs.desktop':
+`[frameset 1 TIMESTAMP (desktop . \"208\") NAME nil nil nil]' -- a
+non-nil object whose `states' list is empty, which every bare non-nil
+test happily accepts."
+      (should-not (edmacs-sessions--frameset-has-frames-p
+                   (edmacs-sessions-test--frameset nil)))
+      (should-not (edmacs-sessions--frameset-has-frames-p nil))
+      (should-not (edmacs-sessions--frameset-has-frames-p 'not-a-frameset)))
+
+    (ert-deftest edmacs-sessions-test-frameset-has-frames-p-accepts-populated ()
+      (should (edmacs-sessions--frameset-has-frames-p
+               (edmacs-sessions-test--frameset edmacs-sessions-test--one-state))))
+
+    (ert-deftest edmacs-sessions-test-stash-skips-empty-frameset ()
+      "Stashing an empty frameset is what closes the loop: it is replayed on
+the boot frame, `frameset-restore''s cleanup pass deletes that frame
+because no state ever claims it, and the frameless session then saves
+another empty frameset for the next boot to find."
+      (let ((edmacs-sessions--pending-frameset nil)
+            (desktop-saved-frameset (edmacs-sessions-test--frameset nil)))
+        (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
+                  ((symbol-function 'desktop-restoring-frameset-p) (lambda () nil)))
+          (edmacs-sessions--stash-frameset-for-daemon)
+          (should-not edmacs-sessions--pending-frameset))))
+
+    (ert-deftest edmacs-sessions-test-stash-takes-populated-frameset ()
+      (let* ((fs (edmacs-sessions-test--frameset edmacs-sessions-test--one-state))
+             (edmacs-sessions--pending-frameset nil)
+             (desktop-saved-frameset fs))
+        (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
+                  ((symbol-function 'desktop-restoring-frameset-p) (lambda () nil)))
+          (edmacs-sessions--stash-frameset-for-daemon)
+          (should (eq edmacs-sessions--pending-frameset fs)))))
+
+    (ert-deftest edmacs-sessions-test-restore-pending-ignores-empty-frameset ()
+      "The same guard on the restore side, so an empty frameset that reached
+`edmacs-sessions--pending-frameset' by any other route still never gets
+as far as `frameset-restore''s frame-deleting cleanup pass."
+      (let ((edmacs-sessions--pending-frameset (edmacs-sessions-test--frameset nil))
+            (scheduled 0) (restored nil))
+        (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                  ((symbol-function 'run-at-time)
+                   (lambda (&rest _) (setq scheduled (1+ scheduled)) nil))
+                  ((symbol-function 'desktop-restore-frameset)
+                   (lambda (&rest _) (setq restored t))))
+          (edmacs-sessions--restore-pending-frameset (selected-frame))
+          (should (= scheduled 0))
+          (should-not restored))))
+
+    (defun edmacs-sessions-test--run-restore-timer (restore-fn)
+      "Drive the deferred body `edmacs-sessions--restore-pending-frameset\='
+schedules, with RESTORE-FN standing in for `desktop-restore-frameset\='.
+Returns (ORDER . WARNINGS): the sequence of steps the timer reached and
+any `display-warning\=' text it produced. RESTORE-FN is called with the
+frame handed to the sweep so a stub can simulate `frameset-restore\='
+deleting it."
+      (let ((edmacs-sessions--pending-frameset
+             (edmacs-sessions-test--frameset edmacs-sessions-test--one-state))
+            (deferred nil) (order nil) (warnings nil))
+        (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                  ((symbol-function 'run-at-time)
+                   (lambda (_secs _repeat fn &rest _) (setq deferred fn) nil))
+                  ((symbol-function 'desktop-restore-frameset)
+                   (lambda (&rest _) (push 'restore order) (funcall restore-fn)))
+                  ((symbol-function 'edmacs-stack-sweep-stale-panes)
+                   (lambda (&rest _) (push 'sweep order)))
+                  ((symbol-function 'edmacs-sessions--ensure-gui-frame)
+                   (lambda () (push 'ensure order)))
+                  ((symbol-function 'edmacs-sessions--finish-frameset-restore)
+                   (lambda () (push 'finish order)))
+                  ((symbol-function 'display-warning)
+                   (lambda (_type msg &rest _) (push msg warnings))))
+          (edmacs-sessions--restore-pending-frameset (selected-frame))
+          (should deferred)
+          (should-not edmacs-sessions--pending-frameset)
+          (funcall deferred))
+        (cons (nreverse order) (nreverse warnings))))
+
+    (ert-deftest edmacs-sessions-test-restore-pending-runs-the-gui-frame-net ()
+      "The net runs inside the same timer body, after the restore and before
+the back-fill -- so a frame it creates to replace one `frameset-restore\='
+deleted still gets its title, worktree tracking, and sidebar."
+      (let ((result (edmacs-sessions-test--run-restore-timer #'ignore)))
+        (should (equal (car result) '(restore sweep ensure finish)))
+        (should-not (cdr result))))
+
+    (ert-deftest edmacs-sessions-test-restore-pending-skips-sweep-on-deleted-frame ()
+      "`frameset-restore\=' deletes the very frame it was handed when its
+cleanup pass finds no saved state to reassign to it. The sweep opens
+with `with-selected-frame\=', so calling it on that dead frame signals
+`(wrong-type-argument frame-live-p ...)\=' out of the timer and skips the
+net -- leaving the daemon with only its tty placeholder, which is the
+frameless state that goes on to save an empty frameset."
+      (let* ((target (selected-frame))
+             (deleted nil)
+             (result
+              (cl-letf (((symbol-function 'frame-live-p)
+                         (lambda (f) (if (eq f target) (not deleted) t))))
+                (edmacs-sessions-test--run-restore-timer
+                 (lambda () (setq deleted t))))))
+        (should (equal (car result) '(restore ensure finish)))
+        (should-not (memq 'sweep (car result)))
+        (should-not (cdr result))))
+
+    (ert-deftest edmacs-sessions-test-restore-pending-nets-a-signalling-restore ()
+      "Any error out of the restore still leaves a GUI frame behind: the
+guard warns and the net runs anyway, rather than the timer aborting
+into a frameless daemon."
+      (let ((result (edmacs-sessions-test--run-restore-timer
+                     (lambda () (error "boom")))))
+        (should (equal (car result) '(restore ensure finish)))
+        (should (= (length (cdr result)) 1))
+        (should (string-match-p "boom" (car (cdr result))))))
+
+    ;; ==========================================================================
+    ;; edmacs-sessions--ensure-gui-frame / --make-gui-frame
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sessions-test-ensure-gui-frame-noop-when-one-exists ()
+      (let ((made 0))
+        (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                  ((symbol-function 'edmacs-sessions--make-gui-frame)
+                   (lambda () (setq made (1+ made)))))
+          (edmacs-sessions--ensure-gui-frame)
+          (should (= made 0)))))
+
+    (ert-deftest edmacs-sessions-test-ensure-gui-frame-creates-one-when-none ()
+      "A daemon left with only its tty placeholder -- `display-graphic-p' nil
+on every live frame -- is exactly the state that saves an empty
+frameset and poisons the next boot."
+      (let ((made 0))
+        (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil))
+                  ((symbol-function 'edmacs-sessions--make-gui-frame)
+                   (lambda () (setq made (1+ made)))))
+          (edmacs-sessions--ensure-gui-frame)
+          (should (= made 1)))))
+
+    (ert-deftest edmacs-sessions-test-gui-frame-parameters-name-the-window-system ()
+      "A daemon's `window-system' is nil, so a bare `make-frame' would hand
+back another tty placeholder rather than the GUI frame asked for."
+      (let ((system-type 'darwin))
+        (should (equal (edmacs-sessions--gui-frame-parameters)
+                       '((window-system . ns)))))
+      (let ((system-type 'gnu/linux))
+        (should-not (edmacs-sessions--gui-frame-parameters))))
+
+    (ert-deftest edmacs-sessions-test-make-gui-frame-passes-those-parameters ()
+      (let (passed)
+        (cl-letf (((symbol-function 'make-frame)
+                   (lambda (&optional params) (setq passed params) 'a-frame)))
+          (should (eq (edmacs-sessions--make-gui-frame) 'a-frame))
+          (should (equal passed (edmacs-sessions--gui-frame-parameters))))))
+
+    (ert-deftest edmacs-sessions-test-make-gui-frame-warns-instead-of-signalling ()
+      "Never signal: an error at a frameless daemon's top level exits it 255
+\(see core.el). The `ignore-errors' this replaced made the failure
+invisible as well as survivable, which is how a boot frame deleted out
+from under the daemon went unnoticed for so long."
+      (let ((warnings nil))
+        (cl-letf (((symbol-function 'make-frame)
+                   (lambda (&rest _) (error "no window system")))
+                  ((symbol-function 'display-warning)
+                   (lambda (&rest args) (push args warnings))))
+          (should-not (edmacs-sessions--make-gui-frame))
+          (should (= 1 (length warnings)))
+          (should (eq (car (car warnings)) 'edmacs-sessions)))))
 
     ;; ==========================================================================
     ;; AC1/AC2 -- edmacs-sessions--ensure-sidebar / --finish-frameset-restore

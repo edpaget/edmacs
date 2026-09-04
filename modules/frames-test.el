@@ -536,5 +536,150 @@ forever."
       (set-frame-parameter frame 'edmacs-repo nil)
       (set-frame-parameter frame 'name nil))))
 
+;; ============================================================================
+;; Fullscreen policy
+;; ============================================================================
+;; Still no real frame: `display-graphic-p' joins the faked primitives, and
+;; the deferring `run-at-time' is stubbed so the timer body can be run
+;; synchronously and inspected.
+
+(defmacro edmacs-frames-test--with-fullscreen-frames (alist &rest body)
+  "Run BODY over fake frames ALIST with `display-graphic-p' faked too.
+A fake frame counts as graphical when its params carry a non-nil
+`graphic' entry, so the policy's own `display-graphic-p' gate is
+exercised without ever opening a GUI frame."
+  (declare (indent 1))
+  `(edmacs-frames-test--with-fake-frames ,alist
+     (cl-letf (((symbol-function 'display-graphic-p)
+                (lambda (&optional f) (frame-parameter f 'graphic))))
+       ,@body)))
+
+(ert-deftest edmacs-frames-test-fullscreen-target-for-plain-graphical-frame ()
+  (let ((edmacs-frames-fullscreen 'fullboth))
+    (edmacs-frames-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (should (eq (edmacs-frames--fullscreen-target 'fa) 'fullboth)))))
+
+(ert-deftest edmacs-frames-test-fullscreen-target-nil-when-policy-disabled ()
+  (let ((edmacs-frames-fullscreen nil))
+    (edmacs-frames-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (should-not (edmacs-frames--fullscreen-target 'fa)))))
+
+(ert-deftest edmacs-frames-test-fullscreen-target-nil-for-tty-frame ()
+  "The daemon's own tty placeholder and every `emacsclient -t' frame:
+`fullscreen' means nothing there and is mangled by frameset's tty
+shelving on the way into a desktop file. This gate is the reason the
+policy is a hook rather than an entry in `default-frame-alist', which
+those frames read too."
+  (let ((edmacs-frames-fullscreen 'fullboth))
+    (edmacs-frames-test--with-fullscreen-frames '((f1 . ((graphic . nil))))
+      (should-not (edmacs-frames--fullscreen-target 'f1)))))
+
+(ert-deftest edmacs-frames-test-fullscreen-policy-is-not-in-default-frame-alist ()
+  "Pins the decision the test above documents: no `fullscreen' entry may
+be added to `default-frame-alist', or the tty frames would inherit it."
+  (should-not (assq 'fullscreen default-frame-alist)))
+
+(ert-deftest edmacs-frames-test-fullscreen-target-nil-for-child-frame ()
+  "A corfu/posframe-style completion popup is a graphical frame by
+construction and must keep the size its owner gave it."
+  (let ((edmacs-frames-fullscreen 'fullboth))
+    (edmacs-frames-test--with-fullscreen-frames
+        '((fa . ((graphic . t)))
+          (popup . ((graphic . t) (parent-frame . fa))))
+      (should-not (edmacs-frames--fullscreen-target 'popup)))))
+
+(ert-deftest edmacs-frames-test-fullscreen-target-nil-when-already-there ()
+  (let ((edmacs-frames-fullscreen 'fullboth))
+    (edmacs-frames-test--with-fullscreen-frames
+        '((fa . ((graphic . t) (fullscreen . fullboth))))
+      (should-not (edmacs-frames--fullscreen-target 'fa)))
+    ;; A frame at some OTHER fullscreen value still needs correcting.
+    (edmacs-frames-test--with-fullscreen-frames
+        '((fa . ((graphic . t) (fullscreen . maximized))))
+      (should (eq (edmacs-frames--fullscreen-target 'fa) 'fullboth)))))
+
+(ert-deftest edmacs-frames-test-fullscreen-target-nil-for-dead-frame ()
+  (let ((edmacs-frames-fullscreen 'fullboth))
+    (edmacs-frames-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (should-not (edmacs-frames--fullscreen-target 'gone)))))
+
+(ert-deftest edmacs-frames-test-apply-fullscreen-defers-then-sets ()
+  "Nothing is set inside the creation hook itself -- a frame is not fully
+mapped there, and the NS port drops a fullscreen toggle sent to an
+unmapped window -- only from the zero-delay timer."
+  (let ((edmacs-frames-fullscreen 'fullboth)
+        (deferred nil) (set-calls nil))
+    (edmacs-frames-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_secs _repeat fn &rest _) (setq deferred fn) nil))
+                ((symbol-function 'set-frame-parameter)
+                 (lambda (f param value) (push (list f param value) set-calls))))
+        (edmacs-frames-apply-fullscreen 'fa)
+        (should deferred)
+        (should-not set-calls)
+        (funcall deferred)
+        (should (equal set-calls '((fa fullscreen fullboth))))))))
+
+(ert-deftest edmacs-frames-test-apply-fullscreen-schedules-nothing-when-ineligible ()
+  (let ((edmacs-frames-fullscreen 'fullboth)
+        (scheduled 0))
+    (edmacs-frames-test--with-fullscreen-frames
+        '((f1 . ((graphic . nil)))
+          (fa . ((graphic . t) (fullscreen . fullboth))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (&rest _) (setq scheduled (1+ scheduled)) nil)))
+        (edmacs-frames-apply-fullscreen 'f1)
+        (edmacs-frames-apply-fullscreen 'fa)
+        (should (= scheduled 0))))))
+
+(ert-deftest edmacs-frames-test-apply-fullscreen-rechecks-target-in-timer ()
+  "The frame can be deleted -- or reach the target by another route --
+between the creation hook and the timer, so the timer body re-checks
+instead of setting a parameter on a frame that no longer qualifies."
+  (let ((calls 0) (deferred nil) (set-calls nil))
+    (cl-letf (((symbol-function 'edmacs-frames--fullscreen-target)
+               (lambda (_frame) (setq calls (1+ calls)) (and (= calls 1) 'fullboth)))
+              ((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest _) (setq deferred fn) nil))
+              ((symbol-function 'set-frame-parameter)
+               (lambda (&rest args) (push args set-calls))))
+      (edmacs-frames-apply-fullscreen 'fa)
+      (funcall deferred)
+      (should (= calls 2))
+      (should-not set-calls))))
+
+(ert-deftest edmacs-frames-test-apply-fullscreen-warns-instead-of-signalling ()
+  "An error out of the timer body would reach a frameless daemon's top
+level, which exits Emacs 255 (see core.el); it is warned about instead."
+  (let ((edmacs-frames-fullscreen 'fullboth)
+        (deferred nil) (warnings nil))
+    (edmacs-frames-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_secs _repeat fn &rest _) (setq deferred fn) nil))
+                ((symbol-function 'set-frame-parameter)
+                 (lambda (&rest _) (error "NS refused the toggle")))
+                ((symbol-function 'display-warning)
+                 (lambda (&rest args) (push args warnings))))
+        (edmacs-frames-apply-fullscreen 'fa)
+        (funcall deferred)
+        (should (= 1 (length warnings)))
+        (should (eq (car (car warnings)) 'edmacs-frames))))))
+
+(ert-deftest edmacs-frames-test-fullscreen-startup-covers-every-live-frame ()
+  "`after-make-frame-functions' never fires for a non-daemon Emacs's own
+initial frame -- the only frame a plain `emacs' start has -- so the
+policy is applied from `emacs-startup-hook' as well."
+  (let ((applied nil))
+    (edmacs-frames-test--with-fullscreen-frames
+        '((fa . ((graphic . t))) (fb . ((graphic . t))))
+      (cl-letf (((symbol-function 'edmacs-frames-apply-fullscreen)
+                 (lambda (frame) (push frame applied))))
+        (edmacs-frames--apply-fullscreen-at-startup)
+        (should (equal (nreverse applied) '(fa fb)))))))
+
+(ert-deftest edmacs-frames-test-fullscreen-is-wired-to-both-hooks ()
+  (should (memq #'edmacs-frames-apply-fullscreen after-make-frame-functions))
+  (should (memq #'edmacs-frames--apply-fullscreen-at-startup emacs-startup-hook)))
+
 (provide 'frames-test)
 ;;; frames-test.el ends here

@@ -31,6 +31,12 @@
 ;; one, off the redisplay path and never shelling out -- see its own
 ;; commentary below.
 ;;
+;; Every graphical frame this config opens -- a repo frame, the daemon's
+;; boot frame, an `emacsclient -c' frame -- is put fullscreen by
+;; `edmacs-frames-apply-fullscreen'. On macOS that is native fullscreen,
+;; so each repo frame gets its own Space; a fullscreen frame also has no
+;; saved geometry left to replay onto whatever monitor it was last on.
+;;
 ;; `edmacs-worktrees-for-repo' feeds sidebar.el a repo's full worktree
 ;; list (tab or not) from a cache populated only at frame-creation time
 ;; and refreshed by a debounced `file-notify' watch on
@@ -728,6 +734,87 @@ why this teardown call is not redundant with that hook."
    "n" '(edmacs-frames-next-frame :which-key "next frame")
    "p" '(edmacs-frames-previous-frame :which-key "previous frame")
    "d" '(delete-frame :which-key "delete frame")))
+
+;; ============================================================================
+;; Fullscreen -- every graphical frame opens fullscreen
+;; ============================================================================
+
+;; The load-bearing knob for "one Space per frame": with it nil the NS port
+;; fakes fullscreen by resizing the window inside the current Space instead.
+;; Already the default; pinned so the contract lives in source.
+(defvar ns-use-native-fullscreen)
+(when (eq system-type 'darwin)
+  (setq ns-use-native-fullscreen t))
+
+(defgroup edmacs-frames nil
+  "One frame per repo."
+  :group 'convenience)
+
+(defcustom edmacs-frames-fullscreen 'fullboth
+  "The `fullscreen' frame parameter every new graphical frame is given.
+Nil disables the policy. `fullboth' is the portable value: the NS port
+maps it to native macOS fullscreen, the X11/PGTK ports to EWMH's
+`_NET_WM_STATE_FULLSCREEN'."
+  :type '(choice (const :tag "Disabled" nil)
+                 (const :tag "Fullscreen" fullboth)
+                 (const :tag "Maximized" maximized)
+                 (const :tag "Full width" fullwidth)
+                 (const :tag "Full height" fullheight))
+  :group 'edmacs-frames)
+
+(defun edmacs-frames--fullscreen-target (frame)
+  "Return the `fullscreen' value FRAME still needs, or nil.
+Nil when the policy is off, when FRAME already carries that value, or
+when FRAME is one this policy must not touch:
+
+  - a non-graphical frame -- the daemon's own tty placeholder and every
+    `emacsclient -t' frame, where `fullscreen' means nothing and is
+    mangled by frameset's tty shelving on the way into a desktop file.
+    This gate is also why the policy is a hook rather than an entry in
+    `default-frame-alist', which those frames read too.
+  - a child frame -- a completion popup (corfu's, which already binds
+    `after-make-frame-functions' to nil, but posframe-style packages
+    generally do not) is a frame by construction and must stay the size
+    its owner gave it."
+  (and edmacs-frames-fullscreen
+       (frame-live-p frame)
+       (display-graphic-p frame)
+       (not (frame-parameter frame 'parent-frame))
+       (not (eq (frame-parameter frame 'fullscreen) edmacs-frames-fullscreen))
+       edmacs-frames-fullscreen))
+
+(defun edmacs-frames-apply-fullscreen (frame)
+  "Put FRAME fullscreen per `edmacs-frames-fullscreen'.
+Deferred to a zero-delay timer that re-checks the target, for the same
+reason `edmacs-sessions--restore-pending-frameset' defers its own work
+\(sessions.el): a frame is not fully mapped while its own creation hook
+is still running, and the NS port drops a fullscreen toggle sent to an
+unmapped window. Never signals -- an error reaching a frameless
+daemon's top level exits it 255 (see core.el)."
+  (when (edmacs-frames--fullscreen-target frame)
+    (run-at-time
+     0 nil
+     (lambda ()
+       (condition-case err
+           (when-let* ((target (edmacs-frames--fullscreen-target frame)))
+             (set-frame-parameter frame 'fullscreen target))
+         (error
+          (display-warning 'edmacs-frames
+                           (format "could not fullscreen frame: %s" err)
+                           :warning)))))))
+
+(add-hook 'after-make-frame-functions #'edmacs-frames-apply-fullscreen)
+
+(defun edmacs-frames--apply-fullscreen-at-startup ()
+  "Apply the fullscreen policy to every already-live graphical frame.
+`after-make-frame-functions' never fires for a non-daemon Emacs's
+initial frame, which on a plain `emacs' start is the only frame there
+is; under the daemon this finds nothing and the hook above covers the
+boot frame instead."
+  (dolist (frame (frame-list))
+    (edmacs-frames-apply-fullscreen frame)))
+
+(add-hook 'emacs-startup-hook #'edmacs-frames--apply-fullscreen-at-startup)
 
 (provide 'frames)
 ;;; frames.el ends here

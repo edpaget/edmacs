@@ -881,5 +881,29 @@ real add/remove reflection"))
                   (when (buffer-live-p buf) (kill-buffer buf)))
                 (ignore-errors (set-frame-parameter frame 'edmacs-repo nil))))))))
 
+    ;; ==========================================================================
+    ;; Fullscreen policy -- a real frame, through the real unstubbed hook
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-frames-live-test-fullscreen-leaves-tty-frames-alone ()
+      "The half of the policy a real frame can prove in this harness.
+Every frame this suite can open is a tty frame -- the same shape as the
+daemon's own placeholder and as every `emacsclient -t' frame -- where
+`fullscreen' is meaningless and gets mangled by frameset's tty shelving
+on the way into a desktop file. Nothing is stubbed here: the frame is
+made by the suite's own helper, so the real
+`after-make-frame-functions' entry runs, and `sit-for' drains the
+zero-delay timer it would have scheduled.
+
+The positive case needs a window system this batch harness has no way
+to open; `modules/frames-test.el' covers
+`edmacs-frames--fullscreen-target''s graphical branch directly instead."
+      (should edmacs-frames-fullscreen)
+      (should (memq #'edmacs-frames-apply-fullscreen after-make-frame-functions))
+      (edmacs-frames-live-test--with-frames (frame)
+        (should-not (display-graphic-p frame))
+        (sit-for 0.2)
+        (should-not (frame-parameter frame 'fullscreen))))
+
     (provide 'frames-live-test)))
 ;;; frames-live-test.el ends here
