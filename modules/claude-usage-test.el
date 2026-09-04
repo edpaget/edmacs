@@ -1532,6 +1532,70 @@ renders without signalling."
                   (should (string-match-p claude-usage--em-dash (buffer-string))))))
           (when (buffer-live-p buf) (kill-buffer buf)))))
 
+    ;; --- Collapsed sidebar section (phase 10) ------------------------------------
+
+    (ert-deftest claude-usage-test-collapsed-section-empty-when-no-data ()
+      "Collapsed section returns empty string when no usage data is available."
+      (claude-usage-test--with-surface-state
+        (let ((claude-usage--state-envelope nil)
+              (claude-usage--state-source nil))
+          (should (equal "" (claude-usage--collapsed-section (selected-frame) 40))))))
+
+    (ert-deftest claude-usage-test-collapsed-section-formats-usage-data ()
+      "Collapsed section formats headline meters as ID:PCT pairs separated by spaces."
+      (claude-usage-test--with-surface-state
+        (let* ((claude-usage--state-envelope
+                '((fetchedAtMs . 1725274680000)
+                  (utilization
+                   (limits . (((kind . "session") (percent . 45) (severity . "normal"))
+                              ((kind . "weekly_all") (percent . 60) (severity . "normal")))))))
+               (claude-usage--state-source 'cache))
+          (let ((result (claude-usage--collapsed-section (selected-frame) 100)))
+            ;; Should contain both meter IDs
+            (should (string-match-p "session" result))
+            (should (string-match-p "weekly" result))
+            ;; Should contain percentages
+            (should (string-match-p "45" result))
+            (should (string-match-p "60" result))))))
+
+    (ert-deftest claude-usage-test-collapsed-section-respects-width ()
+      "Collapsed section output fits within WIDTH columns using string-width."
+      (claude-usage-test--with-surface-state
+        (let* ((claude-usage--state-envelope
+                '((fetchedAtMs . 1725274680000)
+                  (utilization
+                   (limits . (((kind . "session") (percent . 45) (severity . "normal"))
+                              ((kind . "weekly_all") (percent . 60) (severity . "normal")))))))
+               (claude-usage--state-source 'cache))
+          (let ((result (claude-usage--collapsed-section (selected-frame) 30)))
+            ;; Result must fit within width
+            (should (<= (string-width result) 30))))))
+
+    (ert-deftest claude-usage-test-collapsed-section-truncates-gracefully ()
+      "Very narrow width parameter results in truncated but valid output."
+      (claude-usage-test--with-surface-state
+        (let* ((claude-usage--state-envelope
+                '((fetchedAtMs . 1725274680000)
+                  (utilization
+                   (limits . (((kind . "session") (percent . 45) (severity . "normal")))))))
+               (claude-usage--state-source 'cache))
+          (let ((result (claude-usage--collapsed-section (selected-frame) 10)))
+            ;; Even at 10 columns, should produce something and fit within width
+            (should (<= (string-width result) 10))))))
+
+    (ert-deftest claude-usage-test-collapsed-section-applies-face ()
+      "Usage percentages get their severity face applied."
+      (claude-usage-test--with-surface-state
+        (let* ((claude-usage--state-envelope
+                '((fetchedAtMs . 1725274680000)
+                  (utilization
+                   (limits . (((kind . "session") (percent . 95) (severity . "high")))))))
+               (claude-usage--state-source 'cache))
+          (let ((result (claude-usage--collapsed-section (selected-frame) 40)))
+            ;; Should have text properties (face applied)
+            (should-not (string-empty-p result))
+            (should (> (length (text-properties-at 0 result)) 0))))))
+
     )) ; end of build-root-found branch
 
 (provide 'claude-usage-test)

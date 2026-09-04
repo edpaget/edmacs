@@ -730,5 +730,48 @@ window is currently on screen."
 
 (add-hook 'edmacs-agents-changed-hook #'edmacs-sidebar-agents--on-agents-changed)
 
+;; ============================================================================
+;; Collapsed sidebar strip: agent-status summary
+;; ============================================================================
+
+(defun edmacs-sidebar-agents--non-idle-p (agent)
+  "Return non-nil when AGENT has non-idle status (working, waiting, or done)."
+  (not (eq (edmacs-agent-status agent) 'idle)))
+
+(defun edmacs-sidebar-agents--collapsed-section (frame width)
+  "Render agent statuses into a collapsed sidebar strip for FRAME.
+Returns a string with one line per agent with non-idle status, or
+\"\" when no such agents exist. Each line is glyph + status indicator,
+applying the status face. Measures all lines with `string-width' to
+respect double-width nerd-font glyphs and fits within WIDTH columns.
+FRAME is currently unused (all agents are frame-independent); accepted
+for registration on `edmacs-sidebar-collapsed-section-functions'
+compatibility."
+  (ignore frame)
+  (let ((agents (seq-filter #'edmacs-sidebar-agents--non-idle-p
+                             (edmacs-sidebar-agents--all))))
+    (if (null agents)
+        ""
+      (let ((lines nil))
+        (dolist (agent (sort (copy-sequence agents) #'edmacs-sidebar-agents--compare))
+          (let* ((status (edmacs-agent-status agent))
+                 (glyph (edmacs-sidebar-agents--glyph status))
+                 (face (edmacs-sidebar-agents--status-face status))
+                 ;; Format: glyph + one-char status indicator
+                 (line (format "%s %s" glyph (substring (symbol-name status) 0 1)))
+                 (propertized (if face (propertize line 'face face) line)))
+            (push propertized lines)))
+        ;; Join lines with newline, respecting width constraint
+        (let ((result (string-join (nreverse lines) "\n")))
+          ;; Measure with string-width for double-width glyphs
+          (if (<= (string-width result) width)
+              result
+            ;; If too wide, truncate gracefully
+            (truncate-string-to-width result (max 0 (1- width)))))))))
+
+(add-hook 'edmacs-sidebar-collapsed-section-functions
+          #'edmacs-sidebar-agents--collapsed-section
+          nil)  ;; Prepend (nil = default prepend position)
+
 (provide 'sidebar-agents)
 ;;; sidebar-agents.el ends here

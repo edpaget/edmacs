@@ -1014,6 +1014,51 @@ usage state has been resolved yet."
           #'claude-usage--insert-sidebar-section
           t)
 
+;; ============================================================================
+;; Collapsed sidebar strip: usage summary
+;; ============================================================================
+
+(defun claude-usage--collapsed-section (frame width)
+  "Render usage data into a collapsed sidebar strip for FRAME.
+Returns a compact single-line summary of usage percentages, or
+\"\" when no usage data is available. Measures with `string-width'
+to respect double-width nerd-font glyphs and fits within WIDTH columns,
+truncating model names or percentages if necessary.
+FRAME is currently unused (usage data is frame-independent); accepted
+for registration on `edmacs-sidebar-collapsed-section-functions'
+compatibility."
+  (ignore frame)
+  (let ((values (claude-usage--surface-values)))
+    (if (null values)
+        ""
+      (let ((rows (plist-get values :rows)))
+        (if (null rows)
+            ""
+          ;; Format headline meters (session, weekly_all) compactly as ID:PCT ID:PCT ...
+          (let ((parts nil))
+            (dolist (row rows)
+              (let* ((id (plist-get row :id))
+                     (percent-str (plist-get row :percent-str))
+                     (part (format "%s:%s" id percent-str))
+                     (face (plist-get row :face)))
+                (when (stringp part)
+                  (push (if face (propertize part 'face face) part) parts))))
+            (let ((line (string-join (nreverse parts) " ")))
+              ;; Measure and truncate if needed
+              (if (<= (string-width line) width)
+                  line
+                ;; Truncate: drop trailing ": NN%" from parts if needed
+                (let* ((truncated (truncate-string-to-width line (max 0 (1- width))))
+                       (with-ellipsis (concat truncated "…")))
+                  (if (<= (string-width with-ellipsis) width)
+                      with-ellipsis
+                    truncated))))))))))
+
+;; Append to collapsed hook (runs after agents, which prepends)
+(add-hook 'edmacs-sidebar-collapsed-section-functions
+          #'claude-usage--collapsed-section
+          t)
+
 ;; Seed synchronously from the on-disk cache so the sidebar section has
 ;; figures the moment Emacs starts, rather than only once an async fetch
 ;; resolves.  `--apply-refresh-result' with nil means "no live result": it
