@@ -24,7 +24,6 @@
   ;; On `markdown-mode' (gfm-mode derives from it), not `text-mode',
   ;; so plain text buffers are untouched.
   :hook ((markdown-mode . variable-pitch-mode)
-         (markdown-mode . olivetti-mode)
          (markdown-mode . (lambda () (setq-local line-spacing 0.15)))))
 
 ;; solarized wires only `markdown-code-face' to `fixed-pitch'; the rest of
@@ -36,10 +35,6 @@
                   markdown-pre-face
                   markdown-language-keyword-face))
     (set-face-attribute face nil :inherit 'fixed-pitch)))
-
-(use-package olivetti
-  :straight t
-  :custom (olivetti-body-width 84))
 
 ;; ============================================================================
 ;; Optional: gptel (alternative/additional AI interface)

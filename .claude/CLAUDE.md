@@ -185,7 +185,7 @@ edmacs/
 │   ├── ui.el              # Theme and appearance
 │   ├── completion.el      # Vertico, Corfu, Consult
 │   ├── programming.el     # LSP, Flycheck, Apheleia
-│   ├── ai.el              # Markdown/olivetti editor polish
+│   ├── ai.el              # Markdown editor polish
 │   ├── claude-term.el     # Claude CLI hosted in a ghostel terminal
 │   ├── claude-term-registry.el # Session registry + SPC a keymap
 │   ├── git-common-dir.el  # Worktree-aware git dir resolution
