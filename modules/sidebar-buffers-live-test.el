@@ -806,7 +806,7 @@ render/navigation/rename path."
                                          :status 'working :status-ts (float-time)
                                          :updated-ts (float-time)
                                          :title "composed-render-agent"
-                                         :source 'workmux :locator nil :unread nil)
+                                         :source 'claude-term :locator nil :unread nil)
                      edmacs-agents--table)
             (unwind-protect
                 (progn

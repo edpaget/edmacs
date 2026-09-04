@@ -5,7 +5,7 @@
 ;; create/remove/rename events into the shared `edmacs-agents--table'
 ;; (agents.el, edmacs-sidebar phase 5) as source `claude-term' rows, so a
 ;; ghostel-hosted session shows up in the sidebar's ALL AGENTS list and
-;; `SPC a TAB' attention cycling exactly like a workmux-sourced tmux pane.
+;; participates in `SPC a TAB' attention cycling.
 ;;
 ;; Wires into three swappable extension points added to
 ;; claude-term-registry.el for this purpose:

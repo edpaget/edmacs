@@ -45,27 +45,11 @@
 ;; run therefore needs an actual interactive GUI frame, outside what an
 ;; unattended worktree/batch pass can drive; the advice-guard test is
 ;; this codebase's substitute, per the same "automate the underlying
-;; property, not the literal manual step" approach `agents.el's own
-;; Commentary already documents for its workmux-status-parity AC.
+;; property, not the literal manual step" approach used elsewhere in this
+;; codebase.
 ;;
-;; Two more of phase 8's ACs are met only partially, deliberately, and by
+;; One more of phase 8's ACs is met only partially, deliberately, and by
 ;; design (not oversight):
-;;
-;; - The design's key table describes `r' on an agent row as "Rename
-;;   instance" with no source qualifier. `edmacs-sidebar-agents-rename'
-;;   (sidebar-agents.el) can only push a rename through a `claude-term'-
-;;   sourced row's own registry/buffer-rename path; a `workmux' row's
-;;   title comes from the tmux pane itself, with no channel this UI can
-;;   write through, so it `user-error's instead -- and `workmux' is the
-;;   only agent source with real rows before edmacs-sidebar roadmap phase
-;;   9 (the claude-term adapter) lands. So today `r' on every agent row
-;;   that actually exists errors rather than renaming. This traces
-;;   directly to phase 8's own body ("... or an in-Emacs agent
-;;   instance") and phase 9's cross-dependency, not a bug here; the
-;;   `claude-term' branch is covered against a synthetic `edmacs-agent'
-;;   struct (sidebar-agents-test.el), and the `workmux' `user-error' is
-;;   covered against a real one -- there is no way to exercise a real
-;;   end-to-end claude-term rename until phase 9 supplies real rows.
 ;;
 ;; - "Faces ... text fallback renders sensibly in a terminal frame" has
 ;;   two halves. Which glyph table gets SELECTED (nerd-icons vs. plain

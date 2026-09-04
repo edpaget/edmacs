@@ -39,14 +39,15 @@ other suite's or this machine's real state."
          (edmacs-agents-changed-hook nil))
      ,@body))
 
-(cl-defun claude-term-agents-test--seed-workmux-row
+(cl-defun claude-term-agents-test--seed-foreign-row
     (&key (root "/repo/wt/") (instance "%9") (status 'working))
-  "Insert a stubbed `workmux'-sourced row under ROOT/INSTANCE and return it."
+  "Insert a stubbed row sourced outside the claude-term adapter, under
+ROOT/INSTANCE, and return it."
   (let* ((key (edmacs-agents--key root instance))
          (row (make-edmacs-agent
                :key key :root root :instance instance
                :status status :status-ts (float-time) :updated-ts (float-time)
-               :title "tmux pane" :source 'workmux
+               :title "tmux pane" :source nil
                :locator (list :pane-id instance :session "s1" :window "w1")
                :unread nil)))
     (puthash key row edmacs-agents--table)
@@ -125,17 +126,17 @@ overwrites the same key rather than adding a second row."
 
 (ert-deftest claude-term-agents-test-on-remove-deletes-only-that-row ()
   "The remove-functions handler deletes exactly the targeted row and
-leaves a stubbed workmux row under the same root untouched."
+leaves a stubbed foreign-sourced row under the same root untouched."
   (claude-term-agents-test--with-clean-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf")))
       (unwind-protect
           (progn
             (claude-term-agents--on-create root "ghostel-1" buf)
-            (let ((workmux-row (claude-term-agents-test--seed-workmux-row :root root)))
+            (let ((foreign-row (claude-term-agents-test--seed-foreign-row :root root)))
               (claude-term-agents--on-remove root "ghostel-1")
               (should-not (gethash (edmacs-agents--key root "ghostel-1") edmacs-agents--table))
-              (should (equal workmux-row (gethash (edmacs-agent-key workmux-row)
+              (should (equal foreign-row (gethash (edmacs-agent-key foreign-row)
                                                    edmacs-agents--table)))))
         (kill-buffer buf)))))
 
@@ -200,17 +201,17 @@ file's own create listener."
     (should (zerop (hash-table-count edmacs-agents--table)))))
 
 (ert-deftest claude-term-agents-test-on-rename-leaves-other-rows-untouched ()
-  "Renaming one claude-term row does not disturb a stubbed workmux row
+  "Renaming one claude-term row does not disturb a stubbed foreign-sourced row
 under the same root."
   (claude-term-agents-test--with-clean-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf"))
-           (workmux-row (claude-term-agents-test--seed-workmux-row :root root)))
+           (foreign-row (claude-term-agents-test--seed-foreign-row :root root)))
       (unwind-protect
           (progn
             (claude-term-agents--on-create root "old" buf)
             (claude-term-agents--on-rename root "old" "new")
-            (should (equal workmux-row (gethash (edmacs-agent-key workmux-row)
+            (should (equal foreign-row (gethash (edmacs-agent-key foreign-row)
                                                  edmacs-agents--table))))
         (kill-buffer buf)))))
 
@@ -245,11 +246,11 @@ of the other two hooks by direct `remhash'/`puthash'."
 
 (ert-deftest claude-term-agents-test-set-status-flips-only-the-claude-term-row ()
   "`edmacs-agents-set-status' with an explicit INSTANCE flips only that
-row; a workmux row under the same root is byte-identical afterward."
+row; a foreign-sourced row under the same root is byte-identical afterward."
   (claude-term-agents-test--with-clean-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf"))
-           (workmux-row (claude-term-agents-test--seed-workmux-row :root root)))
+           (foreign-row (claude-term-agents-test--seed-foreign-row :root root)))
       (unwind-protect
           (progn
             (claude-term-agents--on-create root "ghostel-1" buf)
@@ -257,7 +258,7 @@ row; a workmux row under the same root is byte-identical afterward."
             (should (eq 'waiting (edmacs-agent-status
                                    (gethash (edmacs-agents--key root "ghostel-1")
                                             edmacs-agents--table))))
-            (should (equal workmux-row (gethash (edmacs-agent-key workmux-row)
+            (should (equal foreign-row (gethash (edmacs-agent-key foreign-row)
                                                  edmacs-agents--table))))
         (kill-buffer buf)))))
 
@@ -339,17 +340,17 @@ hook-driven case this phase closes."
 (ert-deftest claude-term-agents-test-set-status-remove-deletes-targeted-row-only ()
   "`edmacs-agents-set-status' with STATUS `remove' deletes exactly the
 resolved row (the fix for the internal enum gap this phase closes) and
-leaves a workmux row under the same root in the table."
+leaves a foreign-sourced row under the same root in the table."
   (claude-term-agents-test--with-clean-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf"))
-           (workmux-row (claude-term-agents-test--seed-workmux-row :root root)))
+           (foreign-row (claude-term-agents-test--seed-foreign-row :root root)))
       (unwind-protect
           (progn
             (claude-term-agents--on-create root "ghostel-1" buf)
             (edmacs-agents-set-status root 'remove "ghostel-1")
             (should-not (gethash (edmacs-agents--key root "ghostel-1") edmacs-agents--table))
-            (should (gethash (edmacs-agent-key workmux-row) edmacs-agents--table)))
+            (should (gethash (edmacs-agent-key foreign-row) edmacs-agents--table)))
         (kill-buffer buf)))))
 
 (ert-deftest claude-term-agents-test-set-status-remove-unknown-row-is-a-no-op ()
@@ -369,7 +370,7 @@ source-filtering is added by this phase."
       (unwind-protect
           (progn
             (claude-term-agents--on-create root "ghostel-1" buf)
-            (claude-term-agents-test--seed-workmux-row :root root :instance "%9")
+            (claude-term-agents-test--seed-foreign-row :root root :instance "%9")
             (should-error (edmacs-agents-set-status root 'waiting) :type 'user-error))
         (kill-buffer buf)))))
 

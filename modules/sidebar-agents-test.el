@@ -115,7 +115,7 @@ a real Emacs session) to enable this suite"))
 
     (cl-defun edmacs-sidebar-agents-test--make-agent
         (&key (root "/repo/wt/") (instance "%1") (status 'working)
-              (status-ts (float-time)) (title "Claude Code") (source 'workmux)
+              (status-ts (float-time)) (title "Claude Code") (source 'claude-term)
               (locator nil) (unread nil))
       (let ((key (cons root instance)))
         (make-edmacs-agent :key key :root root :instance instance :status status
@@ -373,18 +373,6 @@ assertions passing untouched."
             (should-not (edmacs-agent-unread agent))
             (should (> redraws 0))))))
 
-    (ert-deftest edmacs-sidebar-agents-test-visit-source-extra-workmux-selects-window-then-pane ()
-      (let ((agent (edmacs-sidebar-agents-test--make-agent
-                    :source 'workmux
-                    :locator (list :pane-id "%7" :session "s1" :window "w1")))
-            (calls nil))
-        (cl-letf (((symbol-function 'start-process)
-                   (lambda (_name _buf &rest args) (push args calls))))
-          (edmacs-sidebar-agents--visit-source-extra agent)
-          (setq calls (nreverse calls))
-          (should (equal '("tmux" "select-window" "-t" "s1:w1") (nth 0 calls)))
-          (should (equal '("tmux" "select-pane" "-t" "%7") (nth 1 calls))))))
-
     (ert-deftest edmacs-sidebar-agents-test-visit-source-extra-claude-term-pops-to-its-window ()
       (let ((agent (edmacs-sidebar-agents-test--make-agent
                     :source 'claude-term :locator "fake-buffer"))
@@ -393,6 +381,36 @@ assertions passing untouched."
                    (lambda (buf) (setq selected buf))))
           (edmacs-sidebar-agents--visit-source-extra agent)
           (should (equal "fake-buffer" selected)))))
+
+    (ert-deftest edmacs-sidebar-agents-test-visit-source-extra-nil-source-is-silent-noop ()
+      "A :source nil row has no jump target: the pcase has no catch-all,
+so this must return without calling anything and without signalling."
+      (let ((agent (edmacs-sidebar-agents-test--make-agent :source nil))
+            (pop-called nil) (proc-called nil))
+        (cl-letf (((symbol-function 'claude-term--pop-to-window)
+                   (lambda (&rest _) (setq pop-called t)))
+                  ((symbol-function 'start-process)
+                   (lambda (&rest _) (setq proc-called t))))
+          (edmacs-sidebar-agents--visit-source-extra agent)
+          (should-not pop-called)
+          (should-not proc-called))))
+
+    (ert-deftest edmacs-sidebar-agents-test-visit-nil-source-opens-tab-marks-read-without-signalling ()
+      "The full RET visit on a :source nil row still runs the common half
+-- open the worktree tab, mark it read -- and never signals, even though
+the source-specific jump half is a no-op."
+      (let* ((agent (edmacs-sidebar-agents-test--make-agent :source nil :root "/repo/wt/"))
+             (opened nil) (marked-key nil))
+        (cl-letf (((symbol-function 'edmacs-frames-open-worktree-tab)
+                   (lambda (dir) (push dir opened)))
+                  ((symbol-function 'edmacs-agents-mark-read)
+                   (lambda (key) (setq marked-key key)))
+                  ((symbol-function 'edmacs-sidebar-agents--redraw-all)
+                   (lambda () nil)))
+          (edmacs-sidebar-agents--visit-common agent)
+          (edmacs-sidebar-agents--visit-source-extra agent)
+          (should (equal '("/repo/wt/") opened))
+          (should (equal (edmacs-agent-key agent) marked-key)))))
 
     ;; ==========================================================================
     ;; SPC a TAB attention cycling (AC3)
@@ -654,8 +672,8 @@ would desync `claude-term--on-exit's deregistration lookup)."
         (cl-letf (((symbol-function 'claude-term-registry-get) (lambda (&rest _) nil)))
           (should-error (edmacs-sidebar-agents-rename agent) :type 'user-error))))
 
-    (ert-deftest edmacs-sidebar-agents-test-rename-workmux-user-errors ()
-      (let ((agent (edmacs-sidebar-agents-test--make-agent :source 'workmux)))
+    (ert-deftest edmacs-sidebar-agents-test-rename-non-claude-term-user-errors ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent :source nil)))
         (should-error (edmacs-sidebar-agents-rename agent) :type 'user-error)))
 
     ;; ==========================================================================
@@ -686,19 +704,8 @@ would desync `claude-term--on-exit's deregistration lookup)."
           (edmacs-sidebar-agents-kill agent)
           (should-not called))))
 
-    (ert-deftest edmacs-sidebar-agents-test-kill-workmux-kills-pane-via-start-process ()
-      (let ((agent (edmacs-sidebar-agents-test--make-agent
-                    :source 'workmux :locator (list :pane-id "%7" :session "s1" :window "w1")))
-            (calls nil))
-        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
-                  ((symbol-function 'start-process)
-                   (lambda (_name _buf &rest args) (push args calls)))
-                  ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
-          (edmacs-sidebar-agents-kill agent)
-          (should (equal calls '(("tmux" "kill-pane" "-t" "%7")))))))
-
-    (ert-deftest edmacs-sidebar-agents-test-kill-workmux-no-pane-user-errors ()
-      (let ((agent (edmacs-sidebar-agents-test--make-agent :source 'workmux :locator nil)))
+    (ert-deftest edmacs-sidebar-agents-test-kill-unsupported-source-user-errors ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent :source nil)))
         (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
           (should-error (edmacs-sidebar-agents-kill agent) :type 'user-error))))
 

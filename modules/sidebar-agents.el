@@ -403,27 +403,17 @@ source-specific extra step in `edmacs-sidebar-agents--visit-source-extra'."
 
 (defun edmacs-sidebar-agents--visit-source-extra (agent)
   "Run AGENT's source-specific jump side effect.
-A workmux row also switches the real tmux window/pane, via two
-`start-process' calls -- async, never `call-process'/`shell-command',
-so this never blocks the command loop. An in-Emacs row (source
-`claude-term'/`claude-repl') instead displays and selects its own pane
-via `claude-term--pop-to-window' -- an ordinary window, not a side
-window, since claude-term stopped allocating right-hand side slots.
-Called unguarded on purpose: the `fboundp' guard this replaced turned a
-renamed-away function into a silent no-op rather than an error."
+A `claude-term' row displays and selects its own pane via
+`claude-term--pop-to-window' -- an ordinary window, not a side window,
+since claude-term stopped allocating right-hand side slots. Any other
+source (including a `nil', unattached row) is a deliberate no-op: this
+pcase has no catch-all, so a row with no jump target simply does
+nothing here, after `edmacs-sidebar-agents--visit-common' has already
+raised the frame and marked it read. Called unguarded on purpose: the
+`fboundp' guard this replaced turned a renamed-away function into a
+silent no-op rather than an error."
   (pcase (edmacs-agent-source agent)
-    ('workmux
-     (let* ((locator (edmacs-agent-locator agent))
-            (session (plist-get locator :session))
-            (window (plist-get locator :window))
-            (pane-id (plist-get locator :pane-id)))
-       (when (and session window)
-         (start-process "edmacs-sidebar-agents-tmux-window" nil
-                         "tmux" "select-window" "-t" (format "%s:%s" session window)))
-       (when pane-id
-         (start-process "edmacs-sidebar-agents-tmux-pane" nil
-                         "tmux" "select-pane" "-t" pane-id))))
-    ((or 'claude-term 'claude-repl)
+    ('claude-term
      (claude-term--pop-to-window (edmacs-agent-locator agent)))))
 
 ;;;###autoload
@@ -463,10 +453,10 @@ updates the buffer-local `claude-term--instance' and renames the
 buffer itself, both of which `claude-term--on-exit' (claude-term.el)
 reads to deregister the session on kill; skipping them here would
 leave the registry keyed under the OLD instance for that lookup while
-this file's own row model already reflects the new one. Every other
-source (`workmux', and any future one) signals `user-error' -- its
-title comes from the pane itself, with no channel this UI can push a
-rename through.
+this file's own row model already reflects the new one. Any non-
+`claude-term' source, including a `nil', unattached row, signals
+`user-error' -- only a `claude-term' row's title has a channel this UI
+can push a rename through.
 This function's own test coverage of the `claude-term' branch (this
 file's pure suite) is against a synthetic `edmacs-agent' struct and a
 mocked `claude-term-registry-get'/`claude-term-rename', not a real
@@ -476,13 +466,7 @@ delegates to, already has real-session coverage via
 `edmacs-sidebar-agents-visit' and `-kill' now also have a real,
 adapter-produced row to run against: see
 `edmacs-sidebar-agents-live-test-real-claude-term-row-visit-and-kill'
-(sidebar-agents-live-test.el, edmacs-sidebar roadmap phase 9).
-The design's key table describes `r' on an agent row plainly as
-\"Rename instance\", with no source qualifier; `workmux' rows still
-error rather than rename, since workmux titles come from the tmux
-pane, not this UI, and this phase's own body scopes renaming to \"an
-in-Emacs agent instance\" specifically -- the design table itself
-should be updated to say so explicitly."
+(sidebar-agents-live-test.el, edmacs-sidebar roadmap phase 9)."
   (if (eq (edmacs-agent-source agent) 'claude-term)
       (let ((session (edmacs-sidebar-agents--claude-term-session agent)))
         (claude-term-rename (claude-term-session-buffer session))
@@ -500,24 +484,14 @@ A `claude-term' row resolves its live session via
 `claude-term-registry-get' and calls `claude-term-kill' on its buffer
 -- teardown then runs through claude-term.el's own async
 sentinel/`claude-term--on-exit' path exactly as it does for the direct
-command, so the registry and buffer stay in sync. A `workmux' row asks
-tmux to kill the pane via an async `start-process' -- never
-`call-process' -- mirroring `edmacs-sidebar-agents--visit-source-extra's
-tmux jump: this only ever runs from an explicit `d' keypress, never
-from a redraw, so it is exempt from the render-path no-subprocess rule
-the same way that jump already is. Any other source signals
-`user-error'."
+command, so the registry and buffer stay in sync. Any other source
+signals `user-error'."
   (when (yes-or-no-p (format "Kill agent session %s? " (edmacs-agent-title agent)))
     (pcase (edmacs-agent-source agent)
       ('claude-term
        (claude-term-kill
         (claude-term-session-buffer
          (edmacs-sidebar-agents--claude-term-session agent))))
-      ('workmux
-       (let ((pane-id (plist-get (edmacs-agent-locator agent) :pane-id)))
-         (unless pane-id
-           (user-error "Workmux agent has no pane to kill"))
-         (start-process "edmacs-sidebar-agents-tmux-kill" nil "tmux" "kill-pane" "-t" pane-id)))
       (source (user-error "Cannot kill a %s agent" source)))
     (edmacs-sidebar-agents--redraw-all)))
 
@@ -589,8 +563,7 @@ Async via `start-process', never blocking."
 (defvar edmacs-sidebar-agents-coalesce-seconds 2
   "Notifications queued within this many seconds of each other collapse
 into one call to `edmacs-sidebar-agents-notify-function'. A plain
-`defvar', not `defcustom', so a test can shrink it -- matching
-agents.el's own `edmacs-agents-stale-seconds' convention.")
+`defvar', not `defcustom', so a test can shrink it.")
 
 (defvar edmacs-sidebar-agents--pending-notification nil
   "The most recent queued (TITLE . BODY) pair, or nil.
@@ -711,8 +684,7 @@ same as every other trigger site."
 
 (defun edmacs-sidebar-agents--elapsed-tick-safe ()
   "Call `edmacs-sidebar-agents--elapsed-tick', catching any error so the
-repeating timer never dies silently on one bad redraw -- matching
-agents.el's own `edmacs-agents--sweep-safe' convention."
+repeating timer never dies silently on one bad redraw."
   (condition-case err
       (edmacs-sidebar-agents--elapsed-tick)
     (error (message "edmacs-sidebar-agents: elapsed tick failed: %s" err))))

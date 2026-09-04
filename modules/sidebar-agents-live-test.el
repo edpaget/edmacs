@@ -178,7 +178,7 @@ a real Emacs session) to enable this suite"))
 
     (cl-defun edmacs-sidebar-agents-live-test--make-agent
         (&key (root "/repo/wt/") (instance "%1") (status 'working)
-              (status-ts (float-time)) (title "Claude Code") (source 'workmux)
+              (status-ts (float-time)) (title "Claude Code") (source 'claude-term)
               (locator nil) (unread nil))
       (make-edmacs-agent :key (cons root instance) :root root :instance instance
                           :status status :status-ts status-ts :updated-ts status-ts
@@ -245,65 +245,8 @@ batch environment (no controlling terminal? run under `script -q /dev/null \
 emacs ...' to exercise this test): %s" e)))))
 
     ;; ==========================================================================
-    ;; AC2 -- RET visit: raise/select tab, tmux window+pane, un-bold
+    ;; AC2 -- RET visit: claude-term row pops to its own window
     ;; ==========================================================================
-
-    (ert-deftest edmacs-sidebar-agents-live-test-visit-opens-tab-tmux-and-unbolds ()
-      "RET on a bold (unread-done) workmux agent row opens/selects its
-worktree tab, issues the two real async tmux `start-process' calls (via
-a stub `tmux' on `exec-path', never blocking), and a subsequent redraw
-shows the row no longer bold."
-      (edmacs-sidebar-agents-live-test--with-clean-state
-        (let* ((shim (edmacs-sidebar-agents-live-test--make-shim "tmux"))
-               (exec-path (cons (car shim) exec-path))
-               (agent (edmacs-sidebar-agents-live-test--make-agent
-                       :root "/repo/wt/" :status 'done :unread t
-                       :locator (list :pane-id "%9" :session "sess" :window "win"))))
-          (puthash (edmacs-agent-key agent) agent edmacs-agents--table)
-          (unwind-protect
-              (progn
-                (edmacs-sidebar-show (selected-frame))
-                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                  (let ((inhibit-read-only t))
-                    (goto-char (point-max))
-                    ;; Wrapped in its own outer section rather than
-                    ;; inserted as a second top-level call: an
-                    ;; unwrapped top-level `magit-insert-section' call
-                    ;; becomes `magit-root-section' itself and is
-                    ;; skipped by property-tagging (see
-                    ;; sidebar-test.el's own comment on this same
-                    ;; magit-section quirk), so this ensures
-                    ;; `magit-current-section' below finds it via a
-                    ;; real text property, not the root-fallback.
-                    (magit-insert-section (edmacs-sidebar-agents-live-test-root)
-                      (magit-insert-section (edmacs-sidebar-agent agent)
-                        (magit-insert-heading (propertize "row" 'face 'bold)))))
-                  (goto-char (point-max))
-                  (forward-line -1)
-                  (should (text-property-any (point-min) (point-max) 'face 'bold))
-                  (edmacs-sidebar-agents-visit))
-                (should (member "/repo/wt/" edmacs-sidebar-agents-live-test--open-worktree-tab-calls))
-                (should (eq 'idle (edmacs-agent-status agent)))
-                (should (edmacs-sidebar-agents-live-test--wait-until
-                         (lambda ()
-                           (>= (length (edmacs-sidebar-agents-live-test--shim-calls (cdr shim))) 2))
-                         5.0))
-                ;; Both are independent async subprocesses -- issued in
-                ;; window-then-pane order from Lisp, but not guaranteed
-                ;; to *complete* (and so log) in that order -- so this
-                ;; checks both happened, not their relative order.
-                (let ((calls (edmacs-sidebar-agents-live-test--shim-calls (cdr shim))))
-                  (should (seq-some (lambda (c) (string-match-p "select-window -t sess:win" c)) calls))
-                  (should (seq-some (lambda (c) (string-match-p "select-pane -t %9" c)) calls)))
-                ;; Un-bolds: the row's own agent struct is now `idle', and a
-                ;; fresh render of it carries no bold face.
-                (with-temp-buffer
-                  (magit-section-mode)
-                  (let ((inhibit-read-only t))
-                    (edmacs-sidebar-agents--insert-row agent))
-                  (should-not (text-property-any (point-min) (point-max) 'face 'bold))))
-            (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))
-            (ignore-errors (delete-directory (car shim) t))))))
 
     (ert-deftest edmacs-sidebar-agents-live-test-visit-claude-term-source-pops-to-its-window ()
       "An in-Emacs (phase 9) agent row pops to its own window instead of
@@ -451,8 +394,8 @@ silently never fire again while conditions stay tick-worthy."
     (ert-deftest edmacs-sidebar-agents-live-test-point-survives-heartbeat-redraw ()
       "Point sitting on an agent's row survives a heartbeat-only redraw
 that replaces its struct with a fresh one under the same key --
-mirroring `edmacs-agents--apply-workmux-row', which always builds a new
-struct rather than mutating one in place. Point must track the agent's
+mirroring `edmacs-agents-set-status' (agents.el), which always builds a
+new struct rather than mutating one in place. Point must track the agent's
 own stable KEY, not the rendered label text (which changes on every
 such refresh), so it does not jump back to `point-min'."
       (edmacs-sidebar-agents-live-test--with-clean-state
