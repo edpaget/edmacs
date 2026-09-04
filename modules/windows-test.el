@@ -2043,6 +2043,36 @@ regression this asserts against."
       (should (window-live-p (edmacs-main-window)))
       (should-not (edmacs-windows-frame-wedged-p)))))
 
+(ert-deftest edmacs-windows-test-stack-toggle-reports-the-no-state-signal ()
+  "The signal the `condition-case' in `edmacs-stack-toggle' exists for.
+On a healthy frame that has never shown a side window there is neither a
+side window to stash nor a saved `window-state' to restore, so core's
+restore branch errors \"No side windows state found\". The wedged-frame
+cases above never reach it -- repair re-shows a real side window first,
+so the stash branch always wins -- which is why this asserts the
+precondition with `should-error' before calling the command."
+  (let ((saved (frame-parameter nil 'window-state)))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (set-frame-parameter nil 'window-state nil)
+          (should-not (window-with-parameter 'window-side))
+          (should-not (edmacs-windows-frame-wedged-p))
+          (should-error (window-toggle-side-windows) :type 'error)
+          (let (messages)
+            (cl-letf (((symbol-function 'message)
+                       (lambda (format &rest args)
+                         (push (apply #'format format args) messages))))
+              ;; Unwrapped: an error escaping here fails the test, which is
+              ;; the assertion this case is for.
+              (edmacs-stack-toggle))
+            (should (seq-find (lambda (m)
+                                (string-match-p "No side windows state found" m))
+                              messages)))
+          (should (window-live-p (edmacs-main-window)))
+          (should-not (edmacs-windows-frame-wedged-p)))
+      (set-frame-parameter nil 'window-state saved))))
+
 (ert-deftest edmacs-windows-test-switch-to-buffer-in-dedicated-window-is-pop ()
   "Read only by `switch-to-buffer's interactive spec: nil hard-errors in
 the sidebar and every stack pane while the non-interactive call already
