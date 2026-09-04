@@ -24,9 +24,9 @@
 ;; open one's tab and no-ops on a tab-less row. A repo-less frame (the
 ;; daemon's boot/spare frame) keeps the original flat tab list.
 ;;
-;; `window-sides-slots' LEFT element is bumped to 1 below; the RIGHT
-;; element (reserved for edmacs-claude-terminal's agent panes) is read back
-;; and preserved verbatim, never overwritten.
+;; The sidebar claims the LEFT element of `window-sides-slots' (cap 1)
+;; through `modules/windows.el's `edmacs-windows-claim-side', the single
+;; writer of that variable.
 ;;
 ;; Phase 8's "no subprocess frames on the render path" AC is checked two
 ;; ways. `sidebar-test.el's `edmacs-sidebar-test-redraw-and-hooks-never-
@@ -76,6 +76,7 @@
 (require 'tab-bar)
 (require 'desktop)
 (require 'cl-lib)
+(require 'windows)
 
 ;; `modules/git.el's `use-package magit :commands (...)' only activates
 ;; magit's autoloads file, which does not autoload `magit-section-mode',
@@ -1037,17 +1038,11 @@ firing and the timer executing."
 (setq tab-bar-show nil)
 
 ;; ============================================================================
-;; window-sides-slots: bump LEFT to 1, leave everything else untouched
+;; window-sides-slots: claim LEFT, cap 1
 ;; ============================================================================
-;; Rebuilt as a fresh list rather than `setcar'-mutated in place, to avoid
-;; any shared-structure/byte-compiled-literal mutation hazard on the
-;; `'(nil nil 3 nil)' literal `claude-term.el' installs -- and to guarantee
-;; the right side's cap of 3 (reserved for edmacs-claude-terminal's agent
-;; panes) survives verbatim.
+;; One sidebar per frame, so the left column holds exactly one slot.
 
-(setq window-sides-slots
-      (list 1 (nth 1 window-sides-slots) (nth 2 window-sides-slots)
-            (nth 3 window-sides-slots)))
+(edmacs-windows-claim-side 'left 1 'sidebar)
 
 ;; ============================================================================
 ;; SPC t s - toggle

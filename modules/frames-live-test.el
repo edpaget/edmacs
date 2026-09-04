@@ -120,6 +120,8 @@ a real Emacs session) to enable this suite"))
 
     (dolist (dep '("compat" "cond-let" "llama" "transient" "seq" "magit-section"))
       (edmacs-frames-live-test--add-dep dep))
+    ;; windows.el first: sidebar.el `require's it for `edmacs-windows-claim-side'.
+    (load (expand-file-name "modules/windows.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
     (load (expand-file-name "modules/frames.el" default-directory) nil t)
 

@@ -17,6 +17,10 @@
 ;; evil-ghostel itself is never actually loaded, so
 ;; `claude-term--configure-evil-escape' below is tested against the plain
 ;; `defvar' declared in claude-term.el, not the real package.)
+;;
+;; Placement is windows.el's `agent-pane' declaration now, not an action
+;; list this module writes, so the coverage for "an agent pane must not
+;; land in the stack" lives in windows-test.el against the real registry.
 
 ;;; Code:
 
@@ -139,14 +143,6 @@ geometry each test measures is deterministic."
            (ignore-errors (delete-window w))))
        ,@body)))
 
-(defconst claude-term-test--side-window-base-action
-  '((display-buffer-reuse-window display-buffer-in-side-window)
-    (side . right)
-    (slot . -1))
-  "Stand-in for windows.el's own `display-buffer-base-action'.
-Reproduces the fallback claude-term.el's explicit action list has to beat
-without making this file depend on windows.el being on the load line.")
-
 (ert-deftest claude-term-test-display-buffer-creates-an-ordinary-window ()
   "An agent pane carries none of the side-window parameters, so
 `balance-windows' -- which only ever rebalances `window-main-window''s
@@ -162,20 +158,6 @@ non-side subtree -- reaches it."
             (should-not (window-parameter win 'no-delete-other-windows))
             (should-not (window-dedicated-p win))
             (should (eq (window-frame win) (selected-frame))))
-        (kill-buffer buf)))))
-
-(ert-deftest claude-term-test-display-buffer-beats-a-side-window-base-action ()
-  "The explicit action list is load-bearing: with windows.el's side-window
-fallback installed as `display-buffer-base-action', the pane must still
-land in an ordinary window rather than back in the stack column."
-  (claude-term-test--with-fresh-layout
-    (let ((display-buffer-base-action claude-term-test--side-window-base-action)
-          (window-sides-slots '(nil nil nil nil))
-          (buf (generate-new-buffer "claude-term-test-base-action")))
-      (unwind-protect
-          (let ((win (claude-term--display-buffer buf)))
-            (should (window-live-p win))
-            (should-not (window-parameter win 'window-side)))
         (kill-buffer buf)))))
 
 (ert-deftest claude-term-test-display-buffer-redisplay-reuses-the-same-window ()

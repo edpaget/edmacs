@@ -88,6 +88,14 @@ a module compiles clean:
 emacs -Q --batch -f batch-byte-compile modules/claude-term.el
 ```
 
+Add `-L modules` for any module that `require`s a sibling module --
+`sidebar.el`, `vterm.el`, `git.el` and `languages/clojure.el` all
+`(require 'windows)`, which bare `-Q` cannot resolve:
+
+```bash
+emacs -Q --batch -L modules -f batch-byte-compile modules/git.el
+```
+
 Delete the resulting `.elc` afterwards -- compiled output is not committed.
 
 ### Startup check

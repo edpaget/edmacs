@@ -8,6 +8,7 @@
 ;;; Code:
 
 (require 'lisp-common)
+(require 'windows)
 
 ;; ============================================================================
 ;; Clojure Mode (Tree-sitter)
@@ -44,6 +45,11 @@
 
   (setq cider-font-lock-dynamically '(macro core function var)
         cider-prompt-for-symbol nil)
+
+  ;; A fixed stack slot so a generic popup at slot -1 cannot evict the REPL.
+  (edmacs-windows-place 'cider-repl
+    :match "\\`\\*cider-repl "
+    :as 'stack-fixed :slot -2)
 
   ;; CIDER keybindings with local leader
   (general-define-key

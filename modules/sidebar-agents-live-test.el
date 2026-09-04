@@ -109,6 +109,8 @@ a real Emacs session) to enable this suite"))
         (let ((tab (edmacs-frames--tab-for-root root (selected-frame))))
           (tab-bar-select-tab (1+ (tab-bar--tab-index tab (tab-bar-tabs) (selected-frame)))))))
 
+    ;; windows.el first: sidebar.el `require's it for `edmacs-windows-claim-side'.
+    (load (expand-file-name "modules/windows.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
     (load (expand-file-name "modules/agents.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar-agents.el" default-directory) nil t)

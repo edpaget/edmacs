@@ -13,7 +13,11 @@
 ;;
 ;; Note sidebar.el is NOT passed on the command line -- this file fixes
 ;; `load-path' against the straight build tree and loads sidebar.el itself,
-;; below, so sidebar.el's own `(require 'magit-section)' succeeds. If
+;; below, so sidebar.el's own `(require 'magit-section)' succeeds. It loads
+;; `modules/windows.el' first, which sidebar.el now `require's for
+;; `edmacs-windows-claim-side'; that also installs windows.el's global side
+;; effects (`display-buffer-base-action', the `quit-restore-window' advice,
+;; the `tab-bar-tab-post-open-functions' hook) into this batch session. If
 ;; neither this checkout nor its sibling main `edmacs' checkout has ever
 ;; bootstrapped straight, the whole suite reports a single skip rather than
 ;; erroring out on file load.
@@ -102,6 +106,8 @@ a real Emacs session) to enable this suite"))
   (progn
 
     (edmacs-sidebar-test--add-magit-section-deps edmacs-sidebar-test--build-root)
+    ;; windows.el first: sidebar.el `require's it for `edmacs-windows-claim-side'.
+    (load (expand-file-name "modules/windows.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
 
     ;; ==========================================================================
@@ -673,6 +679,11 @@ has its own dedicated coverage below."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-test-window-parameters-block-other-window-and-c-x-1 ()
+      "Behavioural half only: this asserts the parameters at creation time.
+Whether they survive a `window-state-get'/`window-state-put' round trip --
+what a daemon restart does to a background tab -- is windows.el's owned
+set, covered by `edmacs-windows-test-layout-parameters-survive-a-state-
+round-trip'."
       (unwind-protect
           (let ((win (edmacs-sidebar-show (selected-frame)))
                 (ordinary (selected-window)))

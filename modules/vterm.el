@@ -5,6 +5,8 @@
 
 ;;; Code:
 
+(require 'windows)
+
 ;; ============================================================================
 ;; VTerm - Terminal Emulator
 ;; ============================================================================
@@ -63,21 +65,23 @@
 ;; VTerm Toggle - Toggle vterm buffer
 ;; ============================================================================
 
+;; Byte-compile hygiene: vterm defines this, and the placement predicate
+;; below is compiled now that it is a real closure rather than a quoted list.
+(defvar vterm-buffer-name)
+
 (use-package vterm-toggle
   :after vterm
   :config
   (setq vterm-toggle-fullscreen-p nil)
   ;; Stays at the bottom, not the right stack: a transient scratch terminal
   ;; toggled in and out, not a dismiss-to-main popup pane.
-  (add-to-list 'display-buffer-alist
-               '((lambda (buffer-or-name _)
-                   (let ((buffer (get-buffer buffer-or-name)))
-                     (with-current-buffer buffer
-                       (or (equal major-mode 'vterm-mode)
-                           (string-prefix-p vterm-buffer-name (buffer-name buffer))))))
-                 (display-buffer-reuse-window display-buffer-at-bottom)
-                 (reusable-frames . visible)
-                 (window-height . 0.3)))
+  (edmacs-windows-place 'vterm
+    :match (lambda (buffer-or-name _)
+             (let ((buffer (get-buffer buffer-or-name)))
+               (with-current-buffer buffer
+                 (or (equal major-mode 'vterm-mode)
+                     (string-prefix-p vterm-buffer-name (buffer-name buffer))))))
+    :as 'bottom :height 0.3)
 
   (general-define-key
    :states 'normal

@@ -9,28 +9,28 @@
 ;;
 ;; `display-buffer-base-action' makes the stack the default destination for
 ;; any `display-buffer' call that would otherwise pop up a window -- dwm's
-;; rule that the window manager, not the program, decides placement. A small
-;; `display-buffer-alist' allow-list ahead of that fallback keeps dired,
-;; magit-status, and plain (non-other-window) file commands reusing a
-;; manually-split center window instead.
+;; rule that the window manager, not the program, decides placement.
 ;;
-;; This module owns the RIGHT element of `window-sides-slots' (nil, i.e.
-;; uncapped); `modules/sidebar.el' owns LEFT and must never be clobbered by
-;; this module or vice versa -- both use the same nth-rebuild
-;; read-modify-write so neither can stomp the other regardless of load
-;; order.
+;; `edmacs-windows-place' is the single declaration point for everything
+;; that must NOT take that default: the five roles are `main' (reuse the
+;; center), `stack', `stack-fixed' (a slot of its own), `ordinary' (never
+;; managed into the stack at all) and `bottom'. `modules/vterm.el',
+;; `modules/git.el' and `modules/languages/clojure.el' declare through it
+;; too, and a declaration that merely restates the default is rejected.
 ;;
-;; Every popup buffer (Warnings, Messages, Help/helpful, compilation,
-;; Flycheck, Backtrace, Occur, grep/xref, Embark Collect, magit diff/log,
-;; lsp-help) routes through one `display-buffer-alist' block onto the
-;; shared right-column slot -1. `edmacs-stack-pin' moves the current popup
-;; to its own slot when it should outlive the next one; a `quit-restore-
-;; window' advice makes `q' in any popup delete the pane and return to
-;; `edmacs-main-window' rather than risk restoring a stale prior popup.
+;; `window-sides-slots' has one writer, `edmacs-windows-claim-side': edges
+;; are claimed by name, a second claimant signals, and this module claims
+;; RIGHT (nil, i.e. uncapped) while `modules/sidebar.el' claims LEFT.
+;;
+;; `edmacs-stack-pin' moves the current popup to its own slot when it
+;; should outlive the next one; a `quit-restore-window' advice makes `q' in
+;; any popup delete the pane and return to `edmacs-main-window' rather than
+;; risk restoring a stale prior popup.
 ;;
 ;; Run the ERT suite with:
-;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/windows-test.el \
-;;         -f ert-run-tests-batch-and-exit
+;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/claude-term.el -l modules/windows.el \
+;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
 
 ;;; Code:
 
@@ -46,10 +46,20 @@
 ;; Main window: explicit state via a window parameter
 ;; ============================================================================
 
-;; `writable', not bare `t': `window-state-put' checks the persistent-
-;; parameter's type tag before restoring a value, and only `writable'
-;; passes that check for an arbitrary Lisp value like `t'.
-(add-to-list 'window-persistent-parameters '(edmacs-main . writable))
+;; The layout parameters this config owns. `window--state-put-2' nils every
+;; parameter before reassigning the saved ones, so an unregistered one is
+;; actively cleared by a frameset restore, not merely not saved. `writable',
+;; not bare `t', is what lets an arbitrary Lisp value through.
+;; `window-preserved-size' is deliberately absent: its value carries a live
+;; buffer object, which must never reach the printed desktop file.
+(dolist (parameter '(edmacs-main
+                     no-other-window
+                     no-delete-other-windows
+                     edmacs-stack-popup
+                     mode-line-format
+                     window-side
+                     window-slot))
+  (add-to-list 'window-persistent-parameters (cons parameter 'writable)))
 
 (defun edmacs--topleft-window ()
   "Return the frame's top-left window that is not a side window.
@@ -241,55 +251,9 @@ same template, registered display-buffer-alist entries included."
     (preserve-size . (t . nil))
     (window-parameters . ((edmacs-stack-popup . t) ,@extra-params))))
 
-;; Every popup buffer below shares slot -1: `display-buffer-in-side-window'
-;; reuses an existing side window whose `window-slot' matches the requested
-;; slot, so a second popup replaces the first instead of stacking beside it
-;; (see `edmacs-stack-pin' below for pulling one out of that shared slot).
-;; Prefixes, not exact names, are used where the real buffer name carries a
-;; variable suffix -- helpful's "*helpful variable: foo*", magit's
-;; "*magit-diff: reponame*" and "*magit-log: reponame*". Revision-mode and
-;; process-mode magit buffers are intentionally not routed here.
-(dolist (pattern '("\\`\\*Warnings\\*\\'"
-                    "\\`\\*Messages\\*\\'"
-                    "\\`\\*Help\\*\\'"
-                    "\\`\\*helpful "
-                    "\\`\\*compilation\\*\\'"
-                    "\\`\\*quickrun\\*\\'"
-                    "\\`\\*Flycheck errors\\*\\'"
-                    "\\`\\*Backtrace\\*\\'"
-                    "\\`\\*Occur\\*\\'"
-                    "\\`\\*grep\\*\\'"
-                    "\\`\\*xref\\*\\'"
-                    "\\`\\*magit-diff: "
-                    "\\`\\*magit-log: "
-                    "\\`\\*lsp-help\\*\\'"))
-  (add-to-list 'display-buffer-alist (cons pattern (edmacs-stack--popup-alist))))
-
-;; Embark's live/completions buffers keep the `(mode-line-format . none)'
-;; window-parameter completion.el's own now-removed entry used to set.
-(add-to-list 'display-buffer-alist
-             (cons "\\`\\*Embark Collect \\(Live\\|Completions\\)\\*"
-                   (edmacs-stack--popup-alist nil '((mode-line-format . none)))))
-
 ;; ============================================================================
-;; Catch-all: display-buffer fallback (dwm default placement)
+;; Center reuse: the "keep it in main" destination
 ;; ============================================================================
-
-;; The fallback chain for any unrouted `display-buffer' call: reuse a window
-;; already showing the buffer, else create it in the shared stack slot.
-;; `display-buffer-pop-up-window' never appears here, so an ordinary popup
-;; can no longer split the center -- and because
-;; `display-buffer-in-side-window' always succeeds (RIGHT is uncapped),
-;; Emacs's own `display-buffer-fallback-action' is never reached either.
-(setq display-buffer-base-action
-      (cons (list #'display-buffer-reuse-window #'display-buffer-in-side-window)
-            (cdr (edmacs-stack--popup-alist))))
-
-;; Flipping this to t would route `switch-to-buffer' through
-;; `display-buffer-base-action' above, moving main's buffer into the stack
-;; instead of swapping it in place -- pinned at the Emacs default so that
-;; can't happen by drift.
-(setq switch-to-buffer-obey-display-actions nil)
 
 (defcustom edmacs-windows-center-reuse-commands
   '(find-file find-alternate-file revert-buffer)
@@ -320,23 +284,181 @@ selected when the triggering command ran."
 
 (defconst edmacs-windows--center-reuse-action
   '((display-buffer-reuse-window edmacs-windows--reuse-main-window))
-  "Action alist shared by every center-reuse `display-buffer-alist' entry.")
+  "Action alist for the `main' placement role.")
 
-(add-to-list 'display-buffer-alist
-             (cons #'edmacs-windows--center-reuse-p
-                   edmacs-windows--center-reuse-action))
+;; ============================================================================
+;; The placement registry: one declaration point for "where does buffer X go"
+;; ============================================================================
 
-;; Belt-and-braces: dired and magit-status are already same-window by their
-;; own display functions, but route them explicitly too.
-(dolist (mode '(dired-mode magit-status-mode))
-  (add-to-list 'display-buffer-alist
-               (cons (cons 'major-mode mode)
-                     edmacs-windows--center-reuse-action)))
+(defvar edmacs-windows-ordinary-buffer-p #'ignore
+  "Predicate for a buffer that must never be managed into the stack.
+Called with one BUFFER; a non-nil return means place it in an ordinary
+window. Default `#\\='ignore' never matches, which keeps this module free
+of any claude-term dependency; `modules/claude-term-registry.el' wires the
+real agent-pane check onto this variable at load time.")
 
-;; cider's REPL and the shell buffers get a fixed stack slot of their own so
-;; a generic popup at slot -1 can never evict them.
-(dolist (pattern '("\\`\\*cider-repl " "\\`\\*shell\\*\\'" "\\`\\*eshell\\*\\'"))
-  (add-to-list 'display-buffer-alist (cons pattern (edmacs-stack--popup-alist -2))))
+(defconst edmacs-windows-roles '(main stack stack-fixed ordinary bottom)
+  "The placement roles `edmacs-windows-place' accepts for its `:as' argument.")
+
+(defun edmacs-windows--role-action (role slot height params)
+  "Return the `display-buffer' ACTION for ROLE.
+SLOT applies to `stack-fixed', HEIGHT to `bottom', PARAMS (extra
+window-parameters conses) to the two stack roles."
+  (pcase role
+    ('main edmacs-windows--center-reuse-action)
+    ('stack (edmacs-stack--popup-alist nil params))
+    ('stack-fixed (edmacs-stack--popup-alist (or slot -2) params))
+    ('ordinary '((display-buffer-reuse-window display-buffer-pop-up-window)
+                 (reusable-frames . visible)))
+    ('bottom `((display-buffer-reuse-window display-buffer-at-bottom)
+               (reusable-frames . visible)
+               (window-height . ,(or height 0.3))))
+    (_ (error "edmacs-windows-place: unknown role %S" role))))
+
+(defvar edmacs-windows--placements nil
+  "Ordered list of (NAME . SPEC) placements, in declaration order.
+First match wins, so declarations are written most-specific-first.")
+
+(defvar edmacs-windows--owned-alist-entries nil
+  "The exact `display-buffer-alist' cons cells this registry installed.
+Tracked by identity so a re-sync removes only its own entries.")
+
+(defun edmacs-windows-placements ()
+  "Return the registry's placements, in declaration order."
+  edmacs-windows--placements)
+
+(defun edmacs-windows--redundant-p (placement)
+  "Non-nil when PLACEMENT's resolved action is what the default already does.
+A plain `stack' placement with no slot, height or extra parameters
+resolves to exactly `display-buffer-base-action', so its
+`display-buffer-alist' entry buys nothing -- unless `:override' says the
+entry itself is the point."
+  (let ((spec (cdr placement)))
+    (and (eq (plist-get spec :as) 'stack)
+         (null (plist-get spec :slot))
+         (null (plist-get spec :height))
+         (null (plist-get spec :params))
+         (null (plist-get spec :override)))))
+
+(defun edmacs-windows--sync-display-buffer-alist ()
+  "Rewrite this registry's entries at the head of `display-buffer-alist'."
+  (setq display-buffer-alist
+        (seq-remove (lambda (entry) (memq entry edmacs-windows--owned-alist-entries))
+                    display-buffer-alist))
+  (setq edmacs-windows--owned-alist-entries
+        (mapcar (lambda (placement)
+                  (let ((spec (cdr placement)))
+                    (cons (plist-get spec :match)
+                          (edmacs-windows--role-action
+                           (plist-get spec :as)
+                           (plist-get spec :slot)
+                           (plist-get spec :height)
+                           (plist-get spec :params)))))
+                edmacs-windows--placements))
+  (setq display-buffer-alist
+        (append edmacs-windows--owned-alist-entries display-buffer-alist)))
+
+(defun edmacs-windows-place (name &rest spec)
+  "Declare that buffers matching :match belong in the :as role.
+NAME is a symbol identifying the placement; re-declaring a NAME replaces
+it in place, so re-loading a module is idempotent. SPEC is a plist:
+
+  :match     a `display-buffer-alist' CONDITION -- regexp, (major-mode . M),
+             or a two-argument predicate.
+  :as        one of `edmacs-windows-roles'.
+  :slot      right-column slot, `stack-fixed' only.
+  :height    fractional height, `bottom' only.
+  :params    extra window-parameters conses for a stack role.
+  :override  keep the `display-buffer-alist' entry even though its action
+             equals the default: `display-buffer' consults the alist BEFORE
+             a caller-supplied ACTION, so only an alist entry outranks a
+             producer that passes its own action.
+
+Declaration order is precedence order -- the first matching entry wins."
+  (let ((role (plist-get spec :as)))
+    (unless (symbolp name)
+      (error "edmacs-windows-place: NAME must be a symbol, got %S" name))
+    (unless (plist-get spec :match)
+      (error "edmacs-windows-place: %s needs a :match" name))
+    (unless (memq role edmacs-windows-roles)
+      (error "edmacs-windows-place: unknown role %S" role))
+    (when (and (plist-get spec :slot) (not (eq role 'stack-fixed)))
+      (error "edmacs-windows-place: %s passes :slot with role %S" name role))
+    (when (and (plist-get spec :height) (not (eq role 'bottom)))
+      (error "edmacs-windows-place: %s passes :height with role %S" name role))
+    (when (edmacs-windows--redundant-p (cons name spec))
+      (error "edmacs-windows-place: %s duplicates the default; delete it or pass :override"
+             name))
+    (let ((existing (assq name edmacs-windows--placements)))
+      (if existing
+          (setcdr existing spec)
+        (setq edmacs-windows--placements
+              (append edmacs-windows--placements (list (cons name spec))))))
+    (edmacs-windows--sync-display-buffer-alist)
+    name))
+
+;; ============================================================================
+;; Catch-all: display-buffer fallback (dwm default placement)
+;; ============================================================================
+
+;; The fallback chain for any unrouted `display-buffer' call: reuse a window
+;; already showing the buffer, else create it in the shared stack slot.
+;; `display-buffer-pop-up-window' never appears here, so an ordinary popup
+;; can no longer split the center -- and because
+;; `display-buffer-in-side-window' always succeeds (RIGHT is uncapped),
+;; Emacs's own `display-buffer-fallback-action' is never reached either.
+(setq display-buffer-base-action
+      (cons (list #'display-buffer-reuse-window #'display-buffer-in-side-window)
+            (cdr (edmacs-stack--popup-alist))))
+
+;; Flipping this to t would route `switch-to-buffer' through
+;; `display-buffer-base-action' above, moving main's buffer into the stack
+;; instead of swapping it in place -- pinned at the Emacs default so that
+;; can't happen by drift.
+(setq switch-to-buffer-obey-display-actions nil)
+
+;; ============================================================================
+;; This module's placements (most-specific-first)
+;; ============================================================================
+
+;; Agent panes are the one class that must stay out of the stack entirely,
+;; so they are declared ahead of everything else.
+(edmacs-windows-place 'agent-pane
+  :match (lambda (buffer _action)
+           (let ((buffer (get-buffer buffer)))
+             (and buffer (funcall edmacs-windows-ordinary-buffer-p buffer))))
+  :as 'ordinary)
+
+;; Embark's live/completions buffers keep the `(mode-line-format . none)'
+;; window-parameter completion.el's own now-removed entry used to set.
+(edmacs-windows-place 'embark-collect
+  :match "\\`\\*Embark Collect \\(Live\\|Completions\\)\\*"
+  :as 'stack
+  :params '((mode-line-format . none)))
+
+;; A fixed slot of their own so a generic popup at slot -1 can never evict
+;; them. cider's REPL claims the same slot from languages/clojure.el.
+(edmacs-windows-place 'inferior-shells
+  :match "\\`\\*e?shell\\*\\'"
+  :as 'stack-fixed :slot -2)
+
+;; The four popup classes below resolve to the default destination, and are
+;; declared only for their `:override' effect -- each producer passes its
+;; own ACTION that a `display-buffer-alist' entry must outrank.
+(edmacs-windows-place 'warnings :match "\\`\\*Warnings\\*\\'" :as 'stack :override t)
+(edmacs-windows-place 'backtrace :match "\\`\\*Backtrace\\*\\'" :as 'stack :override t)
+(edmacs-windows-place 'quickrun :match "\\`\\*quickrun\\*\\'" :as 'stack :override t)
+(edmacs-windows-place 'flycheck-errors
+  :match "\\`\\*Flycheck errors\\*\\'" :as 'stack :override t)
+
+;; Declared last: these match on `this-command' or major mode rather than on
+;; a buffer name, so a more specific name-based placement above must win.
+(edmacs-windows-place 'center-reuse
+  :match #'edmacs-windows--center-reuse-p
+  :as 'main)
+
+(edmacs-windows-place 'dired :match '(major-mode . dired-mode) :as 'main)
+(edmacs-windows-place 'magit-status :match '(major-mode . magit-status-mode) :as 'main)
 
 (defun edmacs-stack-windows ()
   "Return the selected frame's stack windows: right side windows, by slot."
@@ -345,17 +467,52 @@ selected when the triggering command ran."
         (lambda (a b) (< (or (window-parameter a 'window-slot) 0)
                           (or (window-parameter b 'window-slot) 0)))))
 
-;; `window-sides-slots' element order is LEFT TOP RIGHT BOTTOM. Rebuilt as a
-;; fresh list (never `setcar'-mutated) so this can never clobber LEFT, which
-;; `modules/sidebar.el' owns via the identical pattern -- see AC4 in this
-;; roadmap's phase-1 body. RIGHT is nil: no cap, so a fresh slot always
-;; creates a new window and `display-buffer-in-side-window' never silently
-;; steals an existing pane (see this roadmap's DECISIONS for why a numeric
-;; cap is actively dangerous here). `edmacs-stack-pin' below depends on this
-;; staying uncapped.
-(setq window-sides-slots
-      (list (nth 0 window-sides-slots) (nth 1 window-sides-slots)
-            nil (nth 3 window-sides-slots)))
+;; ============================================================================
+;; window-sides-slots: one writer, claimed by edge name
+;; ============================================================================
+
+(defconst edmacs-windows--side-edges '(left top right bottom)
+  "Element order of `window-sides-slots'.")
+
+(defvar edmacs-windows--side-claims nil
+  "Alist of (EDGE VALUE . CLAIMANT) for every claimed side-window edge.")
+
+(defun edmacs-windows-claim-side (edge value &optional claimant)
+  "Claim EDGE of `window-sides-slots' for VALUE on behalf of CLAIMANT.
+EDGE is one of `edmacs-windows--side-edges'; VALUE is that edge's slot
+cap (nil means uncapped). CLAIMANT defaults to the loading file's base
+name. Signals when a different claimant already holds EDGE at a
+different VALUE, so a second owner is a loud failure rather than a
+silent overwrite. Unclaimed edges keep whatever value they already had."
+  (unless (memq edge edmacs-windows--side-edges)
+    (error "edmacs-windows-claim-side: %S is not one of %S"
+           edge edmacs-windows--side-edges))
+  (let* ((claimant (or claimant
+                       (intern (file-name-base
+                                (or load-file-name buffer-file-name "unknown")))))
+         (standing (assq edge edmacs-windows--side-claims)))
+    (when (and standing
+               (not (eq (cddr standing) claimant))
+               (not (equal (cadr standing) value)))
+      (error "edmacs-windows-claim-side: %s is already claimed by %s (=%S); %s wants %S"
+             edge (cddr standing) (cadr standing) claimant value))
+    (if standing
+        (setcdr standing (cons value claimant))
+      (setq edmacs-windows--side-claims
+            (append edmacs-windows--side-claims
+                    (list (cons edge (cons value claimant))))))
+    (setq window-sides-slots
+          (let ((index -1))
+            (mapcar (lambda (e)
+                      (setq index (1+ index))
+                      (let ((claim (assq e edmacs-windows--side-claims)))
+                        (if claim (cadr claim) (nth index window-sides-slots))))
+                    edmacs-windows--side-edges)))))
+
+;; RIGHT stays uncapped so a fresh slot always creates a new window and
+;; `display-buffer-in-side-window' never silently steals an existing pane;
+;; `edmacs-stack-pin' below depends on that.
+(edmacs-windows-claim-side 'right nil 'windows)
 
 (defvar edmacs-stack--next-pin-slot -2
   "Next negative right-column slot `edmacs-stack-pin' will allocate.

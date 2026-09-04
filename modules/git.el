@@ -5,6 +5,8 @@
 
 ;;; Code:
 
+(require 'windows)
+
 ;; ============================================================================
 ;; Magit - The best Git interface
 ;; ============================================================================
@@ -19,6 +21,12 @@
         ;; refreshes a visible magit-status every 5s. Still available per hunk
         ;; via `magit-diff-toggle-refine-hunk'.
         magit-diff-refine-hunk nil))
+
+;; magit hands its log buffers an explicit `(display-buffer-same-window)'
+;; ACTION, which only a `display-buffer-alist' entry outranks.
+(edmacs-windows-place 'magit-diff-log
+  :match "\\`\\*magit-\\(diff\\|log\\): "
+  :as 'stack :override t)
 
 ;; Outside use-package so bindings exist before magit autoloads.
 (general-define-key

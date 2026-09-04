@@ -5,7 +5,8 @@
 ;; live subprocess.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/windows.el -l modules/claude-term.el \
+;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/claude-term.el -l modules/windows.el \
 ;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; `modules/claude-term.el' is on the invocation line above because
@@ -269,7 +270,10 @@ a real Emacs session) to enable this test"))
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
 
     (ert-deftest edmacs-windows-test-window-sides-slots-load-order ()
-      (should (equal window-sides-slots '(1 nil nil nil))))))
+      (should (equal window-sides-slots '(1 nil nil nil)))
+      ;; Both edges arrive through the claim API, each naming its owner.
+      (should (equal (assq 'left edmacs-windows--side-claims) '(left 1 . sidebar)))
+      (should (equal (assq 'right edmacs-windows--side-claims) '(right nil . windows))))))
 
 ;; ============================================================================
 ;; Popup routing, pinning, and quit-restore (this phase)
@@ -1450,5 +1454,291 @@ that actually kills the buffer."
             (should (= edited 1))
             (should (buffer-live-p buf)))
         (when (buffer-live-p buf) (kill-buffer buf))))))
+
+;; ============================================================================
+;; Phase 2 AC1/AC2 -- the placement registry
+;; ============================================================================
+
+(defmacro edmacs-windows-test--with-scratch-registry (&rest body)
+  "Run BODY with the placement registry and its alist entries let-bound.
+Every declaration BODY makes is discarded on exit, so a throwaway
+placement can never leak into the live registry the AC2 sweep checks."
+  (declare (indent 0))
+  `(let ((display-buffer-alist display-buffer-alist)
+         (edmacs-windows--placements edmacs-windows--placements)
+         (edmacs-windows--owned-alist-entries edmacs-windows--owned-alist-entries))
+     ,@body))
+
+(defconst edmacs-windows-test--windows-el-placements
+  '(agent-pane embark-collect inferior-shells warnings backtrace quickrun
+    flycheck-errors center-reuse dired magit-status)
+  "The placements windows.el itself declares, in declaration order.
+git.el adds `magit-diff-log' eagerly, for eleven after a real init;
+vterm.el's `vterm' and languages/clojure.el's `cider-repl' are declared
+from a deferred `use-package' `:config', so they join once their package
+actually loads, for thirteen.")
+
+(ert-deftest edmacs-windows-test-registry-holds-windows-el-placements ()
+  (should (equal (mapcar #'car (edmacs-windows-placements))
+                 edmacs-windows-test--windows-el-placements)))
+
+(ert-deftest edmacs-windows-test-place-registers-every-role ()
+  "Each role resolves to its own destination, with the real
+`display-buffer-base-action' in force -- so `ordinary' proves it beats
+the side-window fallback rather than merely never meeting it."
+  (edmacs-windows-test--with-scratch-registry
+    (let ((split-height-threshold 0)
+          (split-width-threshold nil))
+      (dolist (case '((main "ewt-role-main" nil nil)
+                      (stack-fixed "ewt-role-fixed" right -2)
+                      (ordinary "ewt-role-ordinary" nil nil)
+                      (bottom "ewt-role-bottom" nil nil)))
+        (pcase-let ((`(,role ,name ,side ,slot) case))
+          (save-window-excursion
+            (delete-other-windows)
+            (let ((buf (edmacs-windows-test--fresh-named-buffer name)))
+              (unwind-protect
+                  (progn
+                    (apply #'edmacs-windows-place 'ewt-role
+                           :match (concat "\\`" (regexp-quote name) "\\'")
+                           :as role
+                           (when (eq role 'stack-fixed) '(:slot -2)))
+                    (let ((win (display-buffer buf)))
+                      (should (window-live-p win))
+                      (should (eq (window-parameter win 'window-side) side))
+                      (should (equal (window-parameter win 'window-slot) slot))
+                      (when (eq role 'main)
+                        (should (eq win (edmacs-main-window))))
+                      (when (eq role 'ordinary)
+                        (should-not (window-dedicated-p win))
+                        (should-not (window-parameter win 'no-other-window)))
+                      (when (eq role 'bottom)
+                        (should (= (nth 3 (window-edges win))
+                                   (nth 3 (window-edges (frame-root-window))))))))
+                (kill-buffer buf)))))))))
+
+(ert-deftest edmacs-windows-test-place-stack-role-lands-on-slot-minus-1 ()
+  (edmacs-windows-test--with-scratch-registry
+    (save-window-excursion
+      (delete-other-windows)
+      (let ((buf (edmacs-windows-test--fresh-named-buffer "ewt-role-stack")))
+        (unwind-protect
+            (progn
+              (edmacs-windows-place 'ewt-role-stack
+                :match "\\`ewt-role-stack\\'" :as 'stack
+                :params '((mode-line-format . none)))
+              (let ((win (display-buffer buf)))
+                (should (eq (window-parameter win 'window-side) 'right))
+                (should (equal (window-parameter win 'window-slot) -1))
+                (should (eq (window-parameter win 'mode-line-format) 'none))))
+          (kill-buffer buf))))))
+
+(ert-deftest edmacs-windows-test-agent-pane-placement-uses-the-seam ()
+  "`edmacs-windows-ordinary-buffer-p' is the only thing that makes a
+buffer ordinary; with the `#\\='ignore' default the same buffer takes the
+stack, which is what keeps windows.el free of a claude-term dependency."
+  (let ((split-height-threshold 0)
+        (split-width-threshold nil))
+    (save-window-excursion
+      (delete-other-windows)
+      (let ((buf (edmacs-windows-test--fresh-named-buffer "ewt-agent-pane")))
+        (unwind-protect
+            (progn
+              (let ((edmacs-windows-ordinary-buffer-p
+                     (lambda (b) (string-prefix-p "ewt-agent-pane" (buffer-name b)))))
+                (let ((win (display-buffer buf)))
+                  (should-not (window-parameter win 'window-side))
+                  (should-not (window-parameter win 'window-slot))
+                  (delete-window win)))
+              (let ((win (display-buffer buf)))
+                (should (eq (window-parameter win 'window-side) 'right))))
+          (kill-buffer buf))))))
+
+(ert-deftest edmacs-windows-test-place-replaces-a-redeclared-name ()
+  "Re-loading a module must not double its entries."
+  (edmacs-windows-test--with-scratch-registry
+    (let ((before (length (edmacs-windows-placements))))
+      (edmacs-windows-place 'ewt-dup :match "\\`ewt-dup\\'" :as 'ordinary)
+      (should (= (1+ before) (length (edmacs-windows-placements))))
+      (edmacs-windows-place 'ewt-dup :match "\\`ewt-dup\\'" :as 'bottom)
+      (should (= (1+ before) (length (edmacs-windows-placements))))
+      (should (= (length (edmacs-windows-placements))
+                 (length edmacs-windows--owned-alist-entries)))
+      (should (eq 'bottom (plist-get (alist-get 'ewt-dup (edmacs-windows-placements)) :as))))))
+
+(ert-deftest edmacs-windows-test-place-validates-its-spec ()
+  (edmacs-windows-test--with-scratch-registry
+    (should-error (edmacs-windows-place 'ewt-bad :match "x" :as 'sideways))
+    (should-error (edmacs-windows-place 'ewt-bad :as 'ordinary))
+    (should-error (edmacs-windows-place 'ewt-bad :match "x" :as 'stack :slot -3))
+    (should-error (edmacs-windows-place 'ewt-bad :match "x" :as 'ordinary :height 0.3))))
+
+;; ---------------------------------------------------------------------------
+;; AC2 -- nothing registered merely restates the default
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-no-placement-duplicates-the-default ()
+  (should-not (seq-find #'edmacs-windows--redundant-p (edmacs-windows-placements))))
+
+(ert-deftest edmacs-windows-test-place-signals-on-a-redundant-declaration ()
+  (edmacs-windows-test--with-scratch-registry
+    (should-error (edmacs-windows-place 'ewt-redundant :match "\\`\\*ewt-x\\*\\'" :as 'stack))
+    (should (edmacs-windows-place 'ewt-redundant :match "\\`\\*ewt-x\\*\\'"
+                                  :as 'stack :override t))))
+
+(ert-deftest edmacs-windows-test-override-entry-outranks-a-caller-action ()
+  "`display-buffer' consults `display-buffer-alist' before a caller's own
+ACTION but `display-buffer-base-action' after it, so the four `:override'
+placements are exactly the ones whose producers pass their own action."
+  (dolist (name '("*Warnings*" "*Backtrace*" "*quickrun*" "*Flycheck errors*"))
+    (save-window-excursion
+      (delete-other-windows)
+      (let ((buf (edmacs-windows-test--fresh-named-buffer name)))
+        (unwind-protect
+            (let ((win (display-buffer buf '(display-buffer-same-window))))
+              (should (eq (window-parameter win 'window-side) 'right))
+              (should (equal (window-parameter win 'window-slot) -1)))
+          (kill-buffer buf)))))
+  ;; A name that reaches slot -1 only through the base action loses to a
+  ;; caller-supplied ACTION -- which is why deleting its entry was safe
+  ;; only after checking that its producer supplies none.
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((buf (edmacs-windows-test--fresh-named-buffer "*Help*")))
+      (unwind-protect
+          (let ((win (display-buffer buf '(display-buffer-same-window))))
+            (should-not (window-parameter win 'window-side)))
+        (kill-buffer buf)))))
+
+;; ============================================================================
+;; Phase 2 AC3 -- window-sides-slots is claimed by edge name, by one writer
+;; ============================================================================
+
+(ert-deftest edmacs-windows-test-claim-side-leaves-other-edges-untouched ()
+  (dolist (case '((left 0 (1 8 7 6)) (top 1 (9 1 7 6))
+                  (right 2 (9 8 1 6)) (bottom 3 (9 8 7 1))))
+    (pcase-let ((`(,edge ,_index ,expected) case))
+      (let ((window-sides-slots '(9 8 7 6))
+            (edmacs-windows--side-claims nil))
+        (edmacs-windows-claim-side edge 1 'ewt-a)
+        (should (equal window-sides-slots expected))))))
+
+(ert-deftest edmacs-windows-test-claim-side-conflict-signals ()
+  (let ((window-sides-slots '(9 8 7 6))
+        (edmacs-windows--side-claims nil))
+    (edmacs-windows-claim-side 'left 1 'ewt-a)
+    ;; A second claimant wanting a different value is a hard error.
+    (should-error (edmacs-windows-claim-side 'left 2 'ewt-b))
+    ;; The same claimant may change its mind.
+    (edmacs-windows-claim-side 'left 3 'ewt-a)
+    (should (equal window-sides-slots '(3 8 7 6)))
+    ;; A duplicate claim at the standing value is a harmless no-op.
+    (edmacs-windows-claim-side 'left 3 'ewt-b)
+    (should (equal window-sides-slots '(3 8 7 6)))
+    (should-error (edmacs-windows-claim-side 'sideways 1 'ewt-a))))
+
+(ert-deftest edmacs-windows-test-window-sides-slots-has-one-writer ()
+  "A third writer added later fails here rather than silently winning."
+  (let ((hits 0))
+    (dolist (file '("windows.el" "sidebar.el" "vterm.el" "git.el"
+                    "claude-term.el" "claude-term-registry.el" "sessions.el"))
+      (let ((path (expand-file-name (concat "modules/" file) default-directory)))
+        (when (file-readable-p path)
+          (with-temp-buffer
+            (insert-file-contents path)
+            (goto-char (point-min))
+            (while (re-search-forward "(setq[q]?-default?\\s-+window-sides-slots\\|(setq\\s-+window-sides-slots" nil t)
+              (setq hits (1+ hits))
+              (should (equal file "windows.el"))
+              ;; ...and inside `edmacs-windows-claim-side', not beside it.
+              (let ((here (point)))
+                (should (re-search-backward "^(defun \\([^ ]+\\)" nil t))
+                (should (equal (match-string 1) "edmacs-windows-claim-side"))
+                (goto-char here)))))))
+    (should (= hits 1))))
+
+;; ============================================================================
+;; Phase 2 AC4 -- every layout window parameter survives a real
+;; window-state-get/window-state-put round trip
+;; ============================================================================
+
+(defun edmacs-windows-test--layout-round-trip ()
+  "Build a laid-out frame, round-trip it through `window-state-get'/`-put'.
+Uses the exact calls a frameset restore makes (`frameset.el's
+WRITABLE-non-nil get and `safe' put), not a `window-configuration' --
+`tab-bar-select-tab' only reaches this path after a saved session is
+restored, which is where the parameter loss actually bit."
+  (delete-other-windows)
+  (edmacs-window-set-main (selected-window))
+  (display-buffer-in-side-window
+   (edmacs-windows-test--fresh-named-buffer "ewt-rt-sidebar")
+   '((side . left) (slot . 0)
+     (window-parameters . ((no-other-window . t) (no-delete-other-windows . t)))))
+  (display-buffer (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
+  (display-buffer (edmacs-windows-test--fresh-named-buffer "*Embark Collect Live*"))
+  (let ((state (window-state-get (frame-root-window) t)))
+    (delete-other-windows)
+    (window-state-put state (frame-root-window) 'safe)
+    state))
+
+(defun edmacs-windows-test--window-showing (name)
+  "Return the selected frame's window showing the buffer named NAME."
+  (seq-find (lambda (w) (equal (buffer-name (window-buffer w)) name))
+            (window-list nil 'no-minibuf)))
+
+(ert-deftest edmacs-windows-test-layout-parameters-survive-a-state-round-trip ()
+  (save-window-excursion
+    (unwind-protect
+        (progn
+          (edmacs-windows-test--layout-round-trip)
+          (let ((sidebar (edmacs-windows-test--window-showing "ewt-rt-sidebar"))
+                (popup (edmacs-windows-test--window-showing "*Embark Collect Live*")))
+            (should sidebar)
+            (should (eq (window-parameter sidebar 'window-side) 'left))
+            (should (equal (window-parameter sidebar 'window-slot) 0))
+            (should (window-parameter sidebar 'no-other-window))
+            (should (window-parameter sidebar 'no-delete-other-windows))
+            (should popup)
+            (should (eq (window-parameter popup 'window-side) 'right))
+            (should (equal (window-parameter popup 'window-slot) -1))
+            (should (window-parameter popup 'edmacs-stack-popup))
+            (should (eq (window-parameter popup 'mode-line-format) 'none))
+            (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
+                              (window-list nil 'no-minibuf)))))
+      (dolist (name '("ewt-rt-sidebar" "*Embark Collect Live*"))
+        (when (get-buffer name) (kill-buffer name))))))
+
+(ert-deftest edmacs-windows-test-state-get-output-stays-printable ()
+  "Registering a parameter puts its value into the desktop file, which
+desktop.el writes with `prin1' -- so the whole owned set must read back."
+  (save-window-excursion
+    (unwind-protect
+        (let ((state (edmacs-windows-test--layout-round-trip)))
+          (should (read (prin1-to-string state))))
+      (dolist (name '("ewt-rt-sidebar" "*Embark Collect Live*"))
+        (when (get-buffer name) (kill-buffer name))))))
+
+(ert-deftest edmacs-windows-test-owned-layout-parameters-are-registered ()
+  (dolist (parameter '(edmacs-main no-other-window no-delete-other-windows
+                       edmacs-stack-popup mode-line-format window-side window-slot))
+    (should (eq 'writable (alist-get parameter window-persistent-parameters))))
+  ;; `window-preserved-size's value carries a live buffer object, which must
+  ;; never reach the printed desktop file.
+  (should-not (assq 'window-preserved-size window-persistent-parameters)))
+
+(ert-deftest edmacs-windows-test-quit-restore-advice-still-fires-after-a-round-trip ()
+  "Losing `edmacs-stack-popup' across a restore would drop `q' back to
+stock `quit-restore-window', which can resurrect a stale prior buffer."
+  (save-window-excursion
+    (unwind-protect
+        (progn
+          (edmacs-windows-test--layout-round-trip)
+          (let ((popup (edmacs-windows-test--window-showing "*Embark Collect Live*")))
+            (should popup)
+            (quit-restore-window popup)
+            (should-not (window-live-p popup))
+            (should (eq (selected-window) (edmacs-main-window)))))
+      (dolist (name '("ewt-rt-sidebar" "*Embark Collect Live*"))
+        (when (get-buffer name) (kill-buffer name))))))
 
 ;;; windows-test.el ends here

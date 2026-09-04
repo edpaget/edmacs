@@ -262,6 +262,20 @@ touching `claude-term--read-session's body.")
           (and (claude-term--parse-buffer-name (buffer-name buf))
                (not (process-live-p (claude-term-registry--process-of buf)))))))
 
+;; ============================================================================
+;; windows.el's ordinary-placement predicate
+;; ============================================================================
+;; `modules/windows.el's `edmacs-windows-ordinary-buffer-p' is a swappable
+;; seam (default `#\='ignore') that keeps windows.el free of any claude-term
+;; dependency; wired to the real agent-pane check here. The bare `defvar'
+;; is byte-compile hygiene only, matching the block above.
+
+(defvar edmacs-windows-ordinary-buffer-p)
+
+(setq edmacs-windows-ordinary-buffer-p
+      (lambda (buffer)
+        (and (claude-term--parse-buffer-name (buffer-name buffer)) t)))
+
 (defun claude-term-registry--windows ()
   "Return the selected frame\='s windows showing a claude-term buffer."
   (seq-filter (lambda (w)

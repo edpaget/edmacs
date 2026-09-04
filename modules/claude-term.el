@@ -581,20 +581,17 @@ everything else from the dead session."
 ;; `delete-other-windows' like any other window.  Killing the WINDOW never
 ;; kills the session; the buffer and its process outlive it.
 ;;
-;; The explicit action list below is load-bearing.  `display-buffer' would
-;; otherwise fall through to windows.el's `display-buffer-base-action',
-;; whose `display-buffer-in-side-window' fallback always succeeds -- putting
-;; the pane straight back into the side-window column this section exists to
-;; leave.
+;; Keeping the pane out of the stack is windows.el's `ordinary' placement
+;; role, declared against a seam this module's registry wires up -- not a
+;; hand-written action list here.
 
 (defun claude-term--display-buffer (buffer)
-  "Display BUFFER in an ordinary window and return that window.
-Reuses a window already showing BUFFER (on any frame) before splitting,
-so redisplaying a live session never draws it a second window.  Returns
-nil exactly when `display-buffer' does, and never signals in that case."
-  (display-buffer buffer
-                  '((display-buffer-reuse-window display-buffer-pop-up-window)
-                    (reusable-frames . visible))))
+  "Display BUFFER and return that window.
+Placement is windows.el's `agent-pane' declaration: an ordinary window,
+reusing one already showing BUFFER (on any frame) before splitting, so
+redisplaying a live session never draws it a second window.  Returns nil
+exactly when `display-buffer' does, and never signals in that case."
+  (display-buffer buffer))
 
 (defun claude-term--pop-to-window (buffer)
   "Display BUFFER via `claude-term--display-buffer' and select its window.
