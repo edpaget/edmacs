@@ -1384,9 +1384,13 @@ back out to `edmacs-sidebar--min-width'."
         nil)
        (t
         (set-window-dedicated-p window t)
-        ;; Fringes cost roughly two columns of a four-column strip.
-        (when (frame-parameter frame 'edmacs-sidebar-collapsed)
-          (set-window-fringes window 0 0))
+        ;; Fringes cost roughly two columns of a four-column strip. nil
+        ;; restores the frame's own widths -- without the else branch the
+        ;; window stays fringe-less for the rest of its life, so one collapse
+        ;; permanently narrows the expanded sidebar too.
+        (if (frame-parameter frame 'edmacs-sidebar-collapsed)
+            (set-window-fringes window 0 0)
+          (set-window-fringes window nil nil))
         ;; Belt-and-suspenders (matches `edmacs-sidebar-collapse's own
         ;; docstring pattern): the buffer's very first `--redraw' ran from
         ;; `--ensure-buffer' above, before this window existed, so any
