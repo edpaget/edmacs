@@ -31,6 +31,10 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
 - `modules/windows-test.el` -- master-and-stack layout, popup routing, the
   `SPC w` command set, tab/desktop persistence, the `display-buffer` catch-all
 - `modules/ui-test.el`, `modules/sidebar-test.el` -- ui.el and sidebar.el
+- `modules/window-geometry-live-test.el` -- sidebar side-window width and
+  fringe assertions; two-tier (see GUI-only geometry assertions below). The
+  standard batch invocation always shows 3 of its 8 tests as skipped -- that
+  is the documented GUI-only gate, not a regression
 
 Run a suite in batch from the repository root, loading the modules it
 depends on first:
@@ -127,6 +131,28 @@ the wired-in form. This wrapper is opt-in per suite, not a systemic guard
 -- adopt it for any other suite you want the same protection on rather
 than assuming ERT's exit code already covers it.
 
+#### GUI-only geometry assertions
+
+Some assertions -- fringe pixels, scroll-bar width, the real gap between
+`window-total-width` and `window-body-width` -- are unfalsifiable under
+`emacs --batch`: a batch frame accepts `left-fringe`/`right-fringe` and
+ignores them, so that gap is always exactly 1 there and 2-5 on a real GUI
+frame. `scripts/gui-ert.sh` runs a suite inside an off-screen NS/X frame in
+a **throwaway** daemon (its own server name, `edmacs-gui-ert-$$`) to make
+those assertions real:
+
+```bash
+scripts/gui-ert.sh modules/window-geometry-live-test.el [selector] [-l extra.el ...]
+```
+
+It never touches the user's real daemon (server name `server`) and never
+sets `--init-directory`, so it cannot bootstrap a second `straight` package
+tree -- safe to run from a worktree or the main checkout. The throwaway
+daemon is killed on every exit path, including a failure before any test
+runs. A test's `:expected-result :failed` marker is honored here the same
+way ERT's own batch reporter honors it: an expected failure is not counted
+toward the script's exit code, only a genuinely unexpected result is.
+
 ### Compilation
 
 Modules are loaded from source, not byte-compiled as a build step. To check
@@ -145,6 +171,28 @@ emacs -Q --batch -L modules -f batch-byte-compile modules/git.el
 ```
 
 Delete the resulting `.elc` afterwards -- compiled output is not committed.
+
+### Linting
+
+`scripts/ambient-reads.el` flags a function that reads ambient state
+(`selected-window`, `selected-frame`, `default-directory`, ...) despite
+being handed an explicit argument for that same thing -- the lint no
+existing tool provides. Run it over every top-level module:
+
+```bash
+emacs -Q --batch -l scripts/ambient-reads.el -f edmacs-ambient-reads-batch modules/*.el
+```
+
+This is `modules/*.el` only -- it does not recurse into
+`modules/languages/`. Findings are two-tier: `ERROR` (the caller supplied
+the parameter and the function ignored it anyway) gates the batch exit
+code; `WARN` (no such parameter exists -- the read is ambient by
+construction, e.g. the `(or PARAM (selected-frame))` idiom) is
+informational only. Suppress a legitimate residual finding with a
+`;; ambient-reads: ok` comment on the finding's line or the line above --
+there is no separate whitelist file. `modules/sidebar.el:819` is a known,
+currently-unfixed `ERROR`-level true positive tracked for a later phase;
+it is not a lint bug to chase now.
 
 ### Startup check
 
