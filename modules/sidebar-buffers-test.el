@@ -390,6 +390,53 @@ or a module-global instead of the FRAME actually passed in."
             (dolist (call calls)
               (should (eq (car call) sentinel)))))))
 
+    ;; ==========================================================================
+    ;; AC2 -- buffers-root fold state survives its enclosing tab's number
+    ;; shifting (the same cons-shape fragility AC1's worktree-row fix
+    ;; addresses, now for this section's own value)
+    ;; ==========================================================================
+
+    (defun edmacs-sidebar-buffers-test--find-child-of-type (parent type)
+      "Depth-first search PARENT's descendant `magit-section's for the
+first one of TYPE, or nil."
+      (catch 'found
+        (dolist (child (oref parent children))
+          (when (eq (oref child type) type)
+            (throw 'found child))
+          (when-let* ((found (edmacs-sidebar-buffers-test--find-child-of-type child type)))
+            (throw 'found found)))
+        nil))
+
+    (ert-deftest edmacs-sidebar-buffers-test-buffers-root-fold-survives-tab-number-churn ()
+      "`edmacs-sidebar-buffers-root's section value is the bare ROOT
+string, not a `(ROOT . TAB-NUMBER)' cons, so its `magit-section-ident'
+stays stable when the enclosing worktree's open tab shifts index (e.g.
+another tab closing ahead of it) -- the same tab-number-churn fragility
+AC1's worktree-row fix addresses. Fold it, rebuild the same buffer with
+a DIFFERENT TAB-NUMBER (simulating that shift), and confirm
+`magit-section-cached-visibility' -- magit-section.el's own free
+mechanism, keyed on ident -- restores it hidden, with no bespoke
+fold-preservation code of this phase's own."
+      (cl-letf (((symbol-function 'edmacs-frames--tab-for-root)
+                 (lambda (&rest _) (cons 'current-tab nil))))
+        (with-temp-buffer
+          (magit-section-mode)
+          (let ((inhibit-read-only t))
+            (magit-insert-section (edmacs-sidebar-root nil nil)
+              (edmacs-sidebar-buffers--on-worktree-section "/repo/wt/" t (selected-frame) 1))
+            (let ((root-sec (edmacs-sidebar-buffers-test--find-child-of-type
+                              magit-root-section 'edmacs-sidebar-buffers-root)))
+              (should root-sec)
+              (should (eq nil (oref root-sec hidden)))
+              (magit-section-hide root-sec))
+            (erase-buffer)
+            (magit-insert-section (edmacs-sidebar-root nil nil)
+              (edmacs-sidebar-buffers--on-worktree-section "/repo/wt/" t (selected-frame) 2))
+            (let ((root-sec (edmacs-sidebar-buffers-test--find-child-of-type
+                              magit-root-section 'edmacs-sidebar-buffers-root)))
+              (should root-sec)
+              (should (eq t (oref root-sec hidden))))))))
+
     ))
 
 (ert-deftest edmacs-sidebar-buffers-test-listable-p-admits-work ()

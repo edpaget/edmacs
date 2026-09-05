@@ -294,7 +294,7 @@ never by a whole-buffer text search, which would always see both."
          (lambda (section)
            (when (and (eq (oref section type) 'edmacs-sidebar-buffers-root)
                       (slot-boundp section 'value)
-                      (equal (car (oref section value)) root))
+                      (equal (oref section value) root))
              (throw 'found section))))
         nil))
 

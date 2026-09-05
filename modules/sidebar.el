@@ -128,10 +128,11 @@
 ;; autoloads have not yet been regenerated.
 (declare-function which-key-show-full-keymap "which-key")
 
-;; agents.el loads AFTER this file too; used only by
+;; agents.el loads AFTER this file too; used by
 ;; `edmacs-sidebar--find-agent-section' below to key an agent row on its
 ;; stable struct field rather than its rendered (and frequently-changing)
-;; label text.
+;; label text, and by sidebar-agents.el's `magit-section-ident-value'
+;; specializer on `edmacs-sidebar-agent-section' for the same reason.
 (declare-function edmacs-agent-key "agents")
 
 ;; sidebar-buffers.el (phase 7) loads AFTER this file; these three
@@ -456,22 +457,6 @@ in the current buffer's section tree) whose buffer's name is NAME, or nil."
          (throw 'edmacs-sidebar--found-buffer-section section))))
     nil))
 
-(defun edmacs-sidebar--find-worktree-section (root)
-  "Return the `edmacs-sidebar-tab' section (anywhere in the current
-buffer's section tree) whose value is ROOT, or nil. Matches both an
-open row and a tab-less one -- the section value is the bare root
-string in both shapes now, so there is no separate tab-less case to
-distinguish."
-  (catch 'edmacs-sidebar--found-worktree-section
-    (edmacs-sidebar--map-sections
-     magit-root-section
-     (lambda (section)
-       (when (and (eq (oref section type) 'edmacs-sidebar-tab)
-                  (slot-boundp section 'value)
-                  (equal (oref section value) root))
-         (throw 'edmacs-sidebar--found-worktree-section section))))
-    nil))
-
 (defun edmacs-sidebar--capture-positions (buf)
   "Capture BUF's per-window point/scroll state ahead of a redraw.
 Modeled on magit-mode.el's `magit--refresh-buffer-get-positions': for
@@ -484,10 +469,14 @@ position'), and -- separately -- the section at the window's
 Relies entirely on `magit-section-ident' stability (via
 `magit-section-goto-successor' in `edmacs-sidebar--restore-positions')
 rather than any bespoke per-row-type identity scheme: a worktree row's
-section value is now the bare, `equal'-stable root string (see
-`edmacs-sidebar--insert-tab-row'), an agent row's and a buffer row's
-values are already stable structs/buffer objects, so no custom
-`magit-section-ident-value' method is needed for any of them.
+and an agents-group's section values are now the bare, `equal'-stable
+root string (see `edmacs-sidebar--insert-tab-row' and
+`edmacs-sidebar-agents--insert-group'), a buffer row's value is already
+a stable buffer object, and an agent row's value -- a raw `edmacs-agent'
+struct that `edmacs-agents-set-status' rebuilds fresh on every change --
+gets a `magit-section-ident-value' specializer of its own
+(`edmacs-sidebar-agent-section' in sidebar-agents.el) keyed on
+`edmacs-agent-key' instead.
 
 Falls back to a single window-less entry, keyed on BUF's own (buffer-
 local, window-independent) point, when BUF has no live window at all --

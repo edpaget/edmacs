@@ -397,13 +397,12 @@ silently never fire again while conditions stay tick-worthy."
       "A heartbeat-only redraw that replaces an agent's struct with a
 fresh one under the same key (mirroring `edmacs-agents-set-status',
 which always builds a new struct rather than mutating one in place)
-degrades point to the nearest ancestor with a stable identity, rather
-than resetting to `point-min': `edmacs-sidebar--redraw's restore
-epilogue keys purely on `magit-section-ident' now, and an
-`edmacs-sidebar-agent' section's value -- the raw struct -- is not
-`equal'-stable across such a refresh, so `magit-section-goto-successor'
-falls through to its related-section fallback and lands on the
-enclosing worktree row instead of the agent leaf itself."
+still resolves point back onto the same agent row afterward, rather
+than degrading to the enclosing worktree row: `edmacs-sidebar-agent-
+section's `magit-section-ident-value' specializer (sidebar-agents.el)
+keys identity on `edmacs-agent-key', not the raw (and now different)
+struct, so the row's `magit-section-ident' stays stable across the
+refresh and `magit-section-goto-successor' finds the row itself."
       (edmacs-sidebar-agents-live-test--with-clean-state
         (let ((agent (edmacs-sidebar-agents-live-test--make-agent
                       :root "/repo/wt/" :status 'working :status-ts (float-time))))
@@ -432,8 +431,9 @@ enclosing worktree row instead of the agent leaf itself."
                                     :source (edmacs-agent-source agent))))
                     (puthash (edmacs-agent-key refreshed) refreshed edmacs-agents--table))
                   (edmacs-sidebar--redraw (selected-frame))
-                  (should (eq (oref (magit-current-section) type) 'edmacs-sidebar-tab))
-                  (should (equal (oref (magit-current-section) value) "/repo/wt/"))))
+                  (should (eq (oref (magit-current-section) type) 'edmacs-sidebar-agent))
+                  (should (equal (edmacs-agent-key (oref (magit-current-section) value))
+                                 (edmacs-agent-key agent)))))
             (remhash "/repo/" edmacs-frames--worktrees-cache)
             (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))
             (set-frame-parameter (selected-frame) 'edmacs-repo nil)))))

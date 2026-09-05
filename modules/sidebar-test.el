@@ -2870,6 +2870,22 @@ hook variable names."
                        (buffer-string))))
         (should-not (string-match-p "claude-usage" source))))
 
+    ;; ==========================================================================
+    ;; AC3 -- the hand-rolled point-identity family no longer exists
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-point-identity-family-retired ()
+      "`--point-identity'/`--goto-identity' (replaced by
+`--capture-positions'/`--restore-positions' built on
+`magit-section-get-relative-position'/`magit-section-goto-successor')
+and `--find-worktree-section' (left with zero callers once
+`--goto-identity's cons-dispatch wrapper was deleted -- unlike
+`--find-agent-section'/`--find-buffer-section', which each keep a real
+direct caller) are gone entirely, not merely unused."
+      (should-not (fboundp 'edmacs-sidebar--point-identity))
+      (should-not (fboundp 'edmacs-sidebar--goto-identity))
+      (should-not (fboundp 'edmacs-sidebar--find-worktree-section)))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-test.el ends here

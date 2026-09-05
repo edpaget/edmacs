@@ -276,7 +276,7 @@ Commentary on the module-boundary convention), and every
                       :root "/repo/wt/" :status 'working :title "Claude Code"
                       :status-ts (float-time))))
           (edmacs-sidebar-agents-test--with-sidebar-buffer
-            (edmacs-sidebar-agents--insert-group (list agent))
+            (edmacs-sidebar-agents--insert-group "/repo/wt/" (list agent))
             (let ((text (buffer-string)))
               (should (string-match-p (regexp-quote "*") text))
               (should (string-match-p "Claude Code" text))

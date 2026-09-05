@@ -88,6 +88,7 @@
 ;; module ever actually runs any of the functions below that touch them.
 (declare-function make-edmacs-agent "agents")
 (declare-function edmacs-agent-key "agents")
+(declare-function edmacs-agent-p "agents")
 (declare-function edmacs-agent-root "agents")
 (declare-function edmacs-agent-instance "agents")
 (declare-function edmacs-agent-status "agents")
@@ -276,6 +277,29 @@ deterministic for two rows in the same state at the same timestamp."
 ;; Rendering: per-worktree `agents' subsection
 ;; ============================================================================
 
+;; An `edmacs-sidebar-agent' row's section value is the live `edmacs-agent'
+;; cl-defstruct, and `edmacs-agents-set-status' always builds a fresh struct
+;; under the same key rather than mutating one in place -- so the struct
+;; itself is not `equal'-stable across a heartbeat-only redraw, and the
+;; default `magit-section-ident-value' (which returns a non-EIEIO value
+;; verbatim) would make the row's ident change on every tick. Register a
+;; distinct, package-prefixed subclass for this one type and specialize
+;; ident-value on it, exactly as real Magit extends section identity for
+;; its own non-trivial values; this must NOT be done on the shared base
+;; `magit-section' class, or it would leak into claude-usage.el's own
+;; `magit-section-mode' buffer and any real Magit buffer.
+(defclass edmacs-sidebar-agent-section (magit-section) ())
+(add-to-list 'magit--section-type-alist (cons 'edmacs-sidebar-agent 'edmacs-sidebar-agent-section))
+(cl-defmethod magit-section-ident-value ((section edmacs-sidebar-agent-section))
+  "Key on `edmacs-agent-key', falling back to the raw value when it is
+not actually an `edmacs-agent' struct -- a degenerate/direct-call
+construction (never `--insert-row' itself) can give this section type a
+nil or otherwise non-agent value, and `magit-section-cached-visibility'
+computes every section's ident unconditionally on every insertion, so
+this runs even then."
+  (let ((value (oref section value)))
+    (if (edmacs-agent-p value) (edmacs-agent-key value) value)))
+
 (defun edmacs-sidebar-agents--insert-row (agent)
   "Insert one row for AGENT: glyph, title, elapsed time, per-status face.
 Bold is layered ON TOP of the status face (rather than replacing it)
@@ -295,10 +319,18 @@ below call before redrawing."
       (magit-insert-heading
         (if face (propertize label 'face face) label)))))
 
-(defun edmacs-sidebar-agents--insert-group (agents)
-  "Insert AGENTS (already known to belong to one worktree) as child rows
-of one `edmacs-sidebar-agents-group' section, in attention order."
-  (magit-insert-section (edmacs-sidebar-agents-group agents)
+(defun edmacs-sidebar-agents--insert-group (root agents)
+  "Insert AGENTS (already known to belong to ROOT) as child rows of one
+`edmacs-sidebar-agents-group' section, in attention order. The
+section's own value is ROOT, not AGENTS: `edmacs-agents-set-status'
+always rebuilds this list fresh (new cons cells, new structs) even
+when membership and order are unchanged, so keying identity on it would
+make the group's `magit-section-ident' -- and therefore every child
+agent row's full ident chain -- change on every heartbeat tick. A bare
+ROOT string is `equal'-stable the same way `edmacs-sidebar--insert-tab-
+row's worktree-row value is, so this needs no
+`magit-section-ident-value' specializer of its own."
+  (magit-insert-section (edmacs-sidebar-agents-group root)
     (dolist (agent (sort (copy-sequence agents) #'edmacs-sidebar-agents--compare))
       (edmacs-sidebar-agents--insert-row agent))))
 
@@ -315,7 +347,7 @@ this function's arity still matches the now-4-arg
 `run-hook-with-args' call in sidebar.el."
   (let ((agents (edmacs-sidebar-agents--for-root root)))
     (when agents
-      (edmacs-sidebar-agents--insert-group agents))))
+      (edmacs-sidebar-agents--insert-group root agents))))
 
 (add-hook 'edmacs-sidebar-worktree-section-functions #'edmacs-sidebar-agents--on-worktree-section)
 

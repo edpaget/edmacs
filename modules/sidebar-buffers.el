@@ -65,6 +65,7 @@
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar--find-buffer-section "sidebar")
+(declare-function edmacs-sidebar--root-tab-number "sidebar")
 (declare-function nerd-icons-octicon "nerd-icons")
 (defvar edmacs-sidebar-worktree-section-functions)
 (defvar edmacs-sidebar-extra-section-functions)
@@ -561,7 +562,7 @@ own TAB-NUMBER convention (like every other consumer of this hook) is
            (is-current (and tab (eq (car tab) 'current-tab)))
            (flat (frame-parameter frame 'edmacs-sidebar-buffers-flat)))
       (let ((root-sec
-             (magit-insert-section sec (edmacs-sidebar-buffers-root (cons root tab-number) (not is-current))
+             (magit-insert-section sec (edmacs-sidebar-buffers-root root (not is-current))
                ;; Headless (no `magit-insert-heading' call): stamp `content'
                ;; ourselves so `--apply-initial-fold' below has a body span
                ;; to hide -- otherwise `content' stays nil (`magit-section's
@@ -612,10 +613,11 @@ usable tab identity, rather than doing nothing."
   (interactive)
   (let* ((buf (edmacs-sidebar-buffers--row-buffer-at-point))
          (root-section (and buf (edmacs-sidebar-buffers--enclosing-root (magit-current-section))))
-         (root-tab (and root-section (slot-boundp root-section 'value) (oref root-section value))))
-    (if (and buf root-tab)
+         (root (and root-section (slot-boundp root-section 'value) (oref root-section value)))
+         (tab-number (and root (edmacs-sidebar--root-tab-number root))))
+    (if (and buf tab-number)
         (progn
-          (edmacs-sidebar-buffers--select-tab-if-needed (car root-tab) (cdr root-tab))
+          (edmacs-sidebar-buffers--select-tab-if-needed root tab-number)
           (when (buffer-live-p buf)
             (edmacs-window-pop-buffer-to-main buf)))
       (user-error "Nothing to do on this row"))))
@@ -640,8 +642,8 @@ always the selected frame."
 ;; ============================================================================
 
 (defun edmacs-sidebar-buffers--enclosing-root-tab ()
-  "Return the `(ROOT . TAB-NUMBER)' of the buffers-root enclosing point,
-or nil when point is not inside any buffers subsection."
+  "Return the ROOT of the buffers-root enclosing point, or nil when
+point is not inside any buffers subsection."
   (let ((root-section (edmacs-sidebar-buffers--enclosing-root (magit-current-section))))
     (and root-section (slot-boundp root-section 'value) (oref root-section value))))
 
@@ -650,10 +652,11 @@ or nil when point is not inside any buffers subsection."
 \(FORWARD-P non-nil for `next-buffer') -- the exact commands `SPC b n'/
 `SPC b p' already run -- then redraw FRAME's sidebar and follow point
 to the resulting buffer's row."
-  (let ((root-tab (edmacs-sidebar-buffers--enclosing-root-tab)))
-    (if (null root-tab)
+  (let* ((root (edmacs-sidebar-buffers--enclosing-root-tab))
+         (tab-number (and root (edmacs-sidebar--root-tab-number root))))
+    (if (null tab-number)
         (message "edmacs-sidebar-buffers: point is not in a buffers subsection")
-      (edmacs-sidebar-buffers--select-tab-if-needed (car root-tab) (cdr root-tab))
+      (edmacs-sidebar-buffers--select-tab-if-needed root tab-number)
       (let ((main (edmacs-main-window)))
         (when main
           (with-selected-window main
