@@ -59,6 +59,15 @@
 ;; not bare `t', is what lets an arbitrary Lisp value through.
 ;; `window-preserved-size' is deliberately absent: its value carries a live
 ;; buffer object, which must never reach the printed desktop file.
+;; `quit-restore' is deliberately absent too, for the same reason: its value
+;; embeds live window, buffer, and marker objects (the PREV-WINDOW/THIS-BUFFER
+;; slots, and, once a window has shown a different buffer, that buffer's own
+;; marker). Persisting it would also do nothing for the other shape that
+;; drops `display-buffer-in-side-window's width request -- a reused window
+;; whose slot 1 already holds a displaced buffer's quadruple -- which arises
+;; from live buffer recreation, not from restore. See
+;; `edmacs-sidebar--enforce-width' in sidebar.el for the fix at the point of
+;; use instead.
 (dolist (parameter '(edmacs-main
                      no-other-window
                      no-delete-other-windows

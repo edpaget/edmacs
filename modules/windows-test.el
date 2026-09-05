@@ -1870,7 +1870,12 @@ desktop.el writes with `prin1' -- so the whole owned set must read back."
     (should (eq 'writable (alist-get parameter window-persistent-parameters))))
   ;; `window-preserved-size's value carries a live buffer object, which must
   ;; never reach the printed desktop file.
-  (should-not (assq 'window-preserved-size window-persistent-parameters)))
+  (should-not (assq 'window-preserved-size window-persistent-parameters))
+  ;; `quit-restore's value embeds live window/buffer/marker objects for the
+  ;; same reason -- see the comment above the `dolist' registering these
+  ;; parameters. sidebar.el's `edmacs-sidebar--enforce-width' compensates at
+  ;; the point of use instead of persisting this parameter.
+  (should-not (assq 'quit-restore window-persistent-parameters)))
 
 (ert-deftest edmacs-windows-test-quit-restore-advice-still-fires-after-a-round-trip ()
   "Losing `edmacs-stack-popup' across a restore would drop `q' back to

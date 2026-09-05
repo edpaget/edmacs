@@ -1305,6 +1305,40 @@ frame with no live sidebar window."
 
 (add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change-anchor)
 
+(defun edmacs-sidebar--enforce-width (window frame width)
+  "Resize WINDOW on FRAME to WIDTH, which the placement only sometimes does.
+`display-buffer-in-side-window' honours a `window-width' request on a
+window it REUSES only when that window's `quit-restore' parameter still
+carries the symbol `window' in slot 1 (window.el's `window--display-buffer').
+A frameset-restored window has no `quit-restore' at all -- it is not in
+`window-persistent-parameters' -- and a window that ever showed a
+different buffer carries the displaced buffer's quadruple there instead.
+Both shapes occur in ordinary use, and in both the width request is
+dropped without a word, which is why the collapsed strip could open at
+full width.
+
+WIDTH is either a total-column integer or a `(body-columns . N)' cons,
+matching the two `window-width' forms. The body-columns case corrects
+against the window's own measured body width and repeats, because chrome
+is not a whole number of columns on a graphical frame -- a 17-pixel
+scroll bar at a 7-pixel character width costs 2.43 columns, so a single
+computed delta lands one column out. Two passes suffice; a third is
+insurance, and a converged pass costs nothing.
+
+IGNORE must be `safe' rather than t: plain t drops only
+`window-min-width' and still respects the pixel cost of fringes and a
+scroll bar, which alone is enough to refuse a four-column strip on a
+graphical frame. Neither `window-resize' call is wrapped in
+`ignore-errors' -- a genuine refusal (e.g. a fixed-size window, or a
+request `safe' cannot satisfy) must signal, not vanish."
+  (ignore frame)
+  (if (consp width)
+      (dotimes (_ 3)
+        (let ((delta (- (cdr width) (window-body-width window))))
+          (unless (zerop delta)
+            (window-resize window delta t 'safe))))
+    (window-resize window (- width (window-total-width window)) t 'safe)))
+
 (defun edmacs-sidebar-show (&optional frame)
   "Show FRAME's sidebar window, creating and redrawing its buffer first.
 Guarantees the result is either FRAME's left side window or nil --
@@ -1352,12 +1386,14 @@ back out to `edmacs-sidebar--min-width'."
     (when (edmacs-windows-frame-wedged-p frame)
       (edmacs-windows-repair-frame frame))
     (let* ((buf (edmacs-sidebar--ensure-buffer frame))
-           (width (if (frame-parameter frame 'edmacs-sidebar-collapsed)
-                      ;; +1: the placement keeps a column of chrome, so a
-                      ;; request of N yields a body of N-1 (measured live:
-                      ;; total 32 -> body 31). The constant is the body
-                      ;; width the producers are formatted for.
-                      (1+ edmacs-sidebar--collapsed-width)
+           (collapsed (frame-parameter frame 'edmacs-sidebar-collapsed))
+           (width (if collapsed
+                      ;; A `body-columns' request is sized in body pixels, so
+                      ;; it lands on the width the producers are formatted
+                      ;; for whatever this frame's chrome costs -- one column
+                      ;; in batch, two to five on a GUI frame depending on
+                      ;; `frame-char-width', fringe pixels and scroll bar.
+                      (cons 'body-columns edmacs-sidebar--collapsed-width)
                     (edmacs-sidebar--clamp-width
                      (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
                          edmacs-sidebar-width)
@@ -1388,9 +1424,16 @@ back out to `edmacs-sidebar--min-width'."
         ;; restores the frame's own widths -- without the else branch the
         ;; window stays fringe-less for the rest of its life, so one collapse
         ;; permanently narrows the expanded sidebar too.
-        (if (frame-parameter frame 'edmacs-sidebar-collapsed)
+        (if collapsed
             (set-window-fringes window 0 0)
           (set-window-fringes window nil nil))
+        ;; `display-buffer-in-side-window's `window-width' request is only
+        ;; honoured on a REUSED window with an intact `quit-restore' -- see
+        ;; `edmacs-sidebar--enforce-width''s docstring. Every frameset-restored
+        ;; window and every window that ever showed a different buffer fails
+        ;; that check, so both the collapse and the expand path enforce the
+        ;; width themselves rather than trusting the placement call above.
+        (edmacs-sidebar--enforce-width window frame width)
         ;; Belt-and-suspenders (matches `edmacs-sidebar-collapse's own
         ;; docstring pattern): the buffer's very first `--redraw' ran from
         ;; `--ensure-buffer' above, before this window existed, so any

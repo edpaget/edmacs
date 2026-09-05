@@ -238,8 +238,6 @@ is in -- `quit-restore' is not persisted by `frameset' -- and it is the
 state in which `edmacs-sidebar-show's `display-buffer-in-side-window'
 call silently declines to resize.  Fails on a checkout whose
 `edmacs-sidebar-show' relies on that call alone to set the width."
-      ;; Expected to flip in edmacs-verification-gap/phase-3-quit-restore-geometry.
-      :expected-result :failed
       (edmacs-geometry-test--with-sidebar frame window
         (let ((wide (window-total-width window)))
           (should (> wide 15))
@@ -256,8 +254,6 @@ is the displaced-buffer quadruple rather than the symbol `window'.  A
 sidebar buffer that was ever recreated (the `<2>' uniquification path)
 leaves the window permanently in this shape, so collapse never worked
 again on that frame."
-      ;; Expected to flip in edmacs-verification-gap/phase-3-quit-restore-geometry.
-      :expected-result :failed
       (edmacs-geometry-test--with-sidebar frame window
         (let ((wide (window-total-width window)))
           (edmacs-geometry-test--poison-quit-restore window 'other)
@@ -280,8 +276,6 @@ Batch cannot grow real fringes, but `set-window-margins' shaves
 in as a chrome surrogate: with a 2-column left margin the `1+' is off by
 two, and the producers are formatted for a width the window does not
 have."
-      ;; Expected to flip in edmacs-verification-gap/phase-3-quit-restore-geometry.
-      :expected-result :failed
       (edmacs-geometry-test--with-sidebar frame window
         (set-window-margins window 2 0)
         (edmacs-sidebar-collapse frame)
@@ -296,8 +290,6 @@ have."
 collapsed strip's `window-body-width' must equal
 `edmacs-sidebar--collapsed-width'.  Fails on a checkout that requests
 `(1+ edmacs-sidebar--collapsed-width)' as a TOTAL width."
-      ;; Expected to flip in edmacs-verification-gap/phase-3-quit-restore-geometry.
-      :expected-result :failed
       (unless (edmacs-geometry-test--graphical-p)
         (ert-skip "needs a graphical frame; run via scripts/gui-ert.sh"))
       (edmacs-geometry-test--with-sidebar frame window
@@ -307,6 +299,22 @@ collapsed strip's `window-body-width' must equal
           (should (= edmacs-sidebar--collapsed-width (window-body-width w)))
           (should (= edmacs-sidebar--collapsed-width
                      (edmacs-sidebar--strip-width frame))))))
+
+    (ert-deftest edmacs-geometry-test-enforce-width-signal-propagates ()
+      "AC: a genuine `window-resize' failure inside
+`edmacs-sidebar--enforce-width' must signal, not vanish. A wrapper that
+caught it (e.g. `ignore-errors', as the `spike/live-frame-harness'
+candidate did) would return silently here instead. Exercises both WIDTH
+forms `edmacs-sidebar-show' passes -- the plain integer (expanded case)
+and the `(body-columns . N)' cons (collapsed case)."
+      (edmacs-geometry-test--with-sidebar frame window
+        (cl-letf (((symbol-function 'window-resize)
+                   (lambda (&rest _) (signal 'error '("stubbed resize refusal")))))
+          (should-error (edmacs-sidebar--enforce-width window frame 12)
+                        :type 'error)
+          (should-error
+           (edmacs-sidebar--enforce-width window frame (cons 'body-columns 4))
+           :type 'error))))
 
     (ert-deftest edmacs-geometry-test-gui-expand-restores-fringes ()
       "AC: expanding must undo the collapse's `set-window-fringes 0 0'.
