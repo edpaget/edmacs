@@ -317,3 +317,95 @@ and is what the suppression comment exists for.
    breaks the sidebar's geometry will fail tier 1 in batch and tier 2 on a
    real frame, and the lint will name any function that starts reading ambient
    state instead of taking it.
+
+---
+
+## 7. Real-frame verification captured as an artifact (edmacs-verification-gap)
+
+Commit `4a05410` (the sidebar row-identity/magit-restore change) and
+`af394e8` (the `gui-ert.sh` selector-quoting fix that made this possible)
+both narrated a real-frame verification pass in their commit messages only
+-- prose, no attached output. A later review correctly marked "Verified on
+a real frame" PARTIAL on exactly that basis: prose is not an artifact a
+static reviewer can check. This section is that artifact: the actual
+commands and their actual output, captured on 2026-09-05 against `af394e8`
+on macOS 26.5 / GNU Emacs 31.1 (emacs-plus@31) via
+`scripts/gui-ert.sh`, which boots a throwaway daemon and runs the suite
+inside one real off-screen `ns` graphical frame.
+
+### `modules/sidebar-test.el` (AC1, AC2)
+
+```
+$ scripts/gui-ert.sh modules/sidebar-test.el t -l modules/git-common-dir.el
+frame 160x48  window-system=ns  char=7x14  fringes=8/8  scroll-bar=17  graphic=t
+...
+   passed  edmacs-sidebar-test-fold-state-survives-redraw-through-label-change
+...
+   passed  edmacs-sidebar-test-point-survives-redraw-through-label-change
+...
+   FAILED  edmacs-sidebar-test-reset-width-clears-parameter
+            (ert-test-failed ((should (= (1- (edmacs-sidebar--clamp-width edmacs-sidebar-width frame)) (window-width (edmacs-sidebar--window frame)))) :form (= 31 27) :value nil))
+
+Ran 127 tests, 124 passed, 0 expected-failed, 1 failed, 2 skipped
+```
+
+`fringes=8/8  scroll-bar=17  graphic=t` is the tell: this is a real window
+system, not `--batch`'s always-zero chrome (Section 1 above). AC1's and
+AC2's own tests -- `point-survives-redraw-through-label-change` and
+`fold-state-survives-redraw-through-label-change` -- both run and pass
+inside that real frame, which is the direct, reproducible confirmation the
+prior commit messages asserted only in prose. The one failure
+(`reset-width-clears-parameter`) and the two skips (both refuse for lack of
+a *second* frame, unrelated to this phase's AC1/AC2 tests) are pre-existing
+and orthogonal to this phase; see the next subsection for why a second
+frame could not be produced in this run.
+
+### Second-frame tests: a genuine, disclosed limitation
+
+`af394e8`'s message additionally claimed 19/20 and 8/8 results for
+`modules/frames-live-test.el` and `modules/sidebar-agents-live-test.el`
+under `script -q /dev/null`, describing this as exercising a second real
+frame. Re-running both suites the same way here does **not** reproduce
+those counts:
+
+```
+$ script -q /dev/null bash -c "scripts/gui-ert.sh modules/frames-live-test.el t -l modules/git-common-dir.el"
+Ran 20 tests, 4 passed, 0 expected-failed, 0 failed, 16 skipped
+
+$ scripts/gui-ert.sh modules/sidebar-agents-live-test.el t -l modules/git-common-dir.el
+Ran 8 tests, 7 passed, 0 expected-failed, 0 failed, 1 skipped
+```
+
+Every skip in both runs gives the same reason: `could not create a second
+frame in this batch environment ... (error Could not open file: /dev/tty)`.
+Checked directly in this run's shell:
+
+```
+$ ls -la /dev/tty
+crw-rw-rw- 1 root wheel 2, 0 ... /dev/tty
+$ python3 -c "open('/dev/tty')"
+OSError: [Errno 6] Device not configured: '/dev/tty'
+```
+
+`/dev/tty` exists as a device node but has no controlling terminal attached
+to this process tree, and wrapping the invocation in `script -q /dev/null`
+does not change that -- `emacs --daemon` detaches from its controlling
+terminal at boot regardless of what launched it, so no amount of `script`
+wrapping around `gui-ert.sh` gives the *daemon* a tty to make a second
+frame on. Whatever second-frame result the prior commit messages reported
+was evidently produced in a different, genuinely-interactive shell this
+sandboxed verification pass cannot reconstruct -- which is itself the
+finding worth recording: **do not restate a prior session's second-frame
+numbers without re-deriving them**, since they are not reproducible from
+this environment and the previous instance of exactly that mistake is what
+this section replaces.
+
+The tests this phase's own ACs depend on (`point-survives-redraw-through-label-change`,
+`fold-state-survives-redraw-through-label-change`) need only a single real
+frame and are directly confirmed above. The remaining AC4 bullet -- focus
+away and back on a second frame, checking for the pre-existing cursor-jump
+symptom -- needs genuine interactive multi-frame input that neither
+`--batch` nor this sandboxed daemon-over-emacsclient harness can produce;
+it stays a manual, on-hardware check, consistent with this repo's
+GUI-only-ACs convention (accept and continue, list for manual check rather
+than reworking automation that cannot exist).
