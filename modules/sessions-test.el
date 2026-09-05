@@ -18,6 +18,14 @@
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
 ;;         -l modules/sessions-test.el -f ert-run-tests-batch-and-exit
 ;;
+;; This reports 0 unexpected with 4 SKIPPED under a shell with no
+;; controlling tty (a headless CI runner, some IDE terminals): those four
+;; route through `edmacs-sessions-test--make-second-frame-or-skip', which
+;; opens `/dev/tty' to create a real second frame and `ert-skip's when
+;; there is none -- environment-dependent, not an invocation gap. Run
+;; under a real or pseudo tty (e.g. `script -q /dev/null emacs -Q --batch
+;; ...' with the same arguments above) to get all 59 including those four.
+;;
 ;; Also covers the daemon lifecycle commands `SPC q' dispatches to. They
 ;; exist because homebrew.mxcl.emacs-plus@31.plist sets `KeepAlive'
 ;; unconditionally: launchd relaunches the daemon on ANY exit, so the three
@@ -193,9 +201,11 @@ cannot drift apart on what counts as a frame a repo may live on."
 save, and the walk must not stamp it, rename it, give it a sidebar or
 arm a `file-notify' watch on it. Observed live as a second frame named
 after a repo it could never display. The eligible frame is processed in
-full, with the tab stamp FIRST -- back-fill resolves a frame's repo from
-its tabs' own roots, which a pre-stamp desktop file does not carry until
-`edmacs-frames-stamp-frame-tabs' has written them."
+full, with dead-tab-root cleanup running even before the tab stamp --
+back-fill resolves a frame's repo from its tabs' own roots, which a
+pre-stamp desktop file does not carry until
+`edmacs-frames-stamp-frame-tabs' has written them, and a root pointing at
+a deleted worktree must be dropped before either step touches it."
       (let (calls)
         (cl-letf (((symbol-function 'frame-list) (lambda () '(f1 gui)))
                   ((symbol-function 'frame-live-p) (lambda (f) (memq f '(f1 gui))))
@@ -209,6 +219,8 @@ its tabs' own roots, which a pre-stamp desktop file does not carry until
                   ((symbol-function 'edmacs-frames-frame-usable-p)
                    (lambda (f) (and (not (and (daemonp) (frame-initial-p f)))
                                     (display-graphic-p f))))
+                  ((symbol-function 'edmacs-sessions--drop-dead-tab-roots)
+                   (lambda (f) (push (cons 'drop-dead f) calls)))
                   ((symbol-function 'edmacs-frames-stamp-frame-tabs)
                    (lambda (f) (push (cons 'stamp f) calls)))
                   ((symbol-function 'edmacs-sessions--backfill-repo-param)
@@ -223,7 +235,7 @@ its tabs' own roots, which a pre-stamp desktop file does not carry until
         (setq calls (nreverse calls))
         (should-not (seq-find (lambda (c) (eq (cdr c) 'f1)) calls))
         (should (equal (mapcar #'car calls)
-                       '(stamp backfill title tracking sidebar)))))
+                       '(drop-dead stamp backfill title tracking sidebar)))))
 
     ;; ==========================================================================
     ;; AC1 -- edmacs-sessions--backfill-repo-param

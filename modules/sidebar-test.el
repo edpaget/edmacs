@@ -1648,12 +1648,15 @@ next hide/show cycle."
                                     (+ edmacs-sidebar-width 50))
               (edmacs-sidebar-reset-width frame)
               (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width))
-              ;; `display-buffer-in-side-window' yields an actual window one
-              ;; column narrower than requested on a fresh split -- see
-              ;; `edmacs-sidebar--remember-width's docstring -- so the live
-              ;; width is the clamped default minus one, not the raw default.
-              (should (= (1- (edmacs-sidebar--clamp-width edmacs-sidebar-width frame))
-                          (window-width (edmacs-sidebar--window frame)))))
+              ;; `edmacs-sidebar-width', like `edmacs-sidebar-remembered-width',
+              ;; is a TOTAL-width target: `edmacs-sidebar-show' hands it to
+              ;; `edmacs-sidebar--enforce-width', which resizes the live
+              ;; window's `window-total-width' to match exactly, regardless
+              ;; of how many columns of that total the window's own chrome
+              ;; (a vertical border here in batch; fringes/scroll bar on a
+              ;; real GUI frame) then costs `window-body-width'.
+              (should (= (edmacs-sidebar--clamp-width edmacs-sidebar-width frame)
+                          (window-total-width (edmacs-sidebar--window frame)))))
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
@@ -2596,6 +2599,61 @@ this phase adding anything beyond the Step-1 data-shape fix."
                 (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
 
     ;; ==========================================================================
+    ;; Window-start half of `edmacs-sidebar--capture-positions'/
+    ;; `--restore-positions', untouched by the AC1/AC2 tests above (they only
+    ;; ever assert on point and fold state)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-window-start-survives-redraw-through-shifted-content ()
+      "Window-start, scrolled onto one worktree row while point sits on a
+later row, is restored to that same row (by section identity, not the
+stale raw integer) after a redraw that inserts a missing-repo warning
+above every row -- shifting each row's buffer position down.
+`edmacs-sidebar--restore-positions' first tries `magit-section-equal' on
+the old raw integer, which -- after the shift -- now lands on the wrong
+row entirely, so a correct restore has to fall through to its
+`magit-section-goto-successor--same' recovery branch instead of
+silently keeping a wrong-looking-but-live window-start."
+      (let* (;; Forces `tab-bar-tabs's one-time lazy frame-init (and the
+             ;; `tab-bar-tab-post-open-functions' it runs) to happen here,
+             ;; not on the first `tab-bar-tabs' call inside
+             ;; `edmacs-sidebar--redraw-worktrees' below -- every other test
+             ;; in this file gets this for free via an earlier
+             ;; `tab-bar--current-tab-find', which this test has no other
+             ;; reason to call.
+             (_ (tab-bar-tabs))
+             (worktrees (cl-loop for i from 0 below 8
+                                 collect (cons (format "wt-%d" i)
+                                               (format "/repo/wt-%d/" i))))
+             (root-alist nil))
+        (edmacs-sidebar-test--stub-worktree-lookup root-alist
+          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
+            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
+              (unwind-protect
+                  (let ((window nil))
+                    (edmacs-sidebar-show (selected-frame))
+                    (setq window (edmacs-sidebar--window (selected-frame)))
+                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                      (goto-char (point-min))
+                      (forward-line 2)
+                      (should (equal (oref (magit-current-section) value) "/repo/wt-2/"))
+                      (set-window-start window (point) t)
+                      (goto-char (point-min))
+                      (forward-line 6)
+                      (should (equal (oref (magit-current-section) value) "/repo/wt-6/"))
+                      (set-window-point window (point)))
+                    ;; The warning row inserted ahead of the worktree list
+                    ;; shifts every row's buffer position down, so the old
+                    ;; raw `window-start' integer no longer names wt-2's row.
+                    (set-frame-parameter (selected-frame) 'edmacs-repo-missing t)
+                    (edmacs-sidebar--redraw (selected-frame))
+                    (with-selected-window window
+                      (should (equal (oref (magit-section-at (window-start)) value)
+                                     "/repo/wt-2/"))))
+                (set-frame-parameter (selected-frame) 'edmacs-repo-missing nil)
+                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+
+    ;; ==========================================================================
     ;; Sanitiser and collision prevention for repo-less frames
     ;; ==========================================================================
 
@@ -2671,6 +2729,66 @@ this phase adding anything beyond the Step-1 data-shape fix."
             (edmacs-sidebar-test--cleanup-sidebar f2)
             (delete-frame f2)))))
 
+    (ert-deftest edmacs-sidebar-test-permanent-name-collision-does-not-poison-quit-restore ()
+      "edmacs-verification-gap phase 6 (AC5) investigation: unlike the
+transient boot-race `-ensure-buffer-renames-stale-buffer-name' covers,
+two frames that converge on the exact same FINAL sanitised title (e.g.
+two frames restoring the identical worktree) hit a PERMANENT collision
+-- the losing frame's buffer can never win the rename race back to the
+canonical name, because the winning frame already holds it. Reproduced
+live via a real second frame, confirmed by asserting the `<2>' suffix
+survives a second `--ensure-buffer' call after both frames' names change
+again to the same new value.
+
+This does NOT, however, poison the losing frame's `quit-restore' window
+parameter into the \"buffer quadruple\" shape phase 3
+\(phase-3-quit-restore-geometry\) found blocked `display-buffer-in-side-
+window' from ever honouring a width request again: every sidebar
+buffer/window lookup in this file (`--buffer', `--window', `--ensure-
+buffer') goes through a frame parameter or buffer/window IDENTITY, never
+buffer NAME matching, so a `<2>'-suffixed name has no path to
+`quit-restore' at all -- confirmed here by asserting slot 1 still holds
+the healthy `window' symbol, not a displaced buffer's quadruple, exactly
+as phase 3 describes. And even if some future window WERE reused into a
+poisoned shape, `edmacs-sidebar--enforce-width' (phase 3's fix) no
+longer reads `quit-restore' before resizing, so the collapse/expand
+width guarantee holds independently of this name collision either way.
+No further fix is needed for the name collision itself: it is real and
+permanent, but harmless."
+      (let* ((f1 (selected-frame))
+             (f2 (edmacs-sidebar-test--make-second-frame-or-skip)))
+        (unwind-protect
+            (progn
+              ;; A real terminal-frame's initial size can be arbitrarily
+              ;; small on a controlling tty `ioctl' cannot query (e.g. a
+              ;; pty-less sandbox) -- force a workable size explicitly so
+              ;; `display-buffer-in-side-window' can actually place a
+              ;; window rather than refusing for lack of room, independent
+              ;; of what this test happens to run under.
+              (set-frame-size f2 80 24)
+              (set-frame-parameter f1 'name "same-name")
+              (set-frame-parameter f2 'name "same-name")
+              (edmacs-sidebar-show f1)
+              (with-selected-frame f2 (edmacs-sidebar-show f2))
+              (should (equal (buffer-name (edmacs-sidebar--buffer f1)) "*sidebar: same-name*"))
+              (should (equal (buffer-name (edmacs-sidebar--buffer f2)) "*sidebar: same-name*<2>"))
+              ;; Both frames' titles regenerate to the SAME new final name --
+              ;; the permanent-trigger scenario, not the transient boot race.
+              (set-frame-parameter f1 'name "same-repo")
+              (set-frame-parameter f2 'name "same-repo")
+              (edmacs-sidebar--ensure-buffer f1)
+              (edmacs-sidebar--ensure-buffer f2)
+              (should (equal (buffer-name (edmacs-sidebar--buffer f1)) "*sidebar: same-repo*"))
+              (should (equal (buffer-name (edmacs-sidebar--buffer f2)) "*sidebar: same-repo*<2>"))
+              (let ((w2 (edmacs-sidebar--window f2)))
+                (should (window-live-p w2))
+                (should (eq (window-parameter w2 'window-side) 'left))
+                (should (eq (nth 1 (window-parameter w2 'quit-restore)) 'window))))
+          (edmacs-sidebar-test--cleanup-sidebar f1)
+          (when (frame-live-p f2)
+            (edmacs-sidebar-test--cleanup-sidebar f2)
+            (delete-frame f2)))))
+
     ;; ==========================================================================
     ;; edmacs-sidebar-polish phase 13 -- bottom-anchor the usage section
     ;; ==========================================================================
@@ -2741,6 +2859,40 @@ window at all."
           (let ((before (buffer-string)))
             (edmacs-sidebar--anchor-region-to-bottom nil region-start)
             (should (equal before (buffer-string)))))))
+
+    (ert-deftest edmacs-sidebar-test-anchor-region-pulls-point-forward-on-unselected-frame ()
+      "The overflow branch's point-pull-forward step must not be gated on
+WINDOW being the globally `selected-window' -- redisplay keeps every
+window's own point visible regardless of which frame is selected, so a
+window on a real, backgrounded frame needs the same treatment a
+selected-window's already gets. Uses a genuinely separate, live frame
+\(not a stub\) via `edmacs-sidebar-test--make-second-frame-or-skip',
+mirroring this suite's other real-multi-frame tests: fails against the
+old `eq'-gated code (point stays stuck above `window-start'), passes
+once the guard runs for every window."
+      (let* ((f1 (selected-frame))
+             (f2 (edmacs-sidebar-test--make-second-frame-or-skip))
+             buf window)
+        (unwind-protect
+            (progn
+              ;; `make-frame' selects the frame it creates -- select F1 back
+              ;; so F2's window below is genuinely NOT the selected window.
+              (select-frame f1)
+              (setq buf (generate-new-buffer " *anchor-unselected-frame-test*"))
+              (setq window (frame-first-window f2))
+              (set-window-buffer window buf)
+              (with-current-buffer buf
+                (dotimes (i 20) (insert (format "row %d\n" i)))
+                (let ((region-start (point)))
+                  (insert "anchored one\nanchored two\n")
+                  ;; Well above where the forced overflow `window-start' will land.
+                  (set-window-point window (point-min))
+                  (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 5)))
+                    (should (eq f1 (selected-frame)))
+                    (edmacs-sidebar--anchor-region-to-bottom window region-start))
+                  (should (>= (window-point window) (window-start window))))))
+          (when (buffer-live-p buf) (kill-buffer buf))
+          (when (frame-live-p f2) (delete-frame f2)))))
 
     (ert-deftest edmacs-sidebar-test-bottom-anchor-section-visible-with-short-content ()
       "A short registrant on `edmacs-sidebar-bottom-anchor-section-functions'

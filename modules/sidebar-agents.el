@@ -479,13 +479,34 @@ one place rather than half of two commands."
       (user-error "Claude-term: no session registered for instance %s"
                   (edmacs-agent-instance agent))))
 
+(defun edmacs-sidebar-agents--claude-term-buffer (agent)
+  "Return AGENT's live `claude-term' buffer, or signal `user-error'.
+This module's single call site for the foreign `claude-term-session-buffer'
+struct accessor: `claude-term-registry.el' compiles that accessor's
+callers into an inlined type-check-plus-`aref' whenever it is loaded
+before this module, which a `cl-letf' stub on the bare accessor cannot
+intercept. Routing both `-rename' and `-kill' through this plain defun
+instead keeps this file's own test suite's stubs immune to that
+load-order-dependent inlining.
+Resolves the session via a `let' binding rather than nesting the call
+directly, so a missing session's `user-error' (from
+`edmacs-sidebar-agents--claude-term-session') signals before this
+function's own body ever needs `claude-term-session-buffer's binding --
+Emacs Lisp resolves a call's function binding before evaluating its
+argument forms, so `(claude-term-session-buffer (...session...))' would
+instead report a `void-function' error in an environment where
+`claude-term-registry.el' (which defines the real accessor) is not
+loaded, such as this module's own pure test suite."
+  (let ((session (edmacs-sidebar-agents--claude-term-session agent)))
+    (claude-term-session-buffer session)))
+
 ;;;###autoload
 (defun edmacs-sidebar-agents-rename (agent)
   "Rename AGENT's title, called by sidebar.el's `edmacs-sidebar-rename-at-point'.
 Only a `claude-term'-sourced row can be renamed here: resolves AGENT's
-live session via `claude-term-registry-get' and delegates entirely to
-`claude-term-rename' on that session's buffer, rather than calling
-`claude-term-registry-rename' directly -- `claude-term-rename' also
+live session's buffer via `edmacs-sidebar-agents--claude-term-buffer'
+and delegates entirely to `claude-term-rename' on it, rather than
+calling `claude-term-registry-rename' directly -- `claude-term-rename' also
 updates the buffer-local `claude-term--instance' and renames the
 buffer itself, both of which `claude-term--on-exit' (claude-term.el)
 reads to deregister the session on kill; skipping them here would
@@ -505,8 +526,8 @@ adapter-produced row to run against: see
 `edmacs-sidebar-agents-live-test-real-claude-term-row-visit-and-kill'
 (sidebar-agents-live-test.el, edmacs-sidebar roadmap phase 9)."
   (if (eq (edmacs-agent-source agent) 'claude-term)
-      (let ((session (edmacs-sidebar-agents--claude-term-session agent)))
-        (claude-term-rename (claude-term-session-buffer session))
+      (let ((buffer (edmacs-sidebar-agents--claude-term-buffer agent)))
+        (claude-term-rename buffer)
         (edmacs-sidebar-agents--redraw-all))
     (user-error "Cannot rename a %s agent" (edmacs-agent-source agent))))
 
@@ -517,18 +538,17 @@ adapter-produced row to run against: see
 ;;;###autoload
 (defun edmacs-sidebar-agents-kill (agent)
   "Kill AGENT's underlying session, after confirming with `yes-or-no-p'.
-A `claude-term' row resolves its live session via
-`claude-term-registry-get' and calls `claude-term-kill' on its buffer
--- teardown then runs through claude-term.el's own async
+A `claude-term' row resolves its live session's buffer via
+`edmacs-sidebar-agents--claude-term-buffer' and calls `claude-term-kill'
+on it -- teardown then runs through claude-term.el's own async
 sentinel/`claude-term--on-exit' path exactly as it does for the direct
 command, so the registry and buffer stay in sync. Any other source
 signals `user-error'."
   (when (yes-or-no-p (format "Kill agent session %s? " (edmacs-agent-title agent)))
     (pcase (edmacs-agent-source agent)
       ('claude-term
-       (claude-term-kill
-        (claude-term-session-buffer
-         (edmacs-sidebar-agents--claude-term-session agent))))
+       (let ((buffer (edmacs-sidebar-agents--claude-term-buffer agent)))
+         (claude-term-kill buffer)))
       (source (user-error "Cannot kill a %s agent" source)))
     (edmacs-sidebar-agents--redraw-all)))
 

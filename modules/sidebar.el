@@ -256,7 +256,11 @@ restore bridge."
 ;; ============================================================================
 
 (defcustom edmacs-sidebar-width 32
-  "Default width, in columns, of the sidebar side window.
+  "Default TOTAL width, in columns, of the sidebar side window --
+`window-total-width', not `window-body-width': the same convention
+`edmacs-sidebar-remembered-width' holds, since both are read by
+`edmacs-sidebar-show' and enforced via `edmacs-sidebar--enforce-width',
+which resizes the live window's `window-total-width' to match exactly.
 Overridden per frame once the user manually resizes the window -- see
 `edmacs-sidebar--on-window-size-change'. Always subject to
 `edmacs-sidebar--clamp-width' before it reaches a live window."
@@ -816,9 +820,14 @@ buffer, which callers always arrange to be the one WINDOW displays."
           ;; Point may sit above the forced start (e.g. mid-navigation on a
           ;; row that just scrolled off) -- pull it forward so the next
           ;; redisplay cycle doesn't fight the scroll trying to keep it
-          ;; visible, which would silently undo the anchor.
-          (when (and (eq window (selected-window))
-                     (< (window-point window) start))
+          ;; visible, which would silently undo the anchor. Applies to any
+          ;; window, not just the selected one: redisplay keeps a
+          ;; backgrounded window's own point visible too, regardless of
+          ;; which frame or window is currently selected, and
+          ;; `set-window-point' on the selected window already behaves
+          ;; exactly like `goto-char' per its own doc, so this is a pure
+          ;; widening of the existing behavior.
+          (when (< (window-point window) start)
             (set-window-point window start))))))))
 
 (defun edmacs-sidebar--anchor-marker-at (position)
@@ -1060,8 +1069,8 @@ to the first row and DELTA < 0 is a no-op."
 An integer value (the repo-less flat tab list) is itself always an open
 tab's number; a string value (the worktree-aware list, always a root
 truename) is looked up via `edmacs-sidebar--root-tab-number', returning
-nil for a tab-less worktree row -- same shape
-`edmacs-sidebar-close-worktree' already dispatches on."
+nil for a tab-less worktree row. Also used by
+`edmacs-sidebar-close-worktree' and `edmacs-sidebar-rename-at-point'."
   (let ((value (and section (slot-boundp section 'value) (oref section value))))
     (cond ((integerp value) value)
           ((stringp value) (edmacs-sidebar--root-tab-number value)))))
@@ -1167,11 +1176,8 @@ with workmux/rdm, never this key (phase body Steps item 5) -- or when
 no enclosing worktree row can be found at all."
   (interactive)
   (when-let* ((section (edmacs-sidebar--enclosing-worktree (magit-current-section)))
-              (value (and (slot-boundp section 'value) (oref section value))))
-    (let ((tab-number (cond ((integerp value) value)
-                             ((stringp value) (edmacs-sidebar--root-tab-number value)))))
-      (when tab-number
-        (tab-bar-close-tab tab-number)))))
+              (tab-number (edmacs-sidebar--section-tab-number section)))
+    (tab-bar-close-tab tab-number)))
 
 (defun edmacs-sidebar-kill-at-point (frame)
   "Act on the section at point: kill a buffer row (sidebar-buffers.el,

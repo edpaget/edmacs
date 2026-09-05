@@ -666,6 +666,31 @@ stubbed one, matching agents.el's own real-timer test convention."
         (should (equal "*" (edmacs-sidebar-agents--glyph 'working)))))
 
     ;; ==========================================================================
+    ;; edmacs-sidebar-agents--claude-term-session
+    ;; ==========================================================================
+    ;; Stubs only `claude-term-registry-get' -- a plain defun this module
+    ;; does not own but that carries no struct-accessor compiler macro, so
+    ;; it stays a safe `cl-letf' target regardless of load order. This is
+    ;; the coverage that used to ride along inside the -rename/-kill tests
+    ;; above before they moved to stubbing `--claude-term-buffer' instead.
+
+    (ert-deftest edmacs-sidebar-agents-test-claude-term-session-calls-registry-get-with-root-and-instance ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent
+                    :root "/repo/wt/" :instance "%1" :source 'claude-term))
+            (get-calls nil))
+        (cl-letf (((symbol-function 'claude-term-registry-get)
+                   (lambda (root instance) (push (cons root instance) get-calls) 'sidebar-agents-test-fake-session)))
+          (should (eq (edmacs-sidebar-agents--claude-term-session agent)
+                      'sidebar-agents-test-fake-session))
+          (should (equal get-calls '(("/repo/wt/" . "%1")))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-claude-term-session-no-session-user-errors ()
+      (let ((agent (edmacs-sidebar-agents-test--make-agent
+                    :root "/repo/wt/" :instance "%1" :source 'claude-term)))
+        (cl-letf (((symbol-function 'claude-term-registry-get) (lambda (&rest _) nil)))
+          (should-error (edmacs-sidebar-agents--claude-term-session agent) :type 'user-error))))
+
+    ;; ==========================================================================
     ;; edmacs-sidebar-agents-rename (phase 8)
     ;; ==========================================================================
     ;; The `claude-term' branch is necessarily exercised against a synthetic
@@ -674,25 +699,31 @@ stubbed one, matching agents.el's own real-timer test convention."
     ;; claude-term rows, which land in this table only once phase 9 does.
 
     (ert-deftest edmacs-sidebar-agents-test-rename-claude-term-delegates-to-claude-term-rename ()
-      "Delegates to `claude-term-rename' on the session's buffer -- not just
+      "Delegates to `claude-term-rename' on the buffer
+`edmacs-sidebar-agents--claude-term-buffer' resolves -- not just
 `claude-term-registry-rename' -- so the buffer-local `claude-term--instance'
 and the buffer's own name stay in sync with the registry (see
 `edmacs-sidebar-agents-rename's docstring for why a registry-only update
-would desync `claude-term--on-exit's deregistration lookup)."
+would desync `claude-term--on-exit's deregistration lookup).
+Stubs the adapter itself rather than the foreign `claude-term-session-buffer'
+accessor it wraps: that accessor is a `cl-defstruct' reader, and loading
+`claude-term-registry.el' before this file's own `(load ...)' of
+`sidebar-agents.el' (as happens when a caller adds
+`-l modules/claude-term-registry.el' to this suite's invocation) makes the
+compiler inline it into a type-check-plus-`aref' that a bare `cl-letf'
+stub on the accessor can no longer intercept. `cl-letf' on this module's
+own plain defun is immune to that inlining in either load order."
       (let ((agent (edmacs-sidebar-agents-test--make-agent
                     :root "/repo/wt/" :instance "%1" :source 'claude-term))
-            (fake-session 'sidebar-agents-test-fake-session)
-            (get-calls nil)
+            (buffer-calls nil)
             (rename-calls nil))
-        (cl-letf (((symbol-function 'claude-term-registry-get)
-                   (lambda (root instance) (push (cons root instance) get-calls) fake-session))
-                  ((symbol-function 'claude-term-session-buffer)
-                   (lambda (session) (should (eq session fake-session)) 'sidebar-agents-test-fake-buffer))
+        (cl-letf (((symbol-function 'edmacs-sidebar-agents--claude-term-buffer)
+                   (lambda (a) (push a buffer-calls) 'sidebar-agents-test-fake-buffer))
                   ((symbol-function 'claude-term-rename)
                    (lambda (buffer) (push buffer rename-calls)))
                   ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
           (edmacs-sidebar-agents-rename agent)
-          (should (equal get-calls '(("/repo/wt/" . "%1"))))
+          (should (equal buffer-calls (list agent)))
           (should (equal rename-calls '(sidebar-agents-test-fake-buffer))))))
 
     (ert-deftest edmacs-sidebar-agents-test-rename-claude-term-no-session-user-errors ()
@@ -709,19 +740,22 @@ would desync `claude-term--on-exit's deregistration lookup)."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-agents-test-kill-claude-term-calls-claude-term-kill ()
+      "Stubs the `edmacs-sidebar-agents--claude-term-buffer' adapter rather
+than the foreign `claude-term-session-buffer' accessor -- see the sibling
+rename test's docstring for why: this suite must behave identically
+whether or not `claude-term-registry.el' happens to be loaded first."
       (let ((agent (edmacs-sidebar-agents-test--make-agent
                     :root "/repo/wt/" :instance "%1" :source 'claude-term))
-            (fake-session 'sidebar-agents-test-fake-session)
+            (buffer-calls nil)
             (kill-calls nil))
         (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
-                  ((symbol-function 'claude-term-registry-get)
-                   (lambda (_root _instance) fake-session))
-                  ((symbol-function 'claude-term-session-buffer)
-                   (lambda (_session) 'sidebar-agents-test-fake-buffer))
+                  ((symbol-function 'edmacs-sidebar-agents--claude-term-buffer)
+                   (lambda (a) (push a buffer-calls) 'sidebar-agents-test-fake-buffer))
                   ((symbol-function 'claude-term-kill)
                    (lambda (buffer) (push buffer kill-calls)))
                   ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
           (edmacs-sidebar-agents-kill agent)
+          (should (equal buffer-calls (list agent)))
           (should (equal kill-calls '(sidebar-agents-test-fake-buffer))))))
 
     (ert-deftest edmacs-sidebar-agents-test-kill-declines-confirmation-does-nothing ()
