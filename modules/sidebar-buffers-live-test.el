@@ -571,6 +571,56 @@ state under test."
                 (should (eq 'edmacs-sidebar-buffers-selected-face (overlay-get ov 'face)))))))))
 
     ;; ==========================================================================
+    ;; `3bac609' guard -- selecting the sidebar window itself must not refresh
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-live-test-on-window-change-guards-sidebar-focus ()
+      "`edmacs-sidebar-buffers--on-window-change' (added in `3bac609' so an
+evil motion into the sidebar would not re-run the marker refresh, which
+read as the cursor jumping) is a real two-window, single-frame
+behavior -- unlike this file's `--frame-local'/`--isolation' tests, it
+needs no second tty frame at all: `edmacs-sidebar-show' already puts a
+second, real window of THIS frame on screen, and selecting it is
+exactly what an evil window-motion into the sidebar does. Drives the
+hook the same way redisplay does (`run-hook-with-args', one FRAME
+argument -- see `window-selection-change-functions's own doc) rather
+than waiting on redisplay's own timing, so the assertion is
+deterministic under both plain `--batch' and a real graphical frame
+\(`scripts/gui-ert.sh'), and confirms the two-sided contract that AC4's
+re-examination of this guard actually depends on: no-op while the
+sidebar itself is selected, refresh again the moment focus leaves."
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root))
+            (calls 0))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (let ((a (edmacs-sidebar-buffers-live-test--write-file root "a.el")))
+            (edmacs-sidebar-buffers-live-test--register-worktrees
+             "/repo/.git" (list (cons "repo" root)))
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+            (find-file a)
+            (let ((main (selected-window)))
+              (edmacs-sidebar-show (selected-frame))
+              (should (eq (selected-window) main))
+              (let ((sidebar-window (edmacs-sidebar--window (selected-frame))))
+                (should (window-live-p sidebar-window))
+                (should-not (eq sidebar-window main))
+                (advice-add 'edmacs-sidebar-buffers--refresh-markers :before
+                            (lambda (&rest _) (setq calls (1+ calls)))
+                            '((name . edmacs-sidebar-buffers-live-test--count-refresh)))
+                (unwind-protect
+                    (progn
+                      ;; Focus moves INTO the sidebar -- the guard must no-op.
+                      (select-window sidebar-window)
+                      (run-hook-with-args 'window-selection-change-functions (selected-frame))
+                      (should (= calls 0))
+                      ;; Focus moves back OUT -- refresh runs normally again.
+                      (select-window main)
+                      (run-hook-with-args 'window-selection-change-functions (selected-frame))
+                      (should (> calls 0)))
+                  (advice-remove 'edmacs-sidebar-buffers--refresh-markers
+                                 'edmacs-sidebar-buffers-live-test--count-refresh))))))))
+
+    ;; ==========================================================================
     ;; AC3 -- s toggles tree vs. flat, per-frame
     ;; ==========================================================================
 

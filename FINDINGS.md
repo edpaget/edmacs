@@ -402,10 +402,70 @@ this section replaces.
 
 The tests this phase's own ACs depend on (`point-survives-redraw-through-label-change`,
 `fold-state-survives-redraw-through-label-change`) need only a single real
-frame and are directly confirmed above. The remaining AC4 bullet -- focus
-away and back on a second frame, checking for the pre-existing cursor-jump
-symptom -- needs genuine interactive multi-frame input that neither
-`--batch` nor this sandboxed daemon-over-emacsclient harness can produce;
-it stays a manual, on-hardware check, consistent with this repo's
-GUI-only-ACs convention (accept and continue, list for manual check rather
-than reworking automation that cannot exist).
+frame and are directly confirmed above. The genuinely second-frame-dependent
+tests above (`frames-live-test.el`, `sidebar-agents-live-test.el`) are
+unrelated to this phase's own AC4 bullet -- do not conflate the two, which
+is exactly what the previous pass over this section did.
+
+### Correction: the guard re-examination needs one frame, not two
+
+The prior version of this section folded AC4's Step 4 -- re-examine
+`sidebar-buffers.el`'s `window-selection-change-functions` guard (added in
+`3bac609`) -- into the second-frame limitation above and deferred it
+wholesale as "needs a second frame; manual check only." That was a
+misreading of `3bac609` itself: read its own commit message (quoted in
+full above `--point-identity`'s deletion in this phase's own commits), the
+defect it fixes is "cursor jumping under evil navigation in the sidebar" --
+moving point from a *main* window into the *sidebar* window of the **same**
+frame, which is exactly two windows, not two frames. `edmacs-sidebar-show`
+already places the sidebar in a second real window of the current frame
+without selecting it, so the whole scenario -- select the sidebar window,
+observe the guard's effect, select back out -- is reproducible with the one
+real frame `scripts/gui-ert.sh` already provides.
+
+Added `edmacs-sidebar-buffers-live-test-on-window-change-guards-sidebar-focus`
+(`modules/sidebar-buffers-live-test.el`) to pin this directly: it spies on
+`edmacs-sidebar-buffers--refresh-markers` via `advice-add`, selects the real
+sidebar window (the guard must no-op the refresh), then selects back to the
+main window (refresh must run normally again) -- driving
+`window-selection-change-functions` the same way redisplay does
+(`run-hook-with-args`, one FRAME argument, per that hook's own doc) rather
+than waiting on redisplay's timing, so it is deterministic in both
+environments below. Run against a real graphical frame:
+
+```
+$ scripts/gui-ert.sh modules/sidebar-buffers-live-test.el "on-window-change-guards-sidebar-focus" -l modules/git-common-dir.el
+frame 160x48  window-system=ns  char=7x14  fringes=8/8  scroll-bar=17  graphic=t
+   passed  edmacs-sidebar-buffers-live-test-on-window-change-guards-sidebar-focus
+
+Ran 1 tests, 1 passed, 0 expected-failed, 0 failed, 0 skipped
+```
+
+and, for the CI-equivalent plain-batch invocation this file's own
+Commentary documents:
+
+```
+$ emacs -Q --batch -l ert -l modules/git-common-dir.el -l modules/sidebar-buffers-live-test.el \
+        --eval '(ert-run-tests-batch-and-exit "on-window-change-guards-sidebar-focus")'
+   passed  1/1  edmacs-sidebar-buffers-live-test-on-window-change-guards-sidebar-focus (0.001899 sec)
+
+Ran 1 tests, 1 results as expected, 0 unexpected
+```
+
+This closes the behavioral half of Step 4 with real, reproducible evidence
+on a real frame: the guard's actual no-op-while-focused / refresh-once-left
+contract is confirmed, not merely narrated. What remains genuinely
+unfalsifiable by any batch or off-screen technique is the last mile of the
+original wording -- whether the cursor visually *looks* like it jumps.
+`edmacs-sidebar-buffers--decorate-overlay` (the function the guard was
+gating) only ever sets `before-string`/`after-string`/`face` overlay
+properties; it never calls `goto-char`, so there is no buffer-level or
+window-point signal a test could assert on for the pixel-level rendering
+question -- that is a property of the redisplay engine's cursor placement
+around an overlay's `before-string`, not of this module's code, and has no
+programmatic handle in a headless or off-screen frame regardless of
+`window-system`. That specific nuance stays a manual, on-hardware eyeball
+check, consistent with this repo's GUI-only-ACs convention (accept and
+continue, list for manual check rather than reworking automation that
+cannot exist) -- but it is now correctly scoped to just that pixel-rendering
+question, not to the whole guard, whose actual logic is covered above.
