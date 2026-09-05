@@ -74,6 +74,17 @@ the read several levels inside the `interactive' spec; still exempt."
   window)
 "))))
 
+(ert-deftest edmacs-ambient-reads-test-interactive-spec-without-matching-parameter-is-warn ()
+  "The `interactive' exemption is conditioned on the SAME has-parameter
+gate as the `(or FRAME (selected-frame))' guard above -- not applied
+unconditionally to any ambient read textually inside an `(interactive
+...)' form. A function with no frame parameter at all reading
+`(selected-frame)' there is still ambient by construction: WARN, not
+silently exempt."
+  (should (equal '(warn)
+                 (edmacs-ambient-reads-test--severities
+                  "(defun foo (name)\n  (interactive (list (format \"tab in %s\" (selected-frame))))\n  name)\n"))))
+
 (ert-deftest edmacs-ambient-reads-test-suppression-comment-is-exempt ()
   "The `;; ambient-reads: ok' suppression comment on the preceding line
 silences a finding that would otherwise be an ERROR."

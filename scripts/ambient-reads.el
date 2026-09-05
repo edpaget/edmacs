@@ -137,7 +137,13 @@ supplies the ambient value as the single, auditable argument
 `call-interactively' passes in, rather than defaulting it deep in the
 body; `edmacs-window-promote's numeric-prefix branch nests the read
 inside an intervening `if'/`let*'/`progn', so this walks up to six
-levels rather than the three levels `--defaulting-idiom-p' needs."
+levels rather than the three levels `--defaulting-idiom-p' needs.
+Like that sibling predicate, this only answers \"is point inside an
+`interactive' form\" -- the caller gates the exemption on `has' (the
+enclosing function actually taking a parameter of the matching kind)
+exactly as it does for `--defaulting-idiom-p', so a command with NO
+such parameter reading `(selected-frame)' in its `interactive' spec
+still reports WARN rather than being silently exempted."
   (save-excursion
     (condition-case nil
         (catch 'found
@@ -275,10 +281,10 @@ Each finding is (FILE LINE SEVERITY FUNCTION LABEL)."
                                (not (edmacs-ambient-reads--suppressed-p)))
                       (let ((has (edmacs-ambient-reads--has-parameter-p
                                   params candidates)))
-                        (unless (or (and has
-                                         (edmacs-ambient-reads--defaulting-idiom-p
-                                          candidates))
-                                    (edmacs-ambient-reads--interactive-spec-p))
+                        (unless (and has
+                                     (or (edmacs-ambient-reads--defaulting-idiom-p
+                                          candidates)
+                                         (edmacs-ambient-reads--interactive-spec-p)))
                           (push (list file (line-number-at-pos hit)
                                       (if has 'error 'warn) name label)
                                 findings))))

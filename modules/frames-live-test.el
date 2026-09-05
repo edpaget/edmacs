@@ -619,6 +619,51 @@ enable this test")
                 (should (equal (edmacs-frames-live-test--current-tab-display-name)
                                "repoB/repoB-wt"))))))))
 
+    (ert-deftest edmacs-frames-live-test-tab-names-track-own-frame-across-two-real-frames ()
+      "AC1, live and read-only: two real frames, each visiting a DIFFERENT
+repo's main worktree, each queried through the real
+`tab-bar-tab-name-function' -- not `edmacs-frames--tab-root', which only
+proves the stamp, never the rendered label this AC is actually about.
+Deliberately does NOT go through `edmacs-frames-open': it adopts
+whichever repo-less frame `edmacs-frames--spare-frame' finds first in
+`frame-list' order, not necessarily the one just `with-selected-frame'
+bound, so it cannot pin a chosen repo to a chosen frame here. Visiting
+each frame's own directory directly (as the sibling
+`-background-frame-tab-root-never-derives-from-selected-frame' test
+does) sidesteps that and keeps this test about the tab NAME, not the
+`edmacs-root' stamp. Neither frame's label may derive from whichever
+buffer happens to be globally current: every read below happens with
+`*scratch*' (or the OTHER frame's own buffer) current, never the frame
+being queried's own."
+      (edmacs-frames-live-test--with-sessions-tab-namer
+        (edmacs-frames-live-test--with-sandbox sandbox
+          (let ((repo-a (expand-file-name "repoA" sandbox))
+                (repo-b (expand-file-name "repoB" sandbox))
+                (edmacs-git-common-dir-cache (make-hash-table :test #'equal)))
+            (edmacs-frames-live-test--make-git-repo repo-a)
+            (edmacs-frames-live-test--make-git-repo repo-b)
+            (edmacs-frames-live-test--with-frames (frame-a frame-b)
+              (with-selected-frame frame-a (dired repo-a))
+              (with-selected-frame frame-b (dired repo-b))
+              (with-current-buffer (get-buffer-create "*scratch*")
+                (should (equal (with-selected-frame frame-a
+                                 (edmacs-frames-live-test--current-tab-display-name))
+                               "repoA"))
+                (should (equal (with-selected-frame frame-b
+                                 (edmacs-frames-live-test--current-tab-display-name))
+                               "repoB"))
+                ;; Make FRAME-A's own buffer globally current, then query
+                ;; FRAME-B -- the exact cross-frame mix-up this AC exists
+                ;; to rule out: FRAME-B's label must still read "repoB",
+                ;; never inherit FRAME-A's ambiently-current buffer.
+                (with-current-buffer (window-buffer (frame-selected-window frame-a))
+                  (should (equal (with-selected-frame frame-b
+                                   (edmacs-frames-live-test--current-tab-display-name))
+                                 "repoB"))
+                  (should (equal (with-selected-frame frame-a
+                                   (edmacs-frames-live-test--current-tab-display-name))
+                                 "repoA")))))))))
+
     ;; ==========================================================================
     ;; AC1/AC5 -- picker seeding registrar (core.el), sandboxed
     ;; ==========================================================================

@@ -1119,5 +1119,107 @@ of it must already have landed by the time it fires."
       (set-frame-parameter frame 'edmacs-repo nil)
       (set-frame-parameter frame 'name original-name))))
 
+;; ============================================================================
+;; edmacs-frames--current-frame-common
+;; ============================================================================
+
+(ert-deftest edmacs-frames-test-current-frame-common-ignores-ambient-current-buffer ()
+  "The no-`edmacs-repo' fallback in `edmacs-frames--current-frame-common'
+must derive FRAME's own content-window buffer's `default-directory' via
+`buffer-local-value', never plain ambient `default-directory' -- the same
+bug class the sibling `edmacs-sessions--tab-name-for-frame' fix targets
+(see `edmacs-sessions-test-tab-name-for-frame-ignores-ambient-current-buffer'
+in sessions-test.el). Proven here by asserting `edmacs-frames--repo-of' is
+called with FRAME's own buffer's directory even while a different
+directory's buffer is ambiently current."
+  (let* ((frame (selected-frame))
+         (saved-repo (frame-parameter frame 'edmacs-repo))
+         (frame-dir (file-name-as-directory
+                     (make-temp-file "edmacs-frames-test-framedir-" t)))
+         (ambient-dir (file-name-as-directory
+                       (make-temp-file "edmacs-frames-test-ambientdir-" t)))
+         (frame-buf (generate-new-buffer "edmacs-frames-test-frame-buf"))
+         (ambient-buf (generate-new-buffer "edmacs-frames-test-ambient-buf"))
+         (dirs-queried nil))
+    (unwind-protect
+        (progn
+          (set-frame-parameter frame 'edmacs-repo nil)
+          (with-current-buffer frame-buf (setq default-directory frame-dir))
+          (with-current-buffer ambient-buf (setq default-directory ambient-dir))
+          (set-window-buffer (frame-selected-window frame) frame-buf)
+          (with-current-buffer ambient-buf
+            (cl-letf (((symbol-function 'edmacs-frames--frame-content-window)
+                       (lambda (f) (frame-selected-window f)))
+                      ((symbol-function 'edmacs-frames--repo-of)
+                       (lambda (dir) (push dir dirs-queried) "resolved-common")))
+              (should (equal (edmacs-frames--current-frame-common frame)
+                              "resolved-common"))
+              (should (equal dirs-queried (list frame-dir))))))
+      (set-frame-parameter frame 'edmacs-repo saved-repo)
+      (delete-directory frame-dir t)
+      (delete-directory ambient-dir t)
+      (kill-buffer frame-buf)
+      (kill-buffer ambient-buf))))
+
+(ert-deftest edmacs-frames-test-current-frame-common-prefers-stamped-repo ()
+  "A frame already claimed by `edmacs-frames-open' answers from its own
+`edmacs-repo' parameter and never falls back to a buffer derivation at
+all -- the buffer-derivation branch is for the unclaimed-frame case only."
+  (let* ((frame (selected-frame))
+         (saved-repo (frame-parameter frame 'edmacs-repo)))
+    (unwind-protect
+        (progn
+          (set-frame-parameter frame 'edmacs-repo "/stamped/.git")
+          (cl-letf (((symbol-function 'edmacs-frames--repo-of)
+                     (lambda (&rest _) (error "should not derive from a buffer"))))
+            (should (equal (edmacs-frames--current-frame-common frame)
+                            "/stamped/.git"))))
+      (set-frame-parameter frame 'edmacs-repo saved-repo))))
+
+;; ============================================================================
+;; edmacs-frames--read-worktree
+;; ============================================================================
+;; `edmacs-frames-open-worktree-tab's every existing test (frames-live-
+;; test.el) calls it as a plain function with an explicit DIR, bypassing its
+;; `(interactive (list (edmacs-frames--read-worktree current-prefix-arg
+;; (selected-frame))))' spec -- and `edmacs-frames--read-worktree' itself --
+;; entirely. These prove the interactive path's own FRAME plumbing directly.
+
+(ert-deftest edmacs-frames-test-read-worktree-prefix-skips-frame-lookup ()
+  "A PREFIX arg falls straight to `read-directory-name', never consulting
+FRAME (or `edmacs-frames--current-frame-common') at all."
+  (cl-letf (((symbol-function 'edmacs-frames--current-frame-common)
+             (lambda (&rest _) (error "should not consult FRAME under a prefix arg")))
+            ((symbol-function 'read-directory-name)
+             (lambda (&rest _) "/picked/")))
+    (should (equal (edmacs-frames--read-worktree t (selected-frame)) "/picked/"))))
+
+(ert-deftest edmacs-frames-test-read-worktree-no-common-falls-back ()
+  "No PREFIX, but FRAME has no resolvable repo (an unclaimed frame with no
+project-bearing buffer either): fall back to `read-directory-name', still
+without ever calling `completing-read'."
+  (cl-letf (((symbol-function 'edmacs-frames--current-frame-common)
+             (lambda (frame) (should (eq frame (selected-frame))) nil))
+            ((symbol-function 'completing-read)
+             (lambda (&rest _) (error "should not offer a worktree list with no common dir")))
+            ((symbol-function 'read-directory-name)
+             (lambda (&rest _) "/picked/")))
+    (should (equal (edmacs-frames--read-worktree nil (selected-frame)) "/picked/"))))
+
+(ert-deftest edmacs-frames-test-read-worktree-offers-frames-own-worktrees ()
+  "No PREFIX, FRAME resolves a common dir: `completing-read' is offered
+FRAME's OWN worktrees (via `edmacs-frames--repo-worktrees'), proving the
+FRAME argument -- not an ambient selected-frame read -- drives the lookup."
+  (let ((other-frame 'a-different-frame))
+    (cl-letf (((symbol-function 'edmacs-frames--current-frame-common)
+               (lambda (frame) (should (eq frame other-frame)) "/repo/.git"))
+              ((symbol-function 'edmacs-frames--repo-worktrees)
+               (lambda (common) (should (equal common "/repo/.git")) '("/wt-a/" "/wt-b/")))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (should (equal collection '("/wt-a/" "/wt-b/")))
+                 "/wt-a/")))
+      (should (equal (edmacs-frames--read-worktree nil other-frame) "/wt-a/")))))
+
 (provide 'frames-test)
 ;;; frames-test.el ends here
