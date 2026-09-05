@@ -333,7 +333,29 @@ reporting `(0 0 nil nil)' while a sibling frame's sidebar reported
           (edmacs-sidebar-expand frame)
           (let ((w (edmacs-sidebar--side-window frame)))
             (should (window-live-p w))
-            (should (equal default (seq-take (window-fringes w) 2)))))))))
+            (should (equal default (seq-take (window-fringes w) 2)))))))
+
+    (ert-deftest edmacs-geometry-test-gui-expand-restores-width ()
+      "AC1's other half, on a real frame: expanding must restore the exact
+pre-collapse `window-total-width', not just non-zero fringes.
+`edmacs-sidebar--remember-width' stashes `window-total-width' and
+`edmacs-sidebar--enforce-width's plain-integer branch resizes directly
+against that same measure, so the round trip must be exact even though
+real fringe and scroll-bar pixels are not a whole number of columns --
+unlike the stale `(1+ (window-width window))' body-width reading, which
+only happened to match the total width when chrome cost exactly one
+column, true in `--batch' but not on a GUI frame."
+      (unless (edmacs-geometry-test--graphical-p)
+        (ert-skip "needs a graphical frame; run via scripts/gui-ert.sh"))
+      (edmacs-geometry-test--with-sidebar frame window
+        (window-resize window -5 t 'safe)
+        (edmacs-sidebar--remember-width frame t)
+        (let ((wide (window-total-width window)))
+          (edmacs-sidebar-collapse frame)
+          (edmacs-sidebar-expand frame)
+          (let ((w (edmacs-sidebar--side-window frame)))
+            (should (window-live-p w))
+            (should (= wide (window-total-width w)))))))))
 
 (provide 'window-geometry-live-test)
 ;;; window-geometry-live-test.el ends here

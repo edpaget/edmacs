@@ -1233,16 +1233,18 @@ future entry point is added, rather than scattering the rule
 elsewhere.")
 
 (defun edmacs-sidebar--remember-width (frame &optional interactive-resize)
-  "Stash the `window-width' value that reproduces FRAME's current
+  "Stash the `window-total-width' value that reproduces FRAME's current
 sidebar window width the next time `edmacs-sidebar-show' creates a
-fresh side window. `display-buffer-in-side-window's own `window-width'
-action-alist entry consistently yields an actual window one column
-narrower than requested on a fresh split -- confirmed live, both for
-the plain `edmacs-sidebar-width' default and after a manual resize --
-so `1+' compensates for that offset; a plain `window-resize' (an
-already-live window, not a fresh split) has no such offset, which is
-why `--on-window-size-change's own measurement below has to go through
-this same compensation rather than stashing the raw width.
+fresh side window. `edmacs-sidebar-show' feeds the stashed value into
+`edmacs-sidebar--enforce-width's plain-integer (expanded) branch, which
+resizes directly against `window-total-width' -- so the value stashed
+here must be a TOTAL width, not a body width, or the round trip loses
+exactly the window's chrome cost (fringes plus a scroll bar) on every
+expand. A stale `(1+ (window-width window))' -- a body-width reading
+with a fresh-split-rounding offset added back on -- happened to equal
+the total width only when chrome cost exactly one column, true in
+batch but not on a real GUI frame; `window-total-width' is correct in
+both.
 
 Refuses to stash unless INTERACTIVE-RESIZE is non-nil -- see the
 comment block above `edmacs-sidebar--interactive-resize-commands' --
@@ -1267,7 +1269,7 @@ clamped via `edmacs-sidebar--clamp-width'."
                  (> (length (window-list frame 'never)) 1))
         (set-frame-parameter
          frame 'edmacs-sidebar-remembered-width
-         (edmacs-sidebar--clamp-width (1+ (window-width window)) frame))))))
+         (edmacs-sidebar--clamp-width (window-total-width window) frame))))))
 
 (defun edmacs-sidebar--on-window-size-change (frame)
   "Registered on `window-size-change-functions': debounce-stash FRAME's

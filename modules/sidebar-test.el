@@ -1534,10 +1534,9 @@ debounce timing (which has no dedicated assertion here)."
 
     (ert-deftest edmacs-sidebar-test-on-window-size-change-debounces-and-stashes ()
       "`--on-window-size-change' schedules a debounced call to
-`--remember-width', which stashes the CURRENT window width (`1+', to
-compensate for `display-buffer-in-side-window's own fresh-split
-off-by-one -- see `--remember-width's docstring) once it fires; a
-no-op for a frame with no live sidebar window shown. `this-command' is
+`--remember-width', which stashes the CURRENT window's
+`window-total-width' (see `--remember-width's docstring) once it
+fires; a no-op for a frame with no live sidebar window shown. `this-command' is
 bound to an allowlisted `edmacs-sidebar--interactive-resize-commands'
 member throughout, modeling a genuine user-driven resize -- the
 allowlist gate itself is covered by the two tests below."
@@ -1557,7 +1556,7 @@ allowlist gate itself is covered by the two tests below."
                 (while (and (< (float-time) deadline)
                             (not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
                   (sit-for 0.1)))
-              (should (= (1+ (window-width (edmacs-sidebar--window frame)))
+              (should (= (window-total-width (edmacs-sidebar--window frame))
                           (frame-parameter frame 'edmacs-sidebar-remembered-width))))
           (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
             (when (timerp timer) (cancel-timer timer)))
@@ -1619,7 +1618,7 @@ becoming so broad it silently breaks genuine manual resizes."
                 (while (and (< (float-time) deadline)
                             (not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
                   (sit-for 0.1)))
-              (should (= (1+ (window-width (edmacs-sidebar--window frame)))
+              (should (= (window-total-width (edmacs-sidebar--window frame))
                           (frame-parameter frame 'edmacs-sidebar-remembered-width))))
           (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
             (when (timerp timer) (cancel-timer timer)))
@@ -1899,7 +1898,7 @@ identity, but `window-parameter ... window-side' is nil there."
 
     (ert-deftest edmacs-sidebar-test-remember-width-clamps-stash ()
       "A genuinely live side window measuring wider than the fraction cap
-gets the CLAMPED value stashed, not the raw `(1+ (window-width window))'."
+gets the CLAMPED value stashed, not the raw `window-total-width'."
       (let* ((frame (selected-frame))
              (fw (frame-width frame))
              (oversized (max 40 (- fw 10))))
@@ -1911,11 +1910,11 @@ gets the CLAMPED value stashed, not the raw `(1+ (window-width window))'."
               (let* ((edmacs-sidebar-max-width-fraction 0.2)
                      (edmacs-sidebar--min-width 5)
                      (window (edmacs-sidebar--window frame))
-                     (measured (window-width window))
-                     (expected (edmacs-sidebar--clamp-width (1+ measured) frame)))
+                     (measured (window-total-width window))
+                     (expected (edmacs-sidebar--clamp-width measured frame)))
                 ;; The scenario is only meaningful if the live window is
                 ;; actually wider than the shrunk cap.
-                (should (> (1+ measured) expected))
+                (should (> measured expected))
                 (edmacs-sidebar--remember-width frame t)
                 (should (= expected (frame-parameter frame 'edmacs-sidebar-remembered-width)))))
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
