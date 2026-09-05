@@ -94,8 +94,11 @@ compile can outright fail rather than merely being slow.
 
 Guard any `-test.el` file that `cl-letf`s a subr with this, near the top,
 after requires and before the first `ert-deftest` -- copy the guarded form
-(the `(when (boundp ...))` wrapper matters: an unconditional `setq` errors
-on a non-native-comp build):
+(the `(when (boundp ...))` wrapper avoids a byte-compiler "assignment to
+free variable" warning on a non-native-comp build; an unconditional `setq`
+does *not* error there -- `setq` on an unbound symbol is never a runtime
+error in Elisp -- several sibling files below already use the unconditional
+form and run fine, but the guarded form is the one to copy going forward):
 
 ```elisp
 (when (boundp 'native-comp-enable-subr-trampolines)
@@ -115,10 +118,14 @@ suite taking too long, so a 70x slowdown produced zero failures. Wrap any
 ERT batch invocation you want protected against a repeat in
 `scripts/run-ert-suite.sh <budget-seconds> <command...>`: it measures the
 wrapped command's wall time and fails the run (regardless of the wrapped
-command's own exit status) past the budget. `modules/windows-test.el`'s own
-Commentary shows the wired-in form; adopt the same wrapper for any other
-suite you want the same protection on rather than assuming ERT's exit code
-already covers it.
+command's own exit status) past the budget, and fails fast on a
+non-numeric budget rather than silently treating it as zero. All four
+files this incident touched (`windows-test.el`, `claude-term-test.el`,
+`claude-term-registry-test.el`, `claude-term-registry-live-test.el`) now
+route their documented invocation through it; their Commentary blocks show
+the wired-in form. This wrapper is opt-in per suite, not a systemic guard
+-- adopt it for any other suite you want the same protection on rather
+than assuming ERT's exit code already covers it.
 
 ### Compilation
 

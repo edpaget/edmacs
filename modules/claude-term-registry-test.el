@@ -9,11 +9,17 @@
 ;; wiring, both of which need a real subprocess to observe.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;   scripts/run-ert-suite.sh 15 emacs -Q --batch -l ert \
+;;         -l modules/git-common-dir.el \
 ;;         -l modules/claude-term.el \
 ;;         -l modules/claude-term-registry.el \
 ;;         -l modules/claude-term-registry-test.el \
 ;;         -f ert-run-tests-batch-and-exit
+;;
+;; The 15s budget is generous margin over the few seconds this suite takes
+;; once native-comp-enable-subr-trampolines is disabled below -- this file
+;; had the same un-guarded trampoline gap as windows-test.el's 4.2s -> 282s
+;; incident (see .claude/CLAUDE.md's Testing section).
 
 ;;; Code:
 

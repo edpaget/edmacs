@@ -6,8 +6,13 @@
 ;; lifecycle, which drives claude-term--exec against real (non-ghostel)
 ;; subprocesses instead.
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/claude-term.el -l modules/claude-term-test.el \
-;;         -f ert-run-tests-batch-and-exit
+;;   scripts/run-ert-suite.sh 15 emacs -Q --batch -l ert -l modules/claude-term.el \
+;;         -l modules/claude-term-test.el -f ert-run-tests-batch-and-exit
+;;
+;; The 15s budget is generous margin over the well-under-1s this suite takes
+;; once native-comp-enable-subr-trampolines is disabled below -- this file
+;; had the same un-guarded trampoline gap as windows-test.el's 4.2s -> 282s
+;; incident (see .claude/CLAUDE.md's Testing section).
 ;;
 ;; (Loading claude-term.el under `-Q' prints a benign "Unrecognized
 ;; keyword: :straight" notice from each of the `use-package ghostel' and

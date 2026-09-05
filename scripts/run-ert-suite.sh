@@ -31,6 +31,15 @@ fi
 BUDGET="$1"
 shift
 
+# A non-numeric budget would otherwise numify to 0 in the perl comparisons
+# below and silently defeat the whole point of this script (elapsed > 0
+# looks true, but so does the wrapped command's own success) -- fail fast
+# with an actionable message instead.
+if ! [[ "$BUDGET" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "budget must be a positive number of seconds, got: ${BUDGET}" >&2
+  exit 2
+fi
+
 # Sub-second timestamp portable across BSD date (no %N) and bash < 5 (no
 # EPOCHREALTIME); perl ships with macOS. Matches scripts/startup-bench.sh's
 # own now()/elapsed_since() helpers.
