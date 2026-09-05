@@ -129,9 +129,9 @@
 (declare-function which-key-show-full-keymap "which-key")
 
 ;; agents.el loads AFTER this file too; used only by
-;; `edmacs-sidebar--point-identity'/`--find-agent-section' below to key
-;; point-preservation on an agent row by its stable struct field rather
-;; than its rendered (and frequently-changing) label text.
+;; `edmacs-sidebar--find-agent-section' below to key an agent row on its
+;; stable struct field rather than its rendered (and frequently-changing)
+;; label text.
 (declare-function edmacs-agent-key "agents")
 
 ;; sidebar-buffers.el (phase 7) loads AFTER this file; these three
@@ -458,81 +458,90 @@ in the current buffer's section tree) whose buffer's name is NAME, or nil."
 
 (defun edmacs-sidebar--find-worktree-section (root)
   "Return the `edmacs-sidebar-tab' section (anywhere in the current
-buffer's section tree) whose worktree-aware value's car is ROOT, or nil.
-Matches both an open row (`(ROOT . TAB-NUMBER)') and a tab-less one
-(`(ROOT . nil)') -- the identity is the root, not whether a tab is
-currently attached."
+buffer's section tree) whose value is ROOT, or nil. Matches both an
+open row and a tab-less one -- the section value is the bare root
+string in both shapes now, so there is no separate tab-less case to
+distinguish."
   (catch 'edmacs-sidebar--found-worktree-section
     (edmacs-sidebar--map-sections
      magit-root-section
      (lambda (section)
        (when (and (eq (oref section type) 'edmacs-sidebar-tab)
                   (slot-boundp section 'value)
-                  (consp (oref section value))
-                  (equal (car (oref section value)) root))
+                  (equal (oref section value) root))
          (throw 'edmacs-sidebar--found-worktree-section section))))
     nil))
 
-(defun edmacs-sidebar--point-identity ()
-  "Return an identity for the row at point, preserved across a redraw.
-An `edmacs-sidebar-agent' row is identified by its agent's own stable
-KEY field rather than its rendered label: unlike a tab row, an agent
-row's label text (elapsed-time string, title on a heartbeat refresh)
-routinely changes between one redraw and the next even though it is
-still \"the same row\" as far as the user sitting on it is concerned.
-A `edmacs-sidebar-buffers-file'/`-special' row (sidebar-buffers.el,
-phase 7) is likewise identified by its buffer's own name rather than
-its rendered label, which changes with recency-based reordering. An
-`edmacs-sidebar-tab' row whose value is a cons (the worktree-aware
-shape) is identified by its root -- the car, always the worktree
-truename -- rather than its label, since the cdr (tab-number) and hence
-the whole rendered label (glyph, \" (no tab)\" suffix, agent-count
-suffix) can flip between one redraw and the next while it is still the
-same worktree row. A bare-integer `edmacs-sidebar-tab' value (the
-repo-less flat tab list) and every other row keep the original
-rendered-label identity. Returns nil when point is on no recognized
-row."
-  (let ((section (magit-current-section)))
-    (cond
-     ((and section (eq (oref section type) 'edmacs-sidebar-agent)
-           (slot-boundp section 'value))
-      (cons 'agent (edmacs-agent-key (oref section value))))
-     ((and section
-           (memq (oref section type) '(edmacs-sidebar-buffers-file edmacs-sidebar-buffers-special))
-           (slot-boundp section 'value)
-           (buffer-live-p (oref section value)))
-      (cons 'buffer (buffer-name (oref section value))))
-     ((and section (eq (oref section type) 'edmacs-sidebar-tab)
-           (slot-boundp section 'value)
-           (consp (oref section value)))
-      (cons 'worktree (car (oref section value))))
-     (t (save-excursion
-          (goto-char (line-beginning-position))
-          ;; One non-space marker glyph (a plain Unicode dot/circle, or a
-          ;; nerd-icons private-use-area glyph -- see `--glyph' below)
-          ;; followed by a space, then the row's own text.
-          (when (looking-at "\\S-+ \\(.*\\)$")
-            (cons 'tab (match-string 1))))))))
+(defun edmacs-sidebar--capture-positions (buf)
+  "Capture BUF's per-window point/scroll state ahead of a redraw.
+Modeled on magit-mode.el's `magit--refresh-buffer-get-positions': for
+each live window showing BUF, record that window, the section at point,
+its position relative to that section (`magit-section-get-relative-
+position'), and -- separately -- the section at the window's
+`window-start', that section's own relative position, and the raw
+`window-start' integer.
 
-(defun edmacs-sidebar--goto-identity (identity)
-  "Move point to the row named by IDENTITY (from `--point-identity'),
-or `point-min' if it can no longer be found."
-  (goto-char (point-min))
-  (pcase identity
-    (`(agent . ,key)
-     (let ((section (edmacs-sidebar--find-agent-section key)))
-       (when section
-         (goto-char (oref section start)))))
-    (`(buffer . ,name)
-     (let ((section (edmacs-sidebar--find-buffer-section name)))
-       (when section
-         (goto-char (oref section start)))))
-    (`(worktree . ,root)
-     (let ((section (edmacs-sidebar--find-worktree-section root)))
-       (when section
-         (goto-char (oref section start)))))
-    (`(tab . ,name)
-     (re-search-forward (concat "^\\S-+ " (regexp-quote name) "$") nil t))))
+Relies entirely on `magit-section-ident' stability (via
+`magit-section-goto-successor' in `edmacs-sidebar--restore-positions')
+rather than any bespoke per-row-type identity scheme: a worktree row's
+section value is now the bare, `equal'-stable root string (see
+`edmacs-sidebar--insert-tab-row'), an agent row's and a buffer row's
+values are already stable structs/buffer objects, so no custom
+`magit-section-ident-value' method is needed for any of them.
+
+Falls back to a single window-less entry, keyed on BUF's own (buffer-
+local, window-independent) point, when BUF has no live window at all --
+e.g. a redraw while the sidebar is hidden, or in an ERT fixture that
+never displays the buffer. Returns nil only when even that fallback
+finds no section at point (an empty buffer)."
+  (with-current-buffer buf
+    (or (mapcan
+         (lambda (window)
+           (with-selected-window window
+             (with-current-buffer buf
+               (when-let* ((section (magit-section-at)))
+                 (list (list window
+                             section
+                             (magit-section-get-relative-position section)
+                             (when-let* ((ws-section (magit-section-at (window-start))))
+                               (list ws-section
+                                     (car (magit-section-get-relative-position ws-section))
+                                     (window-start)))))))))
+         (get-buffer-window-list buf nil t))
+        (when-let* ((section (magit-section-at)))
+          (list (list nil section (magit-section-get-relative-position section) nil))))))
+
+(defun edmacs-sidebar--restore-positions (positions)
+  "Restore POSITIONS, as captured by `edmacs-sidebar--capture-positions',
+against the just-redrawn buffer -- modeled on magit-mode.el's
+`magit--refresh-buffer-set-positions', dropped down to this buffer's
+simpler single-buffer-type case (no hunk/log-mode special cases apply
+here). A window-less entry (see `edmacs-sidebar--capture-positions's
+own fallback) moves the current buffer's own point directly, with no
+window involved at all. For each still-live window, moves point to the
+successor of the captured section (`magit-section-goto-successor',
+which tries the same ident first and falls back to a related section),
+then restores WINDOW-START from the second capture -- unless point's
+own successor already scrolled past the captured start, or the
+window-start section's successor can't be found either, in which case
+the window is left wherever its own redisplay puts it, exactly as
+before."
+  (pcase-dolist (`(,window ,section ,relative ,ws) positions)
+    (if (null window)
+        (apply #'magit-section-goto-successor section relative)
+      (when (window-live-p window)
+        (with-selected-window window
+          (apply #'magit-section-goto-successor section relative)
+          (pcase ws
+            (`(,ws-section ,ws-line ,window-start)
+             (cond
+              ((> window-start (point)))
+              ((magit-section-equal ws-section (magit-section-at window-start))
+               (set-window-start window window-start t))
+              ((when-let* ((pos (save-excursion
+                                   (and (magit-section-goto-successor--same ws-section ws-line 0)
+                                        (point)))))
+                 (set-window-start window pos t)))))))))))
 
 ;; ============================================================================
 ;; Glyphs: nerd-icons with a plain-text fallback
@@ -618,16 +627,19 @@ pathologically narrow strip -- mirrors `--truncate-label's own `(max 0
 
 (defun edmacs-sidebar--insert-tab-row (tab tabs frame &optional root stale body-fn)
   "Insert a row for TAB, an element of TABS in FRAME.
-With ROOT, the section value is `(ROOT . TAB-NUMBER)' (the worktree-aware
-shape `edmacs-sidebar-activate' dispatches on); without it, the section
-value is the bare 1-based TAB-NUMBER (the repo-less flat-list shape).
-STALE renders the label with `edmacs-sidebar-missing-worktree-face' --
-TAB's own worktree directory has disappeared from the fresh worktree
-list (phase body Steps item 6); otherwise the current tab's row gets
-`edmacs-sidebar-current-tab-face'. BODY-FN, if given, is called with no
-arguments as the last form inside this row's own section body -- before
-it closes -- so anything it inserts becomes a real child of this row's
-section rather than a sibling following it."
+With ROOT, the section value is the bare ROOT string (the worktree-aware
+shape `edmacs-sidebar-activate' dispatches on) -- equal-stable across a
+tab-number change, unlike a `(ROOT . TAB-NUMBER)' cons, so it is what
+keeps this row's `magit-section-ident' stable across a redraw that opens
+or closes its tab; without ROOT, the section value is the bare 1-based
+TAB-NUMBER (the repo-less flat-list shape). STALE renders the label with
+`edmacs-sidebar-missing-worktree-face' -- TAB's own worktree directory
+has disappeared from the fresh worktree list (phase body Steps item 6);
+otherwise the current tab's row gets `edmacs-sidebar-current-tab-face'.
+BODY-FN, if given, is called with no arguments as the last form inside
+this row's own section body -- before it closes -- so anything it
+inserts becomes a real child of this row's section rather than a
+sibling following it."
   ;; `tabs'/`frame' passed explicitly: the 0-arg form of
   ;; `tab-bar--tab-index' defaults to `(selected-frame)' and would
   ;; silently return nil for a tab belonging to a non-selected frame.
@@ -635,7 +647,7 @@ section rather than a sibling following it."
          (suffix (and root (funcall edmacs-sidebar-worktree-label-suffix-function root)))
          (label (edmacs-sidebar--truncate-label
                  (concat (edmacs-sidebar--tab-label tab) (or suffix "")) frame))
-         (value (if root (cons root tab-number) tab-number)))
+         (value (or root tab-number)))
     (magit-insert-section (edmacs-sidebar-tab value)
       (magit-insert-heading
         (cond
@@ -646,14 +658,16 @@ section rather than a sibling following it."
 
 (defun edmacs-sidebar--insert-no-tab-row (entry frame &optional body-fn)
   "Insert a dimmed, tab-less row for worktree ENTRY, a (NAME . ROOT) pair,
-in FRAME's sidebar. BODY-FN, if given, is called with no arguments as
-the last form inside this row's own section body -- see
+in FRAME's sidebar. The section value is the bare ROOT string (CDR of
+ENTRY) -- see `edmacs-sidebar--insert-tab-row's own value docstring.
+BODY-FN, if given, is called with no arguments as the last form inside
+this row's own section body -- see
 `edmacs-sidebar--insert-tab-row's own BODY-FN."
   (let* ((suffix (funcall edmacs-sidebar-worktree-label-suffix-function (cdr entry)))
          (label (edmacs-sidebar--truncate-label
                  (concat (edmacs-sidebar--glyph 'no-tab) " " (car entry) (or suffix "") " (no tab)")
                  frame)))
-    (magit-insert-section (edmacs-sidebar-tab (cons (cdr entry) nil))
+    (magit-insert-section (edmacs-sidebar-tab (cdr entry))
       (magit-insert-heading
         (propertize label 'face 'edmacs-sidebar-worktree-closed-face))
       (when body-fn (funcall body-fn)))))
@@ -835,8 +849,10 @@ same insertion-type) before the hook ran."
   "Redraw FRAME's sidebar buffer from its current `tab-bar-tabs'.
 No-ops when FRAME has no live sidebar buffer -- callers such as the
 tab-bar hooks below fire for every frame regardless of whether that
-frame's sidebar has ever been shown. Point is preserved on the same
-row when possible; falls back to `point-min' otherwise.
+frame's sidebar has ever been shown. Point and fold state are preserved
+on the same row when possible, via `edmacs-sidebar--capture-positions'/
+`--restore-positions' and `magit-section-ident' stability -- see those
+functions and `edmacs-sidebar--insert-tab-row's value docstring.
 
 When FRAME carries `edmacs-sidebar-collapsed', every other section --
 the tab/worktree render, the missing-repo warning, the extra-section
@@ -861,7 +877,7 @@ contract its registrants already follow."
         (let* ((inhibit-read-only t)
                (collapsed (frame-parameter frame 'edmacs-sidebar-collapsed))
                (common (frame-parameter frame 'edmacs-repo))
-               (point-identity (edmacs-sidebar--point-identity))
+               (positions (edmacs-sidebar--capture-positions buf))
                anchor-start anchor-end)
           (erase-buffer)
           (magit-insert-section (edmacs-sidebar-root)
@@ -886,7 +902,7 @@ contract its registrants already follow."
                   (setq anchor-end (point))
                   (setq anchor-start (edmacs-sidebar--anchor-marker-at anchor-start-pos))))))
           (setq header-line-format (unless collapsed (edmacs-sidebar--header-line frame)))
-          (edmacs-sidebar--goto-identity point-identity)
+          (edmacs-sidebar--restore-positions positions)
           (setq edmacs-sidebar--anchor-start (and (> anchor-end anchor-start) anchor-start))
           (when edmacs-sidebar--anchor-start
             (edmacs-sidebar--anchor-region-to-bottom
@@ -920,6 +936,18 @@ sidebar buffer."
 ;; Commands
 ;; ============================================================================
 
+(defun edmacs-sidebar--root-tab-number (root &optional frame)
+  "Return ROOT's open tab's 1-based `tab-bar-tabs' index in FRAME
+(default the selected frame), or nil when ROOT has no open tab.
+Looks the tab up via `edmacs-frames--tab-for-root' rather than reading a
+tab-number off any section value -- a worktree row's section value is
+now the bare ROOT string alone (see `edmacs-sidebar--insert-tab-row'),
+so nothing else in this buffer carries that number any more. Mirrors
+the same `(1+ (tab-bar--tab-index ...))' computation
+`edmacs-sidebar--redraw-worktrees' already does inline."
+  (when-let* ((tab (edmacs-frames--tab-for-root root frame)))
+    (1+ (tab-bar--tab-index tab (tab-bar-tabs frame) frame))))
+
 (defun edmacs-sidebar-activate ()
   "Act on the section at point: switch to its tab, or open/create one.
 Resolves point to its enclosing `edmacs-sidebar-tab' row first (see
@@ -929,24 +957,25 @@ worktree from a nested descendant -- e.g. sidebar-buffers.el's own
 section value (the repo-less flat tab list) is already the 1-based
 tab-number `tab-bar-select-tab' expects -- it treats 0 as a \"reselect
 current tab\" sentinel, so redraw stores `(1+ index)', never the raw
-0-based index. A `(ROOT . TAB-NUMBER)' value (the worktree-aware list)
-selects TAB-NUMBER when non-nil; when non-nil CAR but nil CDR -- no tab
-yet for that worktree -- opens one via `edmacs-frames-open-worktree-tab'
-(only ever called with a truthy CAR, so it can never reach
-`file-truename' with nil), which performs its own find-or-create dance,
-so a second activation of what is now an open row takes the tab-number
-branch instead and simply reselects, never duplicating.
-Every other case -- no enclosing worktree row at all, an unbound or nil
-value slot (a usage row, deliberately valueless), or a value that is
-neither an integer nor a cons with a usable CAR/CDR -- signals
+0-based index. A string section value (the worktree-aware list, always
+a root truename) is looked up via `edmacs-sidebar--root-tab-number':
+selects that tab-number when it has one; with no open tab yet, opens
+one via `edmacs-frames-open-worktree-tab', which performs its own
+find-or-create dance, so a second activation of what is now an open row
+takes the tab-number branch instead and simply reselects, never
+duplicating.
+Every other case -- no enclosing worktree row at all, or an unbound or
+nil value slot (a usage row, deliberately valueless) -- signals
 `user-error' instead of silently doing nothing."
   (interactive)
   (let* ((section (edmacs-sidebar--enclosing-worktree (magit-current-section)))
          (value (and section (slot-boundp section 'value) (oref section value))))
     (cond
      ((integerp value) (tab-bar-select-tab value))
-     ((and (consp value) (cdr value)) (tab-bar-select-tab (cdr value)))
-     ((and (consp value) (car value)) (edmacs-frames-open-worktree-tab (car value)))
+     ((stringp value)
+      (if-let* ((tab-number (edmacs-sidebar--root-tab-number value)))
+          (tab-bar-select-tab tab-number)
+        (edmacs-frames-open-worktree-tab value)))
      (t (user-error "Nothing to do on this row")))))
 
 (defun edmacs-sidebar-visit-at-point ()
@@ -1040,12 +1069,13 @@ to the first row and DELTA < 0 is a no-op."
 (defun edmacs-sidebar--section-tab-number (section)
   "Return the open tab-number for tab-row SECTION's value, or nil.
 An integer value (the repo-less flat tab list) is itself always an open
-tab's number; a `(ROOT . TAB-NUMBER)' value's TAB-NUMBER may be nil for
-a tab-less worktree row -- same shape `edmacs-sidebar-close-worktree'
-already dispatches on."
+tab's number; a string value (the worktree-aware list, always a root
+truename) is looked up via `edmacs-sidebar--root-tab-number', returning
+nil for a tab-less worktree row -- same shape
+`edmacs-sidebar-close-worktree' already dispatches on."
   (let ((value (and section (slot-boundp section 'value) (oref section value))))
     (cond ((integerp value) value)
-          ((consp value) (cdr value)))))
+          ((stringp value) (edmacs-sidebar--root-tab-number value)))))
 
 ;;;###autoload
 (defun edmacs-sidebar-rename-at-point ()
@@ -1150,7 +1180,7 @@ no enclosing worktree row can be found at all."
   (when-let* ((section (edmacs-sidebar--enclosing-worktree (magit-current-section)))
               (value (and (slot-boundp section 'value) (oref section value))))
     (let ((tab-number (cond ((integerp value) value)
-                             ((consp value) (cdr value)))))
+                             ((stringp value) (edmacs-sidebar--root-tab-number value)))))
       (when tab-number
         (tab-bar-close-tab tab-number)))))
 

@@ -337,14 +337,13 @@ call raises that exact same one rather than creating another."
     (defun edmacs-frames-live-test--sidebar-worktree-section (frame root)
       "Return FRAME's sidebar buffer's top-level worktree section for ROOT.
 Scans `magit-root-section's direct children for the `edmacs-sidebar-tab'
-section whose value's CAR (both the `(ROOT . TAB-NUMBER)' open shape and
-the `(ROOT . nil)' tab-less shape are conses) equals ROOT. Signals if the
-sidebar buffer has not been shown, or has no root section yet."
+section whose value -- the bare ROOT string, open or tab-less alike --
+equals ROOT. Signals if the sidebar buffer has not been shown, or has
+no root section yet."
       (with-current-buffer (edmacs-sidebar--buffer frame)
         (seq-find (lambda (s)
                     (and (eq (oref s type) 'edmacs-sidebar-tab)
-                         (consp (oref s value))
-                         (equal (car (oref s value)) root)))
+                         (equal (oref s value) root)))
                   (oref magit-root-section children))))
 
     (ert-deftest edmacs-frames-live-test-sidebar-ret-opens-worktree-without-duplicate ()
@@ -385,7 +384,7 @@ tab-identity/reconciliation logic (phases 3/7/8) both run for real."
                       (edmacs-sidebar-show frame)
                       (let ((row (edmacs-frames-live-test--sidebar-worktree-section frame wt-root)))
                         (should row)
-                        (should-not (cdr (oref row value)))
+                        (should-not (edmacs-sidebar--section-tab-number row))
                         (with-current-buffer (edmacs-sidebar--buffer frame)
                           (goto-char (oref row start))
                           (edmacs-sidebar-activate)))
@@ -398,7 +397,7 @@ tab-identity/reconciliation logic (phases 3/7/8) both run for real."
                       (edmacs-sidebar--redraw frame)
                       (let ((row (edmacs-frames-live-test--sidebar-worktree-section frame wt-root)))
                         (should row)
-                        (should (cdr (oref row value)))
+                        (should (edmacs-sidebar--section-tab-number row))
                         (let ((tab-count (length (tab-bar-tabs frame)))
                               (closed-before (length tab-bar-closed-tabs))
                               (current-index (tab-bar--current-tab-index nil frame)))

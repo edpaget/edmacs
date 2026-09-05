@@ -64,7 +64,7 @@
 (declare-function edmacs-sidebar--buffer "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar--redraw "sidebar")
-(declare-function edmacs-sidebar--goto-identity "sidebar")
+(declare-function edmacs-sidebar--find-buffer-section "sidebar")
 (declare-function nerd-icons-octicon "nerd-icons")
 (defvar edmacs-sidebar-worktree-section-functions)
 (defvar edmacs-sidebar-extra-section-functions)
@@ -371,15 +371,6 @@ group internally by (rank . name) ascending, most-recently-visited first."
             (if (/= ra rb) (< ra rb) (string< (buffer-name a) (buffer-name b)))))))
 
 ;; ============================================================================
-;; Point-identity buffer case (extends sidebar.el's own mechanism)
-;; ============================================================================
-;; sidebar.el's `edmacs-sidebar--point-identity'/`--goto-identity' are
-;; extended (in sidebar.el itself) with a `(buffer . NAME)' case that
-;; needs no function from this file -- only the type symbols
-;; `edmacs-sidebar-buffers-file'/`-special' below, which sidebar.el
-;; checks structurally via `oref', not by calling into this module.
-
-;; ============================================================================
 ;; Row overlays: marker glyph / modified asterisk / selected highlight
 ;; ============================================================================
 ;; Rendered as overlay before/after-strings and an overlay face, not text
@@ -668,8 +659,9 @@ to the resulting buffer's row."
           (with-selected-window main
             (funcall (if forward-p #'next-buffer #'previous-buffer)))
           (edmacs-sidebar--redraw frame)
-          (let ((buf (window-buffer main)))
-            (edmacs-sidebar--goto-identity (cons 'buffer (buffer-name buf)))))))))
+          (let* ((buf (window-buffer main))
+                 (section (edmacs-sidebar--find-buffer-section (buffer-name buf))))
+            (goto-char (or (and section (oref section start)) (point-min)))))))))
 
 ;;;###autoload
 (defun edmacs-sidebar-buffers-next (frame)

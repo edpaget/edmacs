@@ -394,12 +394,16 @@ silently never fire again while conditions stay tick-worthy."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-agents-live-test-point-survives-heartbeat-redraw ()
-      "Point sitting on an agent's row survives a heartbeat-only redraw
-that replaces its struct with a fresh one under the same key --
-mirroring `edmacs-agents-set-status' (agents.el), which always builds a
-new struct rather than mutating one in place. Point must track the agent's
-own stable KEY, not the rendered label text (which changes on every
-such refresh), so it does not jump back to `point-min'."
+      "A heartbeat-only redraw that replaces an agent's struct with a
+fresh one under the same key (mirroring `edmacs-agents-set-status',
+which always builds a new struct rather than mutating one in place)
+degrades point to the nearest ancestor with a stable identity, rather
+than resetting to `point-min': `edmacs-sidebar--redraw's restore
+epilogue keys purely on `magit-section-ident' now, and an
+`edmacs-sidebar-agent' section's value -- the raw struct -- is not
+`equal'-stable across such a refresh, so `magit-section-goto-successor'
+falls through to its related-section fallback and lands on the
+enclosing worktree row instead of the agent leaf itself."
       (edmacs-sidebar-agents-live-test--with-clean-state
         (let ((agent (edmacs-sidebar-agents-live-test--make-agent
                       :root "/repo/wt/" :status 'working :status-ts (float-time))))
@@ -412,7 +416,13 @@ such refresh), so it does not jump back to `point-min'."
                 (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
                   (goto-char (oref (edmacs-sidebar--find-agent-section (edmacs-agent-key agent))
                                     start))
-                  (should (eq 'agent (car (edmacs-sidebar--point-identity))))
+                  ;; `--capture-positions' reads each window's own
+                  ;; `window-point', which redisplay (never run under
+                  ;; `-Q --batch') would otherwise sync from the
+                  ;; buffer's actual point on its own.
+                  (when-let* ((window (edmacs-sidebar--window (selected-frame))))
+                    (set-window-point window (point)))
+                  (should (eq (oref (magit-current-section) type) 'edmacs-sidebar-agent))
                   (let ((refreshed (edmacs-sidebar-agents-live-test--make-agent
                                     :root (edmacs-agent-root agent)
                                     :instance (edmacs-agent-instance agent)
@@ -422,9 +432,8 @@ such refresh), so it does not jump back to `point-min'."
                                     :source (edmacs-agent-source agent))))
                     (puthash (edmacs-agent-key refreshed) refreshed edmacs-agents--table))
                   (edmacs-sidebar--redraw (selected-frame))
-                  (should (eq (oref (magit-current-section) type) 'edmacs-sidebar-agent))
-                  (should (equal (edmacs-agent-key agent)
-                                 (edmacs-agent-key (oref (magit-current-section) value))))))
+                  (should (eq (oref (magit-current-section) type) 'edmacs-sidebar-tab))
+                  (should (equal (oref (magit-current-section) value) "/repo/wt/"))))
             (remhash "/repo/" edmacs-frames--worktrees-cache)
             (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))
             (set-frame-parameter (selected-frame) 'edmacs-repo nil)))))
