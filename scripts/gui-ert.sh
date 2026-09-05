@@ -61,7 +61,19 @@ fi
 
 ev "(load \"$TEST_FILE\" nil t)" >/dev/null || exit 1
 
-RESULT=$(ev "(let ((r (edmacs-gui-ert-run '$SELECTOR))) (format \"%s\n__FAILURES__ %d\" (car r) (cdr r)))")
+# `ert-select-tests' treats a symbol selector as "exactly this test name" and
+# a string selector as a regexp/prefix match.  The default "t" means "every
+# test" and must stay the symbol `t'; anything else is a regexp and must be
+# passed through as a quoted Lisp string, or partial/prefix selectors (the
+# normal ERT idiom) silently fail with `ert-test-unbound' instead of matching.
+if [ "$SELECTOR" = "t" ]; then
+  SELECTOR_FORM="t"
+else
+  ESCAPED_SELECTOR=$(printf '%s' "$SELECTOR" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  SELECTOR_FORM="\"$ESCAPED_SELECTOR\""
+fi
+
+RESULT=$(ev "(let ((r (edmacs-gui-ert-run $SELECTOR_FORM))) (format \"%s\n__FAILURES__ %d\" (car r) (cdr r)))")
 # emacsclient prints the string escaped and quoted; unwrap it.
 printf '%s\n' "$RESULT" | python3 -c '
 import sys
