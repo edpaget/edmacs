@@ -5,9 +5,15 @@
 ;; live subprocess.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;         -l modules/claude-term.el -l modules/windows.el \
-;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
+;;   scripts/run-ert-suite.sh 30 emacs -Q --batch -l ert \
+;;         -l modules/git-common-dir.el -l modules/claude-term.el \
+;;         -l modules/windows.el -l modules/windows-test.el \
+;;         -f ert-run-tests-batch-and-exit
+;;
+;; The 30s budget is generous margin over the ~0.3s this suite actually
+;; takes once native-comp-enable-subr-trampolines is disabled below (see
+;; .claude/CLAUDE.md's Testing section for the 4.2s -> 282s -> ~0.3s
+;; incident this wrapper exists to catch a repeat of).
 ;;
 ;; `modules/claude-term.el' is on the invocation line above because
 ;; `edmacs-stack-agent-pane-p' (whose wiring this file's sweep tests
@@ -39,6 +45,14 @@
 (require 'subr-x)
 (require 'tab-bar)
 (require 'cl-lib)
+
+;; `buffer-live-p', `delete-frame', `frame-parameter' and `message' are all
+;; C subrs this file `cl-letf's; without this guard each redirected subr
+;; makes Emacs build a native trampoline via a synchronous compiler
+;; subprocess (~28s, almost entirely wall clock). See .claude/CLAUDE.md's
+;; Testing section and frames-test.el's precedent.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
 
 ;; ============================================================================
 ;; AC1 -- edmacs-window-promote swaps buffers for the three layouts

@@ -33,6 +33,13 @@
 (require 'ert)
 (require 'cl-lib)
 
+;; `read-string' is a C subr this file `cl-letf's; without this guard the
+;; redirected subr makes Emacs build a native trampoline via a synchronous
+;; compiler subprocess (~28s, almost entirely wall clock). See
+;; .claude/CLAUDE.md's Testing section and frames-test.el's precedent.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
+
 ;; The real `inheritenv' package is not bootstrapped under `-Q --batch'
 ;; (straight.el is absent), but `claude-term--exec' unconditionally
 ;; wraps its `ghostel-exec' call in `(inheritenv ...)' -- see

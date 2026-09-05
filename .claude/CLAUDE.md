@@ -79,6 +79,47 @@ the same suite legitimately reports different skip counts in the two
 places. Run the suites from the main checkout when the skip count is what
 you are trying to drive to zero.
 
+#### `cl-letf` on a subr can silently cost 28 seconds
+
+`cl-letf` on a C subr (`buffer-live-p`, `delete-frame`, `signal-process`,
+`completing-read`, ...) forces Emacs to build a native-comp **subr
+trampoline** for it -- a synchronous `call-process` out to the native
+compiler, ~28s of wall clock with the CPU otherwise idle. The trampoline is
+cached on disk once built, keyed by subr signature and shared across the
+whole machine (`native-comp-eln-load-path`), so the cost can vanish for
+weeks and then reappear the moment the cache is cold (a fresh machine, a
+cleared eln-cache, a different Emacs build) or a new un-guarded `cl-letf`
+target is introduced. On a build where the eln-cache is unwritable, the
+compile can outright fail rather than merely being slow.
+
+Guard any `-test.el` file that `cl-letf`s a subr with this, near the top,
+after requires and before the first `ert-deftest` -- copy the guarded form
+(the `(when (boundp ...))` wrapper matters: an unconditional `setq` errors
+on a non-native-comp build):
+
+```elisp
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
+```
+
+`modules/frames-test.el` carries the canonical comment to copy alongside
+it. Incident: `modules/windows-test.el` regressed from 4.2s to 282s this
+way (5 tests each paying ~28s, one of them 6 times over); the guard above
+brought it back to about 0.3s. `modules/claude-term-test.el`,
+`modules/claude-term-registry-test.el`, and
+`modules/claude-term-registry-live-test.el` had the identical un-guarded
+gap and got the same fix.
+
+That incident passed `108/108` the entire time -- ERT has no notion of a
+suite taking too long, so a 70x slowdown produced zero failures. Wrap any
+ERT batch invocation you want protected against a repeat in
+`scripts/run-ert-suite.sh <budget-seconds> <command...>`: it measures the
+wrapped command's wall time and fails the run (regardless of the wrapped
+command's own exit status) past the budget. `modules/windows-test.el`'s own
+Commentary shows the wired-in form; adopt the same wrapper for any other
+suite you want the same protection on rather than assuming ERT's exit code
+already covers it.
+
 ### Compilation
 
 Modules are loaded from source, not byte-compiled as a build step. To check

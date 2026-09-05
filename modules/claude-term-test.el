@@ -28,6 +28,14 @@
 (require 'subr-x)
 (require 'cl-lib)
 
+;; `signal-process' and `kill-process' are C subrs this file `cl-letf's;
+;; without this guard each redirected subr makes Emacs build a native
+;; trampoline via a synchronous compiler subprocess (~28s, almost entirely
+;; wall clock). See .claude/CLAUDE.md's Testing section and frames-test.el's
+;; precedent.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
+
 (ert-deftest claude-term-test-leaf ()
   (should (equal (claude-term--leaf "/foo/bar-baz/") "bar-baz"))
   (should (equal (claude-term--leaf "/foo/bar-baz") "bar-baz")))
