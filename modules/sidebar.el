@@ -570,22 +570,20 @@ fallback from `edmacs-sidebar--fallback-glyphs'."
 ;; Ellipsis truncation to the sidebar window's live width
 ;; ============================================================================
 
-(defun edmacs-sidebar--truncate-label (label &optional frame)
+(defun edmacs-sidebar--truncate-label (label frame)
   "Truncate LABEL with a trailing … to fit FRAME's sidebar window width.
-FRAME defaults to the selected frame. Falls back to the frame's
-remembered width, or `edmacs-sidebar-width', when the sidebar has no
-live window yet (e.g. the very first redraw of a freshly created
-buffer, before `display-buffer' has shown it) -- there is no live width
-to measure against yet, but this is still a reasonable estimate,
-consistent with what `edmacs-sidebar-show' is about to use. That
-fallback is run through `edmacs-sidebar--clamp-width' just like every
-other read of the same frame parameter (`edmacs-sidebar-show',
-`edmacs-sidebar--remember-width'): otherwise a poisoned or merely
-larger-than-clamp remembered width would render an untruncated label on
-this first pass, only to be truncated correctly from the next redraw on
-once a live, clamped window exists to measure."
-  (let* ((frame (or frame (selected-frame)))
-         (window (edmacs-sidebar--window frame))
+Falls back to the frame's remembered width, or `edmacs-sidebar-width',
+when the sidebar has no live window yet (e.g. the very first redraw of
+a freshly created buffer, before `display-buffer' has shown it) --
+there is no live width to measure against yet, but this is still a
+reasonable estimate, consistent with what `edmacs-sidebar-show' is
+about to use. That fallback is run through `edmacs-sidebar--clamp-width'
+just like every other read of the same frame parameter
+(`edmacs-sidebar-show', `edmacs-sidebar--remember-width'): otherwise a
+poisoned or merely larger-than-clamp remembered width would render an
+untruncated label on this first pass, only to be truncated correctly
+from the next redraw on once a live, clamped window exists to measure."
+  (let* ((window (edmacs-sidebar--window frame))
          (width (if (window-live-p window)
                     (window-width window)
                   (edmacs-sidebar--clamp-width
@@ -1086,7 +1084,7 @@ tab-number through explicitly instead of using `call-interactively'."
      (t (user-error "Nothing to rename here")))))
 
 ;;;###autoload
-(defun edmacs-sidebar-toggle-at-point ()
+(defun edmacs-sidebar-toggle-at-point (frame)
   "Fold/unfold the section at point, matching the design table's `TAB'
 row: a section with its own children (a tab row, an agents/buffers
 group heading) folds itself via `magit-section-toggle'; a leaf row
@@ -1099,10 +1097,13 @@ has children, matching plain `magit-section-toggle's own no-op/error
 behavior for the root and unparented sections.
 
 On a collapsed sidebar, TAB expands it instead -- there is nothing
-meaningful to fold in the collapsed strip's own render."
-  (interactive)
-  (if (frame-parameter (selected-frame) 'edmacs-sidebar-collapsed)
-      (edmacs-sidebar-expand (selected-frame))
+meaningful to fold in the collapsed strip's own render.
+
+FRAME is the frame whose sidebar point sits in; interactively, always
+the selected frame -- there is no other frame a keypress could mean."
+  (interactive (list (selected-frame)))
+  (if (frame-parameter frame 'edmacs-sidebar-collapsed)
+      (edmacs-sidebar-expand frame)
     (let ((section (magit-current-section)))
       (cond
        ((or (null section) (eq section magit-root-section))
@@ -1112,13 +1113,14 @@ meaningful to fold in the collapsed strip's own render."
                section)))))))
 
 ;;;###autoload
-(defun edmacs-sidebar-redraw ()
-  "Force a redraw of the selected frame's sidebar from cached data.
+(defun edmacs-sidebar-redraw (frame)
+  "Force a redraw of FRAME's sidebar from cached data.
 Never re-runs `edmacs-frames--worktrees-refresh' (a subprocess call) --
 this only rebuilds the section tree from data already cached, so it is
-always safe to bind to a bare key."
-  (interactive)
-  (edmacs-sidebar--redraw (selected-frame))
+always safe to bind to a bare key. Interactively, FRAME is always the
+selected frame."
+  (interactive (list (selected-frame)))
+  (edmacs-sidebar--redraw frame)
   (message "sidebar redrawn"))
 
 ;;;###autoload
@@ -1152,15 +1154,16 @@ no enclosing worktree row can be found at all."
       (when tab-number
         (tab-bar-close-tab tab-number)))))
 
-(defun edmacs-sidebar-kill-at-point ()
+(defun edmacs-sidebar-kill-at-point (frame)
   "Act on the section at point: kill a buffer row (sidebar-buffers.el,
 phase 7), kill an agent session (sidebar-agents.el, phase 8, after
-confirming), else close the worktree row's tab exactly as before."
-  (interactive)
+confirming), else close the worktree row's tab exactly as before.
+Interactively, FRAME is always the selected frame."
+  (interactive (list (selected-frame)))
   (let ((section (magit-current-section)))
     (cond
      ((and section (memq (oref section type) '(edmacs-sidebar-buffers-file edmacs-sidebar-buffers-special)))
-      (edmacs-sidebar-buffers-kill))
+      (edmacs-sidebar-buffers-kill frame))
      ((and section (eq (oref section type) 'edmacs-sidebar-agent) (slot-boundp section 'value))
       (edmacs-sidebar-agents-kill (oref section value)))
      (t (edmacs-sidebar-close-worktree)))))
@@ -1341,7 +1344,7 @@ request `safe' cannot satisfy) must signal, not vanish."
             (window-resize window delta t 'safe))))
     (window-resize window (- width (window-total-width window)) t 'safe)))
 
-(defun edmacs-sidebar-show (&optional frame)
+(defun edmacs-sidebar-show (frame)
   "Show FRAME's sidebar window, creating and redrawing its buffer first.
 Guarantees the result is either FRAME's left side window or nil --
 never a window on any other edge. Calls
@@ -1381,72 +1384,71 @@ carries `edmacs-sidebar-collapsed', this whole remembered-width read is
 bypassed in favor of `edmacs-sidebar--collapsed-width' directly --
 routing it through `edmacs-sidebar--clamp-width' would only widen it
 back out to `edmacs-sidebar--min-width'."
-  (interactive)
-  (let ((frame (or frame (selected-frame))))
-    ;; A frame with no non-side window would otherwise just have its
-    ;; existing slot-0 left window reused, leaving it wedged.
-    (when (edmacs-windows-frame-wedged-p frame)
-      (edmacs-windows-repair-frame frame))
-    (let* ((buf (edmacs-sidebar--ensure-buffer frame))
-           (collapsed (frame-parameter frame 'edmacs-sidebar-collapsed))
-           (width (if collapsed
-                      ;; A `body-columns' request is sized in body pixels, so
-                      ;; it lands on the width the producers are formatted
-                      ;; for whatever this frame's chrome costs -- one column
-                      ;; in batch, two to five on a GUI frame depending on
-                      ;; `frame-char-width', fringe pixels and scroll bar.
-                      (cons 'body-columns edmacs-sidebar--collapsed-width)
-                    (edmacs-sidebar--clamp-width
-                     (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
-                         edmacs-sidebar-width)
-                     frame)))
-           (window (with-selected-frame frame
-                     (display-buffer-in-side-window
-                      buf
-                      `((side . left)
-                        (slot . 0)
-                        (window-width . ,width)
-                        (preserve-size . (t . nil))
-                        (window-parameters . ((no-delete-other-windows . t)
-                                               (no-other-window . t)
-                                               (mode-line-format . none))))))))
-      (cond
-       ((null window) nil)
-       ((not (eq (window-parameter window 'window-side) 'left))
-        ;; This call is what produced WINDOW, so deleting it is the right
-        ;; cleanup -- except on the one shape `delete-window' refuses, a
-        ;; window with no parent, which is released in place instead.
-        (if (window-parent window)
-            (delete-window window)
-          (edmacs-sidebar--release-window window frame))
-        nil)
-       (t
-        (set-window-dedicated-p window t)
-        ;; Fringes cost roughly two columns of a four-column strip. nil
-        ;; restores the frame's own widths -- without the else branch the
-        ;; window stays fringe-less for the rest of its life, so one collapse
-        ;; permanently narrows the expanded sidebar too.
-        (if collapsed
-            (set-window-fringes window 0 0)
-          (set-window-fringes window nil nil))
-        ;; `display-buffer-in-side-window's `window-width' request is only
-        ;; honoured on a REUSED window with an intact `quit-restore' -- see
-        ;; `edmacs-sidebar--enforce-width''s docstring. Every frameset-restored
-        ;; window and every window that ever showed a different buffer fails
-        ;; that check, so both the collapse and the expand path enforce the
-        ;; width themselves rather than trusting the placement call above.
-        (edmacs-sidebar--enforce-width window frame width)
-        ;; Belt-and-suspenders (matches `edmacs-sidebar-collapse's own
-        ;; docstring pattern): the buffer's very first `--redraw' ran from
-        ;; `--ensure-buffer' above, before this window existed, so any
-        ;; bottom-anchor hook it ran no-op'd against a nil window. Reapply
-        ;; the anchor now that the real window -- and its real height --
-        ;; exists, rather than waiting on the next
-        ;; `window-size-change-functions' firing. A geometry-only reapply,
-        ;; not a full `--redraw': that would rerun every section-contributing
-        ;; hook a second time on every single show, not just the first.
-        (edmacs-sidebar--reapply-bottom-anchor frame)
-        window)))))
+  (interactive (list (selected-frame)))
+  ;; A frame with no non-side window would otherwise just have its
+  ;; existing slot-0 left window reused, leaving it wedged.
+  (when (edmacs-windows-frame-wedged-p frame)
+    (edmacs-windows-repair-frame frame))
+  (let* ((buf (edmacs-sidebar--ensure-buffer frame))
+         (collapsed (frame-parameter frame 'edmacs-sidebar-collapsed))
+         (width (if collapsed
+                    ;; A `body-columns' request is sized in body pixels, so
+                    ;; it lands on the width the producers are formatted
+                    ;; for whatever this frame's chrome costs -- one column
+                    ;; in batch, two to five on a GUI frame depending on
+                    ;; `frame-char-width', fringe pixels and scroll bar.
+                    (cons 'body-columns edmacs-sidebar--collapsed-width)
+                  (edmacs-sidebar--clamp-width
+                   (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
+                       edmacs-sidebar-width)
+                   frame)))
+         (window (with-selected-frame frame
+                   (display-buffer-in-side-window
+                    buf
+                    `((side . left)
+                      (slot . 0)
+                      (window-width . ,width)
+                      (preserve-size . (t . nil))
+                      (window-parameters . ((no-delete-other-windows . t)
+                                             (no-other-window . t)
+                                             (mode-line-format . none))))))))
+    (cond
+     ((null window) nil)
+     ((not (eq (window-parameter window 'window-side) 'left))
+      ;; This call is what produced WINDOW, so deleting it is the right
+      ;; cleanup -- except on the one shape `delete-window' refuses, a
+      ;; window with no parent, which is released in place instead.
+      (if (window-parent window)
+          (delete-window window)
+        (edmacs-sidebar--release-window window frame))
+      nil)
+     (t
+      (set-window-dedicated-p window t)
+      ;; Fringes cost roughly two columns of a four-column strip. nil
+      ;; restores the frame's own widths -- without the else branch the
+      ;; window stays fringe-less for the rest of its life, so one collapse
+      ;; permanently narrows the expanded sidebar too.
+      (if collapsed
+          (set-window-fringes window 0 0)
+        (set-window-fringes window nil nil))
+      ;; `display-buffer-in-side-window's `window-width' request is only
+      ;; honoured on a REUSED window with an intact `quit-restore' -- see
+      ;; `edmacs-sidebar--enforce-width''s docstring. Every frameset-restored
+      ;; window and every window that ever showed a different buffer fails
+      ;; that check, so both the collapse and the expand path enforce the
+      ;; width themselves rather than trusting the placement call above.
+      (edmacs-sidebar--enforce-width window frame width)
+      ;; Belt-and-suspenders (matches `edmacs-sidebar-collapse's own
+      ;; docstring pattern): the buffer's very first `--redraw' ran from
+      ;; `--ensure-buffer' above, before this window existed, so any
+      ;; bottom-anchor hook it ran no-op'd against a nil window. Reapply
+      ;; the anchor now that the real window -- and its real height --
+      ;; exists, rather than waiting on the next
+      ;; `window-size-change-functions' firing. A geometry-only reapply,
+      ;; not a full `--redraw': that would rerun every section-contributing
+      ;; hook a second time on every single show, not just the first.
+      (edmacs-sidebar--reapply-bottom-anchor frame)
+      window))))
 
 (defun edmacs-sidebar--release-window (window frame)
   "Stop WINDOW on FRAME being the sidebar's, without ever signalling.
@@ -1473,14 +1475,14 @@ shown. Returns WINDOW when it survived, nil when it was deleted."
                              other)))
       window)))
 
-(defun edmacs-sidebar-hide (&optional frame)
+(defun edmacs-sidebar-hide (frame)
   "Hide FRAME's sidebar window, if shown.
 Deletes the window when the sidebar genuinely owns one; otherwise
 releases it in place rather than signalling -- see
-`edmacs-sidebar--release-window'. Returns the surviving window, or nil."
-  (interactive)
-  (let* ((frame (or frame (selected-frame)))
-         (window (edmacs-sidebar--window frame)))
+`edmacs-sidebar--release-window'. Returns the surviving window, or nil.
+Interactively, FRAME is always the selected frame."
+  (interactive (list (selected-frame)))
+  (let ((window (edmacs-sidebar--window frame)))
     (when window
       (edmacs-sidebar--release-window window frame))))
 
@@ -1488,19 +1490,22 @@ releases it in place rather than signalling -- see
 ;; hook `edmacs-windows-repair-frame' runs to put one back. Safe as a hook
 ;; member because `edmacs-sidebar-show' reaches
 ;; `display-buffer-in-side-window' directly rather than through
-;; `display-buffer' -- see its docstring.
+;; `display-buffer' -- see its docstring. `run-hook-with-args' funcalls
+;; this directly with FRAME, never through `call-interactively', so
+;; `edmacs-sidebar-show' being a required-argument command is fine here.
 (add-hook 'edmacs-windows-frame-repaired-functions #'edmacs-sidebar-show)
 
 ;;;###autoload
-(defun edmacs-sidebar-toggle ()
-  "Hide the selected frame's sidebar window if shown, else show it."
-  (interactive)
-  (if (edmacs-sidebar--window (selected-frame))
-      (edmacs-sidebar-hide)
-    (edmacs-sidebar-show)))
+(defun edmacs-sidebar-toggle (frame)
+  "Hide FRAME's sidebar window if shown, else show it.
+Interactively, FRAME is always the selected frame."
+  (interactive (list (selected-frame)))
+  (if (edmacs-sidebar--window frame)
+      (edmacs-sidebar-hide frame)
+    (edmacs-sidebar-show frame)))
 
 ;;;###autoload
-(defun edmacs-sidebar-collapse (&optional frame)
+(defun edmacs-sidebar-collapse (frame)
   "Narrow FRAME's sidebar to a strip, `edmacs-sidebar--collapsed-width'
 columns wide -- collapse means narrow, not hide (three other commands
 already hide: `edmacs-sidebar-hide', `edmacs-sidebar-toggle', closing
@@ -1512,52 +1517,51 @@ full-width-then-flash-resize. `edmacs-sidebar-show' picks up the new
 width and redraws its buffer via `edmacs-sidebar--ensure-buffer'; the
 explicit `edmacs-sidebar--redraw' call after it is belt-and-suspenders,
 guaranteeing the collapsed render even on a future refactor of
-`--show''s own internals."
-  (interactive)
-  (let ((frame (or frame (selected-frame))))
-    (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
-    (edmacs-sidebar-show frame)
-    (edmacs-sidebar--redraw frame)))
+`--show''s own internals. Interactively, FRAME is always the selected
+frame."
+  (interactive (list (selected-frame)))
+  (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
+  (edmacs-sidebar-show frame)
+  (edmacs-sidebar--redraw frame))
 
 ;;;###autoload
-(defun edmacs-sidebar-expand (&optional frame)
+(defun edmacs-sidebar-expand (frame)
   "Restore FRAME's sidebar to its remembered width -- the inverse of
 `edmacs-sidebar-collapse'. `--remember-width' refuses to stash anything
 while collapsed, so the value `edmacs-sidebar-show' reads back here is
-exactly the width from before the collapse."
-  (interactive)
-  (let ((frame (or frame (selected-frame))))
-    (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-    (edmacs-sidebar-show frame)
-    (edmacs-sidebar--redraw frame)))
+exactly the width from before the collapse. Interactively, FRAME is
+always the selected frame."
+  (interactive (list (selected-frame)))
+  (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+  (edmacs-sidebar-show frame)
+  (edmacs-sidebar--redraw frame))
 
 ;;;###autoload
-(defun edmacs-sidebar-toggle-collapse (&optional frame)
+(defun edmacs-sidebar-toggle-collapse (frame)
   "Collapse FRAME's sidebar if expanded, else expand it.
 Unlike `edmacs-sidebar-toggle' (hide/show), this never changes whether
-the sidebar window exists at all -- only its width and render."
-  (interactive)
-  (let ((frame (or frame (selected-frame))))
-    (if (frame-parameter frame 'edmacs-sidebar-collapsed)
-        (edmacs-sidebar-expand frame)
-      (edmacs-sidebar-collapse frame))))
+the sidebar window exists at all -- only its width and render.
+Interactively, FRAME is always the selected frame."
+  (interactive (list (selected-frame)))
+  (if (frame-parameter frame 'edmacs-sidebar-collapsed)
+      (edmacs-sidebar-expand frame)
+    (edmacs-sidebar-collapse frame)))
 
 ;;;###autoload
-(defun edmacs-sidebar-reset-width (&optional frame)
+(defun edmacs-sidebar-reset-width (frame)
   "Clear FRAME's remembered sidebar width back to `edmacs-sidebar-width'.
-FRAME defaults to the selected frame. Only clears
-`edmacs-sidebar-remembered-width'; when the sidebar is currently shown
-on FRAME, also hides and re-shows it so the reset is visible
-immediately rather than waiting for the next hide/show cycle. A pure
-reset -- it does not touch `edmacs-sidebar--clamp-width' or the
+Only clears `edmacs-sidebar-remembered-width'; when the sidebar is
+currently shown on FRAME, also hides and re-shows it so the reset is
+visible immediately rather than waiting for the next hide/show cycle.
+A pure reset -- it does not touch `edmacs-sidebar--clamp-width' or the
 stash-gating rule in `edmacs-sidebar--remember-width', which prevent
-this parameter from being poisoned again going forward."
-  (interactive)
-  (let ((frame (or frame (selected-frame))))
-    (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-    (when (edmacs-sidebar--window frame)
-      (edmacs-sidebar-hide frame)
-      (edmacs-sidebar-show frame))))
+this parameter from being poisoned again going forward.
+Interactively, FRAME is always the selected frame."
+  (interactive (list (selected-frame)))
+  (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+  (when (edmacs-sidebar--window frame)
+    (edmacs-sidebar-hide frame)
+    (edmacs-sidebar-show frame)))
 
 ;; ============================================================================
 ;; Redraw triggers
@@ -1565,12 +1569,16 @@ this parameter from being poisoned again going forward."
 
 (defun edmacs-sidebar--on-tab-select (_from-tab _to-tab)
   "Redraw the selected frame's sidebar; moves the current-tab marker."
+  ;; `tab-bar-tab-post-select-functions' calls with (FROM-TAB TO-TAB), no
+  ;; frame slot -- ambient-reads: ok
   (edmacs-sidebar--redraw (selected-frame)))
 
 (add-hook 'tab-bar-tab-post-select-functions #'edmacs-sidebar--on-tab-select)
 
 (defun edmacs-sidebar--on-tab-open (_tab)
   "Re-show the sidebar in a new tab -- a fresh tab drops the side window."
+  ;; `tab-bar-tab-post-open-functions' calls with (TAB), no frame slot --
+  ;; ambient-reads: ok
   (edmacs-sidebar-show (selected-frame)))
 
 (add-hook 'tab-bar-tab-post-open-functions #'edmacs-sidebar--on-tab-open)
@@ -1582,6 +1590,8 @@ synchronous redraw here would still show the closing tab; deferred one
 tick instead. `frame-live-p' is checked because the last-tab-p
 `delete-frame' branch can run and destroy the frame between this hook
 firing and the timer executing."
+  ;; `tab-bar-tab-pre-close-functions' calls with (TAB LAST-TAB-P), no
+  ;; frame slot -- ambient-reads: ok
   (let ((frame (selected-frame)))
     (run-at-time 0 nil
                  (lambda ()
@@ -1592,7 +1602,8 @@ firing and the timer executing."
 
 ;; `tab-bar-rename-tab' has no dedicated hook; it always targets the
 ;; current tab of the current frame, so the advice has nothing to key off
-;; besides the selected frame.
+;; besides the selected frame. Advice on a fixed `(&rest _)' signature,
+;; same reasoning as the hooks above -- ambient-reads: ok
 (advice-add 'tab-bar-rename-tab :after
             (lambda (&rest _) (edmacs-sidebar--redraw (selected-frame))))
 

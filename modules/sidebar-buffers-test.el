@@ -360,7 +360,7 @@ through."
                        (push (list 'set-frame-parameter frame param value) calls) value))
                     ((symbol-function 'edmacs-sidebar--redraw)
                      (lambda (frame) (push (list 'redraw frame) calls) nil)))
-            (edmacs-sidebar-buffers-toggle-flat)
+            (edmacs-sidebar-buffers-toggle-flat (selected-frame))
             (should calls)
             (dolist (call calls)
               (should (eq (nth 1 call) sentinel)))))))

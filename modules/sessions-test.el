@@ -330,34 +330,72 @@ every restored frame but the one already selected."
           (should (string-match-p (regexp-quote dir) (nth 1 (car warnings))))
           (should (eq (nth 2 (car warnings)) :warning)))))
 
-    (ert-deftest edmacs-sessions-test-regenerate-title-uses-frames-own-buffer-not-ambient-current-buffer ()
-      "`with-selected-frame' alone does not change `current-buffer' --
-confirmed live against a real daemon restart: a restore timer's own
-ambient buffer stayed current while the frame being processed kept
-showing its own buffer in its own selected window. `edmacs-sessions--
-tab-name' reads `default-directory', a buffer-local variable that
-tracks *current buffer*, not the selected window -- so deriving it
-without first making FRAME's own window buffer current renamed every
-restored frame's tab from whatever buffer the timer happened to have
-current instead of that frame's own, corrupting tab names across a
-multi-frame restore (reproduced live before this fix)."
+    (ert-deftest edmacs-sessions-test-regenerate-title-forwards-frame-to-tab-namer ()
+      "`edmacs-sessions--regenerate-frame-title' must call
+`edmacs-sessions--tab-name-for-frame' with FRAME itself, not the
+zero-argument `edmacs-sessions--tab-name' -- that argument is what lets
+the namer derive the tab's project from FRAME's own content window's
+buffer instead of ambient `current-buffer'/`default-directory'. See
+`edmacs-sessions-test-tab-name-for-frame-ignores-ambient-current-buffer'
+for the regression this exists to prevent: a restore timer's own
+ambient buffer staying current while the frame being processed kept
+showing its own buffer used to corrupt tab names across a multi-frame
+restore (reproduced live before this fix)."
       (let* ((frame (selected-frame))
              (dir (file-name-as-directory (make-temp-file "edmacs-sessions-test-" t)))
-             (frame-buf (generate-new-buffer "edmacs-sessions-test-frame-buffer"))
-             (ambient-buf (generate-new-buffer "edmacs-sessions-test-ambient-buffer"))
-             (renamed-with nil))
+             (seen-frame nil))
         (unwind-protect
             (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
               (set-frame-parameter frame 'edmacs-repo dir)
+              (cl-letf (((symbol-function 'edmacs-sessions--tab-name-for-frame)
+                         (lambda (f) (setq seen-frame f) "stub-name"))
+                        ((symbol-function 'tab-bar-rename-tab) (lambda (&rest _) nil)))
+                (edmacs-sessions--regenerate-frame-title frame))
+              (should (eq seen-frame frame)))
+          (delete-directory dir t))))
+
+    (ert-deftest edmacs-sessions-test-tab-name-for-frame-ignores-ambient-current-buffer ()
+      "The regression this spike's FRAME-argument refactor targets:
+`edmacs-sessions--tab-name' used to resolve its project via
+`project-current', which reads plain `default-directory' -- a
+buffer-local variable that tracks *current buffer*, not FRAME's own
+selected window. A tab whose FRAME correctly showed a `cloudcitydotgay'
+worktree was named `edmacs' whenever some OTHER buffer (e.g. a restore
+timer's own) happened to be current when tab-bar recomputed the name.
+`edmacs-sessions--tab-name-for-frame' takes FRAME explicitly and must
+derive the project root from FRAME's own content window's buffer,
+proven here by asserting `project-current' is called with THAT
+buffer's directory even while a different directory's buffer is
+ambiently current."
+      (let* ((frame (selected-frame))
+             (frame-dir (file-name-as-directory
+                         (make-temp-file "edmacs-sessions-test-framedir-" t)))
+             (ambient-dir (file-name-as-directory
+                           (make-temp-file "edmacs-sessions-test-ambientdir-" t)))
+             (frame-buf (generate-new-buffer "edmacs-sessions-test-frame-buf"))
+             (ambient-buf (generate-new-buffer "edmacs-sessions-test-ambient-buf"))
+             (dirs-queried nil))
+        (unwind-protect
+            (progn
+              (with-current-buffer frame-buf (setq default-directory frame-dir))
+              (with-current-buffer ambient-buf (setq default-directory ambient-dir))
               (set-window-buffer (frame-selected-window frame) frame-buf)
               (with-current-buffer ambient-buf
-                (cl-letf (((symbol-function 'edmacs-sessions--tab-name)
-                           (lambda () (buffer-name (current-buffer))))
-                          ((symbol-function 'tab-bar-rename-tab)
-                           (lambda (name &rest _) (setq renamed-with name))))
-                  (edmacs-sessions--regenerate-frame-title frame))
-                (should (equal renamed-with "edmacs-sessions-test-frame-buffer"))))
-          (delete-directory dir t)
+                (cl-letf (((symbol-function 'edmacs-frames--frame-content-window)
+                           (lambda (f) (frame-selected-window f)))
+                          ((symbol-function 'project-current)
+                           (lambda (&optional _maybe-prompt directory)
+                             (push directory dirs-queried)
+                             (cons 'vc directory)))
+                          ((symbol-function 'project-root) #'cdr)
+                          ((symbol-function 'edmacs-frames-tab-in-own-repo-p)
+                           (lambda (&rest _) t))
+                          ((symbol-function 'edmacs-git-common-dir) (lambda (&rest _) nil)))
+                  (should (equal (edmacs-sessions--tab-name-for-frame frame)
+                                  (file-name-nondirectory (directory-file-name frame-dir))))
+                  (should (equal dirs-queried (list frame-dir))))))
+          (delete-directory frame-dir t)
+          (delete-directory ambient-dir t)
           (kill-buffer frame-buf)
           (kill-buffer ambient-buf))))
 

@@ -103,7 +103,7 @@
     (delete-other-windows)
     (let* ((main (selected-window))
            (before (window-buffer (edmacs-main-window))))
-      (edmacs-window-promote)
+      (edmacs-window-promote (selected-window))
       (should (eq (window-buffer main) before)))))
 
 ;; ============================================================================
@@ -1252,7 +1252,7 @@ kill-buffer call."
             (should (window-live-p win))
             (cl-letf (((symbol-function 'buffer-live-p)
                        (lambda (b) (if (eq b buf) nil (funcall orig-live-p b)))))
-              (edmacs-stack-sweep-stale-panes))
+              (edmacs-stack-sweep-stale-panes (selected-frame)))
             (should-not (window-live-p win)))
         (when (buffer-live-p buf) (kill-buffer buf))))))
 
@@ -1264,7 +1264,7 @@ kill-buffer call."
       (unwind-protect
           (let ((edmacs-stack-agent-pane-p (lambda (w) (eq w win))))
             (should (window-live-p win))
-            (edmacs-stack-sweep-stale-panes)
+            (edmacs-stack-sweep-stale-panes (selected-frame))
             (should-not (window-live-p win)))
         (kill-buffer buf)))))
 
@@ -1282,7 +1282,7 @@ not only from a right side window."
           (let ((edmacs-stack-agent-pane-p (lambda (w) (eq w win))))
             (should (window-live-p win))
             (should-not (window-parameter win 'window-side))
-            (edmacs-stack-sweep-stale-panes)
+            (edmacs-stack-sweep-stale-panes (selected-frame))
             (should-not (window-live-p win)))
         (kill-buffer buf)))))
 
@@ -1295,7 +1295,7 @@ not only from a right side window."
       (unwind-protect
           (progn
             (should (window-live-p win))
-            (edmacs-stack-sweep-stale-panes)
+            (edmacs-stack-sweep-stale-panes (selected-frame))
             (should (window-live-p win))
             (should (eq (window-buffer win) (get-buffer "*Messages*"))))
         (when (window-live-p win) (delete-window win))))))
@@ -1307,7 +1307,7 @@ not only from a right side window."
       (set-window-parameter w 'edmacs-main nil))
     (should-not (seq-find (lambda (w) (window-parameter w 'edmacs-main))
                            (window-list nil 'no-minibuf)))
-    (edmacs-stack-sweep-stale-panes)
+    (edmacs-stack-sweep-stale-panes (selected-frame))
     (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
                        (window-list nil 'no-minibuf)))))
 
@@ -1977,7 +1977,7 @@ correctly reports nil."
       (should (eq (window-main-window) (frame-root-window)))
       (should (window-main-window))
       (should-not (edmacs-main-window))
-      (should (edmacs-windows-frame-wedged-p)))))
+      (should (edmacs-windows-frame-wedged-p (selected-frame))))))
 
 (ert-deftest edmacs-windows-test-repair-frame-rebuilds-main-from-wedged-tree ()
   "Both wedged windows lose their side parameters; the survivor becomes an
@@ -1988,7 +1988,7 @@ the assertions are about the repaired main window, not about the frame
 being side-window-free."
   (save-window-excursion
     (cl-destructuring-bind (_left right) (edmacs-windows-test--make-wedged-frame)
-      (let ((main (edmacs-windows-repair-frame)))
+      (let ((main (edmacs-windows-repair-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
         (should-not (window-live-p right))
@@ -1996,9 +1996,9 @@ being side-window-free."
                              no-other-window no-delete-other-windows))
           (should-not (window-parameter main parameter)))
         (should-not (window-dedicated-p main))
-        (should-not (edmacs-windows-frame-wedged-p))
+        (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
         ;; Idempotent: a second call is the healthy-frame no-op.
-        (should (eq (edmacs-windows-repair-frame) main))))))
+        (should (eq (edmacs-windows-repair-frame (selected-frame)) main))))))
 
 (ert-deftest edmacs-windows-test-repair-frame-strips-every-parameter ()
   "The survivor becomes main, so it must not keep a stack pane's styling.
@@ -2014,7 +2014,7 @@ mode-line-less for whatever buffer is reused into it next."
       (set-window-dedicated-p left t)
       (set-window-parameter right 'mode-line-format 'none)
       (set-window-parameter right 'edmacs-stack-popup t)
-      (let ((main (edmacs-windows-repair-frame)))
+      (let ((main (edmacs-windows-repair-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
         (should-not (window-parameter main 'mode-line-format))
@@ -2035,7 +2035,7 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
               (edmacs-windows-test--make-wedged-frame)
             (set-window-buffer left buf)
             (dolist (w (list left right)) (set-window-dedicated-p w t))
-            (let ((main (edmacs-windows-repair-frame)))
+            (let ((main (edmacs-windows-repair-frame (selected-frame))))
               (should (window-live-p main))
               (should-not (eq (window-buffer main) buf))
               (should (equal (buffer-name (window-buffer main)) "*scratch*"))))
@@ -2047,10 +2047,10 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
            (edmacs-windows-frame-repaired-functions
             (list (lambda (frame) (push frame seen)))))
       (edmacs-windows-test--make-wedged-frame)
-      (edmacs-windows-repair-frame)
+      (edmacs-windows-repair-frame (selected-frame))
       (should (equal seen (list (selected-frame))))
       ;; A healthy frame does not re-run it.
-      (edmacs-windows-repair-frame)
+      (edmacs-windows-repair-frame (selected-frame))
       (should (equal seen (list (selected-frame)))))))
 
 (ert-deftest edmacs-windows-test-repair-frame-is-a-no-op-when-reentrant ()
@@ -2059,8 +2059,8 @@ rather than a recursion."
   (save-window-excursion
     (edmacs-windows-test--make-wedged-frame)
     (let ((edmacs-windows--repairing t))
-      (should-not (edmacs-windows-repair-frame))
-      (should (edmacs-windows-frame-wedged-p)))))
+      (should-not (edmacs-windows-repair-frame (selected-frame)))
+      (should (edmacs-windows-frame-wedged-p (selected-frame))))))
 
 (ert-deftest edmacs-windows-test-wedged-p-excludes-child-and-minibuffer-frames ()
   "A corfu-style child frame and a minibuffer-only frame are never wedged:
@@ -2070,7 +2070,7 @@ terminal, and `parent-frame' cannot name the frame itself), so the two
 frame parameters are stubbed instead."
   (save-window-excursion
     (edmacs-windows-test--make-wedged-frame)
-    (should (edmacs-windows-frame-wedged-p))
+    (should (edmacs-windows-frame-wedged-p (selected-frame)))
     (let ((real (symbol-function 'frame-parameter)))
       (dolist (stub '((parent-frame . t) (minibuffer . only)))
         (cl-letf (((symbol-function 'frame-parameter)
@@ -2078,11 +2078,11 @@ frame parameters are stubbed instead."
                      (if (eq parameter (car stub))
                          (cdr stub)
                        (funcall real frame parameter)))))
-          (should-not (edmacs-windows-frame-wedged-p))
+          (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
           ;; And repair is the healthy-frame no-op on such a frame.
-          (should-not (edmacs-windows-repair-frame)))))
+          (should-not (edmacs-windows-repair-frame (selected-frame))))))
     ;; Still wedged once the stubs are gone -- nothing was repaired.
-    (should (edmacs-windows-frame-wedged-p))))
+    (should (edmacs-windows-frame-wedged-p (selected-frame)))))
 
 (ert-deftest edmacs-windows-test-display-buffer-on-mainless-frame-lands-in-center ()
   "The wedge's real symptom: `display-buffer' used to hand an unrouted
@@ -2121,10 +2121,10 @@ frame) because `display-buffer-in-side-window' always succeeds."
 (ert-deftest edmacs-windows-test-sweep-stale-panes-repairs-a-wedged-frame ()
   (save-window-excursion
     (edmacs-windows-test--make-wedged-frame)
-    (let ((main (edmacs-stack-sweep-stale-panes)))
+    (let ((main (edmacs-stack-sweep-stale-panes (selected-frame))))
       (should (window-live-p main))
       (should (eq main (edmacs-main-window)))
-      (should-not (edmacs-windows-frame-wedged-p)))))
+      (should-not (edmacs-windows-frame-wedged-p (selected-frame))))))
 
 (ert-deftest edmacs-windows-test-degraded-paths-never-leave-main-nil ()
   "Each of these used to no-op or signal on a mainless frame, stranding
@@ -2136,7 +2136,7 @@ point in a `no-other-window' side window with no way back."
       (edmacs-windows-test--make-wedged-frame)
       (funcall command)
       (should (edmacs-main-window))
-      (should-not (edmacs-windows-frame-wedged-p)))))
+      (should-not (edmacs-windows-frame-wedged-p (selected-frame))))))
 
 (ert-deftest edmacs-windows-test-degraded-paths-from-the-dedicated-sidebar ()
   "The same three commands invoked from the window repair is about to
@@ -2153,7 +2153,7 @@ window itself."
       (funcall command)
       (should (edmacs-main-window))
       (should (window-live-p (edmacs-main-window)))
-      (should-not (edmacs-windows-frame-wedged-p)))))
+      (should-not (edmacs-windows-frame-wedged-p (selected-frame))))))
 
 (ert-deftest edmacs-windows-test-repair-frame-rebuilds-main-from-a-sole-side-window ()
   "Repair on the parentless shape: there is no sibling to collapse onto,
@@ -2163,8 +2163,8 @@ so the sole window itself is stripped, un-dedicated and evicted to
     (let ((frames (length (frame-list)))
           (window (edmacs-windows-test--make-sole-side-window-frame)))
       (should-not (window-parent window))
-      (should (edmacs-windows-frame-wedged-p))
-      (let ((main (edmacs-windows-repair-frame)))
+      (should (edmacs-windows-frame-wedged-p (selected-frame)))
+      (let ((main (edmacs-windows-repair-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
         (dolist (parameter '(window-side window-slot
@@ -2172,7 +2172,7 @@ so the sole window itself is stripped, un-dedicated and evicted to
           (should-not (window-parameter main parameter)))
         (should-not (window-dedicated-p main))
         (should (equal (buffer-name (window-buffer main)) "*scratch*"))
-        (should-not (edmacs-windows-frame-wedged-p))
+        (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
         (should (= (length (frame-list)) frames))))))
 
 (ert-deftest edmacs-windows-test-display-buffer-on-a-sole-side-window-frame-lands-in-center ()
@@ -2207,7 +2207,7 @@ regression this asserts against."
       (edmacs-windows-test--make-sole-side-window-frame)
       (funcall command)
       (should (window-live-p (edmacs-main-window)))
-      (should-not (edmacs-windows-frame-wedged-p)))))
+      (should-not (edmacs-windows-frame-wedged-p (selected-frame))))))
 
 (ert-deftest edmacs-windows-test-stack-toggle-reports-the-no-state-signal ()
   "The signal the `condition-case' in `edmacs-stack-toggle' exists for.
@@ -2223,7 +2223,7 @@ precondition with `should-error' before calling the command."
           (delete-other-windows)
           (set-frame-parameter nil 'window-state nil)
           (should-not (window-with-parameter 'window-side))
-          (should-not (edmacs-windows-frame-wedged-p))
+          (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
           (should-error (window-toggle-side-windows) :type 'error)
           (let (messages)
             (cl-letf (((symbol-function 'message)
@@ -2236,7 +2236,7 @@ precondition with `should-error' before calling the command."
                                 (string-match-p "No side windows state found" m))
                               messages)))
           (should (window-live-p (edmacs-main-window)))
-          (should-not (edmacs-windows-frame-wedged-p)))
+          (should-not (edmacs-windows-frame-wedged-p (selected-frame))))
       (set-frame-parameter nil 'window-state saved))))
 
 (ert-deftest edmacs-windows-test-switch-to-buffer-in-dedicated-window-is-pop ()

@@ -111,12 +111,12 @@ fresh entry for whatever arbitrary subdirectory DIR happens to be."
          (root (if proj (project-root proj) dir)))
     (edmacs-git-common-dir root)))
 
-(defun edmacs-frames-tab-in-own-repo-p (common)
-  "Return non-nil when git-common-dir COMMON is the selected frame's own repo.
+(defun edmacs-frames-tab-in-own-repo-p (common frame)
+  "Return non-nil when git-common-dir COMMON is FRAME's own repo.
 Used by `edmacs-sessions--tab-name' to decide whether a tab needs the
 repo-name disambiguation prefix at all -- it never does once the frame
 itself already names that repo."
-  (and common (equal common (frame-parameter nil 'edmacs-repo))))
+  (and common (equal common (frame-parameter frame 'edmacs-repo))))
 
 (defun edmacs-frames--graphical-session-p ()
   "Return non-nil when this session holds at least one graphical frame."
@@ -625,25 +625,33 @@ safe pure read and nothing draws from it once no frame references COMMON."
     (ignore-errors (file-notify-rm-watch desc))
     (remhash common edmacs-frames--worktree-watches)))
 
-(defun edmacs-frames--current-frame-common ()
-  "Return the git-common-dir the selected frame is on.
-Prefers the frame's own `edmacs-repo' parameter; falls back to
-resolving the current buffer's own directory for a frame that has not
-been claimed by `edmacs-frames-open' yet (e.g. the daemon's boot frame)."
-  (or (frame-parameter (selected-frame) 'edmacs-repo)
-      (edmacs-frames--repo-of default-directory)))
+(defun edmacs-frames--current-frame-common (frame)
+  "Return the git-common-dir FRAME is on.
+Prefers FRAME's own `edmacs-repo' parameter; falls back to resolving
+the directory of FRAME's own content-window buffer for a frame that
+has not been claimed by `edmacs-frames-open' yet (e.g. the daemon's
+boot frame). Reads that buffer's `default-directory' via
+`buffer-local-value' against FRAME's own content window explicitly --
+plain `default-directory' would read whatever buffer happens to be
+current in the calling context, and `with-selected-frame' would not
+fix that: it does not make FRAME's own selected window's buffer
+current (see this file's guard-rail commentary)."
+  (or (frame-parameter frame 'edmacs-repo)
+      (edmacs-frames--repo-of
+       (buffer-local-value 'default-directory
+                           (window-buffer (edmacs-frames--frame-content-window frame))))))
 
-(defun edmacs-frames--read-worktree (prefix)
-  "Read a worktree directory, interactively.
-With no PREFIX, offer a `completing-read' over the selected frame's own
-repo worktrees -- the main worktree plus `vc-git-known-other-working-trees'
+(defun edmacs-frames--read-worktree (prefix frame)
+  "Read a worktree directory, interactively, for FRAME.
+With no PREFIX, offer a `completing-read' over FRAME's own repo
+worktrees -- the main worktree plus `vc-git-known-other-working-trees'
 -- since worktrees are deliberately absent from
 `project-known-project-roots' (see core.el), making this the only
 prompt that reaches them. With PREFIX, fall back to
 `read-directory-name' for any directory."
   (if prefix
       (read-directory-name "Open worktree in its repo frame: ")
-    (let ((common (edmacs-frames--current-frame-common)))
+    (let ((common (edmacs-frames--current-frame-common frame)))
       (if (not common)
           (read-directory-name "Open worktree in its repo frame: ")
         (completing-read "Worktree: " (edmacs-frames--repo-worktrees common) nil t)))))
@@ -656,7 +664,7 @@ entirely inside that frame. A tab already showing DIR is selected, not
 duplicated; this is the primary duplicate-prevention rule -- see this
 module's Commentary on `edmacs-frames--reconcile-tab-after-open' for
 the safety net covering tabs opened through any other route."
-  (interactive (list (edmacs-frames--read-worktree current-prefix-arg)))
+  (interactive (list (edmacs-frames--read-worktree current-prefix-arg (selected-frame))))
   (let* ((root (file-truename dir))
          (frame (edmacs-frames-open dir)))
     (edmacs-frames--without-display-override
@@ -713,9 +721,11 @@ but only when TAB really IS the selected frame's current tab.
 `tab-bar-tabs' also runs this hook for a default tab it auto-creates on
 a frame it never names, and stamping that one from the selected frame's
 buffer would reintroduce the cross-frame derivation this module removed."
+  ;; `tab-bar-tab-post-open-functions' calls with (TAB), no frame slot --
+  ;; ambient-reads: ok
   (when (eq tab (edmacs-frames--current-tab (selected-frame)))
     (when-let* ((root (or edmacs-frames--pending-tab-root
-                          (edmacs-frames--derive-root (selected-frame)))))
+                          (edmacs-frames--derive-root (selected-frame))))) ;; ambient-reads: ok
       (setf (alist-get 'edmacs-root (cdr tab)) root)))
   (edmacs-frames--reconcile-tab-after-open tab))
 
@@ -728,6 +738,8 @@ the stamp was mandatory. The tab is looked up fresh rather than trusting
 the hook's own TO argument: `tab-bar-select-tab' rebuilds the incoming
 tab's cons before running this hook, so TO is not the object now in the
 frame's tab list."
+  ;; `tab-bar-tab-post-select-functions' calls with (FROM TO), no frame
+  ;; slot -- ambient-reads: ok
   (let* ((frame (selected-frame))
          (tab (edmacs-frames--current-tab frame)))
     (when (and tab (not (edmacs-frames--tab-root tab)))
@@ -892,6 +904,8 @@ so `edmacs-frames--maybe-teardown-watch-for-frame' runs first, while
 race a debounce timer that is already scheduled. The reset branch never
 calls `delete-frame' (so the hook above won't fire for it), which is
 why this teardown call is not redundant with that hook."
+  ;; `tab-bar-close-last-tab-choice' calls with (TAB), no frame slot --
+  ;; ambient-reads: ok
   (let* ((frame (selected-frame)))
     (edmacs-frames--maybe-teardown-watch-for-frame frame)
     (if (edmacs-frames--only-frame-p frame)

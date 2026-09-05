@@ -130,6 +130,89 @@ Walks up to three levels out, so a fallback wrapped in an intervening
           nil)
       (error nil))))
 
+(defun edmacs-ambient-reads--interactive-spec-p ()
+  "Non-nil when point sits inside a function's `(interactive (list ...))' form.
+That is the other sanctioned shape -- `(interactive (list (selected-frame)))'
+supplies the ambient value as the single, auditable argument
+`call-interactively' passes in, rather than defaulting it deep in the
+body; `edmacs-window-promote's numeric-prefix branch nests the read
+inside an intervening `if'/`let*'/`progn', so this walks up to six
+levels rather than the three levels `--defaulting-idiom-p' needs."
+  (save-excursion
+    (condition-case nil
+        (catch 'found
+          (dotimes (_ 6)
+            (backward-up-list 1 t t)
+            (when (eq (car-safe (save-excursion (read (current-buffer))))
+                      'interactive)
+              (throw 'found t)))
+          nil)
+      (error nil))))
+
+(defconst edmacs-ambient-reads-nil-arg-functions
+  '(("frame-parameter"       0 frame)
+    ("frame-parameters"      0 frame)
+    ("frame-selected-window" 0 frame)
+    ("window-list"           0 frame)
+    ("window-parameter"      0 window)
+    ("next-window"           0 window)
+    ("previous-window"       0 window)
+    ("get-buffer-window"     0 buffer))
+  "Functions whose Nth (0-based) argument defaults to the selected
+frame/window, or the current buffer, when nil -- a literal `nil' there
+is the same ambient-read idiom as a literal
+`(selected-frame)'/`(selected-window)'/`(current-buffer)' call. Each
+entry is (FUNCTION-NAME ARG-INDEX KIND); KIND indexes
+`edmacs-ambient-reads-kinds' for its LABEL and PARAMETER-NAMES.")
+
+(defun edmacs-ambient-reads--nil-arg-exempt-p (fn-name form)
+  "Non-nil when FORM (a call to FN-NAME) is a sanctioned nil-argument idiom.
+`(get-buffer-window nil t)' means \"the window showing the CURRENT
+buffer, on any frame\" -- a deliberate, non-ambient-frame read, not the
+\"this frame/window defaults away an argument the caller supplied\" bug
+shape the rest of this table exists to catch."
+  (and (string= fn-name "get-buffer-window")
+       (eq (nth 2 form) t)))
+
+(defun edmacs-ambient-reads--nil-arg-findings (file name params start end)
+  "Return nil-argument-idiom findings for the definition spanning [START,END).
+Mirrors the literal-symbol scan in `edmacs-ambient-reads-file', but for
+the functions in `edmacs-ambient-reads-nil-arg-functions': a literal
+`nil' in the flagged argument position, rather than a literal
+`(selected-frame)'-shaped call."
+  (let (findings)
+    (pcase-dolist (`(,fn-name ,arg-index ,kind) edmacs-ambient-reads-nil-arg-functions)
+      (let* ((kind-entry (assq kind edmacs-ambient-reads-kinds))
+             (label (format "nil argument to `%s' (defaults to %s)"
+                            fn-name (nth 1 kind-entry)))
+             (candidates (nth 3 kind-entry)))
+        (save-excursion
+          (goto-char start)
+          (while (re-search-forward
+                  (concat "(\\s-*" (regexp-quote fn-name) "\\_>") end t)
+            (let ((call-start (match-beginning 0)))
+              (goto-char call-start)
+              (if (not (edmacs-ambient-reads--in-code-p))
+                  (goto-char (1+ call-start))
+                (let ((form (condition-case nil
+                                (save-excursion (read (current-buffer)))
+                              (error nil))))
+                  (goto-char (1+ call-start))
+                  (when (and (consp form)
+                             (> (length form) (1+ arg-index))
+                             (eq (nth (1+ arg-index) form) nil)
+                             (not (edmacs-ambient-reads--nil-arg-exempt-p
+                                   fn-name form))
+                             (not (save-excursion
+                                    (goto-char call-start)
+                                    (edmacs-ambient-reads--suppressed-p))))
+                    (let ((has (edmacs-ambient-reads--has-parameter-p
+                                params candidates)))
+                      (push (list file (line-number-at-pos call-start)
+                                  (if has 'error 'warn) name label)
+                            findings))))))))))
+    findings))
+
 (defconst edmacs-ambient-reads-suppression "ambient-reads: ok"
   "Comment text that suppresses a finding on its own or the preceding line.
 For a read that is ambient on purpose -- a stub closure that must see the
@@ -192,13 +275,18 @@ Each finding is (FILE LINE SEVERITY FUNCTION LABEL)."
                                (not (edmacs-ambient-reads--suppressed-p)))
                       (let ((has (edmacs-ambient-reads--has-parameter-p
                                   params candidates)))
-                        (unless (and has
-                                     (edmacs-ambient-reads--defaulting-idiom-p
-                                      candidates))
+                        (unless (or (and has
+                                         (edmacs-ambient-reads--defaulting-idiom-p
+                                          candidates))
+                                    (edmacs-ambient-reads--interactive-spec-p))
                           (push (list file (line-number-at-pos hit)
                                       (if has 'error 'warn) name label)
                                 findings))))
-                    (goto-char after))))))))
+                    (goto-char after)))))
+            (setq findings
+                  (append findings
+                          (edmacs-ambient-reads--nil-arg-findings
+                           file name params start end))))))
       nil)
     (nreverse findings)))
 

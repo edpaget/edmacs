@@ -196,9 +196,9 @@ parameter, for the rest of the session once it has ever shown once."
     (unwind-protect
         (progn
           (set-frame-parameter frame 'edmacs-repo "/repo/.git")
-          (should (edmacs-frames-tab-in-own-repo-p "/repo/.git"))
-          (should-not (edmacs-frames-tab-in-own-repo-p "/other/.git"))
-          (should-not (edmacs-frames-tab-in-own-repo-p nil)))
+          (should (edmacs-frames-tab-in-own-repo-p "/repo/.git" frame))
+          (should-not (edmacs-frames-tab-in-own-repo-p "/other/.git" frame))
+          (should-not (edmacs-frames-tab-in-own-repo-p nil frame)))
       (set-frame-parameter frame 'edmacs-repo nil))))
 
 ;; ============================================================================

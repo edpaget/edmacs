@@ -634,14 +634,15 @@ usable tab identity, rather than doing nothing."
 ;; ============================================================================
 
 ;;;###autoload
-(defun edmacs-sidebar-buffers-kill ()
+(defun edmacs-sidebar-buffers-kill (frame)
   "Kill the buffer at point (`kill-buffer' prompts on a modified one) and
-force an immediate redraw of the frame's sidebar."
-  (interactive)
+force an immediate redraw of FRAME's sidebar. Interactively, FRAME is
+always the selected frame."
+  (interactive (list (selected-frame)))
   (when-let* ((buf (edmacs-sidebar-buffers--row-buffer-at-point)))
     (when (buffer-live-p buf)
       (kill-buffer buf))
-    (edmacs-sidebar--redraw (selected-frame))))
+    (edmacs-sidebar--redraw frame)))
 
 ;; ============================================================================
 ;; [ / ] -- previous-buffer / next-buffer on the tab's main window
@@ -653,11 +654,11 @@ or nil when point is not inside any buffers subsection."
   (let ((root-section (edmacs-sidebar-buffers--enclosing-root (magit-current-section))))
     (and root-section (slot-boundp root-section 'value) (oref root-section value))))
 
-(defun edmacs-sidebar-buffers--step (forward-p)
+(defun edmacs-sidebar-buffers--step (forward-p frame)
   "Drive TAB-NUMBER's main window through `next-buffer'/`previous-buffer'
 \(FORWARD-P non-nil for `next-buffer') -- the exact commands `SPC b n'/
-`SPC b p' already run -- then redraw and follow point to the resulting
-buffer's row."
+`SPC b p' already run -- then redraw FRAME's sidebar and follow point
+to the resulting buffer's row."
   (let ((root-tab (edmacs-sidebar-buffers--enclosing-root-tab)))
     (if (null root-tab)
         (message "edmacs-sidebar-buffers: point is not in a buffers subsection")
@@ -666,21 +667,23 @@ buffer's row."
         (when main
           (with-selected-window main
             (funcall (if forward-p #'next-buffer #'previous-buffer)))
-          (edmacs-sidebar--redraw (selected-frame))
+          (edmacs-sidebar--redraw frame)
           (let ((buf (window-buffer main)))
             (edmacs-sidebar--goto-identity (cons 'buffer (buffer-name buf)))))))))
 
 ;;;###autoload
-(defun edmacs-sidebar-buffers-next ()
-  "`next-buffer' on this row's tab's main window; point follows."
-  (interactive)
-  (edmacs-sidebar-buffers--step t))
+(defun edmacs-sidebar-buffers-next (frame)
+  "`next-buffer' on this row's tab's main window; point follows.
+Interactively, FRAME is always the selected frame."
+  (interactive (list (selected-frame)))
+  (edmacs-sidebar-buffers--step t frame))
 
 ;;;###autoload
-(defun edmacs-sidebar-buffers-prev ()
-  "`previous-buffer' on this row's tab's main window; point follows."
-  (interactive)
-  (edmacs-sidebar-buffers--step nil))
+(defun edmacs-sidebar-buffers-prev (frame)
+  "`previous-buffer' on this row's tab's main window; point follows.
+Interactively, FRAME is always the selected frame."
+  (interactive (list (selected-frame)))
+  (edmacs-sidebar-buffers--step nil frame))
 
 ;; ============================================================================
 ;; s -- toggle directory tree vs. flat window-prev-buffers stack
@@ -689,14 +692,14 @@ buffer's row."
 ;; `edmacs-sidebar-agents-toggle-all', which is deliberately global.
 
 ;;;###autoload
-(defun edmacs-sidebar-buffers-toggle-flat ()
-  "Toggle the selected frame's sidebar between the directory tree and a
-flat `window-prev-buffers'-ordered stack."
-  (interactive)
-  (let ((frame (selected-frame)))
-    (set-frame-parameter frame 'edmacs-sidebar-buffers-flat
-                          (not (frame-parameter frame 'edmacs-sidebar-buffers-flat)))
-    (edmacs-sidebar--redraw frame)))
+(defun edmacs-sidebar-buffers-toggle-flat (frame)
+  "Toggle FRAME's sidebar between the directory tree and a flat
+`window-prev-buffers'-ordered stack. Interactively, FRAME is always the
+selected frame."
+  (interactive (list (selected-frame)))
+  (set-frame-parameter frame 'edmacs-sidebar-buffers-flat
+                        (not (frame-parameter frame 'edmacs-sidebar-buffers-flat)))
+  (edmacs-sidebar--redraw frame))
 
 ;; ============================================================================
 ;; Redraw triggers: debounced full rebuild, immediate marker refresh

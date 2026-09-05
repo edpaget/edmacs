@@ -50,13 +50,24 @@
 (declare-function edmacs-frames-tab-root-live-p "frames")
 (declare-function edmacs-sidebar-show "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
+(declare-function edmacs-frames--frame-content-window "frames")
 
-(defun edmacs-sessions--tab-name ()
-  "Name the current tab after its project/worktree, falling back sanely.
-Uses `project-current' so each tab's label reflects the worktree it
-holds; when no project is found (e.g. a scratch tab), falls back to
+(defun edmacs-sessions--tab-name-for-frame (frame)
+  "Name FRAME's current tab after its project/worktree, falling back sanely.
+Derives the project from FRAME's own content window's buffer -- via
+`edmacs-frames--frame-content-window' and `buffer-local-value', never
+plain `default-directory' or `current-buffer' -- so each tab's label
+reflects the worktree FRAME itself is showing, not whatever buffer
+happens to be ambiently current when tab-bar recomputes an unrenamed
+tab's name (it does this on every `tab-bar-tabs' read, not only at
+creation, and not necessarily with FRAME selected or its own window's
+buffer current). `with-selected-frame' alone would not fix this: it
+never makes FRAME's selected window's buffer current, only
+`default-directory' cares about current buffer, not window. When no
+project is found (e.g. a scratch tab), falls back to
 `tab-bar-tab-name-current' default behavior (buffer name of the
-selected window).
+selected window) -- itself still ambient, but that is core's own
+contract for the no-project case, not something this function chooses.
 
 Two worktrees of *different* repositories can share a directory
 basename (e.g. both named `feature-x', or two rdm worktrees named
@@ -65,22 +76,33 @@ basename would render as identical, ambiguous tab names. Disambiguate
 by prefixing the owning repository's own directory name, derived from
 `edmacs-git-common-dir' (shared by every worktree of one repo, so it
 names the repo rather than the worktree) -- except when that repo is
-already the one the selected frame itself carries (`modules/frames.el's
+already the one FRAME itself carries (`modules/frames.el's
 `edmacs-repo' parameter): the frame's own title already disambiguates
 it, so a tab inside it need only name its worktree. A tab whose repo is
 some *other* one -- a foreign-project scratch tab, which `frames.el's
 stray-visit relocator should make rare -- still gets the prefix."
-  (if-let* ((proj (project-current))
-            (root (project-root proj)))
-      (let* ((base (file-name-nondirectory (directory-file-name root)))
-             (common (edmacs-git-common-dir root)))
-        (if (edmacs-frames-tab-in-own-repo-p common)
-            base
-          (let ((repo (and common (edmacs-git-common-dir-repo-name common))))
-            (if (and repo (not (string= repo base)))
-                (format "%s/%s" repo base)
-              base))))
-    (tab-bar-tab-name-current)))
+  (let* ((buffer (window-buffer (edmacs-frames--frame-content-window frame)))
+         (dir (buffer-local-value 'default-directory buffer)))
+    (if-let* ((proj (project-current nil dir))
+              (root (project-root proj)))
+        (let* ((base (file-name-nondirectory (directory-file-name root)))
+               (common (edmacs-git-common-dir root)))
+          (if (edmacs-frames-tab-in-own-repo-p common frame)
+              base
+            (let ((repo (and common (edmacs-git-common-dir-repo-name common))))
+              (if (and repo (not (string= repo base)))
+                  (format "%s/%s" repo base)
+                base))))
+      (tab-bar-tab-name-current))))
+
+(defun edmacs-sessions--tab-name ()
+  "`tab-bar-tab-name-function' entry point: name the selected frame's
+current tab. Emacs core calls this with zero arguments by its own fixed
+API -- `(selected-frame)' here is a forced read, not a default this
+function chose; see `edmacs-sessions--tab-name-for-frame' for the real,
+frame-explicit logic."
+  ;; ambient-reads: ok -- see the docstring above.
+  (edmacs-sessions--tab-name-for-frame (selected-frame)))
 
 (setq tab-bar-tab-name-function #'edmacs-sessions--tab-name)
 
@@ -266,34 +288,39 @@ and must be recomputed here, the same way `edmacs-frames-open' sets it
 on first creation. When COMMON's directory is gone, marks the frame
 `edmacs-repo-missing' and warns instead of erroring -- see AC3.
 
-Also re-derives the current tab's own label via `edmacs-sessions--tab-name'
--- never hardcoded to the bare repo label, which would be correct only
-for a tab on the repo's main worktree and would clobber any other
-worktree tab's disambiguating name -- so a tab named before this
-frame's `edmacs-repo' was backfilled (and thus still carrying a
-now-redundant prefix) gets relabeled consistently with every tab
-`frames.el' creates going forward.
+Also re-derives the current tab's own label via
+`edmacs-sessions--tab-name-for-frame' -- never hardcoded to the bare
+repo label, which would be correct only for a tab on the repo's main
+worktree and would clobber any other worktree tab's disambiguating
+name -- so a tab named before this frame's `edmacs-repo' was backfilled
+(and thus still carrying a now-redundant prefix) gets relabeled
+consistently with every tab `frames.el' creates going forward.
 
-`with-selected-frame' alone does not make `edmacs-sessions--tab-name''s
-`project-current' read FRAME's own tab: `project-current' resolves via
-`default-directory', a buffer-local variable that tracks *current
-buffer*, and selecting a frame never changes that (confirmed live: a
-frame's selected window keeps showing its own buffer while
-`current-buffer' stays whatever the caller's -- here, a restore timer's
--- own buffer happened to be). Multi-frame restore called this once per
-restored frame from the same timer callback, so every frame after the
-first got its current tab renamed from some OTHER frame's (or the
-timer's ambient) project instead of its own -- reproduced live via a
-real multi-frame daemon restart, fixed by explicitly making the
-frame's own selected window's buffer current too."
+Passing FRAME straight into `--tab-name-for-frame' is what makes this
+safe under a multi-frame restore, where this runs once per restored
+frame from the same timer callback: that function derives the project
+from FRAME's own content window's buffer explicitly, never from
+plain `default-directory' or `current-buffer' (a buffer-local variable
+that tracks *current buffer*, not the selected window) -- so it no
+longer matters that `current-buffer' stays whatever the timer's own
+buffer happened to be while control moves between frames (reproduced
+live via a real multi-frame daemon restart before this fix: every
+frame after the first got its current tab renamed from some OTHER
+frame's, or the timer's ambient, project instead of its own). The
+earlier fix here made FRAME's own window buffer current with a nested
+`with-current-buffer' before calling the then-ambient
+`edmacs-sessions--tab-name'; threading FRAME straight through removes
+the need for that entirely -- `with-selected-frame' alone was never
+enough for it (see the trap this file's own Commentary and
+`edmacs-sessions--tab-name-for-frame' document): it does not make
+FRAME's selected window's buffer current."
   (when-let* ((common (frame-parameter frame 'edmacs-repo)))
     (if (file-directory-p common)
         (progn
           (set-frame-parameter frame 'edmacs-repo-missing nil)
           (set-frame-parameter frame 'name (edmacs-git-common-dir-repo-name common))
           (with-selected-frame frame
-            (with-current-buffer (window-buffer (selected-window))
-              (ignore-errors (tab-bar-rename-tab (edmacs-sessions--tab-name))))))
+            (ignore-errors (tab-bar-rename-tab (edmacs-sessions--tab-name-for-frame frame)))))
       (set-frame-parameter frame 'edmacs-repo-missing t)
       (set-frame-parameter
        frame 'name (format "MISSING: %s" (edmacs-git-common-dir-repo-name common)))
@@ -452,18 +479,21 @@ timer so the frame is fully created before frameset-restore touches it."
 ;; click launches a second Emacs. So the daemon opens one frame at boot, and
 ;; closing the last window hides Emacs (what s-h does) instead of deleting the
 ;; frame. A Dock click then unhides it with the layout intact.
-(defun edmacs-ns-close-frame (&optional frame)
+(defun edmacs-ns-close-frame (frame)
   "Close FRAME, hiding Emacs instead when it is the last visible GUI frame.
-Under the daemon a deleted last frame would drop Emacs out of the Dock."
-  (interactive)
-  (let ((frame (or frame (selected-frame))))
-    (if (and (daemonp)
-             (display-graphic-p frame)
-             (= 1 (length (seq-filter (lambda (f) (and (display-graphic-p f)
-                                                       (frame-visible-p f)))
-                                      (frame-list)))))
-        (ns-do-hide-emacs)
-      (delete-frame frame t))))
+Under the daemon a deleted last frame would drop Emacs out of the Dock.
+Interactively (including via its `[remap delete-frame]' binding below),
+FRAME is always the selected frame; the window-close-button handler
+below passes the clicked frame explicitly instead, which need not be
+the selected one."
+  (interactive (list (selected-frame)))
+  (if (and (daemonp)
+           (display-graphic-p frame)
+           (= 1 (length (seq-filter (lambda (f) (and (display-graphic-p f)
+                                                     (frame-visible-p f)))
+                                    (frame-list)))))
+      (ns-do-hide-emacs)
+    (delete-frame frame t)))
 
 (defgroup edmacs-sessions nil
   "Tabs, layout persistence, and the launchd daemon's lifecycle."
@@ -509,7 +539,7 @@ daemon there is no such distinction, so fall through to the stock
 `save-buffers-kill-terminal'."
   (interactive)
   (if (and (daemonp) (display-graphic-p))
-      (edmacs-ns-close-frame)
+      (edmacs-ns-close-frame (selected-frame))
     (save-buffers-kill-terminal)))
 
 (defun edmacs-restart-daemon (&optional arg)
