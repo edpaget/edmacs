@@ -22,16 +22,20 @@
 ;; bootstrapped straight, the whole suite reports a single skip rather than
 ;; erroring out on file load.
 ;;
-;; `edmacs-sidebar-test-per-frame-buffers-distinct-and-delete-frame-scoped'
-;; (AC2: per-frame buffers, delete-frame scoping) needs a second real
-;; frame, which needs a controlling terminal to attach to -- plain `-Q
-;; --batch' with no pty has none, so that one test skips cleanly under
-;; the invocation above. To actually exercise it, wrap the same
-;; invocation in `script' to attach a pty:
+;; Four tests need a second real frame, which needs a controlling terminal
+;; to attach to -- plain `-Q --batch' with no pty has none, so all four
+;; skip cleanly under the invocation above:
+;; `-per-frame-buffers-distinct-and-delete-frame-scoped' (AC2),
+;; `-buffer-name-collision-prevention',
+;; `-permanent-name-collision-does-not-poison-quit-restore',
+;; `-anchor-region-pulls-point-forward-on-unselected-frame'.
+;; To actually exercise them, attach a pty.  `script' works from an
+;; interactive shell but fails where stdin is not itself a terminal;
+;; allocating one directly works in both (131/131, no skips):
 ;;
-;;   script -q /dev/null emacs -Q --batch -l ert \
-;;         -l modules/git-common-dir.el -l modules/sidebar-test.el \
-;;         -f ert-run-tests-batch-and-exit
+;;   python3 -c 'import pty,sys; pty.spawn(sys.argv[1:])' \
+;;     emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;           -l modules/sidebar-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; This draws real terminal escape sequences to that pty as a side
 ;; effect (the second frame is a live tty frame) -- harmless, but expect

@@ -33,8 +33,9 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
 - `modules/ui-test.el`, `modules/sidebar-test.el` -- ui.el and sidebar.el
 - `modules/window-geometry-live-test.el` -- sidebar side-window width and
   fringe assertions; two-tier (see GUI-only geometry assertions below). The
-  standard batch invocation always shows 3 of its 8 tests as skipped -- that
-  is the documented GUI-only gate, not a regression
+  standard batch invocation shows 4 of its 10 tests as skipped -- that
+  is the documented GUI-only gate, not a regression; run them through
+  `scripts/gui-ert.sh`
 
 Run a suite in batch from the repository root, loading the modules it
 depends on first:
@@ -131,6 +132,42 @@ the wired-in form. This wrapper is opt-in per suite, not a systemic guard
 -- adopt it for any other suite you want the same protection on rather
 than assuming ERT's exit code already covers it.
 
+#### A second real frame needs a pty, not a window server
+
+Several suites need a *second* frame to test per-frame state. They ask for a
+tty frame (`(tty . "/dev/tty")`), so they need a **controlling terminal** --
+which `emacs -Q --batch` started from a script, a CI runner, or an agent's
+tool call does not have. Those tests call `ert-skip` rather than failing, so
+the suite still exits 0 while silently testing less:
+
+| suite | skips a pty clears |
+|---|---|
+| `sidebar-test.el` | 4 |
+| `sessions-test.el` | 4 |
+| `frames-live-test.el` | 16 (a 17th needs file-notify) |
+| `sidebar-buffers-live-test.el` | 2 |
+| `sidebar-agents-live-test.el` | 1 |
+
+`scripts/gui-ert.sh` does **not** clear these. It supplies a graphical frame,
+not a terminal, so `/dev/tty` is still absent inside it -- it is the right
+tool for fringe and width assertions, the wrong one for these.
+
+Attach a pty instead. `script -q /dev/null <cmd>` is what the file headers
+document, and it works from an interactive shell -- but it fails wherever
+stdin is not itself a terminal (`tcgetattr/ioctl: Operation not supported on
+socket`), which includes most non-interactive contexts. This allocates one
+directly and works in both:
+
+```bash
+python3 -c 'import pty,sys; pty.spawn(sys.argv[1:])' \
+  emacs -Q --batch -l ert -l modules/git-common-dir.el \
+        -l modules/sidebar-test.el -f ert-run-tests-batch-and-exit
+```
+
+Expect it to be slower -- `sidebar-test.el` goes from 1.5s to ~19s -- because
+a real terminal is being emulated. Worth it before landing: it is the only
+way to drive that skip count to zero.
+
 #### GUI-only geometry assertions
 
 Some assertions -- fringe pixels, scroll-bar width, the real gap between
@@ -190,9 +227,9 @@ code; `WARN` (no such parameter exists -- the read is ambient by
 construction, e.g. the `(or PARAM (selected-frame))` idiom) is
 informational only. Suppress a legitimate residual finding with a
 `;; ambient-reads: ok` comment on the finding's line or the line above --
-there is no separate whitelist file. `modules/sidebar.el:819` is a known,
-currently-unfixed `ERROR`-level true positive tracked for a later phase;
-it is not a lint bug to chase now.
+there is no separate whitelist file. The lint's original true positive in
+`modules/sidebar.el` (`--anchor-region-to-bottom` gating `set-window-point`
+on the selected window) is fixed; that file now reports zero findings.
 
 ### Startup check
 
