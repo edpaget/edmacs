@@ -1736,6 +1736,67 @@ rationale on `claude-usage--insert-sidebar-section's own registration."
       (should (memq #'claude-usage--collapsed-section
                      edmacs-sidebar-collapsed-bottom-anchor-section-functions)))
 
+    ;; sidebar.el is not loaded here, so this is not special yet; without the
+    ;; declaration a `let' below would bind it LEXICALLY and the dynamic
+    ;; `bound-and-true-p' read inside `claude-usage--available-width' would
+    ;; never see it.
+    (defvar edmacs-sidebar-width)
+
+    (ert-deftest claude-usage-test-row-layout-drops-reset-when-narrow ()
+      "The 20-column reset field is the first thing dropped: a row that
+overflows is truncated by redisplay, which costs the percentage."
+      (should (equal '(20 12) (seq-take (claude-usage--row-layout 80) 2)))
+      (should (nth 2 (claude-usage--row-layout 55)))
+      (should-not (nth 2 (claude-usage--row-layout 54)))
+      (should-not (nth 2 (claude-usage--row-layout 30))))
+
+    (ert-deftest claude-usage-test-row-layout-shrinks-monotonically ()
+      "Narrower windows never get a wider label or bar."
+      (let ((widths '(80 55 40 34 30 24 20 10)))
+        (cl-loop for (a b) on widths while b do
+                 (let ((la (claude-usage--row-layout a))
+                       (lb (claude-usage--row-layout b)))
+                   (should (>= (nth 0 la) (nth 0 lb)))
+                   (should (>= (nth 1 la) (nth 1 lb)))))))
+
+    (ert-deftest claude-usage-test-meter-row-fits-a-default-sidebar ()
+      "A rendered row fits 30 body columns -- the sidebar's default. The
+fixed 43-column prefix this replaced ran to 53 and was cut off."
+      (with-temp-buffer
+        (let ((edmacs-sidebar-width 30))
+          (claude-usage--insert-meter-row
+           (list :label "Week (Fable)" :percent 17 :severity 'ok
+                 :resets-at (* 1000 1757000000))
+           (* 1000 1756000000))
+          (goto-char (point-min))
+          (should (<= (- (line-end-position) (line-beginning-position)) 30))
+          ;; The percentage survives -- that is the number worth reading.
+          (should (string-match-p "17%" (buffer-string))))))
+
+    (ert-deftest claude-usage-test-meter-row-keeps-reset-when-wide ()
+      "A wide window still gets the full layout, reset column included."
+      (with-temp-buffer
+        (let ((edmacs-sidebar-width 80))
+          (claude-usage--insert-meter-row
+           (list :label "Week (all)" :percent 17 :severity 'ok
+                 :resets-at (* 1000 1757000000))
+           (* 1000 1756000000))
+          (should (string-match-p "17%" (buffer-string)))
+          (should (> (length (buffer-string)) 40)))))
+
+    (ert-deftest claude-usage-test-meter-row-truncates-a-long-label ()
+      "An over-long label is cut to the column, never allowed to push the
+percentage off the edge."
+      (with-temp-buffer
+        (let ((edmacs-sidebar-width 30))
+          (claude-usage--insert-meter-row
+           (list :label "Week (some-extremely-long-model-name)" :percent 5
+                 :severity 'ok :resets-at nil)
+           (* 1000 1756000000))
+          (goto-char (point-min))
+          (should (<= (- (line-end-position) (line-beginning-position)) 30))
+          (should (string-match-p "5%" (buffer-string))))))
+
     )) ; end of build-root-found branch
 
 (provide 'claude-usage-test)

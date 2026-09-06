@@ -629,6 +629,34 @@ the sidebar section heading, paired with the `claude-usage-stale' face.")
 ;; Rendering
 ;; ============================================================================
 
+(defun claude-usage--available-width ()
+  "Columns available for one meter row.
+The live window when there is one, else the sidebar's configured width
+-- these rows are drawn once before `display-buffer' has shown the
+sidebar. The last resort is deliberately WIDE, not narrow: with neither
+a window nor sidebar.el loaded there is nothing to fit, and guessing
+narrow would truncate a plain `claude-usage--render-to-string' caller
+that has no width constraint at all."
+  (let ((w (get-buffer-window (current-buffer) t)))
+    (cond ((window-live-p w) (window-body-width w))
+          ((bound-and-true-p edmacs-sidebar-width) edmacs-sidebar-width)
+          (t 80))))
+
+(defun claude-usage--row-layout (avail)
+  "Return (LABEL-WIDTH BAR-WIDTH SHOW-RESET TRUNCATE-LABEL) for AVAIL columns.
+The reset column (\"6:59 AM (in 129h 3m)\") is 20 columns on its own, so
+it is the first thing dropped: a row that does not fit is truncated by
+redisplay, which costs the percentage -- the one number worth reading.
+
+TRUNCATE-LABEL is nil at the widest tier, where the label column pads but
+never cuts. That is the pre-existing behaviour for a full-width render
+(a label like \"Week (Claude 3.5 Opus)\" overflows its column rather than
+losing its model name), and only a genuinely constrained row cuts."
+  (cond ((>= avail 55) (list 20 12 t nil))
+        ((>= avail 34) (list 16 8 nil t))
+        ((>= avail 24) (list 12 6 nil t))
+        (t (list 8 4 nil t))))
+
 (defun claude-usage--insert-meter-row (meter now)
   "Insert one row for METER into the current buffer.
 
@@ -636,23 +664,36 @@ NOW is threaded through to `claude-usage--format-reset' for deterministic
 rendering in tests. Never calls `claude-usage--severity-face' with a nil
 percent -- that fallback path does `(>= percent 90)' and would error --
 falling back to `claude-usage--em-dash' and a neutral face for the bar,
-percent, and (when `:resets-at' is missing) reset columns instead."
+percent, and (when `:resets-at' is missing) reset columns instead.
+
+The row is laid out against the window's real width rather than a fixed
+43-column prefix: at the sidebar's default 30 columns the fixed form ran
+to 53 and redisplay truncated the percentage off the right edge."
   (let* ((label (plist-get meter :label))
          (percent (plist-get meter :percent))
          (severity (plist-get meter :severity))
          (resets-at (plist-get meter :resets-at))
+         (layout (claude-usage--row-layout (claude-usage--available-width)))
+         (label-width (nth 0 layout))
+         (bar-width (nth 1 layout))
+         (show-reset (nth 2 layout))
+         (truncate-label (nth 3 layout))
          (face (if percent (claude-usage--severity-face severity percent) 'default))
-         (bar (if percent (claude-usage--bar percent 12) claude-usage--em-dash))
+         (bar (if percent (claude-usage--bar percent bar-width) claude-usage--em-dash))
          (percent-str (if percent (format "%d%%" percent) claude-usage--em-dash))
          (reset-str (if resets-at
                         (claude-usage--format-reset resets-at now)
                       claude-usage--em-dash)))
     (magit-insert-section (claude-usage-meter)
-      (insert (format "  %-20s %s %5s  %s\n"
-                       label
+      ;; Emacs `format' has no `*' width specifier (that is C printf), so the
+      ;; column width is baked into the control string.
+      (insert (format (format "  %%-%ds %%s %%4s%%s\n" label-width)
+                       (if truncate-label
+                           (truncate-string-to-width label label-width nil nil t)
+                         label)
                        (propertize bar 'face face)
                        (propertize percent-str 'face face)
-                       reset-str)))))
+                       (if show-reset (concat "  " reset-str) ""))))))
 
 (defun claude-usage--redraw (cached-util &optional now source)
   "Erase the current buffer and redraw it from CACHED-UTIL.

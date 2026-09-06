@@ -112,6 +112,26 @@ whole function."
 (when (daemonp)
   (add-hook 'after-make-frame-functions #'edmacs--reload-theme-on-first-frame -10))
 
+;; solarized gives `nano-modeline-active', `nano-modeline-inactive' and
+;; `default' all the same background (#002b36), so the mode line is
+;; invisible against its own buffer. Shade it one step up; the sidebar is
+;; shaded one step DOWN (`edmacs-sidebar-background-face'), which puts the
+;; three surfaces on distinct levels.
+(defun edmacs--apply-modeline-contrast (&rest _)
+  "Give the nano-modeline faces a background distinct from `default'.
+Re-applied from `enable-theme-functions' because `load-theme' resets
+faces: ui.el reloads the theme on the first graphical frame, which would
+otherwise discard these the moment a GUI frame appears."
+  (when (eq (frame-parameter nil 'background-mode) 'dark)
+    (set-face-attribute 'nano-modeline-active nil
+                        :background "#073642" :foreground "#93a1a1")
+    (set-face-attribute 'nano-modeline-inactive nil
+                        :background "#073642" :foreground "#586e75")))
+
+(with-eval-after-load 'nano-modeline
+  (edmacs--apply-modeline-contrast)
+  (add-hook 'enable-theme-functions #'edmacs--apply-modeline-contrast))
+
 ;; ============================================================================
 ;; Modeline content
 ;; ============================================================================

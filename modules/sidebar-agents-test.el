@@ -783,8 +783,61 @@ whether or not `claude-term-registry.el' happens to be loaded first."
          (edmacs-sidebar-agents-test--make-agent :root "/r2/" :instance "%1" :status 'waiting))
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r3/" :instance "%1" :status 'done))
-        (should (equal "  [1 working, 1 waiting, 1 done]"
+        (should (equal "  [1⟳ 1💬 1✓]"
                         (edmacs-sidebar-agents--header-line (selected-frame))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-header-line-scopes-to-frame-repo ()
+      "The roll-up counts this frame's project only -- an agent in another
+repo's worktree does not inflate it."
+      (edmacs-sidebar-agents-test--with-clean-state
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/other/wt/" :instance "%1" :status 'working))
+        (cl-letf (((symbol-function 'edmacs-worktrees-for-repo)
+                   (lambda (_common) (list (cons "wt" "/mine/wt/")))))
+          (set-frame-parameter (selected-frame) 'edmacs-repo "/mine/.git")
+          (unwind-protect
+              (should (equal "  [1⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))
+            (set-frame-parameter (selected-frame) 'edmacs-repo nil)))))
+
+    (ert-deftest edmacs-sidebar-agents-test-header-line-falls-back-when-cache-misses ()
+      "A worktree-cache miss (nil) counts everything rather than reporting
+an empty project -- nil is a miss, not a repo with no worktrees."
+      (edmacs-sidebar-agents-test--with-clean-state
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/other/wt/" :instance "%1" :status 'working))
+        (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) nil)))
+          (set-frame-parameter (selected-frame) 'edmacs-repo "/mine/.git")
+          (unwind-protect
+              (should (equal "  [2⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))
+            (set-frame-parameter (selected-frame) 'edmacs-repo nil)))))
+
+    (ert-deftest edmacs-sidebar-agents-test-header-line-omits-zero-counts ()
+      "Only non-zero statuses appear -- the suffix renders inside a 30-column
+sidebar, so the prose form was truncated away entirely."
+      (edmacs-sidebar-agents-test--with-clean-state
+        (edmacs-sidebar-agents-test--put
+         (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
+        (should (equal "  [1⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-header-line-fits-a-default-sidebar ()
+      "The whole suffix fits `edmacs-sidebar-width' (30 body columns) even
+with two-digit counts in every status."
+      (edmacs-sidebar-agents-test--with-clean-state
+        (dotimes (i 12)
+          (edmacs-sidebar-agents-test--put
+           (edmacs-sidebar-agents-test--make-agent
+            :root (format "/w%d/" i) :instance "%1" :status 'working))
+          (edmacs-sidebar-agents-test--put
+           (edmacs-sidebar-agents-test--make-agent
+            :root (format "/x%d/" i) :instance "%1" :status 'waiting))
+          (edmacs-sidebar-agents-test--put
+           (edmacs-sidebar-agents-test--make-agent
+            :root (format "/y%d/" i) :instance "%1" :status 'done)))
+        (should (<= (length (edmacs-sidebar-agents--header-line (selected-frame))) 30))))
 
     (ert-deftest edmacs-sidebar-agents-test-header-line-nil-when-no-agents ()
       (edmacs-sidebar-agents-test--with-clean-state

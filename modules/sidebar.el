@@ -310,10 +310,29 @@ where nerd-icons's private-use-area glyphs render as unreadable boxes."
 ;; Major mode
 ;; ============================================================================
 
+(defface edmacs-sidebar-background-face
+  '((((background dark)) :background "#00212b")
+    (((background light)) :background "#eee8d5")
+    (t :inherit default))
+  "Background for the sidebar window, one step off the frame's own.
+The sidebar is chrome, not content, and reads as a separate surface only
+if it is shaded differently -- solarized gives every buffer the same
+`default' background, so without this the sidebar is indistinguishable
+from the buffer beside it. Applied buffer-locally via
+`face-remapping-alist' rather than by setting `default', so it cannot
+leak into any other buffer."
+  :group 'edmacs-sidebar)
+
 (define-derived-mode edmacs-sidebar-mode magit-section-mode "Sidebar"
   "Major mode listing the current frame's tabs in a side window."
   (when (fboundp 'evil-set-initial-state)
-    (evil-set-initial-state 'edmacs-sidebar-mode 'motion)))
+    (evil-set-initial-state 'edmacs-sidebar-mode 'motion))
+  ;; Remap rather than set: `default' is frame-wide, and setting it here
+  ;; would repaint every window on the frame.
+  (setq-local face-remapping-alist
+              (cons '(default edmacs-sidebar-background-face)
+                    (remove '(default edmacs-sidebar-background-face)
+                            face-remapping-alist))))
 
 ;; Plain `define-key' on the mode's own local map is not enough by
 ;; itself: evil installs its state keymaps via `emulation-mode-map-alists',

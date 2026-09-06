@@ -70,6 +70,7 @@
 ;; "frames")' pattern for a module that loads later.
 
 (declare-function edmacs-frames-open-worktree-tab "frames")
+(declare-function edmacs-worktrees-for-repo "frames")
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar-hide "sidebar")
@@ -364,18 +365,48 @@ swappable seam below."
 ;; Header line: repo-wide agent-status roll-up
 ;; ============================================================================
 
-(defun edmacs-sidebar-agents--header-line (_frame)
-  "Return a \"  [N working, N waiting, N done]\" roll-up suffix, or nil
-when no agent is tracked at all. Assigned to sidebar.el's
+(defun edmacs-sidebar-agents--agents-for-frame (frame)
+  "Return the agents belonging to FRAME's own repo, or all of them.
+An agent is keyed by its worktree root, and a frame owns exactly the
+worktrees of its stamped `edmacs-repo' common-dir -- so the roll-up
+counts this project's work, not every project's. Falls back to the whole
+table when the frame carries no repo stamp or the worktree cache has not
+been populated (a miss returns nil, which is not the same as a repo with
+no worktrees), since a global count is a better answer than an empty one."
+  (let* ((common (and frame (frame-parameter frame 'edmacs-repo)))
+         (worktrees (and common (edmacs-worktrees-for-repo common)))
+         (roots (and worktrees (mapcar #'cdr worktrees))))
+    (if (null roots)
+        (edmacs-sidebar-agents--all)
+      (seq-filter (lambda (a) (member (edmacs-agent-root a) roots))
+                  (edmacs-sidebar-agents--all)))))
+
+(defun edmacs-sidebar-agents--header-line (frame)
+  "Return a \"  [N⟳ N💬 N✓]\" roll-up suffix, or nil when no agent is
+tracked at all. Assigned to sidebar.el's
 `edmacs-sidebar-header-line-function' swappable seam, mirroring
-`--label-suffix's own assignment above; FRAME is unused -- the whole
-(frame-independent) agent table is identical on every frame."
-  (let ((agents (edmacs-sidebar-agents--all)))
+`--label-suffix's own assignment above; the
+agent table is scoped to FRAME's own repo by
+`edmacs-sidebar-agents--agents-for-frame'.
+
+Glyphs, not words, and zero counts omitted: the prose form
+(\"  [1 working, 0 waiting, 0 done]\") is 31 columns and this suffix
+renders inside a sidebar whose default body width is 30, so it was
+always truncated away. Same glyph vocabulary as `agents.el's own
+mode-line roll-up (`edmacs-agents--mode-line-string')."
+  (let ((agents (edmacs-sidebar-agents--agents-for-frame frame)))
     (when agents
       (let ((working (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'working)) agents))
             (waiting (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'waiting)) agents))
             (done (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'done)) agents)))
-        (format "  [%d working, %d waiting, %d done]" working waiting done)))))
+        (format "  [%s]"
+                (string-join
+                 (or (delq nil
+                           (list (and (> working 0) (format "%d⟳" working))
+                                 (and (> waiting 0) (format "%d💬" waiting))
+                                 (and (> done 0) (format "%d✓" done))))
+                     (list "0"))
+                 " "))))))
 
 (setq edmacs-sidebar-header-line-function #'edmacs-sidebar-agents--header-line)
 
