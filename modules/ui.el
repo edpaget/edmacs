@@ -196,6 +196,9 @@ so an unfocused window keeps the same badge."
 (defvar term-raw-map)
 (declare-function nano-modeline-buffer-name "nano-modeline")
 (declare-function nano-modeline-face "nano-modeline")
+(declare-function nano-modeline-buffer-status "nano-modeline")
+(declare-function nerd-icons-icon-for-mode "nerd-icons")
+(declare-function nerd-icons-mdicon "nerd-icons")
 
 (defcustom edmacs-modeline-name-filters
   '(("\\`\\*claude-term:\\(.*\\)\\*\\'" . "\\1")
@@ -275,6 +278,54 @@ carries no severity distinction; those two are defined by every theme."
         (if parts (concat (string-join parts " ") " ") ""))
     ""))
 
+(defcustom edmacs-modeline-force-text-glyphs nil
+  "Non-nil forces the plain text status glyphs everywhere in the modeline
+\(the buffer-status mode icon and the ghostel agent icon\), even when
+`nerd-icons' is loaded. Useful for a terminal frame where nerd-icons's
+private-use-area glyphs render as unreadable boxes."
+  :type 'boolean
+  :group 'edmacs-modeline)
+
+(defcustom edmacs-modeline-modified-marker "*"
+  "String appended to the buffer-status mode icon when the buffer has
+unsaved changes and is not read-only. Keeps the modified state legible
+even though the icon itself no longer spells out RW/RO/**."
+  :type 'string
+  :group 'edmacs-modeline)
+
+(defun edmacs-modeline--mode-icon ()
+  "Return a `nerd-icons' glyph for the current buffer's major mode, or nil.
+Nil whenever icons are forced off, `nerd-icons' is not loaded, or the
+lookup itself fails for any reason -- never signals, so a broken or
+missing icon degrades to `nano-modeline-buffer-status's own default
+text rather than breaking the modeline."
+  (and (not edmacs-modeline-force-text-glyphs)
+       (featurep 'nerd-icons)
+       (fboundp 'nerd-icons-icon-for-mode)
+       (condition-case nil
+           (let ((icon (nerd-icons-icon-for-mode major-mode)))
+             (and (stringp icon) icon))
+         (error nil))))
+
+(defun edmacs-modeline-buffer-status ()
+  "`nano-modeline-buffer-status', with a major-mode icon in place of text.
+Read-only vs. read-write is still encoded exactly as before, via the
+badge's background face -- `nano-modeline-buffer-status' picks that
+purely from `buffer-read-only'/`buffer-modified-p', unaffected by the
+STATUS string passed in here. Modified state, which the icon alone
+would drop, gets `edmacs-modeline-modified-marker' appended, but only
+when the buffer is actually writable: a read-only+modified buffer
+keeps the plain icon with no marker, matching
+`nano-modeline-buffer-status's own read-only-wins precedence. When no
+icon is available, passes nil through unchanged, i.e. exactly today's
+plain RO/**/RW text."
+  (let ((icon (edmacs-modeline--mode-icon)))
+    (nano-modeline-buffer-status
+     (when icon
+       (if (and (buffer-modified-p) (not buffer-read-only))
+           (concat icon edmacs-modeline-modified-marker)
+         icon)))))
+
 (defun edmacs-modeline-fixed-status (status &optional face)
   "Nano-styled STATUS box in FACE, independent of buffer state.
 `nano-modeline-buffer-status' picks its face from `buffer-read-only' and
@@ -287,13 +338,35 @@ works. Same padding/raise treatment, fixed face."
     (propertize (concat top status bot)
                 'face (or face (nano-modeline-face 'status-RO)))))
 
+(defun edmacs-modeline--agent-icon ()
+  "Return a `nerd-icons' robot glyph for an agent session, or nil.
+Same availability guard as `edmacs-modeline--mode-icon'."
+  (and (not edmacs-modeline-force-text-glyphs)
+       (featurep 'nerd-icons)
+       (fboundp 'nerd-icons-mdicon)
+       (condition-case nil
+           (let ((icon (nerd-icons-mdicon "nf-md-robot")))
+             (and (stringp icon) icon))
+         (error nil))))
+
+(defun edmacs-modeline-ghostel-status ()
+  "Status glyph for a ghostel terminal buffer: a robot for claude-term,
+plain \">_\" for everything else. `claude-term-mode' is the buffer-local
+marker minor mode claude-term.el already turns on for exactly its own
+panes; read the same way `modules/sessions.el' already reads it
+cross-module, with no load-order dependency."
+  (edmacs-modeline-fixed-status
+   (if (bound-and-true-p claude-term-mode)
+       (or (edmacs-modeline--agent-icon) "AI")
+     ">_")))
+
 (defun edmacs-modeline-prog-mode (&optional default)
   "Nano line for prog mode, with filtered name and diagnostics.
 `nano-modeline-prog-mode' with two changes: the buffer name goes through
 `edmacs-modeline-name-filters', and `edmacs-modeline-diagnostics' leads
 the right side. Can be made DEFAULT mode."
   (funcall nano-modeline-position
-           '((nano-modeline-buffer-status) " "
+           '((edmacs-modeline-buffer-status) " "
              (edmacs-modeline-buffer-name) " "
              (nano-modeline-git-info))
            '((edmacs-modeline-diagnostics)
@@ -307,7 +380,7 @@ Kept identical to the prog line rather than trimmed: this one is also
 installed as the DEFAULT, so it is what every buffer with no line of its
 own falls back to -- flycheck runs in plenty of those."
   (funcall nano-modeline-position
-           '((nano-modeline-buffer-status) " "
+           '((edmacs-modeline-buffer-status) " "
              (edmacs-modeline-buffer-name) " "
              (nano-modeline-git-info))
            '((edmacs-modeline-diagnostics)
@@ -325,7 +398,7 @@ the name is filtered to the session label alone (see
 `edmacs-modeline-name-filters') and the right side carries the working
 directory instead."
   (funcall nano-modeline-position
-           '((edmacs-modeline-fixed-status ">_") " "
+           '((edmacs-modeline-ghostel-status) " "
              (edmacs-modeline-buffer-name))
            '((nano-modeline-default-directory) " "
              (nano-modeline-window-dedicated))))

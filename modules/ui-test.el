@@ -235,4 +235,119 @@ background, and the overline/underline are dropped."
     (should (equal (face-attribute face :background nil t)
                     (plist-get (face-attribute face :box nil t) :color)))))
 
+;; ============================================================================
+;; edmacs-modeline--mode-icon / edmacs-modeline-buffer-status
+;; ============================================================================
+;; `nano-modeline-buffer-status' is not loadable under `-Q' (a straight
+;; package), so every test here stubs it via `cl-letf' and asserts on the
+;; STATUS string it was called with -- the same indirection
+;; sidebar-agents-test.el uses for nerd-icons and its own line
+;; constructors.
+
+(ert-deftest edmacs-ui-test-buffer-status-uses-mode-icon-when-available ()
+  "When `nerd-icons' is (simulated) present, its glyph is passed through as
+STATUS instead of being left to `nano-modeline-buffer-status's default."
+  (with-temp-buffer
+    (let ((captured 'unset)
+          (edmacs-modeline-force-text-glyphs nil))
+      (cl-letf (((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
+                ((symbol-function 'nerd-icons-icon-for-mode)
+                 (lambda (_mode) "MODE-ICON"))
+                ((symbol-function 'nano-modeline-buffer-status)
+                 (lambda (&optional status) (setq captured status))))
+        (edmacs-modeline-buffer-status))
+      (should (equal captured "MODE-ICON")))))
+
+(ert-deftest edmacs-ui-test-buffer-status-marks-modified-without-losing-readonly-precedence ()
+  "The modified marker is appended only when the buffer is writable and
+modified; a read-only+modified buffer keeps the plain icon, matching
+`nano-modeline-buffer-status's own read-only-wins precedence."
+  (with-temp-buffer
+    (let ((captured 'unset))
+      (cl-letf (((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
+                ((symbol-function 'nerd-icons-icon-for-mode) (lambda (_mode) "ICON"))
+                ((symbol-function 'nano-modeline-buffer-status)
+                 (lambda (&optional status) (setq captured status))))
+        (setq buffer-read-only nil)
+        (set-buffer-modified-p t)
+        (edmacs-modeline-buffer-status)
+        (should (equal captured (concat "ICON" edmacs-modeline-modified-marker)))
+        (setq captured 'unset)
+        (setq buffer-read-only t)
+        (set-buffer-modified-p t)
+        (edmacs-modeline-buffer-status)
+        (should (equal captured "ICON"))))))
+
+(ert-deftest edmacs-ui-test-mode-icon-falls-back-to-nil-when-forced-off-or-absent ()
+  "Every path that yields no icon leaves `nano-modeline-buffer-status's
+STATUS argument nil, i.e. its own default RO/**/RW text renders
+unchanged."
+  (with-temp-buffer
+    ;; (a) forced off, nerd-icons simulated present.
+    (let ((captured 'unset)
+          (edmacs-modeline-force-text-glyphs t))
+      (cl-letf (((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
+                ((symbol-function 'nerd-icons-icon-for-mode) (lambda (_mode) "ICON"))
+                ((symbol-function 'nano-modeline-buffer-status)
+                 (lambda (&optional status) (setq captured status))))
+        (should-not (edmacs-modeline--mode-icon))
+        (edmacs-modeline-buffer-status)
+        (should-not captured)))
+    ;; (b) nerd-icons not loaded.
+    (let ((captured 'unset)
+          (edmacs-modeline-force-text-glyphs nil))
+      (cl-letf (((symbol-function 'featurep) (lambda (_f) nil))
+                ((symbol-function 'nano-modeline-buffer-status)
+                 (lambda (&optional status) (setq captured status))))
+        (should-not (edmacs-modeline--mode-icon))
+        (edmacs-modeline-buffer-status)
+        (should-not captured)))
+    ;; (c) the lookup itself signals.
+    (let ((captured 'unset)
+          (edmacs-modeline-force-text-glyphs nil))
+      (cl-letf (((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
+                ((symbol-function 'nerd-icons-icon-for-mode)
+                 (lambda (_mode) (error "boom")))
+                ((symbol-function 'nano-modeline-buffer-status)
+                 (lambda (&optional status) (setq captured status))))
+        (should-not (edmacs-modeline--mode-icon))
+        (edmacs-modeline-buffer-status)
+        (should-not captured)))))
+
+;; ============================================================================
+;; edmacs-modeline--agent-icon / edmacs-modeline-ghostel-status
+;; ============================================================================
+
+(ert-deftest edmacs-ui-test-ghostel-status-distinguishes-claude-term-from-plain-terminal ()
+  "A claude-term pane gets a distinct robot glyph (or its \"AI\" text
+fallback); a plain ghostel/vterm terminal keeps the unchanged \">_\"."
+  ;; A claude-term buffer with nerd-icons available: the robot glyph wins.
+  (with-temp-buffer
+    (setq-local claude-term-mode t)
+    (let ((captured 'unset)
+          (edmacs-modeline-force-text-glyphs nil))
+      (cl-letf (((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
+                ((symbol-function 'nerd-icons-mdicon) (lambda (_name) "ROBOT-ICON"))
+                ((symbol-function 'edmacs-modeline-fixed-status)
+                 (lambda (status &optional _face) (setq captured status))))
+        (edmacs-modeline-ghostel-status))
+      (should (equal captured "ROBOT-ICON"))))
+  ;; A plain terminal buffer, `claude-term-mode' never bound: unchanged ">_".
+  (with-temp-buffer
+    (let ((captured 'unset))
+      (cl-letf (((symbol-function 'edmacs-modeline-fixed-status)
+                 (lambda (status &optional _face) (setq captured status))))
+        (edmacs-modeline-ghostel-status))
+      (should (equal captured ">_"))))
+  ;; A claude-term buffer with no nerd-icons: the "AI" text fallback.
+  (with-temp-buffer
+    (setq-local claude-term-mode t)
+    (let ((captured 'unset)
+          (edmacs-modeline-force-text-glyphs nil))
+      (cl-letf (((symbol-function 'featurep) (lambda (_f) nil))
+                ((symbol-function 'edmacs-modeline-fixed-status)
+                 (lambda (status &optional _face) (setq captured status))))
+        (edmacs-modeline-ghostel-status))
+      (should (equal captured "AI")))))
+
 ;;; ui-test.el ends here
