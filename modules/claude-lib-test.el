@@ -1,0 +1,196 @@
+;;; claude-lib-test.el --- Tests for claude-lib.el -*- lexical-binding: t -*-
+
+;;; Commentary:
+;; Pure-function coverage of `edmacs-claude-lib-eval-file' and its
+;; helpers: multi-form reading (AC6), string-vs-prin1 value formatting
+;; and unescaped multi-line output (AC2/AC5), interleaved print/message
+;; capture with `*Messages*' left intact (AC2), explicit ROOT binding
+;; and restoration (AC4), error propagation with partial-output
+;; preservation and advice cleanup (AC3), and hard truncation (AC7). No
+;; real `emacsclient' subprocess is exercised here -- that is
+;; `claude-lib-live-test.el's job, driving the identical function
+;; through the real transport.
+;;
+;; Run with:
+;;   emacs -Q --batch -l ert -l modules/claude-lib.el \
+;;         -l modules/claude-lib-test.el -f ert-run-tests-batch-and-exit
+
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+
+;; Forward declarations so this file byte-compiles clean standalone
+;; (its own header invocation loads claude-lib.el first, which already
+;; defines both; this is only for a bare `batch-byte-compile' pass).
+(defvar edmacs-claude-lib-max-output-bytes)
+(declare-function edmacs-claude-lib-eval-file "claude-lib" (form-file output-file root))
+
+(defmacro claude-lib-test--with-form-file (content var &rest body)
+  "Bind VAR to a fresh temp file containing CONTENT, run BODY, then delete it."
+  (declare (indent 2))
+  `(let ((,var (make-temp-file "claude-lib-test-form")))
+     (unwind-protect
+         (progn
+           (with-temp-file ,var (insert ,content))
+           ,@body)
+       (delete-file ,var))))
+
+(defmacro claude-lib-test--with-output-file (var &rest body)
+  "Bind VAR to a not-yet-existing OUTPUT-FILE path, run BODY, then delete it."
+  (declare (indent 1))
+  `(let ((,var (make-temp-name (expand-file-name "claude-lib-test-output" temporary-file-directory))))
+     (unwind-protect
+         (progn ,@body)
+       (when (file-exists-p ,var) (delete-file ,var)))))
+
+(defun claude-lib-test--read-output (output-file)
+  "Read OUTPUT-FILE back as plain text, the way the Bash caller would."
+  (with-temp-buffer
+    (insert-file-contents output-file)
+    (buffer-string)))
+
+;; ============================================================================
+;; AC6 -- read ALL forms, not just the first
+;; ============================================================================
+
+(ert-deftest claude-lib-test-evaluates-every-form-last-wins ()
+  (claude-lib-test--with-form-file "(+ 1 2)\n(+ 3 4)\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)
+      (let ((out (claude-lib-test--read-output output-file)))
+        (should (string-match-p "=== value ===\n7\\'" out))))))
+
+(ert-deftest claude-lib-test-empty-form-file-errors ()
+  (claude-lib-test--with-form-file "" form-file
+    (claude-lib-test--with-output-file output-file
+      (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)))))
+
+(ert-deftest claude-lib-test-comment-only-form-file-errors ()
+  (claude-lib-test--with-form-file ";; just a comment\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)))))
+
+(ert-deftest claude-lib-test-truncated-trailing-form-errors-not-clean-eof ()
+  "An unbalanced trailing form must not be silently treated as \"no more forms\"."
+  (claude-lib-test--with-form-file "(+ 1 2)\n(+ 3 4" form-file
+    (claude-lib-test--with-output-file output-file
+      (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)))))
+
+;; ============================================================================
+;; AC2 -- both the return value and what the form printed
+;; ============================================================================
+
+(ert-deftest claude-lib-test-printed-and-value-and-messages-preserved ()
+  (claude-lib-test--with-form-file "(message \"x\")\n(print \"y\")\n99\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (let ((messages-before (with-current-buffer (messages-buffer) (buffer-string))))
+        (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)
+        (let ((out (claude-lib-test--read-output output-file)))
+          ;; x (from message) then y (from print), in that order, before the value section.
+          (should (string-match-p "x\\(.\\|\n\\)*y\\(.\\|\n\\)*=== value ===\n99\\'" out)))
+        ;; the advice calls through to the original `message' -- *Messages* still gets it.
+        (with-current-buffer (messages-buffer)
+          (should (> (length (buffer-string)) (length messages-before)))
+          (should (string-match-p "x" (buffer-substring (length messages-before) (point-max)))))))))
+
+(ert-deftest claude-lib-test-message-nil-sentinel-not-inserted ()
+  "`(message nil)' cancels the echo area; it must not print the string \"nil\"."
+  (claude-lib-test--with-form-file "(message \"x\")\n(message nil)\n(print \"y\")\n1\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)
+      (let ((out (claude-lib-test--read-output output-file)))
+        (should-not (string-match-p "nil" (car (split-string out "=== value ==="))))))))
+
+;; ============================================================================
+;; AC3 -- usable text and propagation on error; partial output preserved
+;; ============================================================================
+
+(ert-deftest claude-lib-test-error-propagates-with-message ()
+  (claude-lib-test--with-form-file "(error \"boom %s\" 42)\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (let ((err (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory))))
+        (should (string-match-p "boom 42" (error-message-string err)))))))
+
+(ert-deftest claude-lib-test-error-writes-partial-output-first ()
+  (claude-lib-test--with-form-file "(print \"before\")\n(error \"boom\")\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory))
+      (should (file-exists-p output-file))
+      (should (string-match-p "before" (claude-lib-test--read-output output-file))))))
+
+(ert-deftest claude-lib-test-error-still-removes-message-advice ()
+  "A prior call's dead capture buffer must not still be advised onto `message'.
+If cleanup leaked, this second, unrelated `message' call would try to
+insert into that killed buffer and error -- it must not."
+  (claude-lib-test--with-form-file "(error \"boom\")\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory))
+      (should (progn (message "sentinel-after-error") t))
+      (with-current-buffer (messages-buffer)
+        (should (string-match-p "sentinel-after-error" (buffer-string)))))))
+
+;; ============================================================================
+;; AC4 -- explicit ROOT, never ambient default-directory
+;; ============================================================================
+
+(ert-deftest claude-lib-test-root-is-bound-and-restored ()
+  (claude-lib-test--with-form-file "default-directory\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (let* ((root (file-name-as-directory (make-temp-file "claude-lib-test-root" t)))
+             (caller-default-directory default-directory))
+        (unwind-protect
+            (progn
+              (edmacs-claude-lib-eval-file form-file output-file root)
+              (let ((out (claude-lib-test--read-output output-file)))
+                (should (string-match-p (regexp-quote (format "=== value ===\n%s" root)) out)))
+              (should (equal default-directory caller-default-directory)))
+          (delete-directory root t))))))
+
+(ert-deftest claude-lib-test-root-must-be-a-directory ()
+  (claude-lib-test--with-form-file "1\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (should-error (edmacs-claude-lib-eval-file form-file output-file "/no/such/directory-at-all")))))
+
+;; ============================================================================
+;; AC5 -- multi-line output unescaped
+;; ============================================================================
+
+(ert-deftest claude-lib-test-string-value-unescaped-newlines ()
+  (claude-lib-test--with-form-file "(concat \"a\" \"\\n\" \"b\" \"\\n\")\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)
+      (let* ((out (claude-lib-test--read-output output-file))
+             (value-section (cadr (split-string out "=== value ===\n"))))
+        (should-not (string-match-p "\\\\n" value-section))
+        (should (equal value-section "a\nb\n"))))))
+
+(ert-deftest claude-lib-test-nil-value-written-literally ()
+  (claude-lib-test--with-form-file "nil\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)
+      (let ((out (claude-lib-test--read-output output-file)))
+        (should (string-match-p "=== value ===\nnil\\'" out))))))
+
+;; ============================================================================
+;; AC7 -- hard truncation, never a silently truncated write
+;; ============================================================================
+
+(ert-deftest claude-lib-test-oversized-output-errors-and-writes-nothing ()
+  (claude-lib-test--with-form-file "(make-string 1000 ?x)\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (let ((edmacs-claude-lib-max-output-bytes 10))
+        (let ((err (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory))))
+          (should (string-match-p "10" (error-message-string err)))))
+      (should-not (file-exists-p output-file)))))
+
+(ert-deftest claude-lib-test-oversized-output-does-not-clobber-stale-file ()
+  (claude-lib-test--with-form-file "(make-string 1000 ?x)\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (with-temp-file output-file (insert "stale-but-current-looking-content"))
+      (let ((edmacs-claude-lib-max-output-bytes 10))
+        (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)))
+      (should (equal (claude-lib-test--read-output output-file) "stale-but-current-looking-content")))))
+
+(provide 'claude-lib-test)
+;;; claude-lib-test.el ends here

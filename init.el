@@ -98,6 +98,9 @@ LANGUAGE should be the name without the .el extension."
 ;; fullscreen policy. Loads before its callers, which only reference it
 ;; by symbol at dispatch time.
 (load-module "workspaces")
+;; The `emacsclient -e' eval channel Claude drives from the Bash tool --
+;; resident at boot so every daemon, including the real one, has it.
+(load-module "claude-lib")
 (load-module "claude-term")
 (load-module "claude-term-registry")
 ;; (load-module "org-config")
