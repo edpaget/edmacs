@@ -1004,7 +1004,8 @@ pinned popup can be moved into the column by hand."
                          (round (* 0.40 (window-total-width (frame-root-window))))))))
         (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
 
-(ert-deftest edmacs-windows-test-balance-center-leaves-stack-width-untouched ()
+(ert-deftest edmacs-windows-test-balance-center-leaves-a-correct-stack-width-alone ()
+  "A stack column already at `edmacs-stack-width' is not disturbed."
   (save-window-excursion
     (delete-other-windows)
     (edmacs-window-set-main (selected-window))
@@ -1020,6 +1021,40 @@ pinned popup can be moved into the column by hand."
             (should (<= (abs (- (window-total-height main) (window-total-height split))) 1))
             (should (= (window-total-width agent-win) agent-width)))
         (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-balance-center-restores-a-stale-stack-width ()
+  "A stack column left at an old frame's fraction is resized back.
+The ultrawide case: a side window keeps the absolute width it was created
+at, so a column sized for a narrow frame stays narrow after the frame
+grows underneath it. Simulated here by resizing the pane directly, which
+leaves the same state."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((edmacs-stack-width 0.40)
+          (buf (generate-new-buffer "*ewt-stale-width*")))
+      (unwind-protect
+          (let* ((agent-win (edmacs-windows-test--display-agent-pane buf 0))
+                 (target (round (* 0.40 (window-total-width (frame-root-window))))))
+            (should (= (window-total-width agent-win) target))
+            (window-resize agent-win (- (round (* 0.4 target)) target) t 'safe)
+            (should (/= (window-total-width agent-win) target))
+            (edmacs-stack-balance-center)
+            (should (= (window-total-width agent-win) target)))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-balance-center-runs-the-rebalance-hook ()
+  "Members of `edmacs-windows-rebalance-functions' are called with the frame.
+The extension point sidebar.el joins to re-apply the left column's width;
+windows.el itself owns only the right one."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let* ((seen nil)
+           (edmacs-windows-rebalance-functions
+            (list (lambda (frame) (push frame seen)))))
+      (edmacs-stack-balance-center)
+      (should (equal seen (list (selected-frame)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; AC6/AC7 -- `SPC w' binding surface: real evil.el/general.el, plus
@@ -2287,5 +2322,81 @@ the sidebar and every stack pane while the non-interactive call already
 falls through to `pop-to-buffer'. The other values un-dedicate the
 target window, which would break the sidebar's own contract."
   (should (eq switch-to-buffer-in-dedicated-window 'pop)))
+
+
+;; ---------------------------------------------------------------------------
+;; A popup that comes and goes leaves no displaced copy behind
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-quit-restore-leaves-no-displaced-copy ()
+  "A popup taking main and then being quit does not strand main's buffer.
+The popup pushes main's buffer onto the stack on the way in;
+`quit-restore-window' puts that same buffer back in main on the way out
+and knows nothing about the pushed copy. Without the dedupe sweep the
+frame is left showing one buffer in two windows -- \"the buffer I was
+looking at just appeared in a new window and nothing else changed\" --
+and every later popup adds another."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((work (generate-new-buffer "*ewt-dedupe-work*"))
+          (popup (generate-new-buffer "*ewt-dedupe-popup*")))
+      (unwind-protect
+          (progn
+            (display-buffer work)
+            (should (eq (window-buffer (edmacs-main-window)) work))
+            (display-buffer popup)
+            (should (eq (window-buffer (edmacs-main-window)) popup))
+            (should (seq-find (lambda (w) (eq (window-buffer w) work))
+                              (edmacs-stack-windows)))
+            (quit-restore-window (get-buffer-window popup) 'bury)
+            (should (eq (window-buffer (edmacs-main-window)) work))
+            (should (= 1 (length (get-buffer-window-list work nil nil)))))
+        (kill-buffer work)
+        (kill-buffer popup)))))
+
+(ert-deftest edmacs-windows-test-dedupe-frame-keeps-distinct-stack-panes ()
+  "The sweep only ever deletes a window showing main's own buffer."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((a (generate-new-buffer "*ewt-dedupe-a*"))
+          (b (generate-new-buffer "*ewt-dedupe-b*")))
+      (unwind-protect
+          (progn
+            (edmacs-windows-test--display-agent-pane a 0)
+            (edmacs-windows-test--display-agent-pane b 1)
+            (edmacs-windows-dedupe-frame (selected-frame))
+            (should (= 2 (length (edmacs-stack-windows))))
+            ;; Now main shows A too: the stack copy is the one that goes.
+            (set-window-buffer (edmacs-main-window) a)
+            (edmacs-windows-dedupe-frame (selected-frame))
+            (should (equal (list b)
+                           (mapcar #'window-buffer (edmacs-stack-windows)))))
+        (kill-buffer a)
+        (kill-buffer b)))))
+
+(ert-deftest edmacs-windows-test-dedupe-frame-keeps-the-higher-of-two-stack-copies ()
+  "Two stack panes on one buffer collapse to the higher one.
+The residue a duplicate leaves behind once the swap branch has moved it:
+main takes a stack pane's buffer and hands its own -- already duplicated
+-- back to that slot."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((a (generate-new-buffer "*ewt-dedupe-twice*"))
+          (b (generate-new-buffer "*ewt-dedupe-other*")))
+      (unwind-protect
+          (let (high low)
+            (edmacs-windows-test--display-agent-pane b 0)
+            (setq high (edmacs-windows-test--display-agent-pane a -2))
+            (setq low (edmacs-windows-test--display-agent-pane a -1))
+            (should (= 3 (length (edmacs-stack-windows))))
+            (edmacs-windows-dedupe-frame (selected-frame))
+            (should (window-live-p high))
+            (should-not (window-live-p low))
+            (should (= 2 (length (edmacs-stack-windows)))))
+        (kill-buffer a)
+        (kill-buffer b)))))
 
 ;;; windows-test.el ends here

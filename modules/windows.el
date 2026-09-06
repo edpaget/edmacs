@@ -32,6 +32,14 @@
 ;; any popup delete the pane and return to `edmacs-main-window' rather than
 ;; risk restoring a stale prior popup.
 ;;
+;; No buffer is ever shown twice on one frame: a popup that took MAIN and
+;; was then quit leaves the copy it displaced stranded in the stack, so
+;; `edmacs-windows-dedupe-frame' deletes it.
+;;
+;; `edmacs-stack-balance-center' (`SPC w =') restores the frame's
+;; proportions -- a side window keeps the absolute width it was created at,
+;; which a plain `balance-windows' can never fix.
+;;
 ;; `edmacs-windows-repair-frame' exists because core's own guard cannot
 ;; fire on the one shape that matters here: `window-main-window' falls back
 ;; to `frame-root-window', so it never returns nil and `window--sides-check'
@@ -592,6 +600,46 @@ action fall through to its recover and side-window entries."
                           (or (window-parameter b 'window-slot) 0)))))
 
 ;; ============================================================================
+;; One buffer, one window: the displaced-copy sweep
+;; ============================================================================
+;; A transient popup takes MAIN like everything else does, pushing main's
+;; buffer onto the stack. `quit-restore-window' then puts that same buffer
+;; back in main and the pushed copy is stranded there for good -- so every
+;; popup that comes and goes leaves the stack one window wider, each showing
+;; whatever main happened to hold at the time. `--display-in-main' already
+;; refuses to show a buffer twice; this holds that invariant against the
+;; restore path, which never goes through it.
+
+(defvar edmacs-windows--deduping nil
+  "Non-nil while `edmacs-windows-dedupe-frame' is deleting a window.
+`delete-window' runs `window-buffer-change-functions' again, so without
+this the sweep re-enters itself once per window it deletes.")
+
+(defun edmacs-windows-dedupe-frame (frame)
+  "Delete FRAME's stack windows showing a buffer already displayed on it.
+Main wins over the stack, and among stack windows the higher pane wins --
+`edmacs-stack-windows' is slot-ordered, so the copy that goes is always
+the one further down the column."
+  (when (and (frame-live-p frame) (not edmacs-windows--deduping))
+    (let ((edmacs-windows--deduping t))
+      (with-selected-frame frame
+        (let* ((main (edmacs-main-window))
+               (seen (and main (list (window-buffer main)))))
+          (dolist (window (edmacs-stack-windows))
+            (when (and (window-live-p window) (not (eq window main)))
+              (let ((buffer (window-buffer window)))
+                (if (memq buffer seen)
+                    (ignore-errors (delete-window window))
+                  (push buffer seen))))))))))
+
+;; The net for every other restore path (`bury-buffer', `switch-to-prev-buffer',
+;; a frameset put back). `window-buffer-change-functions' runs from redisplay,
+;; so it never fires under `--batch' -- the `quit-restore-window' advice below
+;; covers the path that actually strands a copy, and this catches the rest a
+;; frame later.
+(add-hook 'window-buffer-change-functions #'edmacs-windows-dedupe-frame)
+
+;; ============================================================================
 ;; window-sides-slots: one writer, claimed by edge name
 ;; ============================================================================
 
@@ -694,7 +742,13 @@ BURY-OR-KILL is still honored: `kill' (e.g. `C-u q') kills the buffer
 after the window is gone, matching stock `quit-restore-window'. `killing'
 means the buffer will be killed elsewhere (e.g. by `quit-windows-on' or
 `replace-buffer-in-windows', per their docstrings) -- this function must
-not kill it itself, only stock `kill' does that."
+not kill it itself, only stock `kill' does that.
+
+A popup that took MAIN goes through ORIG-FN instead, which restores the
+buffer main was showing before the popup displaced it -- leaving the
+pushed copy stranded in the stack. `edmacs-windows-dedupe-frame' clears
+it here rather than waiting on the redisplay-time sweep, which never
+runs at all under `--batch'."
   (let ((window (window-normalize-window window)))
     (if (and (eq (window-parameter window 'window-side) 'right)
              (window-parameter window 'edmacs-stack-popup))
@@ -704,7 +758,9 @@ not kill it itself, only stock `kill' does that."
           (when main (select-window main))
           (when (eq bury-or-kill 'kill)
             (kill-buffer buf)))
-      (funcall orig-fn window bury-or-kill))))
+      (let ((frame (window-frame window)))
+        (funcall orig-fn window bury-or-kill)
+        (edmacs-windows-dedupe-frame frame)))))
 
 (advice-add 'quit-restore-window :around #'edmacs-stack--quit-restore-window)
 
@@ -847,13 +903,27 @@ on the exact grid `edmacs-stack-widen'/`edmacs-stack-narrow' step by."
   (interactive)
   (edmacs-stack--set-width (- edmacs-stack-width 0.05)))
 
+(defvar edmacs-windows-rebalance-functions nil
+  "Abnormal hook run with the selected FRAME by `edmacs-stack-balance-center'.
+The extension point for a side column this module does not own --
+`modules/sidebar.el' joins it to re-apply the left sidebar's width. Runs
+after the stack column has been resized and before the center split is
+balanced, so a member may resize its own window without having its work
+undone. A member must not call `display-buffer'.")
+
 (defun edmacs-stack-balance-center ()
-  "Balance the center (non-side) windows, leaving the stack column alone.
-`window-main-window' returns the frame's non-side subtree root -- a
-single window when there is no center split, an internal combination
-otherwise -- so scoping `balance-windows' to it never touches a side
-window."
+  "Restore the frame's proportions: side columns first, then the center.
+A side window keeps the absolute width it was created at, so moving a
+frame to a wider display leaves the stack column at whatever fraction of
+the OLD frame it happened to be -- the one thing a plain `balance-windows'
+can never fix, since `window-main-window' (the frame's non-side subtree
+root) deliberately excludes every side window. So the stack column is
+resized back to `edmacs-stack-width' first, `edmacs-windows-rebalance-functions'
+is given its chance at the other side columns, and only then are the
+center windows balanced against whatever width is left."
   (interactive)
+  (edmacs-stack--apply-width)
+  (run-hook-with-args 'edmacs-windows-rebalance-functions (selected-frame))
   (let ((root (window-main-window)))
     (when root
       (balance-windows root))))

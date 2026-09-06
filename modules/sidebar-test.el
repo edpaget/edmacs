@@ -1517,6 +1517,36 @@ through explicitly instead of `call-interactively'-ing blind."
                       (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-worktree-closed-face))))
                 (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
 
+    (ert-deftest edmacs-sidebar-test-reapply-width-restores-a-resized-sidebar ()
+      "`edmacs-sidebar-reapply-width' resizes a drifted sidebar back to target.
+`SPC w =' reaches it through `edmacs-windows-rebalance-functions': a side
+window keeps the absolute width it was created at, so a sidebar sized for
+one display stays that width on the next one."
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show frame)
+              (let ((window (edmacs-sidebar--window frame)))
+                (window-resize window -5 t)
+                (should (/= (window-total-width window)
+                            (edmacs-sidebar--target-width frame)))
+                (edmacs-sidebar-reapply-width frame)
+                (should (= (window-total-width window)
+                           (edmacs-sidebar--target-width frame)))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-reapply-width-never-shows-a-hidden-sidebar ()
+      "A frame with no sidebar window is left without one."
+      (let ((frame (selected-frame)))
+        (edmacs-sidebar-hide frame)
+        (edmacs-sidebar-reapply-width frame)
+        (should (null (edmacs-sidebar--window frame)))))
+
+    (ert-deftest edmacs-sidebar-test-reapply-width-joins-the-rebalance-hook ()
+      "The command in keybindings.el reaches this file through that hook."
+      (should (memq #'edmacs-sidebar-reapply-width
+                    edmacs-windows-rebalance-functions)))
+
     (ert-deftest edmacs-sidebar-test-resize-survives-toggle ()
       "A manual resize survives `edmacs-sidebar-toggle' twice (hide, then
 show): the restored width comes from the frame-parameter stash, not

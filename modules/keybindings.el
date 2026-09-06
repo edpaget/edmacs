@@ -70,7 +70,7 @@
   "wj" '(evil-window-down :which-key "window down")
   "wk" '(evil-window-up :which-key "window up")
   "wl" '(evil-window-right :which-key "window right")
-  "w=" '(edmacs-stack-balance-center :which-key "balance center windows")
+  "w=" '(edmacs-stack-balance-center :which-key "rebalance layout")
   "w-" '(edmacs-window-demote :which-key "demote window")
   "w]" '(edmacs-stack-next :which-key "next stack pane")
   "w[" '(edmacs-stack-prev :which-key "previous stack pane")

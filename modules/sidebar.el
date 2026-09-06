@@ -1363,6 +1363,24 @@ frame with no live sidebar window."
 
 (add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change-anchor)
 
+(defun edmacs-sidebar--target-width (frame)
+  "Return the `window-width' request that sizes FRAME's sidebar.
+A collapsed frame asks in `body-columns': that request is sized in body
+pixels, so it lands on the width the producers are formatted for whatever
+this frame's chrome costs -- one column in batch, two to five on a GUI
+frame depending on `frame-char-width\=', fringe pixels and scroll bar.
+Otherwise the remembered width, else `edmacs-sidebar-width', clamped
+here at READ time -- which is what makes a value already poisoned in a
+live frame parameter or a restored desktop self-heal rather than only
+ever being prevented on write. The clamp is frame-relative, so the answer
+legitimately differs between a laptop screen and an external display."
+  (if (frame-parameter frame 'edmacs-sidebar-collapsed)
+      (cons 'body-columns edmacs-sidebar--collapsed-width)
+    (edmacs-sidebar--clamp-width
+     (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
+         edmacs-sidebar-width)
+     frame)))
+
 (defun edmacs-sidebar--enforce-width (window frame width)
   "Resize WINDOW on FRAME to WIDTH, which the placement only sometimes does.
 `display-buffer-in-side-window' honours a `window-width' request on a
@@ -1427,34 +1445,17 @@ case (slot exhausted, frame too small). A frame with no non-side window
 is repaired first, since otherwise the existing slot-0 left window is
 simply reused and the frame stays without a main window.
 
-Uses FRAME's remembered width (see above) when it has one, else
-`edmacs-sidebar-width', so a manual resize survives a hide/show cycle.
-Either way the width is passed through `edmacs-sidebar--clamp-width'
-here, at read time -- this is what makes a value already poisoned in a
-live frame parameter or a restored desktop self-heal on the very next
-show, rather than only ever being prevented on write. When FRAME
-carries `edmacs-sidebar-collapsed', this whole remembered-width read is
-bypassed in favor of `edmacs-sidebar--collapsed-width' directly --
-routing it through `edmacs-sidebar--clamp-width' would only widen it
-back out to `edmacs-sidebar--min-width'."
+Sized by `edmacs-sidebar--target-width', so a manual resize survives a
+hide/show cycle and a poisoned remembered width self-heals on the very
+next show."
   (interactive (list (selected-frame)))
   ;; A frame with no non-side window would otherwise just have its
   ;; existing slot-0 left window reused, leaving it wedged.
   (when (edmacs-windows-frame-wedged-p frame)
     (edmacs-windows-repair-frame frame))
   (let* ((buf (edmacs-sidebar--ensure-buffer frame))
+         (width (edmacs-sidebar--target-width frame))
          (collapsed (frame-parameter frame 'edmacs-sidebar-collapsed))
-         (width (if collapsed
-                    ;; A `body-columns' request is sized in body pixels, so
-                    ;; it lands on the width the producers are formatted
-                    ;; for whatever this frame's chrome costs -- one column
-                    ;; in batch, two to five on a GUI frame depending on
-                    ;; `frame-char-width', fringe pixels and scroll bar.
-                    (cons 'body-columns edmacs-sidebar--collapsed-width)
-                  (edmacs-sidebar--clamp-width
-                   (or (frame-parameter frame 'edmacs-sidebar-remembered-width)
-                       edmacs-sidebar-width)
-                   frame)))
          (window (with-selected-frame frame
                    (display-buffer-in-side-window
                     buf
@@ -1502,6 +1503,19 @@ back out to `edmacs-sidebar--min-width'."
       ;; hook a second time on every single show, not just the first.
       (edmacs-sidebar--reapply-bottom-anchor frame)
       window))))
+
+(defun edmacs-sidebar-reapply-width (frame)
+  "Resize FRAME's sidebar window back to `edmacs-sidebar--target-width'.
+Joins `edmacs-windows-rebalance-functions' (`SPC w ='): a side window
+keeps the absolute width it was created at, and the target itself is
+frame-relative through `edmacs-sidebar--clamp-width', so both sides of
+the comparison can be stale after the frame moves to another display.
+Never creates a window -- a hidden sidebar stays hidden."
+  (when-let* ((window (edmacs-sidebar--window frame)))
+    (edmacs-sidebar--enforce-width window frame
+                                    (edmacs-sidebar--target-width frame))))
+
+(add-hook 'edmacs-windows-rebalance-functions #'edmacs-sidebar-reapply-width)
 
 (defun edmacs-sidebar--release-window (window frame)
   "Stop WINDOW on FRAME being the sidebar's, without ever signalling.
