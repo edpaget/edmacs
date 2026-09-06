@@ -324,6 +324,38 @@ what propagates: it is the one that actually explains the failure."
                           "edmacs" "")
      :type 'user-error)))
 
+(ert-deftest claude-lib-test-promote-rejects-newline-in-problem ()
+  "A multi-line PROBLEM must be rejected outright, not spliced into the
+file as an uncommented second line -- see the newline-injection finding
+against an earlier pass of this function."
+  (claude-lib-test--with-temp-library lib
+    (should-error
+     (claude-lib-promote
+      "(defun claude-lib-test-nl-problem (x)\n  \"Return X unchanged.\"\n  x)"
+      "edmacs" "Fixed a bug.\nAlso handles the empty case.")
+     :type 'user-error)
+    ;; The rejection must happen before anything is written: the file
+    ;; must still parse cleanly and must not mention the rejected call.
+    (with-temp-buffer
+      (insert-file-contents lib)
+      (should-not (string-match-p "Also handles the empty case" (buffer-string)))
+      (goto-char (point-min))
+      (should (read (current-buffer))))))
+
+(ert-deftest claude-lib-test-promote-rejects-newline-in-destination ()
+  "A multi-line DESTINATION must be rejected outright for the same reason
+a multi-line PROBLEM is."
+  (claude-lib-test--with-temp-library lib
+    (should-error
+     (claude-lib-promote
+      "(defun claude-lib-test-nl-dest (x)\n  \"Return X unchanged.\"\n  x)"
+      "edmacs\n(defun claude-lib-evil (x) x)" "problem")
+     :type 'user-error)
+    (with-temp-buffer
+      (insert-file-contents lib)
+      (should-not (fboundp 'claude-lib-evil))
+      (should-not (string-match-p "claude-lib-evil" (buffer-string))))))
+
 (ert-deftest claude-lib-test-promote-nil-destination-defaults-to-edmacs ()
   (claude-lib-test--with-temp-library lib
     (unwind-protect
@@ -366,6 +398,43 @@ what propagates: it is the one that actually explains the failure."
                                     (insert-file-contents lib)
                                     (buffer-string)))))
       (when (fboundp 'claude-lib-test-valid) (fmakunbound 'claude-lib-test-valid)))))
+
+(declare-function claude-lib-test-cl-valid nil (x &optional y))
+
+(ert-deftest claude-lib-test-promote-accepts-cl-defun ()
+  "claude-lib-promote must accept a cl-defun SOURCE, not just defun --
+its own docstring and validation both advertise all three shapes."
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (should (eq (claude-lib-promote
+                       "(cl-defun claude-lib-test-cl-valid (x &optional y)\n  \"Return X plus Y, defaulting Y to zero.\"\n  (+ x (or y 0)))"
+                       "edmacs" "cl-defun promotion coverage")
+                      'claude-lib-test-cl-valid))
+          (should (fboundp 'claude-lib-test-cl-valid))
+          (should (equal (claude-lib-test-cl-valid 5 2) 7))
+          (should (string-match-p "cl-defun claude-lib-test-cl-valid"
+                                  (with-temp-buffer
+                                    (insert-file-contents lib)
+                                    (buffer-string)))))
+      (when (fboundp 'claude-lib-test-cl-valid) (fmakunbound 'claude-lib-test-cl-valid)))))
+
+(ert-deftest claude-lib-test-promote-accepts-defmacro ()
+  "claude-lib-promote must accept a defmacro SOURCE, not just defun."
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (should (eq (claude-lib-promote
+                       "(defmacro claude-lib-test-macro-valid (x)\n  \"Expand to a form that doubles X.\"\n  `(* 2 ,x))"
+                       "edmacs" "defmacro promotion coverage")
+                      'claude-lib-test-macro-valid))
+          (should (fboundp 'claude-lib-test-macro-valid))
+          (should (equal (macroexpand '(claude-lib-test-macro-valid 5)) '(* 2 5)))
+          (should (string-match-p "defmacro claude-lib-test-macro-valid"
+                                  (with-temp-buffer
+                                    (insert-file-contents lib)
+                                    (buffer-string)))))
+      (when (fboundp 'claude-lib-test-macro-valid) (fmakunbound 'claude-lib-test-macro-valid)))))
 
 (ert-deftest claude-lib-test-promote-errors-on-modified-buffer ()
   (claude-lib-test--with-temp-library lib

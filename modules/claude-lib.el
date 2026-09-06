@@ -390,7 +390,10 @@ is always an error, never silently coerced to the default: a
 prototype's intended home must be stated outright or left unstated
 entirely, never half-stated. PROBLEM is a required, non-empty
 description of what SOURCE solves; both are recorded in a provenance
-comment above the promoted form.
+comment above the promoted form. Neither may contain a newline: the
+provenance comment is a single `;;'-prefixed line, and a raw embedded
+newline would splice uncommented text straight into this file's Lisp
+source.
 
 Unless NAME is already defined in this file, in which case
 ALLOW-REDEFINE must be non-nil to re-promote it -- promotion never
@@ -406,9 +409,13 @@ symbol."
           ((null destination) "edmacs")
           ((string-empty-p (string-trim destination))
            (user-error "claude-lib-promote: DESTINATION must not be blank"))
+          ((string-match-p "[\n\r]" destination)
+           (user-error "claude-lib-promote: DESTINATION must not contain a newline: %S" destination))
           (t destination))))
     (when (or (null problem) (string-empty-p (string-trim problem)))
       (user-error "claude-lib-promote: PROBLEM must be a non-empty string"))
+    (when (string-match-p "[\n\r]" problem)
+      (user-error "claude-lib-promote: PROBLEM must not contain a newline: %S" problem))
     (let ((forms (claude-lib--read-source-forms source)))
       (unless (= (length forms) 1)
         (user-error "claude-lib-promote: SOURCE must contain exactly one top-level form, got %d"
