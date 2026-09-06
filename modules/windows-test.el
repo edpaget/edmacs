@@ -437,6 +437,15 @@ since Emacs always has one and it must never be killed."
     (kill-buffer name))
   (generate-new-buffer name))
 
+(defun edmacs-windows-test--stack-popup (buffer &optional slot)
+  "Display BUFFER directly as a stack popup pane, bypassing the main rule.
+Every buffer now goes to MAIN by default, so a test whose SUBJECT is the
+stack itself (pin, `quit-restore' behaviour, width) has to build its pane
+explicitly. A caller-supplied ACTION outranks `display-buffer-base-action',
+and this uses the same alist the push path does, so the pane carries the
+real `edmacs-stack-popup' parameter rather than a hand-rolled imitation."
+  (display-buffer buffer (edmacs-stack--popup-alist slot)))
+
 (defconst edmacs-windows-test--popup-names
   '("*Warnings*" "*Messages*" "*Help*" "*helpful variable: foo*"
     "*compilation*" "*quickrun*" "*Flycheck errors*" "*Backtrace*"
@@ -445,61 +454,138 @@ since Emacs always has one and it must never be killed."
   "One representative buffer name per routed `display-buffer-alist' pattern.")
 
 ;; ---------------------------------------------------------------------------
-;; AC1 -- every routed name lands on right/-1; the center is untouched
+;; AC1 -- every buffer lands in MAIN, whatever it is called
 ;; ---------------------------------------------------------------------------
 
-(ert-deftest edmacs-windows-test-popup-routes-to-right-slot-minus-1 ()
+(ert-deftest edmacs-windows-test-every-buffer-lands-in-main ()
+  "No buffer name is special. Each of these once had its own routing to
+the stack; all of them now take MAIN, which is the whole point of the
+uniform rule."
   (dolist (name edmacs-windows-test--popup-names)
     (save-window-excursion
       (delete-other-windows)
-      (let* ((before (edmacs-windows-test--nonside-count))
-             ;; "*Messages*" always already exists (Emacs creates it at
-             ;; startup); `generate-new-buffer' on that exact name would
-             ;; silently get "*Messages*<2>" instead, which the routed
-             ;; pattern's `\\'' anchor does not match. Use the real buffer
-             ;; for that one case rather than creating (and killing) a
-             ;; second one.
-             (real-messages (equal name "*Messages*"))
-             (buf (if real-messages (get-buffer name) (edmacs-windows-test--fresh-named-buffer name))))
+      (edmacs-window-set-main (selected-window))
+      (let* ((real-messages (equal name "*Messages*"))
+             (buf (if real-messages (get-buffer name)
+                    (edmacs-windows-test--fresh-named-buffer name))))
         (unwind-protect
             (let ((win (display-buffer buf)))
               (should win)
-              (should (eq (window-parameter win 'window-side) 'right))
-              (should (equal (window-parameter win 'window-slot) -1))
-              (should (= before (edmacs-windows-test--nonside-count))))
+              (should (eq win (edmacs-main-window)))
+              (should (eq (window-buffer win) buf))
+              (should-not (window-parameter win 'window-side)))
           (unless real-messages (kill-buffer buf)))))))
 
 ;; ---------------------------------------------------------------------------
-;; AC2 -- two different routed buffers in a row share the same slot -1 window
+;; AC2 -- a second buffer pushes the first onto the top of the stack
 ;; ---------------------------------------------------------------------------
 
-(ert-deftest edmacs-windows-test-popup-second-routed-buffer-reuses-window ()
+(ert-deftest edmacs-windows-test-second-buffer-pushes-first-to-stack ()
+  "Displaying B after A puts B in main and A on the stack -- they do not
+share one pane, which is what the old shared popup slot did."
   (save-window-excursion
     (delete-other-windows)
-    (let ((buf-a (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
-          (buf-b (edmacs-windows-test--fresh-named-buffer "*Help*")))
+    (edmacs-window-set-main (selected-window))
+    (let ((buf-a (generate-new-buffer "*ewt-push-a*"))
+          (buf-b (generate-new-buffer "*ewt-push-b*")))
       (unwind-protect
-          (let* ((win-a (display-buffer buf-a))
-                 (count-after-a (length (window-list nil 'no-minibuf)))
-                 (win-b (display-buffer buf-b)))
-            (should (eq win-a win-b))
-            (should (eq (window-buffer win-a) buf-b))
-            (should (= count-after-a (length (window-list nil 'no-minibuf)))))
+          (let ((win-a (display-buffer buf-a)))
+            (should (eq win-a (edmacs-main-window)))
+            (let ((win-b (display-buffer buf-b)))
+              (should (eq win-b (edmacs-main-window)))
+              (should (eq (window-buffer (edmacs-main-window)) buf-b))
+              ;; A is still visible, in the stack rather than in main.
+              (let ((win-for-a (get-buffer-window buf-a)))
+                (should win-for-a)
+                (should (eq (window-parameter win-for-a 'window-side) 'right)))))
         (kill-buffer buf-a)
         (kill-buffer buf-b)))))
 
-(ert-deftest edmacs-windows-test-embark-collect-keeps-mode-line-format-none ()
-  "Consolidating Embark's entry into windows.el must not drop the
-`(mode-line-format . none)' window-parameter completion.el's own
-now-removed entry used to set -- that parameter is Embark's own
-rendering concern, not something any routing AC re-tests on its own."
+(ert-deftest edmacs-windows-test-stack-order-is-most-recent-first ()
+  "Each displacement takes a slot above the one before it, so the stack
+reads newest-at-top. Slots run more-negative-upward."
   (save-window-excursion
     (delete-other-windows)
-    (let ((buf (edmacs-windows-test--fresh-named-buffer "*Embark Collect Live*")))
+    (edmacs-window-set-main (selected-window))
+    (let ((bufs (mapcar (lambda (n) (generate-new-buffer (format "*ewt-order-%d*" n)))
+                        '(0 1 2))))
       (unwind-protect
-          (let ((win (display-buffer buf)))
-            (should (eq (window-parameter win 'mode-line-format) 'none)))
+          (let ((edmacs-stack--next-pin-slot -2))
+            (dolist (b bufs) (display-buffer b))
+            (let* ((windows (edmacs-stack-windows))
+                   (slots (mapcar (lambda (w) (window-parameter w 'window-slot)) windows)))
+              ;; Ascending slot order == top-to-bottom, and the most recently
+              ;; displaced buffer is the topmost.
+              (should (equal slots (sort (copy-sequence slots) #'<)))
+              (should (eq (window-buffer (car windows)) (nth 1 bufs)))))
+        (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
+
+(ert-deftest edmacs-windows-test-redisplaying-main-pushes-nothing ()
+  "Displaying the buffer main already shows must not churn the stack."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((buf (generate-new-buffer "*ewt-noop*")))
+      (unwind-protect
+          (progn
+            (display-buffer buf)
+            (let ((before (length (edmacs-stack-windows))))
+              (display-buffer buf)
+              (should (eq (window-buffer (edmacs-main-window)) buf))
+              (should (= before (length (edmacs-stack-windows))))))
         (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-revisiting-a-stacked-buffer-swaps-not-duplicates ()
+  "A buffer already in the stack is swapped into main rather than shown
+in two windows at once."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((buf-a (generate-new-buffer "*ewt-swap-a*"))
+          (buf-b (generate-new-buffer "*ewt-swap-b*")))
+      (unwind-protect
+          (progn
+            (display-buffer buf-a)
+            (display-buffer buf-b)
+            (display-buffer buf-a)
+            (should (eq (window-buffer (edmacs-main-window)) buf-a))
+            (should (= 1 (length (get-buffer-window-list buf-a nil t))))
+            (should (get-buffer-window buf-b)))
+        (kill-buffer buf-a)
+        (kill-buffer buf-b)))))
+
+(ert-deftest edmacs-windows-test-stack-is-capped-and-evicts-the-bottom ()
+  "`edmacs-stack-max-windows' bounds the column; the bottom (oldest) pane
+goes, and its buffer stays live."
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((bufs (mapcar (lambda (n) (generate-new-buffer (format "*ewt-cap-%d*" n)))
+                        '(0 1 2 3 4)))
+          (edmacs-stack-max-windows 2))
+      (unwind-protect
+          (let ((edmacs-stack--next-pin-slot -2))
+            (dolist (b bufs) (display-buffer b))
+            (should (= 2 (length (edmacs-stack-windows))))
+            ;; The first buffer displaced is the first evicted, still alive.
+            (should (buffer-live-p (car bufs)))
+            (should-not (get-buffer-window (car bufs))))
+        (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
+
+(ert-deftest edmacs-windows-test-stack-cap-nil-means-unbounded ()
+  (save-window-excursion
+    (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
+    (let ((bufs (mapcar (lambda (n) (generate-new-buffer (format "*ewt-uncap-%d*" n)))
+                        '(0 1 2 3)))
+          (edmacs-stack-max-windows nil))
+      (unwind-protect
+          (let ((edmacs-stack--next-pin-slot -2))
+            (dolist (b bufs) (display-buffer b))
+            ;; Four displays, each displacing what main held (including the
+            ;; buffer it started on), and nothing evicted.
+            (should (= 4 (length (edmacs-stack-windows)))))
+        (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; AC3 -- agents (0,1,2) + popup (-1) + pin (-2) + a fresh popup (-1 again)
@@ -517,7 +603,10 @@ rendering concern, not something any routing AC re-tests on its own."
 (ert-deftest edmacs-windows-test-pin-then-fresh-popup-yields-five-windows ()
   (save-window-excursion
     (delete-other-windows)
-    (let (bufs)
+    ;; Every displaced buffer now allocates from this counter, so it has
+    ;; drifted far past -2 by the time this test runs; pin the start.
+    (let ((edmacs-stack--next-pin-slot -2)
+          bufs)
       (unwind-protect
           (progn
             (dotimes (i 3)
@@ -525,7 +614,7 @@ rendering concern, not something any routing AC re-tests on its own."
                 (push b bufs)
                 (edmacs-windows-test--display-agent-pane b i)))
             (let* ((popup-buf (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
-                   (popup-win (display-buffer popup-buf)))
+                   (popup-win (edmacs-windows-test--stack-popup popup-buf)))
               (push popup-buf bufs)
               (should (equal (window-parameter popup-win 'window-slot) -1))
               (edmacs-stack-pin popup-win)
@@ -542,7 +631,7 @@ rendering concern, not something any routing AC re-tests on its own."
               ;; the right column is uncapped -- five distinct live windows,
               ;; each still reporting the slot it was created with.
               (let* ((help-buf (edmacs-windows-test--fresh-named-buffer "*Help*"))
-                     (help-win (display-buffer help-buf)))
+                     (help-win (edmacs-windows-test--stack-popup help-buf)))
                 (push help-buf bufs)
                 (should (equal (window-parameter help-win 'window-slot) -1))
                 (let ((right (edmacs-windows-test--right-windows)))
@@ -564,7 +653,7 @@ rendering concern, not something any routing AC re-tests on its own."
     (let* ((main (edmacs-main-window))
            (buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
       (unwind-protect
-          (let ((win (display-buffer buf)))
+          (let ((win (edmacs-windows-test--stack-popup buf)))
             (select-window win)
             (quit-window nil win)
             (should-not (window-live-p win))
@@ -585,8 +674,8 @@ first popup instead of deleting the pane and returning to main."
            (buf2 (edmacs-windows-test--fresh-named-buffer "*Help*")))
       (unwind-protect
           (progn
-            (display-buffer buf1)
-            (let ((win2 (display-buffer buf2)))
+            (edmacs-windows-test--stack-popup buf1)
+            (let ((win2 (edmacs-windows-test--stack-popup buf2)))
               (select-window win2)
               (quit-window nil win2)
               (should-not (window-live-p win2))
@@ -608,7 +697,7 @@ buffer gets killed."
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
-      (let ((win (display-buffer buf)))
+      (let ((win (edmacs-windows-test--stack-popup buf)))
         (select-window win)
         (quit-window t win)
         (should-not (window-live-p win))
@@ -628,7 +717,7 @@ multiple windows for the same buffer."
     (let* ((main (edmacs-main-window))
            (buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
       (unwind-protect
-          (let ((win (display-buffer buf)))
+          (let ((win (edmacs-windows-test--stack-popup buf)))
             (select-window win)
             (quit-restore-window win 'killing)
             (should-not (window-live-p win))
@@ -1324,19 +1413,19 @@ not only from a right side window."
 ;; Catch-all tiling (phase 5)
 ;; ============================================================================
 
-(ert-deftest edmacs-windows-test-fallback-routes-unrouted-buffer-to-right-slot-minus-1 ()
+(ert-deftest edmacs-windows-test-fallback-routes-any-buffer-to-main ()
+  "A buffer nothing knows anything about lands in main, like every other."
   (save-window-excursion
     (delete-other-windows)
-    (let ((buf (generate-new-buffer "*ewt-anything*"))
-          (nonside-count (edmacs-windows-test--nonside-count)))
+    (edmacs-window-set-main (selected-window))
+    (let ((buf (generate-new-buffer "*ewt-anything*")))
       (unwind-protect
           (let ((win (display-buffer buf)))
-            (should (eq (window-parameter win 'window-side) 'right))
-            (should (equal (window-parameter win 'window-slot) -1))
-            (should (= (edmacs-windows-test--nonside-count) nonside-count)))
+            (should (eq win (edmacs-main-window)))
+            (should (eq (window-buffer win) buf)))
         (kill-buffer buf)))))
 
-(ert-deftest edmacs-windows-test-other-window-shape-lands-in-stack ()
+(ert-deftest edmacs-windows-test-other-window-shape-still-lands-in-main ()
   ;; `find-file-other-window'/`xref-find-definitions-other-window'/
   ;; `switch-to-buffer-other-window' all reduce to `(display-buffer buf t)'
   ;; in Emacs 31.1, which `display-buffer' turns into action nil plus
@@ -1347,11 +1436,18 @@ not only from a right side window."
     (let ((buf (generate-new-buffer "*ewt-other-window*")))
       (unwind-protect
           (let ((win (display-buffer buf '(nil (inhibit-same-window . t)))))
-            (should (eq (window-parameter win 'window-side) 'right)))
+            ;; `inhibit-same-window' cannot apply: main is the destination for
+            ;; everything, and it is reached by identity rather than by being
+            ;; the selected window.
+            (should (eq win (edmacs-main-window))))
         (kill-buffer buf)))))
 
-(ert-deftest edmacs-windows-test-switch-to-buffer-obey-display-actions-stays-nil ()
-  (should-not switch-to-buffer-obey-display-actions))
+(ert-deftest edmacs-windows-test-switch-to-buffer-obeys-display-actions ()
+  "Switching to a buffer must place it exactly like opening one, which
+means routing through `display-buffer-base-action'. Emacs defaults this
+to nil, which swaps main's buffer in place and drops the displaced one
+out of view entirely."
+  (should switch-to-buffer-obey-display-actions))
 
 (ert-deftest edmacs-windows-test-switch-to-buffer-in-main-does-not-move-window ()
   (save-window-excursion
@@ -1374,7 +1470,7 @@ not only from a right side window."
 always succeeds, so any recover action placed after it is dead code and
 the wedge comes straight back."
   (should (equal (car display-buffer-base-action)
-                 (list #'display-buffer-reuse-window
+                 (list #'edmacs-windows--display-in-main
                        #'edmacs-windows--display-buffer-in-recovered-main
                        #'display-buffer-in-side-window))))
 
@@ -1464,21 +1560,7 @@ reachable in real use via `SPC w j' -- is selected when the command runs."
                (should-not (window-parameter (display-buffer buf) 'window-side)))
            (kill-buffer buf)))))))
 
-(ert-deftest edmacs-windows-test-shell-buffer-gets-fixed-slot-and-resists-eviction ()
-  (save-window-excursion
-    (delete-other-windows)
-    (let ((shell-buf (edmacs-windows-test--fresh-named-buffer "*shell*"))
-          (popup-buf (generate-new-buffer "*ewt-generic-popup*")))
-      (unwind-protect
-          (let ((shell-win (display-buffer shell-buf)))
-            (should (equal (window-parameter shell-win 'window-slot) -2))
-            (display-buffer popup-buf)
-            (should (window-live-p shell-win))
-            (should (eq (window-buffer shell-win) shell-buf)))
-        (kill-buffer popup-buf)
-        (when (buffer-live-p shell-buf) (kill-buffer shell-buf))))))
-
-(ert-deftest edmacs-windows-test-pin-skips-occupied-fixed-slot ()
+(ert-deftest edmacs-windows-test-pin-skips-an-occupied-slot ()
   (save-window-excursion
     (delete-other-windows)
     (let ((fixed-buf (generate-new-buffer "*ewt-fixed-minus-2*"))
@@ -1486,10 +1568,9 @@ reachable in real use via `SPC w j' -- is selected when the command runs."
           (edmacs-stack--next-pin-slot -2))
       (unwind-protect
           (progn
-            ;; Simulate the cider/*shell* fixed placement at slot -2 out of
-            ;; band, without going through display-buffer-alist.
+            ;; Occupy slot -2 directly, so the pin counter must step past it.
             (display-buffer-in-side-window fixed-buf (edmacs-stack--popup-alist -2))
-            (let ((popup-win (display-buffer popup-buf)))
+            (let ((popup-win (edmacs-windows-test--stack-popup popup-buf)))
               (should (equal (window-parameter popup-win 'window-slot) -1))
               (edmacs-stack-pin popup-win)
               (let ((pinned (get-buffer-window popup-buf t)))
@@ -1616,15 +1697,17 @@ placement can never leak into the live registry the AC2 sweep checks."
      ,@body))
 
 (defconst edmacs-windows-test--windows-el-placements
-  '(agent-pane embark-collect inferior-shells warnings backtrace quickrun
-    flycheck-errors center-reuse dired magit-status)
+  '()
   "The placements windows.el itself declares, in declaration order.
 git.el adds `magit-diff-log' eagerly, for eleven after a real init;
 vterm.el's `vterm' and languages/clojure.el's `cider-repl' are declared
 from a deferred `use-package' `:config', so they join once their package
 actually loads, for thirteen.")
 
-(ert-deftest edmacs-windows-test-registry-holds-windows-el-placements ()
+(ert-deftest edmacs-windows-test-registry-declares-no-placements ()
+  "Nothing declares through `edmacs-windows-place'. A placement here would
+reintroduce the per-class unpredictability the uniform rule removed, so
+this asserts the registry stays empty rather than listing what is in it."
   (should (equal (mapcar #'car (edmacs-windows-placements))
                  edmacs-windows-test--windows-el-placements)))
 
@@ -1679,27 +1762,6 @@ the side-window fallback rather than merely never meeting it."
                 (should (eq (window-parameter win 'mode-line-format) 'none))))
           (kill-buffer buf))))))
 
-(ert-deftest edmacs-windows-test-agent-pane-placement-uses-the-seam ()
-  "`edmacs-windows-ordinary-buffer-p' is the only thing that makes a
-buffer ordinary; with the `#\\='ignore' default the same buffer takes the
-stack, which is what keeps windows.el free of a claude-term dependency."
-  (let ((split-height-threshold 0)
-        (split-width-threshold nil))
-    (save-window-excursion
-      (delete-other-windows)
-      (let ((buf (edmacs-windows-test--fresh-named-buffer "ewt-agent-pane")))
-        (unwind-protect
-            (progn
-              (let ((edmacs-windows-ordinary-buffer-p
-                     (lambda (b) (string-prefix-p "ewt-agent-pane" (buffer-name b)))))
-                (let ((win (display-buffer buf)))
-                  (should-not (window-parameter win 'window-side))
-                  (should-not (window-parameter win 'window-slot))
-                  (delete-window win)))
-              (let ((win (display-buffer buf)))
-                (should (eq (window-parameter win 'window-side) 'right))))
-          (kill-buffer buf))))))
-
 (ert-deftest edmacs-windows-test-place-replaces-a-redeclared-name ()
   "Re-loading a module must not double its entries."
   (edmacs-windows-test--with-scratch-registry
@@ -1731,30 +1793,6 @@ stack, which is what keeps windows.el free of a claude-term dependency."
     (should-error (edmacs-windows-place 'ewt-redundant :match "\\`\\*ewt-x\\*\\'" :as 'stack))
     (should (edmacs-windows-place 'ewt-redundant :match "\\`\\*ewt-x\\*\\'"
                                   :as 'stack :override t))))
-
-(ert-deftest edmacs-windows-test-override-entry-outranks-a-caller-action ()
-  "`display-buffer' consults `display-buffer-alist' before a caller's own
-ACTION but `display-buffer-base-action' after it, so the four `:override'
-placements are exactly the ones whose producers pass their own action."
-  (dolist (name '("*Warnings*" "*Backtrace*" "*quickrun*" "*Flycheck errors*"))
-    (save-window-excursion
-      (delete-other-windows)
-      (let ((buf (edmacs-windows-test--fresh-named-buffer name)))
-        (unwind-protect
-            (let ((win (display-buffer buf '(display-buffer-same-window))))
-              (should (eq (window-parameter win 'window-side) 'right))
-              (should (equal (window-parameter win 'window-slot) -1)))
-          (kill-buffer buf)))))
-  ;; A name that reaches slot -1 only through the base action loses to a
-  ;; caller-supplied ACTION -- which is why deleting its entry was safe
-  ;; only after checking that its producer supplies none.
-  (save-window-excursion
-    (delete-other-windows)
-    (let ((buf (edmacs-windows-test--fresh-named-buffer "*Help*")))
-      (unwind-protect
-          (let ((win (display-buffer buf '(display-buffer-same-window))))
-            (should-not (window-parameter win 'window-side)))
-        (kill-buffer buf)))))
 
 ;; ============================================================================
 ;; Phase 2 AC3 -- window-sides-slots is claimed by edge name, by one writer
@@ -1820,8 +1858,12 @@ restored, which is where the parameter loss actually bit."
    (edmacs-windows-test--fresh-named-buffer "ewt-rt-sidebar")
    '((side . left) (slot . 0)
      (window-parameters . ((no-other-window . t) (no-delete-other-windows . t)))))
-  (display-buffer (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
-  (display-buffer (edmacs-windows-test--fresh-named-buffer "*Embark Collect Live*"))
+  ;; Real stack panes: the subject is whether their parameters survive the
+  ;; round trip, so they must be built as panes rather than sent to main.
+  (edmacs-windows-test--stack-popup
+   (edmacs-windows-test--fresh-named-buffer "*Warnings*") -3)
+  (edmacs-windows-test--stack-popup
+   (edmacs-windows-test--fresh-named-buffer "*Embark Collect Live*") -1)
   (let ((state (window-state-get (frame-root-window) t)))
     (delete-other-windows)
     (window-state-put state (frame-root-window) 'safe)
@@ -1848,7 +1890,6 @@ restored, which is where the parameter loss actually bit."
             (should (eq (window-parameter popup 'window-side) 'right))
             (should (equal (window-parameter popup 'window-slot) -1))
             (should (window-parameter popup 'edmacs-stack-popup))
-            (should (eq (window-parameter popup 'mode-line-format) 'none))
             (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
                               (window-list nil 'no-minibuf)))))
       (dolist (name '("ewt-rt-sidebar" "*Embark Collect Live*"))
@@ -2108,14 +2149,15 @@ frame) because `display-buffer-in-side-window' always succeeds."
   (length (seq-filter (lambda (w) (eq (window-parameter w 'window-side) 'right))
                       (window-list nil 'no-minibuf))))
 
-(ert-deftest edmacs-windows-test-display-buffer-on-healthy-frame-still-stacks ()
+(ert-deftest edmacs-windows-test-display-buffer-on-healthy-frame-uses-main ()
   "The recover action must be invisible on a frame that has a main window."
   (save-window-excursion
     (delete-other-windows)
+    (edmacs-window-set-main (selected-window))
     (let ((buf (generate-new-buffer "ewt-routed")))
       (unwind-protect
           (let ((win (display-buffer buf '(nil (inhibit-same-window . t)))))
-            (should (eq (window-parameter win 'window-side) 'right)))
+            (should (eq win (edmacs-main-window))))
         (kill-buffer buf)))))
 
 (ert-deftest edmacs-windows-test-sweep-stale-panes-repairs-a-wedged-frame ()

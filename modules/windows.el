@@ -7,16 +7,21 @@
 ;; looks a window up by parameter first and only falls back to designating
 ;; the top-left non-side window when nothing in the frame claims it yet.
 ;;
-;; `display-buffer-base-action' makes the stack the default destination for
-;; any `display-buffer' call that would otherwise pop up a window -- dwm's
-;; rule that the window manager, not the program, decides placement.
+;; ONE placement rule, with no exceptions: every buffer takes MAIN, and
+;; whatever MAIN was showing is pushed onto the top of the stack. An agent
+;; pane, `magit-status', a vterm, the CIDER REPL, `*Warnings*', dired and an
+;; ordinary file all land in the same place, so "where did that go?" has one
+;; answer rather than one per buffer class. `switch-to-buffer' obeys it too.
 ;;
-;; `edmacs-windows-place' is the single declaration point for everything
-;; that must NOT take that default: the five roles are `main' (reuse the
-;; center), `stack', `stack-fixed' (a slot of its own), `ordinary' (never
-;; managed into the stack at all) and `bottom'. `modules/vterm.el',
-;; `modules/git.el' and `modules/languages/clojure.el' declare through it
-;; too, and a declaration that merely restates the default is rejected.
+;; The stack is capped by `edmacs-stack-max-windows' (nil for no limit):
+;; each displacement takes a slot of its own, so without a bound the column
+;; grows once per buffer switch until every pane is a single line. A push
+;; past the cap closes the BOTTOM pane -- the least recently displaced --
+;; and never kills its buffer.
+;;
+;; `edmacs-windows-place' survives as a mechanism but nothing declares
+;; through it. A placement would reintroduce exactly the per-class
+;; unpredictability the uniform rule removed.
 ;;
 ;; `window-sides-slots' has one writer, `edmacs-windows-claim-side': edges
 ;; are claimed by name, a second claimant signals, and this module claims
@@ -477,6 +482,33 @@ Declaration order is precedence order -- the first matching entry wins."
 ;; ordinary file all land in the same place, so "where did that go?" has one
 ;; answer rather than one per buffer class.
 
+(defcustom edmacs-stack-max-windows 3
+  "How many windows the right-hand stack may hold, or nil for no limit.
+Each displaced buffer takes a slot of its own, so without a cap the
+column grows once per buffer switch and every pane shrinks toward one
+line -- unusable, and it destroys the predictability the uniform rule
+exists for. When a push would exceed this, the BOTTOM pane is closed:
+slots run more-negative-upward, so the bottom is the largest slot, which
+is the least recently displaced buffer. Closing a pane never kills its
+buffer; it just stops showing it."
+  :type '(choice (const :tag "No limit" nil) integer)
+  :group 'windows)
+
+(defun edmacs-stack--evict-to-cap ()
+  "Close bottom stack panes until `edmacs-stack-max-windows' is satisfied.
+Returns the buffers whose panes were closed, oldest first."
+  (let (evicted)
+    (when edmacs-stack-max-windows
+      (let ((windows (edmacs-stack-windows)))
+        (while (> (length windows) edmacs-stack-max-windows)
+          ;; `edmacs-stack-windows' sorts ascending by slot, so the LAST
+          ;; entry has the largest slot: the bottom of the column.
+          (let ((victim (car (last windows))))
+            (push (window-buffer victim) evicted)
+            (delete-window victim)
+            (setq windows (edmacs-stack-windows))))))
+    (nreverse evicted)))
+
 (defun edmacs-windows--push-main-to-stack (main)
   "Push MAIN's current buffer onto the top of the right-hand stack.
 Allocates a fresh slot rather than reusing the shared popup slot, so a
@@ -486,8 +518,9 @@ Slots run negative for the right column, and more negative is higher, so
 `edmacs-stack--allocate-pin-slot's descending counter is itself the push."
   (let ((buf (window-buffer main)))
     (when (buffer-live-p buf)
-      (display-buffer-in-side-window
-       buf (cdr (edmacs-stack--popup-alist (edmacs-stack--allocate-pin-slot)))))))
+      (prog1 (display-buffer-in-side-window
+              buf (cdr (edmacs-stack--popup-alist (edmacs-stack--allocate-pin-slot))))
+        (edmacs-stack--evict-to-cap)))))
 
 (defun edmacs-windows--display-in-main (buffer alist)
   "Display BUFFER in `edmacs-main-window', displacing what was there.
