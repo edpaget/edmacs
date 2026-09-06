@@ -146,6 +146,73 @@ with a real shell attached, per the phase's explicit requirement."
                            (directory-file-name default-directory)))
                          rendered))))
           (when (process-live-p proc) (delete-process proc))
-          (kill-buffer buf))))))
+          (kill-buffer buf))))
+
+    ;; ==========================================================================
+    ;; Icon-face regression -- edmacs-modeline--restore-icon-face
+    ;; ==========================================================================
+    ;; A `nerd-icons' glyph is a single character whose 'face carries the
+    ;; patched PUA font's family and a height correction, both required for
+    ;; the codepoint to render as the intended glyph rather than a box.
+    ;; `nano-modeline-buffer-status'/`edmacs-modeline-fixed-status' both
+    ;; finish by `propertize'-ing their whole padded span with ONE uniform
+    ;; badge face, which -- unguarded -- replaces (not merges with) that
+    ;; per-character face. These tests run the REAL nano-modeline
+    ;; constructors (loaded above), not a stub that only captures the
+    ;; STATUS argument, so they exercise the exact `propertize' call where
+    ;; the clobber would happen. `nerd-icons' itself is not loaded (it is
+    ;; not part of this file's `straight/build' preload); `provide'-ing
+    ;; the feature and defining its two entry points directly, rather than
+    ;; `cl-letf'-stubbing them, is enough to satisfy
+    ;; `edmacs-modeline--mode-icon'/`--agent-icon's own `featurep'/`fboundp'
+    ;; guards without building a native-comp subr trampoline for `featurep'
+    ;; itself (see the guard note in modules/ui-test.el).
+
+    (provide 'nerd-icons)
+
+    (defun nerd-icons-icon-for-mode (_mode)
+      "Stand-in for the real function: same shape, a fixed family/height."
+      (propertize "" 'face '(:family "Symbols Nerd Font Mono" :height 1.2)
+                  'display '(raise 0.0)))
+
+    (defun nerd-icons-mdicon (_name)
+      "Stand-in for the real function: same shape, a fixed family/height."
+      (propertize "" 'face '(:family "Material Design Icons" :height 1.1)
+                  'display '(raise 0.0)))
+
+    (defun edmacs-ui-live-test--face-list-at (string pos)
+      "The face(s) at POS in STRING, always as a list.
+`get-text-property' returns either one face spec or a list of them
+depending on whether more than one was merged in via
+`add-face-text-property' -- normalize both shapes so callers can
+`member' against either case uniformly."
+      (let ((face (get-text-property pos 'face string)))
+        (if (and (consp face) (not (keywordp (car face)))) face (list face))))
+
+    (ert-deftest edmacs-ui-live-test-buffer-status-icon-keeps-its-own-face ()
+      "The mode icon's own family/height face survives
+`edmacs-modeline-buffer-status's real (unstubbed) badge construction,
+alongside -- not instead of -- the badge's own read-write face."
+      (let ((edmacs-modeline-force-text-glyphs nil))
+        (with-temp-buffer
+          (setq buffer-read-only nil)
+          (set-buffer-modified-p nil)
+          (let* ((result (edmacs-modeline-buffer-status))
+                 (faces (edmacs-ui-live-test--face-list-at result 1)))
+            (should (stringp result))
+            (should (member '(:family "Symbols Nerd Font Mono" :height 1.2) faces))
+            (should (member (nano-modeline-face 'status-RW) faces))))))
+
+    (ert-deftest edmacs-ui-live-test-ghostel-status-icon-keeps-its-own-face ()
+      "The claude-term robot glyph's own family/height face survives
+`edmacs-modeline-ghostel-status's real (unstubbed) badge construction."
+      (let ((edmacs-modeline-force-text-glyphs nil))
+        (with-temp-buffer
+          (setq-local claude-term-mode t)
+          (let* ((result (edmacs-modeline-ghostel-status))
+                 (faces (edmacs-ui-live-test--face-list-at result 1)))
+            (should (stringp result))
+            (should (member '(:family "Material Design Icons" :height 1.1) faces))
+            (should (member (nano-modeline-face 'status-RO) faces))))))))
 
 ;;; ui-live-test.el ends here

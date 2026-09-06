@@ -307,6 +307,26 @@ text rather than breaking the modeline."
              (and (stringp icon) icon))
          (error nil))))
 
+(defun edmacs-modeline--restore-icon-face (result icon)
+  "Re-merge ICON's own face onto its span inside RESULT, in place.
+`nano-modeline-buffer-status' and `edmacs-modeline-fixed-status' both
+build RESULT as a single space (top pad), the STATUS string, then a
+single space (bottom pad), and `propertize' the whole span with one
+uniform badge face -- which REPLACES, rather than merges with, whatever
+face ICON's own characters already carried. A `nerd-icons' glyph's face
+is not decoration: it names the patched PUA font family and a height
+correction for that font's metrics, both required for the private-use
+codepoint to render as the intended glyph instead of a box. Losing them
+degrades the icon silently, so `add-face-text-property' -- which
+composes onto the existing face list instead of overwriting it -- puts
+them back over the exact span ICON occupies (index 1, right after the
+1-char top pad, per the layout both callers share). No-op when ICON is
+nil (nothing to restore) or carries no face of its own."
+  (let ((icon-face (and icon (get-text-property 0 'face icon))))
+    (when (and icon-face (> (length result) (length icon)))
+      (add-face-text-property 1 (+ 1 (length icon)) icon-face nil result)))
+  result)
+
 (defun edmacs-modeline-buffer-status ()
   "`nano-modeline-buffer-status', with a major-mode icon in place of text.
 Read-only vs. read-write is still encoded exactly as before, via the
@@ -318,13 +338,17 @@ when the buffer is actually writable: a read-only+modified buffer
 keeps the plain icon with no marker, matching
 `nano-modeline-buffer-status's own read-only-wins precedence. When no
 icon is available, passes nil through unchanged, i.e. exactly today's
-plain RO/**/RW text."
-  (let ((icon (edmacs-modeline--mode-icon)))
-    (nano-modeline-buffer-status
-     (when icon
-       (if (and (buffer-modified-p) (not buffer-read-only))
-           (concat icon edmacs-modeline-modified-marker)
-         icon)))))
+plain RO/**/RW text. The icon's own font-family/height face, which the
+badge's uniform `propertize' would otherwise clobber, is restored by
+`edmacs-modeline--restore-icon-face' afterwards."
+  (let* ((icon (edmacs-modeline--mode-icon))
+         (status (when icon
+                   (if (and (buffer-modified-p) (not buffer-read-only))
+                       (concat icon edmacs-modeline-modified-marker)
+                     icon))))
+    (edmacs-modeline--restore-icon-face
+     (nano-modeline-buffer-status status)
+     icon)))
 
 (defun edmacs-modeline-fixed-status (status &optional face)
   "Nano-styled STATUS box in FACE, independent of buffer state.
@@ -354,11 +378,18 @@ Same availability guard as `edmacs-modeline--mode-icon'."
 plain \">_\" for everything else. `claude-term-mode' is the buffer-local
 marker minor mode claude-term.el already turns on for exactly its own
 panes; read the same way `modules/sessions.el' already reads it
-cross-module, with no load-order dependency."
-  (edmacs-modeline-fixed-status
-   (if (bound-and-true-p claude-term-mode)
-       (or (edmacs-modeline--agent-icon) "AI")
-     ">_")))
+cross-module, with no load-order dependency. Restores the robot icon's
+own face the same way `edmacs-modeline-buffer-status' does, so its font
+family/height survive `edmacs-modeline-fixed-status's uniform badge
+`propertize'."
+  (let* ((agent-icon (and (bound-and-true-p claude-term-mode)
+                           (edmacs-modeline--agent-icon)))
+         (status (cond (agent-icon agent-icon)
+                       ((bound-and-true-p claude-term-mode) "AI")
+                       (t ">_"))))
+    (edmacs-modeline--restore-icon-face
+     (edmacs-modeline-fixed-status status)
+     agent-icon)))
 
 (defun edmacs-modeline-prog-mode (&optional default)
   "Nano line for prog mode, with filtered name and diagnostics.
