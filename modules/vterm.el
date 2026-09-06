@@ -75,13 +75,8 @@
   (setq vterm-toggle-fullscreen-p nil)
   ;; Stays at the bottom, not the right stack: a transient scratch terminal
   ;; toggled in and out, not a dismiss-to-main popup pane.
-  (edmacs-windows-place 'vterm
-    :match (lambda (buffer-or-name _)
-             (let ((buffer (get-buffer buffer-or-name)))
-               (with-current-buffer buffer
-                 (or (equal major-mode 'vterm-mode)
-                     (string-prefix-p vterm-buffer-name (buffer-name buffer))))))
-    :as 'bottom :height 0.3)
+  ;; No placement declaration: a vterm buffer is displayed exactly like every
+  ;; other buffer, by `edmacs-windows--display-in-main'.
 
   (general-define-key
    :states 'normal

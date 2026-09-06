@@ -24,9 +24,8 @@
 
 ;; magit hands its log buffers an explicit `(display-buffer-same-window)'
 ;; ACTION, which only a `display-buffer-alist' entry outranks.
-(edmacs-windows-place 'magit-diff-log
-  :match "\\`\\*magit-\\(diff\\|log\\): "
-  :as 'stack :override t)
+;; No placement declaration: a magit diff/log buffer is displayed exactly like
+;; every other buffer, by `edmacs-windows--display-in-main'.
 
 ;; Outside use-package so bindings exist before magit autoloads.
 (general-define-key

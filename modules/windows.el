@@ -468,28 +468,72 @@ Declaration order is precedence order -- the first matching entry wins."
     name))
 
 ;; ============================================================================
-;; Catch-all: display-buffer fallback (dwm default placement)
+;; The one placement rule
 ;; ============================================================================
 
-;; The fallback chain for any unrouted `display-buffer' call: reuse a window
-;; already showing the buffer, recover a center window when the frame has no
-;; non-side window left, else create it in the shared stack slot.
-;; `display-buffer-pop-up-window' never appears here, so an ordinary popup
-;; can no longer split the center. The recover action is also what keeps
-;; Emacs's own `display-buffer-fallback-action' out of reach: a healthy
-;; frame never gets past `display-buffer-in-side-window', and a mainless one
-;; used to fall through as far as `display-buffer-pop-up-frame'.
+;; Every buffer is displayed the same way, with no per-buffer exceptions:
+;; it takes MAIN, and whatever MAIN was showing is pushed to the top of the
+;; right-hand stack. An agent pane, `magit-status', a vterm, `*Help*' and an
+;; ordinary file all land in the same place, so "where did that go?" has one
+;; answer rather than one per buffer class.
+
+(defun edmacs-windows--push-main-to-stack (main)
+  "Push MAIN's current buffer onto the top of the right-hand stack.
+Allocates a fresh slot rather than reusing the shared popup slot, so a
+displaced buffer never evicts the one displaced before it -- the stack
+grows downward from the top, which is what makes the order meaningful.
+Slots run negative for the right column, and more negative is higher, so
+`edmacs-stack--allocate-pin-slot's descending counter is itself the push."
+  (let ((buf (window-buffer main)))
+    (when (buffer-live-p buf)
+      (display-buffer-in-side-window
+       buf (cdr (edmacs-stack--popup-alist (edmacs-stack--allocate-pin-slot)))))))
+
+(defun edmacs-windows--display-in-main (buffer alist)
+  "Display BUFFER in `edmacs-main-window', displacing what was there.
+The single destination for every `display-buffer' call. Three cases, in
+order:
+
+  - BUFFER already IS main's buffer: reuse main, push nothing (so
+    redisplaying the current buffer is not a way to churn the stack).
+  - BUFFER is already on this frame in another window: swap it with
+    main rather than pushing, so it is never shown twice at once.
+  - Otherwise: push main's buffer to the top of the stack, then show
+    BUFFER in main.
+
+Returns nil when the frame has no usable main window, letting the base
+action fall through to its recover and side-window entries."
+  (let ((main (edmacs-main-window)))
+    (when (and main (not (window-dedicated-p main)))
+      (let ((existing (get-buffer-window buffer (window-frame main))))
+        (cond
+         ((eq (window-buffer main) buffer)
+          (window--display-buffer buffer main 'reuse alist))
+         ((and existing (not (eq existing main)))
+          (edmacs--swap-window-buffers main existing)
+          ;; `window-swap-states' carries non-side parameters across, so
+          ;; re-stamp or `edmacs-main' migrates off the geometric main slot.
+          (edmacs-window-set-main main)
+          main)
+         (t
+          (edmacs-windows--push-main-to-stack main)
+          (window--display-buffer buffer main 'reuse alist)))))))
+
+;; The recover entry keeps a frame with no main window left from falling
+;; through to Emacs's own `display-buffer-fallback-action' (as far as
+;; `display-buffer-pop-up-frame'); the side-window entry is the last resort
+;; when even recovery fails.
 (setq display-buffer-base-action
-      (cons (list #'display-buffer-reuse-window
+      (cons (list #'edmacs-windows--display-in-main
                   #'edmacs-windows--display-buffer-in-recovered-main
                   #'display-buffer-in-side-window)
             (cdr (edmacs-stack--popup-alist))))
 
-;; Flipping this to t would route `switch-to-buffer' through
-;; `display-buffer-base-action' above, moving main's buffer into the stack
-;; instead of swapping it in place -- pinned at the Emacs default so that
-;; can't happen by drift.
-(setq switch-to-buffer-obey-display-actions nil)
+;; Routes `switch-to-buffer' through the base action above, so switching to a
+;; buffer places it exactly like opening one. Emacs defaults this to nil,
+;; which swaps main's buffer in place and drops the displaced one out of
+;; view entirely.
+(setq switch-to-buffer-obey-display-actions t)
 
 ;; Read only by `switch-to-buffer's interactive spec. Left nil, `:b' and
 ;; `SPC b b' hard-error in the sidebar and in every stack pane, while the
@@ -499,47 +543,13 @@ Declaration order is precedence order -- the first matching entry wins."
 (setq switch-to-buffer-in-dedicated-window 'pop)
 
 ;; ============================================================================
-;; This module's placements (most-specific-first)
+;; No per-buffer placements
 ;; ============================================================================
-
-;; Agent panes are the one class that must stay out of the stack entirely,
-;; so they are declared ahead of everything else.
-(edmacs-windows-place 'agent-pane
-  :match (lambda (buffer _action)
-           (let ((buffer (get-buffer buffer)))
-             (and buffer (funcall edmacs-windows-ordinary-buffer-p buffer))))
-  :as 'ordinary)
-
-;; Embark's live/completions buffers keep the `(mode-line-format . none)'
-;; window-parameter completion.el's own now-removed entry used to set.
-(edmacs-windows-place 'embark-collect
-  :match "\\`\\*Embark Collect \\(Live\\|Completions\\)\\*"
-  :as 'stack
-  :params '((mode-line-format . none)))
-
-;; A fixed slot of their own so a generic popup at slot -1 can never evict
-;; them. cider's REPL claims the same slot from languages/clojure.el.
-(edmacs-windows-place 'inferior-shells
-  :match "\\`\\*e?shell\\*\\'"
-  :as 'stack-fixed :slot -2)
-
-;; The four popup classes below resolve to the default destination, and are
-;; declared only for their `:override' effect -- each producer passes its
-;; own ACTION that a `display-buffer-alist' entry must outrank.
-(edmacs-windows-place 'warnings :match "\\`\\*Warnings\\*\\'" :as 'stack :override t)
-(edmacs-windows-place 'backtrace :match "\\`\\*Backtrace\\*\\'" :as 'stack :override t)
-(edmacs-windows-place 'quickrun :match "\\`\\*quickrun\\*\\'" :as 'stack :override t)
-(edmacs-windows-place 'flycheck-errors
-  :match "\\`\\*Flycheck errors\\*\\'" :as 'stack :override t)
-
-;; Declared last: these match on `this-command' or major mode rather than on
-;; a buffer name, so a more specific name-based placement above must win.
-(edmacs-windows-place 'center-reuse
-  :match #'edmacs-windows--center-reuse-p
-  :as 'main)
-
-(edmacs-windows-place 'dired :match '(major-mode . dired-mode) :as 'main)
-(edmacs-windows-place 'magit-status :match '(major-mode . magit-status-mode) :as 'main)
+;; Deliberately empty. Every buffer -- agent panes, `magit-status', vterm,
+;; `*Warnings*', dired, an ordinary file -- goes through
+;; `edmacs-windows--display-in-main' above. `edmacs-windows-place' remains
+;; as the mechanism, but nothing declares through it: a placement here would
+;; reintroduce exactly the per-class unpredictability it was removed for.
 
 (defun edmacs-stack-windows ()
   "Return the selected frame's stack windows: right side windows, by slot."

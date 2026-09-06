@@ -47,9 +47,8 @@
         cider-prompt-for-symbol nil)
 
   ;; A fixed stack slot so a generic popup at slot -1 cannot evict the REPL.
-  (edmacs-windows-place 'cider-repl
-    :match "\\`\\*cider-repl "
-    :as 'stack-fixed :slot -2)
+  ;; No placement declaration: the CIDER REPL is displayed exactly like every
+  ;; other buffer, by `edmacs-windows--display-in-main'.
 
   ;; CIDER keybindings with local leader
   (general-define-key
