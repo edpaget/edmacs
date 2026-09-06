@@ -318,26 +318,91 @@ open would stamp its repo onto a frame that can display nothing."
       (should (eq (edmacs-frames--make-frame) 'tty-frame)))
     (should (equal calls '(bare)))))
 
-(ert-deftest edmacs-frames-test-make-frame-falls-back-when-gui-maker-is-absent ()
+(ert-deftest edmacs-frames-test-make-frame-is-nil-when-gui-maker-is-absent ()
   "frames.el must stay loadable without sessions.el -- this very suite
-loads it that way -- so the daemon branch is `fboundp'-guarded."
+loads it that way -- so the daemon branch is `fboundp'-guarded. With no
+maker there is nothing that can build a frame able to display, and a
+bare `make-frame' would build the tty placeholder instead, so the
+guard yields nil rather than falling through to it."
   (let ((saved (and (fboundp 'edmacs-sessions--make-gui-frame)
-                    (symbol-function 'edmacs-sessions--make-gui-frame))))
+                    (symbol-function 'edmacs-sessions--make-gui-frame)))
+        (calls nil))
     (unwind-protect
         (progn
           (fmakunbound 'edmacs-sessions--make-gui-frame)
           (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
-                    ((symbol-function 'make-frame) (lambda (&rest _) 'tty-frame)))
-            (should (eq (edmacs-frames--make-frame) 'tty-frame))))
-      (when saved (fset 'edmacs-sessions--make-gui-frame saved)))))
+                    ((symbol-function 'make-frame)
+                     (lambda (&rest _) (push 'bare calls) 'tty-frame)))
+            (should-not (edmacs-frames--make-frame))))
+      (when saved (fset 'edmacs-sessions--make-gui-frame saved)))
+    ;; Not merely nil -- the placeholder was never built in the first place.
+    (should-not calls)))
 
-(ert-deftest edmacs-frames-test-make-frame-falls-back-when-gui-maker-fails ()
+(ert-deftest edmacs-frames-test-make-frame-is-nil-when-gui-maker-fails ()
   "`edmacs-sessions--make-gui-frame' warns and returns nil when the window
-system refuses the frame; a repo frame is still better than none."
-  (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
-            ((symbol-function 'edmacs-sessions--make-gui-frame) (lambda () nil))
-            ((symbol-function 'make-frame) (lambda (&rest _) 'tty-frame)))
-    (should (eq (edmacs-frames--make-frame) 'tty-frame))))
+system refuses the frame. There is no fallback: a tty placeholder is the
+one frame spare adoption already refuses, and `edmacs-frames-open' would
+drive dired, the sidebar and input focus onto it."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
+              ((symbol-function 'edmacs-sessions--make-gui-frame) (lambda () nil))
+              ((symbol-function 'make-frame)
+               (lambda (&rest _) (push 'bare calls) 'tty-frame)))
+      (should-not (edmacs-frames--make-frame)))
+    (should-not calls)))
+
+(ert-deftest edmacs-frames-test-open-warns-and-stamps-nothing-with-no-frame ()
+  "When no frame can be made, `edmacs-frames-open' returns nil and warns.
+The regression this covers: the old `make-frame' fallback handed back a
+tty placeholder, and every step below ran against a frame that can
+display nothing -- `select-frame-set-input-focus' onto it is what left
+the daemon wedged. Warning rather than signalling matters just as much:
+an error reaching a frameless daemon's top level exits it 255."
+  (let ((warnings nil) (touched nil))
+    (cl-letf (((symbol-function 'edmacs-frames--repo-of) (lambda (_dir) "/repo/.git"))
+              ((symbol-function 'edmacs-frames-for-repo) (lambda (_common) nil))
+              ((symbol-function 'edmacs-frames--spare-frame) (lambda () nil))
+              ((symbol-function 'edmacs-frames--make-frame) (lambda () nil))
+              ((symbol-function 'edmacs-git-common-dir-main-worktree)
+               (lambda (_common) "/repo/"))
+              ((symbol-function 'edmacs-git-common-dir-repo-name)
+               (lambda (_common) "repo"))
+              ((symbol-function 'display-warning)
+               (lambda (_type message &rest _) (push message warnings) nil))
+              ((symbol-function 'set-frame-parameter)
+               (lambda (&rest _) (push 'stamped touched)))
+              ((symbol-function 'edmacs-frames--ensure-repo-tracking)
+               (lambda (&rest _) (push 'tracked touched)))
+              ((symbol-function 'edmacs-frames--visit-root)
+               (lambda (&rest _) (push 'visited touched)))
+              ((symbol-function 'edmacs-sidebar-show)
+               (lambda (&rest _) (push 'sidebar touched)))
+              ((symbol-function 'select-frame-set-input-focus)
+               (lambda (&rest _) (push 'focused touched))))
+      (should-not (edmacs-frames-open "/repo/")))
+    (should (= 1 (length warnings)))
+    (should (string-match-p "repo" (car warnings)))
+    ;; Nothing was half-built, so the next call retries from a clean slate.
+    (should-not touched)))
+
+(ert-deftest edmacs-frames-test-open-worktree-tab-nil-frame-touches-no-tabs ()
+  "`edmacs-frames-open-worktree-tab' must survive `edmacs-frames-open'
+returning nil. It feeds that value straight to `with-selected-frame',
+which signals on nil -- and on a frameless daemon that signal is the
+exit-255 path, so guarding only `edmacs-frames-open' itself would move
+the crash rather than remove it."
+  (let ((touched nil))
+    (cl-letf (((symbol-function 'edmacs-frames-open) (lambda (_dir) nil))
+              ((symbol-function 'edmacs-frames--find-tab-by-root)
+               (lambda (&rest _) (push 'searched touched) nil))
+              ((symbol-function 'tab-bar-new-tab)
+               (lambda (&rest _) (push 'new-tab touched)))
+              ((symbol-function 'edmacs-frames--visit-root)
+               (lambda (&rest _) (push 'visited touched)))
+              ((symbol-function 'tab-bar-rename-tab)
+               (lambda (&rest _) (push 'renamed touched))))
+      (should-not (edmacs-frames-open-worktree-tab "/repo/")))
+    (should-not touched)))
 
 ;; ============================================================================
 ;; edmacs-frames-for-repo -- healthy first, duplicates reconciled

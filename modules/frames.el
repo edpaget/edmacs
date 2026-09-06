@@ -233,15 +233,18 @@ first spare every `emacsclient -e'-driven open finds and adopts."
             (frame-list)))
 
 (defun edmacs-frames--make-frame ()
-  "Create a frame fit to hold a repo.
-Under the daemon a bare `make-frame' yields another tty placeholder --
-the daemon's own `window-system' is nil -- which, now that such a frame
-is never adopted as a spare, is the only way an `emacsclient -e'-driven
-open could still build a repo frame that can show nothing."
-  (or (and (daemonp)
-           (fboundp 'edmacs-sessions--make-gui-frame)
+  "Create a frame fit to hold a repo, or nil when none can be made.
+Under the daemon a bare `make-frame' names no window system and so
+yields another tty placeholder, which is why the frame comes from
+sessions.el's GUI maker instead. When that maker cannot produce one
+there is no safe fallback left: the placeholder is exactly the frame
+spare adoption already refuses, and handing it to `edmacs-frames-open'
+to drive dired, the sidebar and input focus onto is what turns a
+refused frame into a wedged daemon."
+  (if (daemonp)
+      (and (fboundp 'edmacs-sessions--make-gui-frame)
            (edmacs-sessions--make-gui-frame))
-      (make-frame)))
+    (make-frame)))
 
 ;; ============================================================================
 ;; Opening a repo's frame
@@ -293,7 +296,7 @@ then persists the lot, so the duplicate would outlive the session."
   "Raise the frame owning DIR's repo, creating one if none exists yet.
 DIR need not be a repo's main worktree -- any worktree, or a file
 inside one, resolves to the same repo via `edmacs-frames--repo-of'.
-Returns the frame."
+Returns the frame, or nil when no frame could be created for it."
   (let* ((common (edmacs-frames--repo-of dir))
          (existing (and common (edmacs-frames-for-repo common))))
     (if existing
@@ -309,21 +312,31 @@ Returns the frame."
              (label (if common (edmacs-git-common-dir-repo-name common)
                       (file-name-nondirectory (directory-file-name main))))
              (frame (or (edmacs-frames--spare-frame) (edmacs-frames--make-frame))))
-        (set-frame-parameter frame 'edmacs-repo common)
-        (set-frame-parameter frame 'name label)
-        (when common
-          ;; Before the sidebar's first redraw, so `edmacs-worktrees-for-repo'
-          ;; never has to render off a cold cache for this repo's own frame.
-          (edmacs-frames--ensure-repo-tracking common))
-        (edmacs-frames--without-display-override
-          (with-selected-frame frame
-            (delete-other-windows)
-            (edmacs-frames--visit-root main)
-            (edmacs-frames--stamp-current-tab-root (file-truename main))
-            (tab-bar-rename-tab label)
-            (edmacs-sidebar-show frame)))
-        (select-frame-set-input-focus frame)
-        frame))))
+        (if (not frame)
+            ;; Warn rather than signal: an error reaching a frameless
+            ;; daemon's top level exits it 255 (see core.el). Nothing has
+            ;; been stamped yet, so the next call retries cleanly.
+            (progn
+              (display-warning 'edmacs-frames
+                               (format "could not open %s: no frame available"
+                                       label)
+                               :warning)
+              nil)
+          (set-frame-parameter frame 'edmacs-repo common)
+          (set-frame-parameter frame 'name label)
+          (when common
+            ;; Before the sidebar's first redraw, so `edmacs-worktrees-for-repo'
+            ;; never has to render off a cold cache for this repo's own frame.
+            (edmacs-frames--ensure-repo-tracking common))
+          (edmacs-frames--without-display-override
+            (with-selected-frame frame
+              (delete-other-windows)
+              (edmacs-frames--visit-root main)
+              (edmacs-frames--stamp-current-tab-root (file-truename main))
+              (tab-bar-rename-tab label)
+              (edmacs-sidebar-show frame)))
+          (select-frame-set-input-focus frame)
+          frame)))))
 
 (defun edmacs-frames-open-project ()
   "`project-switch-commands' entry point: open the chosen project's repo frame.
@@ -658,6 +671,7 @@ prompt that reaches them. With PREFIX, fall back to
 
 (defun edmacs-frames-open-worktree-tab (dir)
   "Open or raise a tab for DIR's worktree, in DIR's repo's frame.
+Returns that frame, or nil when none could be created for DIR's repo.
 Never touches the calling frame: `edmacs-frames-open' raises or creates
 DIR's own repo frame first, and the tab search/creation below happens
 entirely inside that frame. A tab already showing DIR is selected, not
@@ -667,18 +681,22 @@ the safety net covering tabs opened through any other route."
   (interactive (list (edmacs-frames--read-worktree current-prefix-arg (selected-frame))))
   (let* ((root (file-truename dir))
          (frame (edmacs-frames-open dir)))
-    (edmacs-frames--without-display-override
-      (with-selected-frame frame
-        (let ((tab (edmacs-frames--find-tab-by-root root frame)))
-          (if tab
-              (tab-bar-select-tab (1+ (tab-bar--tab-index tab (tab-bar-tabs frame) frame)))
-            ;; The post-open hook stamps ROOT from this binding, so
-            ;; reconciliation sees the INTENDED root and folds a same-root
-            ;; tab the lookup above missed instead of duplicating it.
-            (let ((edmacs-frames--pending-tab-root root))
-              (tab-bar-new-tab))
-            (edmacs-frames--visit-root dir)
-            (tab-bar-rename-tab (file-name-nondirectory (directory-file-name dir)))))))
+    ;; `edmacs-frames-open' returns nil (having warned) when no frame could
+    ;; be made for DIR's repo; `with-selected-frame' would signal on that,
+    ;; and on a frameless daemon that signal exits Emacs 255 (see core.el).
+    (when frame
+      (edmacs-frames--without-display-override
+        (with-selected-frame frame
+          (let ((tab (edmacs-frames--find-tab-by-root root frame)))
+            (if tab
+                (tab-bar-select-tab (1+ (tab-bar--tab-index tab (tab-bar-tabs frame) frame)))
+              ;; The post-open hook stamps ROOT from this binding, so
+              ;; reconciliation sees the INTENDED root and folds a same-root
+              ;; tab the lookup above missed instead of duplicating it.
+              (let ((edmacs-frames--pending-tab-root root))
+                (tab-bar-new-tab))
+              (edmacs-frames--visit-root dir)
+              (tab-bar-rename-tab (file-name-nondirectory (directory-file-name dir))))))))
     frame))
 
 (defun edmacs-frames--reconcile-tab-after-open (tab)
