@@ -2343,6 +2343,33 @@ membership is what puts one back."
                 (should-not (edmacs-sidebar--side-window frame))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
+    (ert-deftest edmacs-sidebar-test-buffer-remaps-every-surface-face ()
+      "The sidebar reads as one surface, so `default', `fringe' AND
+`header-line' are all remapped to `edmacs-sidebar-background-face'.
+Remapping `default' alone leaves the side fringes and the top strip
+painted in the frame's colour, framing the sidebar in the wrong shade --
+they are separate faces, not `default' inheritors. The window has no
+mode line (`mode-line-format' is `none'), so its bottom edge is ordinary
+buffer area already covered by the `default' entry."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (dolist (face '(default fringe header-line))
+          (should (equal (list face 'edmacs-sidebar-background-face)
+                          (assq face face-remapping-alist))))))
+
+    (ert-deftest edmacs-sidebar-test-face-remap-is-buffer-local-and-idempotent ()
+      "The remap is buffer-local (never touching another buffer's faces) and
+re-running the mode does not stack duplicate entries."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (edmacs-sidebar-mode)
+        (should (= 1 (cl-count 'default face-remapping-alist :key #'car-safe)))
+        (should (= 1 (cl-count 'fringe face-remapping-alist :key #'car-safe)))
+        (should (local-variable-p 'face-remapping-alist)))
+      ;; A fresh buffer is untouched.
+      (with-temp-buffer
+        (should-not (assq 'default face-remapping-alist))))
+
     (ert-deftest edmacs-sidebar-test-window-parameter-mode-line-format-is-none ()
       "The shown sidebar window's mode-line-format parameter is set to `none'
 to prevent it from inheriting the default mode-line format and displaying

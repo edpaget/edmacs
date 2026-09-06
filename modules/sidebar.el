@@ -328,11 +328,20 @@ leak into any other buffer."
   (when (fboundp 'evil-set-initial-state)
     (evil-set-initial-state 'edmacs-sidebar-mode 'motion))
   ;; Remap rather than set: `default' is frame-wide, and setting it here
-  ;; would repaint every window on the frame.
+  ;; would repaint every window on the frame. `fringe' and `header-line'
+  ;; need their own entries -- remapping `default' does not reach either,
+  ;; so the window's side edges and its top strip stayed the frame colour
+  ;; and framed the sidebar in the wrong shade. The window has no mode
+  ;; line (`mode-line-format' window-parameter is `none'), so its bottom
+  ;; is ordinary buffer area and the `default' entry already covers it.
   (setq-local face-remapping-alist
-              (cons '(default edmacs-sidebar-background-face)
-                    (remove '(default edmacs-sidebar-background-face)
-                            face-remapping-alist))))
+              (append '((default edmacs-sidebar-background-face)
+                        (fringe edmacs-sidebar-background-face)
+                        (header-line edmacs-sidebar-background-face))
+                      (seq-remove
+                       (lambda (entry)
+                         (memq (car-safe entry) '(default fringe header-line)))
+                       face-remapping-alist))))
 
 ;; Plain `define-key' on the mode's own local map is not enough by
 ;; itself: evil installs its state keymaps via `emulation-mode-map-alists',
