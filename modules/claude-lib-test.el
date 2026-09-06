@@ -286,6 +286,40 @@ what propagates: it is the one that actually explains the failure."
                      text))))
       (when (fboundp 'claude-lib-test-promoted-fn) (fmakunbound 'claude-lib-test-promoted-fn)))))
 
+(ert-deftest claude-lib-test-promote-eval-failure-does-not-wedge-later-promotions ()
+  "A form that passes every static gate but fails to expand must leave the
+library untouched, so an unrelated well-formed promotion still succeeds.
+Regression: the insert/eval/save sequence once ran unprotected, so a
+`cl-defun' whose arglist puts `&rest' before `&optional' -- legal to
+`read', rejected only at macroexpansion -- left the library buffer
+modified-but-unsaved. Every later `claude-lib-promote' in that Emacs then
+failed on `claude-lib--ensure-fresh-buffer's modified-buffer guard, which
+cannot distinguish a half-finished promotion from a human mid-edit."
+  (claude-lib-test--with-temp-library lib
+    (let ((before (with-temp-buffer (insert-file-contents lib) (buffer-string))))
+      (unwind-protect
+          (progn
+            (should-error
+             (claude-lib-promote
+              "(cl-defun claude-lib-test-bad-arglist (&rest r &optional o)\n  \"Bad arglist.\"\n  (list r o))"
+              "edmacs" "reproduce the unprotected promote sequence")
+             :type 'user-error)
+            ;; Nothing of the failed promotion reached disk...
+            (should (equal before
+                           (with-temp-buffer (insert-file-contents lib) (buffer-string))))
+            ;; ...nor was it defined...
+            (should-not (fboundp 'claude-lib-test-bad-arglist))
+            ;; ...and the library buffer is not left dirty, so this succeeds.
+            (should (eq 'claude-lib-test-after-bad
+                        (claude-lib-promote
+                         "(defun claude-lib-test-after-bad ()\n  \"Return t.\"\n  t)"
+                         "edmacs" "prove a later promotion is unaffected")))
+            (should (string-match-p "claude-lib-test-after-bad"
+                                    (with-temp-buffer (insert-file-contents lib)
+                                      (buffer-string)))))
+        (dolist (sym '(claude-lib-test-bad-arglist claude-lib-test-after-bad))
+          (when (fboundp sym) (fmakunbound sym)))))))
+
 (ert-deftest claude-lib-test-promote-rejects-missing-docstring ()
   (claude-lib-test--with-temp-library lib
     (should-error

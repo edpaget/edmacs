@@ -481,6 +481,17 @@ called this -- see `claude-lib-file'."
           (when (fboundp name)
             (user-error
              "claude-lib-promote: %s is already fboundp in this running Emacs" name))
+          ;; Macroexpand BEFORE touching the library: every gate above is
+          ;; static, so a form can pass them all and still signal at
+          ;; expansion time (a `cl-defun' whose arglist puts `&rest'
+          ;; before `&optional' is the cheap reproducer). Failing here
+          ;; means the common bad-form case never modifies the buffer at
+          ;; all, and never defines anything.
+          (condition-case err
+              (macroexpand-all form)
+            (error
+             (user-error "claude-lib-promote: %s does not expand: %s"
+                         name (error-message-string err))))
           (let ((buf (claude-lib--ensure-fresh-buffer claude-lib-file)))
             (with-current-buffer buf
               (when (claude-lib--name-defined-in-file-p name)
@@ -498,10 +509,24 @@ called this -- see `claude-lib-file'."
               (let ((provide-start (point)))
                 (skip-chars-backward "\n\t ")
                 (delete-region (point) provide-start))
-              (insert "\n\n" (claude-lib--provenance-comment destination problem)
-                      (string-trim-right source) "\n\n")
-              (eval form t)
-              (save-buffer))
+              ;; Everything from here on mutates the library buffer, so any
+              ;; failure must leave it exactly as found. `claude-lib--ensure-fresh-buffer'
+              ;; guarantees it was unmodified on entry, so reverting from disk
+              ;; is a complete restore -- and it is what keeps a failed
+              ;; promotion from wedging every LATER promotion behind that
+              ;; helper's own modified-buffer guard, which cannot tell a
+              ;; half-finished promotion from a human mid-edit.
+              (let ((done nil))
+                (unwind-protect
+                    (progn
+                      (insert "\n\n" (claude-lib--provenance-comment destination problem)
+                              (string-trim-right source) "\n\n")
+                      (eval form t)
+                      (save-buffer)
+                      (setq done t))
+                  (unless done
+                    (with-demoted-errors "claude-lib-promote: buffer restore failed: %S"
+                      (revert-buffer t t t))))))
             name))))))
 
 (provide 'claude-lib)
