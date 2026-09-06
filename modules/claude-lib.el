@@ -150,10 +150,19 @@ takes effect -- so a relative path for either one is never silently
 reinterpreted against ROOT instead.
 
 If a form signals, whatever OUTPUT-FILE content the forms before it
-produced is still written (from the `unwind-protect' cleanup below)
-before the error is left to propagate: emacsclient's own existing
-`*ERROR*: ...' text on stderr plus a non-zero exit is the whole error
-channel here, deliberately not duplicated with a second one."
+produced is still written before the error is left to propagate:
+emacsclient's own existing `*ERROR*: ...' text on stderr plus a
+non-zero exit is the whole error channel here, deliberately not
+duplicated with a second one. That write is best-effort when a form
+error is already in flight: a failure in
+`edmacs-claude-lib--write-output' itself (e.g. an oversized body)
+is swallowed rather than signaled, so it cannot replace the form's
+own error the way a plain `unwind-protect' cleanup error would --
+a later error signaled from a cleanup form supersedes whatever
+condition was already propagating, which would otherwise report the
+wrong problem (\"output too large\" instead of the form's real bug).
+Only when no form error occurred does a write-output failure surface
+as this call's error."
   (unless (file-directory-p root)
     (error "edmacs-claude-lib: ROOT is not a directory: %s" root))
   (let* ((form-file (expand-file-name form-file))
@@ -162,17 +171,24 @@ channel here, deliberately not duplicated with a second one."
          (capture-buffer (generate-new-buffer " *claude-lib-capture*"))
          (advice (edmacs-claude-lib--message-advice capture-buffer))
          (value nil)
+         (eval-error nil)
          (default-directory (file-name-as-directory (expand-file-name root))))
     (unwind-protect
         (progn
           (advice-add 'message :around advice)
           (let ((standard-output capture-buffer))
-            (unwind-protect
+            (condition-case err
                 (dolist (form forms)
                   (setq value (eval form t)))
-              (edmacs-claude-lib--write-output output-file capture-buffer value))))
+              (error (setq eval-error err)))
+            (condition-case write-err
+                (edmacs-claude-lib--write-output output-file capture-buffer value)
+              (error (unless eval-error
+                       (signal (car write-err) (cdr write-err)))))))
       (advice-remove 'message advice)
-      (kill-buffer capture-buffer))))
+      (kill-buffer capture-buffer))
+    (when eval-error
+      (signal (car eval-error) (cdr eval-error)))))
 
 (provide 'claude-lib)
 ;;; claude-lib.el ends here

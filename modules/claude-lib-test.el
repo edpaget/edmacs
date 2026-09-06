@@ -184,6 +184,17 @@ insert into that killed buffer and error -- it must not."
           (should (string-match-p "10" (error-message-string err)))))
       (should-not (file-exists-p output-file)))))
 
+(ert-deftest claude-lib-test-form-error-survives-oversized-write-output ()
+  "When the form errors AND the cleanup write-output also errors (oversized
+body), the form's own error -- not the write-output error -- must be
+what propagates: it is the one that actually explains the failure."
+  (claude-lib-test--with-form-file "(print \"before\")\n(error \"boom\")\n" form-file
+    (claude-lib-test--with-output-file output-file
+      (let ((edmacs-claude-lib-max-output-bytes 1))
+        (let ((err (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory))))
+          (should (string-match-p "boom" (error-message-string err)))
+          (should-not (string-match-p "exceeds" (error-message-string err))))))))
+
 (ert-deftest claude-lib-test-oversized-output-does-not-clobber-stale-file ()
   (claude-lib-test--with-form-file "(make-string 1000 ?x)\n" form-file
     (claude-lib-test--with-output-file output-file
