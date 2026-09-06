@@ -113,14 +113,15 @@ LANGUAGE should be the name without the .el extension."
 ;; tab-bar/desktop setup), and evil-config (its C-x chord registrar).
 (load-module "frames")
 ;; Standalone: no dependency on sidebar/frames yet (phase 6 wires the two
-;; together). `edmacs-agents-init' (splices the mode-line roll-up) is
-;; called here rather than at the module's own top level, so loading
-;; agents.el alone (every ERT run) has no side effects.
+;; together). Pure data + tabulated-list view only -- it has no
+;; load-time side effect of its own to arm.
 (load-module "agents")
-(edmacs-agents-init)
 ;; Last: the phase-9 claude-term<->agents adapter needs both
 ;; claude-term-registry.el's create/remove hook vars (loaded near the
-;; top) and agents.el's row API (loaded just above) to exist.
+;; top) and agents.el's row API (loaded just above) to exist. It also
+;; installs the claude-term-buffer mode-line status splice, lazily via
+;; `with-eval-after-load' on `nano-modeline' -- nano-modeline is loaded
+;; by ui.el, not here, so the install itself waits for that.
 (load-module "claude-term-agents")
 ;; After git.el: straight only puts `magit-section' on `load-path' once
 ;; `use-package magit' (in git.el) has registered it, same as sidebar.el.

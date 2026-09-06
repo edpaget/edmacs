@@ -392,8 +392,8 @@ agent table is scoped to FRAME's own repo by
 Glyphs, not words, and zero counts omitted: the prose form
 (\"  [1 working, 0 waiting, 0 done]\") is 31 columns and this suffix
 renders inside a sidebar whose default body width is 30, so it was
-always truncated away. Same glyph vocabulary as `agents.el's own
-mode-line roll-up (`edmacs-agents--mode-line-string')."
+always truncated away. Same glyph vocabulary as claude-term-agents.el's
+own per-buffer mode-line segment."
   (let ((agents (edmacs-sidebar-agents--agents-for-frame frame)))
     (when agents
       (let ((working (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'working)) agents))

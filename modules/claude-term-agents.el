@@ -53,11 +53,21 @@
 ;; tag carries it -- so that sub-step of the phase body is omitted
 ;; outright rather than guarded behind a dead `fboundp' check.
 ;;
-;; Loaded last in init.el, after `agents.el' and `(edmacs-agents-init)':
-;; every call this file makes into `claude-term-registry.el' or
-;; `agents.el' happens inside a hook-callback body, resolved at
-;; hook-fire time, never at this file's own load time -- but placing it
-;; last keeps the dependency obvious.
+;; Loaded last in init.el, after `agents.el': every call this file makes
+;; into `claude-term-registry.el' or `agents.el' happens inside a
+;; hook-callback body, resolved at hook-fire time, never at this file's
+;; own load time -- but placing it last keeps the dependency obvious.
+;;
+;; Also owns the mode-line half of this adapter (the edmacs-modeline
+;; roadmap phase that moved it here): a claude-term buffer's own status
+;; glyph, spliced into `nano-modeline-footer' only for `ghostel-mode'
+;; buffers. agents.el used to splice a cross-project roll-up into EVERY
+;; buffer's mode line; that is gone now that the sidebar header carries
+;; a project-scoped roll-up instead, and this section replaces it with a
+;; strictly narrower, per-buffer one. The buffer<->row lookup reuses the
+;; exact `claude-term--root'/`claude-term-agents--normalize-instance'
+;; pattern `claude-term-agents--update-progress-title' above already
+;; uses, rather than re-deriving it.
 ;;
 ;; Run pure-function tests:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
@@ -81,7 +91,14 @@
 (declare-function edmacs-agent-status "agents")
 (declare-function edmacs-agent-instance "agents")
 (declare-function edmacs-agent-key "agents")
+(declare-function edmacs-agent-unread "agents")
 (defvar edmacs-agents--table)
+
+;; Dynamically bound by nano-modeline around every render; read (never
+;; set) by `claude-term-agents-mode-line-segment' so its output matches
+;; the line -- mirrors agents.el's former declaration of the same var
+;; for the same reason.
+(defvar nano-modeline-base-face)
 
 (defvar claude-term-registry-create-functions)
 (defvar claude-term-registry-remove-functions)
@@ -277,6 +294,106 @@ chain the wrapper onto itself."
 
 (with-eval-after-load 'ghostel
   (claude-term-agents--install-progress-handler))
+
+;; ============================================================================
+;; Mode-line: this claude-term buffer's own status
+;; ============================================================================
+
+(defun claude-term-agents--mode-line-row ()
+  "Return `current-buffer''s own row in `edmacs-agents--table', or nil.
+No-op (returns nil) for a buffer with no `claude-term--root' at all --
+any ghostel buffer that is not a claude-term session, including a
+buffer that has not yet had `claude-term--exec' set that buffer-local
+\(see this file's Commentary on the `ghostel-mode'-before-buffer-locals
+ordering\). `claude-term--instance' is run through
+`claude-term-agents--normalize-instance' before the lookup, exactly as
+`claude-term-agents--update-progress-title' already does -- the row
+for a default, non-multi-instance session is stored keyed under the
+normalized label, not under a literal nil."
+  (when-let* ((root claude-term--root))
+    (gethash (edmacs-agents--key root (claude-term-agents--normalize-instance
+                                        claude-term--instance))
+              edmacs-agents--table)))
+
+(defun claude-term-agents-mode-line-segment ()
+  "Return this claude-term buffer's own status glyph, or \"\" when there
+is nothing worth flagging. Nullary: the literal element `apply'd on
+every mode-line render by nano-modeline's `:eval' construct.
+
+`working' renders \"[⟳]\", `waiting' renders \"[💬]\", and `done' with
+`edmacs-agent-unread' still set renders \"[✓]\" -- the same glyph
+vocabulary the removed cross-project roll-up used, now for one row
+instead of a count. Every other case -- no row at all (a plain ghostel
+buffer, a session whose row was removed, one racing ahead of the
+registry `put'), `idle', or an already-read `done' -- renders \"\".
+
+Carries the mode line's own base face, for the same reason the removed
+`edmacs-agents-mode-line-segment' did: nano-modeline applies its base
+face only to the STRING elements of a line, so an unpropertized
+function-element return value would render in the frame's `default'
+colours instead of matching the rest of the line."
+  (let* ((row (claude-term-agents--mode-line-row))
+         (glyph (and row
+                     (pcase (edmacs-agent-status row)
+                       ('working "⟳")
+                       ('waiting "💬")
+                       ('done (and (edmacs-agent-unread row) "✓"))))))
+    (if glyph
+        (let ((s (format "[%s]" glyph)))
+          (if (bound-and-true-p nano-modeline-base-face)
+              (propertize s 'face nano-modeline-base-face)
+            s))
+      "")))
+
+(defun claude-term-agents--nano-modeline-footer-filter-args (args)
+  "Append this buffer's status segment to `nano-modeline-footer's RIGHT.
+ARGS is (LEFT [RIGHT [DEFAULT]]); the two-argument shape is the
+mainline one for every claude-term ghostel pane
+(`edmacs-modeline-ghostel-mode'). Scoped to `ghostel-mode' buffers by
+checking `derived-mode-p' in the buffer being baked, rather than
+checking `claude-term--root' non-nil here: claude-term.el sets that
+buffer-local strictly AFTER `ghostel-exec' has already turned on
+`ghostel-mode' and run its hook (see claude-term.el's own comment on
+that ordering), so it is still nil at bake time even for a genuine,
+brand-new claude-term buffer -- gating on it here would mean the
+element never gets baked in at all. The element itself is checked at
+RENDER time instead (`claude-term-agents-mode-line-segment' above),
+by which point the buffer-local is set. The element must be a list,
+not a bare symbol: `nano-modeline--make' `apply's its car to its cdr.
+RIGHT is a shared quoted literal inside nano-modeline, so it is
+appended to, never mutated, and the `member' check keeps a re-bake
+from doubling it."
+  (if (not (derived-mode-p 'ghostel-mode))
+      args
+    (let ((element '(claude-term-agents-mode-line-segment))
+          (right (nth 1 args)))
+      (list (nth 0 args)
+            (if (member element right) right (append right (list element)))
+            (nth 2 args)))))
+
+(defun claude-term-agents--install-mode-line-advice ()
+  "Splice this buffer's status segment into every nano-modeline footer.
+Targets `nano-modeline-footer' because ui.el binds
+`nano-modeline-position' to it; a switch to `nano-modeline-header'
+there would silently drop the segment. Not a bare `advice-add':
+advising an undefined `nano-modeline-footer' succeeds and defines its
+function cell, making `fboundp' lie, so the install stays inside
+`with-eval-after-load'."
+  (advice-add 'nano-modeline-footer :filter-args
+              #'claude-term-agents--nano-modeline-footer-filter-args))
+
+(with-eval-after-load 'nano-modeline
+  (claude-term-agents--install-mode-line-advice))
+
+(defun claude-term-agents--refresh-mode-line (&rest _keys)
+  "Repaint the mode line so an unfocused claude-term buffer's status
+glyph updates promptly on a status change. Wired onto
+`edmacs-agents-changed-hook'; ignores the hook's KEYS argument -- the
+segment reads `edmacs-agents--table' directly on each render, so there
+is no cached aggregate to recompute here, only a repaint to force."
+  (force-mode-line-update t))
+
+(add-hook 'edmacs-agents-changed-hook #'claude-term-agents--refresh-mode-line)
 
 (provide 'claude-term-agents)
 ;;; claude-term-agents.el ends here

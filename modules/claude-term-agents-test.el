@@ -1,12 +1,20 @@
 ;;; claude-term-agents-test.el --- Tests for claude-term-agents.el -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; Pure-function coverage only -- no real ghostel/`claude' subprocess, no
+;; Mostly pure-function coverage -- no real ghostel/`claude' subprocess, no
 ;; real frame or window beyond what `generate-new-buffer'/`display-buffer'
 ;; give for free in batch. See sidebar-agents-live-test.el's
 ;; `edmacs-sidebar-agents-live-test-real-claude-term-row-visit-and-kill'
 ;; for the real-subprocess, real-registry end-to-end coverage this file
 ;; cannot exercise on its own.
+;;
+;; The mode-line construct-level test is the exception: it loads the
+;; real `nano-modeline' package dynamically from the straight build root
+;; (this checkout's, falling back to the sibling main checkout's), the
+;; same convention `claude-usage-test.el' uses (and agents-test.el used
+;; to, before the edmacs-modeline roadmap phase moved this file's own
+;; mode-line coverage here), and `ert-skip's with a clear message when
+;; neither is populated.
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
@@ -30,6 +38,59 @@
 ;; shadow and `claude-term-agents--install-progress-handler' (reading
 ;; the real dynamic variable) signals `void-variable'.
 (defvar ghostel-progress-function)
+
+;; ============================================================================
+;; nano-modeline straight-build helpers (mirrors the identical helpers
+;; agents-test.el used to carry -- no shared test-helper module exists
+;; in this repo, so every *-test.el duplicates its own copy by
+;; convention)
+;; ============================================================================
+
+(defun claude-term-agents-test--locate-straight-build-root ()
+  "Return this checkout's `straight/build' directory, or nil.
+Tries this checkout's own `straight/build' first, then falls back to the
+sibling main `edmacs' checkout's `straight/build' -- see
+`edmacs-sidebar-test--locate-straight-build-root' for the identical
+worktree-vs-sibling-main-checkout rationale."
+  (or
+   (let ((here (expand-file-name "straight/build" default-directory)))
+     (and (file-directory-p here) here))
+   (let* ((root (directory-file-name (expand-file-name default-directory)))
+          (worktrees-dir (directory-file-name (file-name-directory root))))
+     (when (string-suffix-p "__worktrees" worktrees-dir)
+       (let* ((projects-dir (file-name-directory worktrees-dir))
+              (repo-name (string-remove-suffix
+                          "__worktrees" (file-name-nondirectory worktrees-dir)))
+              (main-build (expand-file-name
+                           (concat repo-name "/straight/build") projects-dir)))
+         (and (file-directory-p main-build) main-build))))))
+
+(defun claude-term-agents-test--ensure-nano-modeline ()
+  "Load the real `nano-modeline', skipping the calling test if unavailable.
+nano-modeline needs only `cl-lib' beyond Emacs core, so a single
+`load-path' entry under the straight build root is enough."
+  (unless (featurep 'nano-modeline)
+    (let* ((root (claude-term-agents-test--locate-straight-build-root))
+           (dir (and root (expand-file-name "nano-modeline" root))))
+      (unless (and dir (file-directory-p dir))
+        (ert-skip (format "nano-modeline's straight build was not found at \
+%s; bootstrap straight once (open this worktree in a real Emacs session) to \
+enable this test" (or dir "<no straight build root>"))))
+      (let ((load-path (cons dir load-path)))
+        (require 'nano-modeline)))))
+
+(defun claude-term-agents-test--construct-has-segment-p (form)
+  "Non-nil when FORM contains a cons `equal' to
+`(claude-term-agents-mode-line-segment)'. Structural rather than
+evaluated, for lines that cannot be rendered outside their own major
+mode -- `nano-modeline-term-shell-mode' calls `term-in-char-mode',
+which needs a live term buffer."
+  (cond
+   ((equal form '(claude-term-agents-mode-line-segment)) t)
+   ((consp form)
+    (or (claude-term-agents-test--construct-has-segment-p (car form))
+        (claude-term-agents-test--construct-has-segment-p (cdr form))))
+   (t nil)))
 
 (defmacro claude-term-agents-test--with-clean-state (&rest body)
   "Run BODY with a fresh agent table and changed hook, isolated from any
@@ -533,6 +594,177 @@ no-op for the chained half, not an error."
     ;; A second install call must not chain the wrapper onto itself.
     (claude-term-agents--install-progress-handler)
     (should (eq claude-term-agents--chained-progress-function sentinel))))
+
+;; ============================================================================
+;; Mode-line: this claude-term buffer's own status
+;; ============================================================================
+
+(defmacro claude-term-agents-test--with-mode-line-state (&rest body)
+  "Run BODY with `(default-value \\='mode-line-format)' saved and
+restored, and the `:filter-args' advice + changed-hook listener removed
+afterward regardless of how BODY exits. Direct successor to the
+`edmacs-agents-test--with-mode-line-state' macro agents-test.el used to
+carry for the now-removed global roll-up."
+  (declare (indent 0))
+  `(let ((claude-term-agents-test--saved-default (default-value 'mode-line-format)))
+     (unwind-protect
+         (progn ,@body)
+       (advice-remove 'nano-modeline-footer
+                       #'claude-term-agents--nano-modeline-footer-filter-args)
+       (remove-hook 'edmacs-agents-changed-hook #'claude-term-agents--refresh-mode-line)
+       (setq-default mode-line-format claude-term-agents-test--saved-default))))
+
+(ert-deftest claude-term-agents-test-mode-line-row-normalizes-nil-instance ()
+  "A buffer whose `claude-term--instance' is left nil (the common,
+non-multi-instance case) must still find the row
+`claude-term-agents--on-create' stored for that same ROOT/nil-INSTANCE
+session -- the row is keyed under the NORMALIZED label, not under a
+literal nil, so the lookup must normalize too or the segment silently
+renders blank forever. This is the exact hazard the phase body calls
+out by name."
+  (claude-term-agents-test--with-clean-state
+    (let* ((root "/repo/wt/")
+           (create-buf (generate-new-buffer "claude-term-agents-test-mlr-create"))
+           (buf (generate-new-buffer "claude-term-agents-test-mlr-buf")))
+      (unwind-protect
+          (progn
+            (claude-term-agents--on-create root nil create-buf)
+            (with-current-buffer buf
+              (setq-local claude-term--root root)
+              ;; `claude-term--instance' deliberately left at its
+              ;; buffer-local default (nil) -- never set here.
+              (let ((row (claude-term-agents--mode-line-row)))
+                (should row)
+                (should (equal (edmacs-agent-key row)
+                                (edmacs-agents--key
+                                 root claude-term-registry--default-instance-label))))))
+        (kill-buffer create-buf)
+        (kill-buffer buf)))))
+
+(ert-deftest claude-term-agents-test-mode-line-row-no-cross-instance-bleed ()
+  "A second, differently-instanced row under the same root is not what a
+first buffer's default-instance lookup returns -- no cross-instance
+bleed -- and a buffer with no `claude-term--root' at all (a plain,
+non-claude-term buffer) returns nil rather than erroring."
+  (claude-term-agents-test--with-clean-state
+    (let* ((root "/repo/wt/")
+           (default-buf (generate-new-buffer "claude-term-agents-test-mlr-default"))
+           (named-buf (generate-new-buffer "claude-term-agents-test-mlr-named"))
+           (buf (generate-new-buffer "claude-term-agents-test-mlr-lookup"))
+           (plain-buf (generate-new-buffer "claude-term-agents-test-mlr-plain")))
+      (unwind-protect
+          (progn
+            (claude-term-agents--on-create root nil default-buf)
+            (claude-term-agents--on-create root "other" named-buf)
+            (setf (edmacs-agent-status
+                   (gethash (edmacs-agents--key root "other") edmacs-agents--table))
+                  'working)
+            (with-current-buffer buf
+              (setq-local claude-term--root root)
+              (let ((row (claude-term-agents--mode-line-row)))
+                (should row)
+                (should (equal (edmacs-agent-key row)
+                                (edmacs-agents--key
+                                 root claude-term-registry--default-instance-label)))
+                (should-not (eq (edmacs-agent-status row) 'working))))
+            (with-current-buffer plain-buf
+              (should-not (claude-term-agents--mode-line-row))))
+        (kill-buffer default-buf)
+        (kill-buffer named-buf)
+        (kill-buffer buf)
+        (kill-buffer plain-buf)))))
+
+(ert-deftest claude-term-agents-test-mode-line-segment-glyphs ()
+  "The segment renders the right glyph (or \"\") for every status/unread
+combination, plus the no-row and no-root cases."
+  (claude-term-agents-test--with-clean-state
+    (let ((buf (generate-new-buffer "claude-term-agents-test-glyphs-buf")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local claude-term--root "/repo/wt/")
+            (cl-flet ((set-row (status unread)
+                        (claude-term-agents--on-create "/repo/wt/" nil buf)
+                        (let ((row (gethash (edmacs-agents--key
+                                              "/repo/wt/"
+                                              claude-term-registry--default-instance-label)
+                                             edmacs-agents--table)))
+                          (setf (edmacs-agent-status row) status
+                                (edmacs-agent-unread row) unread))))
+              (set-row 'working nil)
+              (should (equal (claude-term-agents-mode-line-segment) "[⟳]"))
+              (set-row 'waiting nil)
+              (should (equal (claude-term-agents-mode-line-segment) "[💬]"))
+              (set-row 'done t)
+              (should (equal (claude-term-agents-mode-line-segment) "[✓]"))
+              (set-row 'done nil)
+              (should (equal (claude-term-agents-mode-line-segment) ""))
+              (set-row 'idle nil)
+              (should (equal (claude-term-agents-mode-line-segment) ""))
+              (clrhash edmacs-agents--table)
+              (should (equal (claude-term-agents-mode-line-segment) ""))))
+        (kill-buffer buf))
+      (with-temp-buffer
+        (should (equal (claude-term-agents-mode-line-segment) ""))))))
+
+(ert-deftest claude-term-agents-test-filter-args-scoped-to-ghostel-mode ()
+  "The `:filter-args' function appends the segment element only when the
+buffer being baked is `ghostel-mode' (or derived from it); every other
+major mode gets ARGS back unchanged -- the inversion that proves the
+cross-project roll-up no longer reaches a non-ghostel buffer."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (let* ((right (list '(nano-modeline-window-dedicated)))
+           (right-before (copy-tree right))
+           (out (claude-term-agents--nano-modeline-footer-filter-args
+                 (list (list '(edmacs-modeline-fixed-status ">_")) right))))
+      (should (= (length out) 3))
+      (should (equal (nth 1 out)
+                     '((nano-modeline-window-dedicated)
+                       (claude-term-agents-mode-line-segment))))
+      (should (null (nth 2 out)))
+      (should (equal right right-before))
+      (should (equal (claude-term-agents--nano-modeline-footer-filter-args out) out))))
+  (with-temp-buffer
+    (setq major-mode 'text-mode)
+    (let ((args (list (list '(nano-modeline-buffer-status))
+                       (list '(nano-modeline-window-dedicated)))))
+      (should (equal (claude-term-agents--nano-modeline-footer-filter-args args) args)))))
+
+(ert-deftest claude-term-agents-test-mode-line-reaches-ghostel-construct-only ()
+  "Using the real nano-modeline construct: a `ghostel-mode' buffer's
+baked footer structurally carries the segment; a text-mode, message-mode
+or term-mode buffer's does not -- the inversion of what the removed
+`edmacs-agents-test-mode-line-in-ghostel-and-term-lines' asserted for
+the old global splice."
+  (claude-term-agents-test--ensure-nano-modeline)
+  (claude-term-agents-test--with-clean-state
+    (let ((nano-modeline-position #'nano-modeline-footer))
+      (claude-term-agents-test--with-mode-line-state
+        (claude-term-agents--install-mode-line-advice)
+        (with-temp-buffer
+          (setq major-mode 'ghostel-mode)
+          (funcall nano-modeline-position
+                   '((edmacs-modeline-fixed-status ">_"))
+                   '((nano-modeline-window-dedicated)))
+          (should (claude-term-agents-test--construct-has-segment-p mode-line-format)))
+        (with-temp-buffer
+          (nano-modeline-text-mode t)
+          (should-not (claude-term-agents-test--construct-has-segment-p mode-line-format)))
+        (with-temp-buffer
+          (nano-modeline-message-mode)
+          (should-not (claude-term-agents-test--construct-has-segment-p mode-line-format)))
+        (with-temp-buffer
+          (nano-modeline-term-mode)
+          (should-not (claude-term-agents-test--construct-has-segment-p mode-line-format)))))))
+
+(ert-deftest claude-term-agents-test-mode-line-refresh-hooked ()
+  "`claude-term-agents--refresh-mode-line' is installed on the real,
+top-level `edmacs-agents-changed-hook' -- read via `default-value' since
+`claude-term-agents-test--with-clean-state' `let'-shadows the hook to
+nil for other tests and would otherwise hide the real top-level
+`add-hook'."
+  (should (memq #'claude-term-agents--refresh-mode-line
+                (default-value 'edmacs-agents-changed-hook))))
 
 (provide 'claude-term-agents-test)
 ;;; claude-term-agents-test.el ends here

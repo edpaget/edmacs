@@ -2,8 +2,10 @@
 
 ;;; Commentary:
 ;; Phase 5 of the edmacs-sidebar roadmap: one hash table answering
-;; "which agent is doing what", so phase 6's sidebar section and this
-;; phase's own mode-line roll-up have a single place to read from.
+;; "which agent is doing what", so phase 6's sidebar section (and, per
+;; buffer, claude-term-agents.el's own mode-line segment) have a single
+;; place to read from. This file owns no mode-line concern of its own --
+;; it is pure data plus the tabulated-list view below.
 ;;
 ;; `edmacs-agents-set-status' (CWD STATUS &optional INSTANCE) is the
 ;; documented, stable public writer -- edmacs-claude-terminal phase 5's
@@ -33,12 +35,6 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'tabulated-list)
-
-(declare-function edmacs-modeline-text-mode "ui" (&optional default))
-(declare-function nano-modeline-text-mode "nano-modeline" (&optional default))
-;; Dynamically bound by nano-modeline around every render; read (never set)
-;; by `edmacs-agents-mode-line-segment' so its output matches the line.
-(defvar nano-modeline-base-face)
 
 ;; ============================================================================
 ;; Struct and table
@@ -70,8 +66,8 @@ transition into `done' and cleared by `edmacs-agents-mark-read'."
   "Hook run after any mutation to `edmacs-agents--table'.
 Called with one argument, the list of affected keys -- a single-row
 update passes a one-element list, so a listener recomputing something
-table-wide (the mode-line roll-up) still only recomputes once per
-mutating operation.")
+table-wide (e.g. the sidebar's roll-up, or a repaint of a per-buffer
+segment) still only recomputes once per mutating operation.")
 
 (defun edmacs-agents--key (root instance)
   "Return the table key for project ROOT and agent INSTANCE.
@@ -198,107 +194,6 @@ equal-or-older STATUS-TS is not mistaken for newer than this read."
     (edmacs-agents--upsert row)))
 
 ;; ============================================================================
-;; Mode-line roll-up
-;; ============================================================================
-
-(defvar edmacs-agents--mode-line-string ""
-  "Cached mode-line roll-up string, recomputed only from
-`edmacs-agents-changed-hook' -- never a `:eval' form re-run on every
-redisplay.")
-
-(defun edmacs-agents--mode-line-string-compute ()
-  "Return the `[Nwork Nunread-done Nwaiting]' roll-up string, or \"\" if empty."
-  (let ((working 0) (unread-done 0) (waiting 0))
-    (maphash
-     (lambda (_key row)
-       (pcase (edmacs-agent-status row)
-         ('working (cl-incf working))
-         ('waiting (cl-incf waiting))
-         ('done (when (edmacs-agent-unread row) (cl-incf unread-done)))))
-     edmacs-agents--table)
-    (if (zerop (+ working unread-done waiting))
-        ""
-      (format "[%s]"
-              (string-join
-               (delq nil
-                     (list (and (> working 0) (format "%d⟳" working))
-                           (and (> unread-done 0) (format "%d✓" unread-done))
-                           (and (> waiting 0) (format "%d💬" waiting))))
-               " ")))))
-
-(defun edmacs-agents--refresh-mode-line (&rest _keys)
-  "Recompute and cache the mode-line roll-up string, and repaint.
-Wired onto `edmacs-agents-changed-hook'; ignores the hook's KEYS
-argument since every recompute walks the whole table regardless.
-`force-mode-line-update' is required here: under the `:eval'
-construct, nothing else notices this cached string changed."
-  (setq edmacs-agents--mode-line-string (edmacs-agents--mode-line-string-compute))
-  (force-mode-line-update t))
-
-(defun edmacs-agents-mode-line-segment ()
-  "Return the cached roll-up string, already \"\" when empty.
-Nullary: this is the literal element `apply'd on every mode-line render
-by nano-modeline's `:eval' construct.
-
-Carries the mode line's own base face. nano-modeline applies that face
-only to the STRING elements of a line -- a (FUNCTION) element's return
-value is spliced in untouched -- so an unpropertized string renders in
-the frame's `default' colours and reads as a differently-coloured patch
-against the rest of the line. `nano-modeline-base-face' is dynamically
-bound around the render, which is what makes it readable from here."
-  (let ((s edmacs-agents--mode-line-string))
-    (if (and (bound-and-true-p nano-modeline-base-face)
-             (> (length s) 0))
-        (propertize s 'face nano-modeline-base-face)
-      s)))
-
-(defun edmacs-agents--nano-modeline-footer-filter-args (args)
-  "Append the roll-up segment to `nano-modeline-footer's RIGHT element list.
-ARGS is (LEFT [RIGHT [DEFAULT]]); the two-argument shape is the
-mainline one for every claude-term ghostel pane
-(`edmacs-modeline-ghostel-mode'), `nano-modeline-message-mode' and
-`nano-modeline-term-mode'. The element must be a list, not a bare
-symbol: `nano-modeline--make' `apply's its car to its cdr. RIGHT is a
-shared quoted literal inside nano-modeline, so it is appended to,
-never mutated, and the `member' check keeps a re-bake from doubling
-it."
-  (let ((element '(edmacs-agents-mode-line-segment))
-        (right (nth 1 args)))
-    (list (nth 0 args)
-          (if (member element right) right (append right (list element)))
-          (nth 2 args))))
-
-(defun edmacs-agents--install-mode-line-advice ()
-  "Splice the roll-up segment into every nano-modeline footer.
-Targets `nano-modeline-footer' because ui.el binds
-`nano-modeline-position' to it; a switch to `nano-modeline-header'
-there would silently drop the segment. The default line is then
-re-baked because ui.el bakes it long before `edmacs-agents-init'
-loads -- through ui.el's own wrapper when present, since re-baking
-with plain `nano-modeline-text-mode' would strip that line's filtered
-buffer name and diagnostics."
-  (advice-add 'nano-modeline-footer :filter-args
-              #'edmacs-agents--nano-modeline-footer-filter-args)
-  (when (and (consp (default-value 'mode-line-format))
-             (eq (car (default-value 'mode-line-format)) :eval))
-    (with-temp-buffer
-      (cond ((fboundp 'edmacs-modeline-text-mode) (edmacs-modeline-text-mode t))
-            ((fboundp 'nano-modeline-text-mode) (nano-modeline-text-mode t))))))
-
-(defun edmacs-agents--ensure-mode-line ()
-  "Wire the cached roll-up string into the real nano-modeline construct.
-Installs `:filter-args' advice on `nano-modeline-footer' rather than
-splicing into `global-mode-string' -- nano-modeline never reads that
-variable, so a splice there rendered nothing. Not a bare `advice-add':
-advising an undefined `nano-modeline-footer' succeeds and defines its
-function cell, making `fboundp' lie, so the install stays inside
-`with-eval-after-load'."
-  (edmacs-agents--refresh-mode-line)
-  (add-hook 'edmacs-agents-changed-hook #'edmacs-agents--refresh-mode-line)
-  (with-eval-after-load 'nano-modeline
-    (edmacs-agents--install-mode-line-advice)))
-
-;; ============================================================================
 ;; Tabulated-list view
 ;; ============================================================================
 
@@ -342,19 +237,6 @@ sidebar's own ALL AGENTS section."
       (edmacs-agents-list-mode)
       (edmacs-agents--revert-list))
     (pop-to-buffer buffer)))
-
-;; ============================================================================
-;; Load-time setup: mode-line
-;; ============================================================================
-
-(defun edmacs-agents-init ()
-  "Idempotent one-time setup: wire the mode-line roll-up into nano-modeline.
-
-Deliberately NOT called at this file's own top level: init.el calls it
-once, right after `(load-module \"agents\")', so that merely loading
-this file (every ERT run, and `M-x eval-buffer' during development)
-never has this side effect."
-  (edmacs-agents--ensure-mode-line))
 
 (provide 'agents)
 ;;; agents.el ends here
