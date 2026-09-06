@@ -193,6 +193,7 @@ so an unfocused window keeps the same badge."
 ;; not warn about references that resolve fine at redisplay time.
 (defvar nano-modeline-position)
 (defvar nano-modeline-padding)
+(defvar term-raw-map)
 (declare-function nano-modeline-buffer-name "nano-modeline")
 (declare-function nano-modeline-face "nano-modeline")
 
@@ -329,6 +330,20 @@ directory instead."
            '((nano-modeline-default-directory) " "
              (nano-modeline-window-dedicated))))
 
+(defun edmacs-modeline-term-shell-mode ()
+  "Nano's `nano-modeline-term-shell-mode' with its macro call inlined.
+nano-modeline.el is byte-compiled by straight without `term' loaded, so its
+call to the `term-in-char-mode' macro compiles as an ordinary function call
+and signals `invalid-function' at render time, killing the whole `:eval'
+and leaving every term-mode buffer with an apparently-empty modeline. The
+sibling `nano-modeline-eat-shell-mode' reads `eat--semi-char-mode' and
+friends as plain variables, never calls them, so it cannot hit this bug --
+and this repo has no `eat' package or hook wired in regardless."
+  (propertize (if (eq (current-local-map) term-raw-map)
+                  "(char mode)"
+                "(line mode)")
+              'face (nano-modeline-face 'primary)))
+
 ;; ============================================================================
 ;; Nano Modeline
 ;; ============================================================================
@@ -343,6 +358,7 @@ directory instead."
   (add-hook 'text-mode-hook #'edmacs-modeline-text-mode)
   (add-hook 'messages-buffer-mode-hook #'nano-modeline-message-mode)
   (add-hook 'term-mode-hook #'nano-modeline-term-mode)
+  (advice-add 'nano-modeline-term-shell-mode :override #'edmacs-modeline-term-shell-mode)
   ;; ghostel-mode has no nano line of its own, so a claude-term pane
   ;; otherwise falls through to the default text line -- see
   ;; `edmacs-modeline-ghostel-mode'.

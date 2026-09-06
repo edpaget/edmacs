@@ -31,6 +31,10 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
 - `modules/windows-test.el` -- master-and-stack layout, popup routing, the
   `SPC w` command set, tab/desktop persistence, the `display-buffer` catch-all
 - `modules/ui-test.el`, `modules/sidebar-test.el` -- ui.el and sidebar.el
+- `modules/ui-live-test.el` -- term-mode nano-modeline rendering, real
+  `nano-modeline` package loaded from the straight build tree; two-tier
+  (process-less buffer, then a live `make-term` subprocess via
+  `scripts/gui-ert.sh`)
 - `modules/window-geometry-live-test.el` -- sidebar side-window width and
   fringe assertions; two-tier (see GUI-only geometry assertions below). The
   standard batch invocation shows 4 of its 10 tests as skipped -- that
