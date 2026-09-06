@@ -186,4 +186,34 @@ stock `error'/`warning' faces, which every theme defines."
       (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
                      "1 err 2 warn ")))))
 
+;; nano-modeline is not loadable under `-Q', and a bare `defvar' in ui.el
+;; marks the symbol special only within ui.el itself -- so without this the
+;; `let' below would bind lexically and the dynamic read inside
+;; `edmacs--apply-modeline-inactive-status-faces' would see it as void.
+(defvar nano-modeline-faces)
+
+(ert-deftest edmacs-ui-test-inactive-status-faces-mirror-the-active-ones ()
+  "Each `status-*-active' entry gains an `-inactive' twin, so an unfocused
+window keeps its buffer-status badge instead of rendering two raised
+padding spaces against no background."
+  (let ((nano-modeline-faces '((status-RW-active . (nano-modeline-status))
+                               (status-RO-active . (nano-modeline-status))
+                               (status-**-active . (nano-modeline-status)))))
+    (edmacs--apply-modeline-inactive-status-faces)
+    (dolist (key '(status-RW-inactive status-RO-inactive status-**-inactive))
+      (should (assq key nano-modeline-faces)))
+    (should (memq 'nano-modeline-status
+                  (cdr (assq 'status-RW-inactive nano-modeline-faces))))))
+
+(ert-deftest edmacs-ui-test-inactive-status-faces-never-clobber-a-user-entry ()
+  "An existing `-inactive' entry is left alone -- the function only fills a
+gap, so a user customisation of `nano-modeline-faces' survives, and
+re-running it never stacks a duplicate."
+  (let ((nano-modeline-faces '((status-RW-inactive . (my-own-face)))))
+    (edmacs--apply-modeline-inactive-status-faces)
+    (edmacs--apply-modeline-inactive-status-faces)
+    (should (equal '(my-own-face)
+                    (cdr (assq 'status-RW-inactive nano-modeline-faces))))
+    (should (= 1 (cl-count 'status-RW-inactive nano-modeline-faces :key #'car)))))
+
 ;;; ui-test.el ends here

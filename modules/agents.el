@@ -36,6 +36,9 @@
 
 (declare-function edmacs-modeline-text-mode "ui" (&optional default))
 (declare-function nano-modeline-text-mode "nano-modeline" (&optional default))
+;; Dynamically bound by nano-modeline around every render; read (never set)
+;; by `edmacs-agents-mode-line-segment' so its output matches the line.
+(defvar nano-modeline-base-face)
 
 ;; ============================================================================
 ;; Struct and table
@@ -234,9 +237,20 @@ construct, nothing else notices this cached string changed."
 
 (defun edmacs-agents-mode-line-segment ()
   "Return the cached roll-up string, already \"\" when empty.
-Nullary and allocation-free: this is the literal element `apply'd on
-every mode-line render by nano-modeline's `:eval' construct."
-  edmacs-agents--mode-line-string)
+Nullary: this is the literal element `apply'd on every mode-line render
+by nano-modeline's `:eval' construct.
+
+Carries the mode line's own base face. nano-modeline applies that face
+only to the STRING elements of a line -- a (FUNCTION) element's return
+value is spliced in untouched -- so an unpropertized string renders in
+the frame's `default' colours and reads as a differently-coloured patch
+against the rest of the line. `nano-modeline-base-face' is dynamically
+bound around the render, which is what makes it readable from here."
+  (let ((s edmacs-agents--mode-line-string))
+    (if (and (bound-and-true-p nano-modeline-base-face)
+             (> (length s) 0))
+        (propertize s 'face nano-modeline-base-face)
+      s)))
 
 (defun edmacs-agents--nano-modeline-footer-filter-args (args)
   "Append the roll-up segment to `nano-modeline-footer's RIGHT element list.

@@ -128,8 +128,28 @@ otherwise discard these the moment a GUI frame appears."
     (set-face-attribute 'nano-modeline-inactive nil
                         :background "#073642" :foreground "#586e75")))
 
+(defvar nano-modeline-faces)
+
+(defun edmacs--apply-modeline-inactive-status-faces ()
+  "Give the buffer-status badge an inactive face, so it survives defocus.
+`nano-modeline-faces' ships `status-RW-active' / `-RO-active' /
+`status-**-active' with no `-inactive' counterpart, and its own docstring
+says a state left undefined falls back to defaults -- which for the
+status badge means no background at all. The badge is two `display'-raised padding
+spaces around the label, so losing its background does not merely dim it:
+the raised spaces render as a floating artifact. Mirror each active entry
+so an unfocused window keeps the same badge."
+  (dolist (entry `((status-RW-inactive . (nano-modeline-status))
+                   (status-RO-inactive . (nano-modeline-status))
+                   (status-**-inactive . (nano-modeline-status
+                                          ,(when (facep 'nano-popout-i)
+                                             'nano-popout-i)))))
+    (unless (assq (car entry) nano-modeline-faces)
+      (push entry nano-modeline-faces))))
+
 (with-eval-after-load 'nano-modeline
   (edmacs--apply-modeline-contrast)
+  (edmacs--apply-modeline-inactive-status-faces)
   (add-hook 'enable-theme-functions #'edmacs--apply-modeline-contrast))
 
 ;; ============================================================================
