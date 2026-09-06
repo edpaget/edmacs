@@ -16,7 +16,10 @@
 ;; `claude-lib-demo' (its own AC2), `claude-lib-promote's validation
 ;; gates and provenance formatting (AC3/AC4), the no-gptel/no-registry
 ;; scope guard (AC5), and the `claude-lib-relevant-functions'
-;; safe-local-variable predicate (AC6). Every `claude-lib-promote' test
+;; safe-local-variable predicate plus behavioral proof that the
+;; documented interactive-driving primitives (`completing-read-function',
+;; `unread-command-events', `select-window' pinning) actually work the
+;; way the convention describes (AC6). Every `claude-lib-promote' test
 ;; operates on a temp-directory copy of the real file (see
 ;; `claude-lib-test--with-temp-library') and never mutates the
 ;; checked-in modules/claude-lib.el. The cross-process persistence
@@ -474,6 +477,51 @@ its own docstring and validation both advertise all three shapes."
                 (buffer-string))))
     (should (string-match-p "completing-read-function" text))
     (should (string-match-p "unread-command-events" text))))
+
+;; No promoted `claude-lib-' function drives an interactive command yet
+;; (that is phase 6's reusable-helper territory), so there is nothing
+;; real inside claude-lib.el itself for a behavioral test to exercise.
+;; These three tests instead prove the documented primitives actually
+;; behave the way the convention says, against small fixtures local to
+;; this file -- a real regression guard on the mechanism a future
+;; promoted function must use, not just a grep for the words.
+
+(ert-deftest claude-lib-test-interactive-driving-completing-read-function-primitive ()
+  "A bound `completing-read-function' must answer `completing-read'
+without ever reaching the real minibuffer -- the mechanism the
+convention prescribes for \"the caller is the point\"."
+  (let ((completing-read-function
+         (lambda (_prompt _collection &rest _ignored) "chosen")))
+    (should (equal (completing-read "Pick: " '("chosen" "other")) "chosen"))))
+
+(ert-deftest claude-lib-test-interactive-driving-unread-command-events-primitive ()
+  "Pre-fed `unread-command-events' must satisfy a direct event read --
+the mechanism the convention prescribes for \"the picker is the
+point\" (a loop that reads its own keys rather than being driven
+through `completing-read-function')."
+  (let ((unread-command-events (listify-key-sequence "x")))
+    (should (equal (read-char) ?x))))
+
+(ert-deftest claude-lib-test-interactive-driving-select-window-pins-target ()
+  "A key fed through the real command loop must land in the SELECTED
+window's buffer, not whatever buffer a plain `set-buffer' left
+current -- this is why the convention requires pinning the window
+with `select-window' before feeding keys, rather than trusting
+`current-buffer'."
+  (let ((decoy (generate-new-buffer " *claude-lib-test-decoy*"))
+        (target (generate-new-buffer " *claude-lib-test-target*")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) target)
+          (select-window (selected-window))
+          ;; `current-buffer' now disagrees with the selected window's
+          ;; buffer on purpose, mimicking a caller that never switched it.
+          (set-buffer decoy)
+          (execute-kbd-macro [?x])
+          (should (equal (with-current-buffer target (buffer-string)) "x"))
+          (should (equal (with-current-buffer decoy (buffer-string)) "")))
+      (kill-buffer decoy)
+      (kill-buffer target))))
 
 (provide 'claude-lib-test)
 ;;; claude-lib-test.el ends here
