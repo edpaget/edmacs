@@ -346,10 +346,16 @@ emacs ...' to exercise this test): %s" e)))))))
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-buffers-live-test-ac1-shape ()
-      "sessions.el, ui.el, init.el opened in that order, then switch to
-*Messages* -- the buffers subsection groups modules/ (ui.el then
-sessions.el, most-recently-visited first), then init.el, then a dimmed
-*Messages*, exactly AC1's own worked example."
+      "sessions.el, ui.el, init.el opened in that order, then switch to a
+compilation buffer -- the buffers subsection groups modules/ (ui.el then
+sessions.el, most-recently-visited first), then init.el, then the dimmed
+special buffer trailing, exactly AC1's own worked example.
+
+AC1's original wording used `*Messages*' as the trailing special row.
+`edmacs-sidebar-buffers--listable-p' is an allowlist that deliberately
+excludes it (chrome, not work -- see its docstring), so a compilation
+buffer stands in: not file-like, so it still takes the dimmed special
+row, but listable via `edmacs-sidebar-buffers-interactive-modes'."
       (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
         (edmacs-sidebar-buffers-live-test--with-scenario (list root)
           (let ((sessions (edmacs-sidebar-buffers-live-test--write-file root "modules/sessions.el"))
@@ -362,21 +368,28 @@ sessions.el, most-recently-visited first), then init.el, then a dimmed
             (find-file sessions)
             (find-file ui)
             (find-file init)
-            (switch-to-buffer (get-buffer-create "*Messages*"))
-            (edmacs-sidebar-show (selected-frame))
-            (let ((text (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))
-              (should (string-match-p
-                       (rx "modules/" (* anychar) "ui.el" (* anychar) "sessions.el"
-                           (* anychar) "init.el" (* anychar) "*Messages*")
-                       text))
-              ;; *Messages* is dimmed; ui.el/sessions.el/init.el are not.
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (should (text-property-any
-                         (point-min) (point-max) 'face 'edmacs-sidebar-buffers-special-face))
-                (goto-char (point-min))
-                (search-forward "modules/")
-                (search-forward "init.el")
-                (should-not (get-text-property (1- (point)) 'face))))))))
+            ;; Not under ROOT, so `--with-scenario's unwind does not reach it.
+            (unwind-protect
+                (progn
+                  (with-current-buffer (get-buffer-create "*compilation*")
+                    (compilation-mode))
+                  (switch-to-buffer (get-buffer "*compilation*"))
+                  (edmacs-sidebar-show (selected-frame))
+                  (let ((text (edmacs-sidebar-buffers-live-test--sidebar-text (selected-frame))))
+                    (should (string-match-p
+                             (rx "modules/" (* anychar) "ui.el" (* anychar) "sessions.el"
+                                 (* anychar) "init.el" (* anychar) "*compilation*")
+                             text))
+                    ;; The compilation row is dimmed; ui.el/sessions.el/init.el are not.
+                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                      (should (text-property-any
+                               (point-min) (point-max) 'face 'edmacs-sidebar-buffers-special-face))
+                      (goto-char (point-min))
+                      (search-forward "modules/")
+                      (search-forward "init.el")
+                      (should-not (get-text-property (1- (point)) 'face)))))
+              (when (get-buffer "*compilation*")
+                (kill-buffer "*compilation*")))))))
 
     (ert-deftest edmacs-sidebar-buffers-live-test-ac1-chain-flatten-and-fold ()
       "A directory chain ending in a lone file collapses to one row
