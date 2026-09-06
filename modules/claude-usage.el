@@ -1044,6 +1044,33 @@ and diagnostics."
 (with-eval-after-load 'nano-modeline
   (claude-usage--install-mode-line-advice))
 
+(defun claude-usage--sidebar-meter-line (row)
+  "Format ROW as one sidebar meter line, fitted to the sidebar's width.
+Laid out against the live window rather than a fixed 43-column prefix:
+at the sidebar's default 30 body columns the fixed form ran to 53 and
+redisplay cut the percentage -- the one number worth reading -- off the
+right edge. The reset field (\"7:00 AM (in 128h 51m)\") is 20 columns on
+its own and so is dropped first; then the label column shrinks.
+
+The bar arrives pre-rendered in ROW (`claude-usage--surface-values'
+builds it at a fixed width for every surface), so a narrow sidebar
+truncates it rather than re-rendering it at a smaller width."
+  (let* ((layout (claude-usage--row-layout (claude-usage--available-width)))
+         (label-width (nth 0 layout))
+         (bar-width (nth 1 layout))
+         (show-reset (nth 2 layout))
+         (truncate-label (nth 3 layout))
+         (label (plist-get row :label))
+         (face (plist-get row :face)))
+    (format (format " %%-%ds %%s %%4s%%s\n" label-width)
+            (if truncate-label
+                (truncate-string-to-width label label-width nil nil t)
+              label)
+            (propertize (truncate-string-to-width (plist-get row :bar) bar-width)
+                        'face face)
+            (propertize (plist-get row :percent-str) 'face face)
+            (if show-reset (concat "  " (plist-get row :reset)) ""))))
+
 (defun claude-usage--insert-sidebar-section (frame)
   "Insert the usage section into the current sidebar buffer.
 FRAME is accepted (per `edmacs-sidebar-bottom-anchor-section-functions')
@@ -1068,13 +1095,7 @@ usage state has been resolved yet."
               ;; user-error ("Nothing to do on this row") instead of
               ;; silently doing nothing.
               (magit-insert-section (claude-usage-sidebar-meter)
-                (insert (format " %-16s %s %4s  %s\n"
-                                (plist-get row :label)
-                                (propertize (plist-get row :bar)
-                                            'face (plist-get row :face))
-                                (propertize (plist-get row :percent-str)
-                                            'face (plist-get row :face))
-                                (plist-get row :reset))))))
+                (insert (claude-usage--sidebar-meter-line row)))))
           (when (plist-get values :stale)
             (add-face-text-property start (point) 'claude-usage-stale)))))))
 

@@ -1773,6 +1773,29 @@ fixed 43-column prefix this replaced ran to 53 and was cut off."
           ;; The percentage survives -- that is the number worth reading.
           (should (string-match-p "17%" (buffer-string))))))
 
+    (ert-deftest claude-usage-test-sidebar-meter-line-fits-a-default-sidebar ()
+      "The SIDEBAR renderer is a separate function from
+`claude-usage--insert-meter-row' and needs its own width fitting: at 30
+body columns the old fixed format ran to 53 and lost the percentage."
+      (let ((edmacs-sidebar-width 30))
+        (let ((line (claude-usage--sidebar-meter-line
+                     (list :label "Week (Fable)" :bar "████░░░░░░░░"
+                           :percent-str "17%" :face 'default
+                           :reset "7:00 AM (in 128h 51m)"))))
+          (should (<= (length (string-trim-right line "\n")) 30))
+          (should (string-match-p "17%" line))
+          (should-not (string-match-p "128h" line)))))
+
+    (ert-deftest claude-usage-test-sidebar-meter-line-keeps-reset-when-wide ()
+      "A wide sidebar keeps the reset field."
+      (let ((edmacs-sidebar-width 80))
+        (let ((line (claude-usage--sidebar-meter-line
+                     (list :label "Week (all)" :bar "████░░░░░░░░"
+                           :percent-str "17%" :face 'default
+                           :reset "7:00 AM (in 128h 51m)"))))
+          (should (string-match-p "128h" line))
+          (should (string-match-p "17%" line)))))
+
     (ert-deftest claude-usage-test-meter-row-keeps-reset-when-wide ()
       "A wide window still gets the full layout, reset column included."
       (with-temp-buffer
