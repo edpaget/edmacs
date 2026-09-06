@@ -11,6 +11,19 @@
 ;; `claude-lib-live-test.el's job, driving the identical function
 ;; through the real transport.
 ;;
+;; Also covers the phase-3 promotion library built on top of that same
+;; file: discovery-form regression tests against the seeded
+;; `claude-lib-demo' (its own AC2), `claude-lib-promote's validation
+;; gates and provenance formatting (AC3/AC4), the no-gptel/no-registry
+;; scope guard (AC5), and the `claude-lib-relevant-functions'
+;; safe-local-variable predicate (AC6). Every `claude-lib-promote' test
+;; operates on a temp-directory copy of the real file (see
+;; `claude-lib-test--with-temp-library') and never mutates the
+;; checked-in modules/claude-lib.el. The cross-process persistence
+;; check for phase-3's AC1 (a promoted function surviving into a
+;; second, separate Emacs process) lives in claude-lib-live-test.el
+;; instead, since it needs a real forked `emacs' subprocess.
+;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/claude-lib.el \
 ;;         -l modules/claude-lib-test.el -f ert-run-tests-batch-and-exit
@@ -19,12 +32,38 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'elisp-mode)
 
 ;; Forward declarations so this file byte-compiles clean standalone
 ;; (its own header invocation loads claude-lib.el first, which already
 ;; defines both; this is only for a bare `batch-byte-compile' pass).
 (defvar edmacs-claude-lib-max-output-bytes)
+(defvar claude-lib-file)
+(defvar claude-lib-relevant-functions)
 (declare-function edmacs-claude-lib-eval-file "claude-lib" (form-file output-file root))
+(declare-function claude-lib-demo "claude-lib" (root &optional depth))
+(declare-function claude-lib-promote "claude-lib" (source destination problem &optional allow-redefine))
+
+(defvar claude-lib-test--repo-root
+  (file-name-directory (or load-file-name buffer-file-name))
+  "This file's own directory (modules/), used to locate claude-lib.el
+regardless of the caller's `default-directory'.")
+
+(defmacro claude-lib-test--with-temp-library (var &rest body)
+  "Bind VAR and the dynamic `claude-lib-file' to a temp copy of the
+real library, run BODY, then kill any buffer left visiting it and
+delete the temp file. Never touches the checked-in modules/claude-lib.el."
+  (declare (indent 1))
+  `(let* ((,var (make-temp-file "claude-lib-test-promote-lib" nil ".el"))
+          (claude-lib-file ,var))
+     (unwind-protect
+         (progn
+           (copy-file (expand-file-name "claude-lib.el" claude-lib-test--repo-root)
+                      ,var t)
+           ,@body)
+       (let ((buf (get-file-buffer ,var)))
+         (when buf (kill-buffer buf)))
+       (ignore-errors (delete-file ,var)))))
 
 (defmacro claude-lib-test--with-form-file (content var &rest body)
   "Bind VAR to a fresh temp file containing CONTENT, run BODY, then delete it."
@@ -202,6 +241,170 @@ what propagates: it is the one that actually explains the failure."
       (let ((edmacs-claude-lib-max-output-bytes 10))
         (should-error (edmacs-claude-lib-eval-file form-file output-file temporary-file-directory)))
       (should (equal (claude-lib-test--read-output output-file) "stale-but-current-looking-content")))))
+
+;; ============================================================================
+;; Phase 3 AC2 -- discovery needs no second tool
+;; ============================================================================
+
+(ert-deftest claude-lib-test-demo-discoverable-by-apropos ()
+  (should (memq 'claude-lib-demo (apropos-internal "^claude-lib-" #'fboundp))))
+
+(ert-deftest claude-lib-test-demo-docstring-exact ()
+  (should (equal (documentation 'claude-lib-demo)
+                 "Summarise the project at ROOT to DEPTH levels.\nReturns an alist of (FILE . LINES).")))
+
+(ert-deftest claude-lib-test-demo-arglist-exact ()
+  (should (equal (help-function-arglist 'claude-lib-demo) '(root &optional depth))))
+
+(ert-deftest claude-lib-test-demo-eldoc-args-string ()
+  (should (equal (elisp-get-fnsym-args-string 'claude-lib-demo) "(ROOT &optional DEPTH)")))
+
+;; ============================================================================
+;; Phase 3 AC3/AC4 -- claude-lib-promote: provenance and validation
+;; ============================================================================
+
+(ert-deftest claude-lib-test-promote-writes-provenance-comment-above-form ()
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (claude-lib-promote
+           "(defun claude-lib-test-promoted-fn (x)\n  \"Return X unchanged.\"\n  x)"
+           "rdm/editors/emacs" "needed a trivial passthrough for a live test")
+          (let ((text (with-temp-buffer
+                        (insert-file-contents lib)
+                        (buffer-string))))
+            (should (string-match-p "needed a trivial passthrough for a live test" text))
+            (should (string-match-p "Destination: rdm/editors/emacs\\." text))
+            (should (string-match-p
+                     (rx "\n;; Promoted " (= 4 digit) "-" (= 2 digit) "-" (= 2 digit) ": "
+                         "needed a trivial passthrough for a live test "
+                         "Destination: rdm/editors/emacs.\n"
+                         "(defun claude-lib-test-promoted-fn")
+                     text))))
+      (when (fboundp 'claude-lib-test-promoted-fn) (fmakunbound 'claude-lib-test-promoted-fn)))))
+
+(ert-deftest claude-lib-test-promote-rejects-missing-docstring ()
+  (claude-lib-test--with-temp-library lib
+    (should-error
+     (claude-lib-promote "(defun claude-lib-test-no-doc (x) x)" "edmacs" "problem")
+     :type 'user-error)))
+
+(ert-deftest claude-lib-test-promote-rejects-docstring-without-period ()
+  (claude-lib-test--with-temp-library lib
+    (should-error
+     (claude-lib-promote "(defun claude-lib-test-bad-doc (x)\n  \"Return X\"\n  x)" "edmacs" "problem")
+     :type 'user-error)))
+
+(ert-deftest claude-lib-test-promote-rejects-wrong-prefix ()
+  (claude-lib-test--with-temp-library lib
+    (should-error
+     (claude-lib-promote "(defun not-claude-lib-prefixed (x)\n  \"Return X unchanged.\"\n  x)" "edmacs" "problem")
+     :type 'user-error)))
+
+(ert-deftest claude-lib-test-promote-rejects-multiple-forms ()
+  (claude-lib-test--with-temp-library lib
+    (should-error
+     (claude-lib-promote
+      (concat "(defun claude-lib-test-multi-a (x)\n  \"Return X unchanged.\"\n  x)\n"
+              "(defun claude-lib-test-multi-b (x)\n  \"Return X unchanged.\"\n  x)")
+      "edmacs" "problem")
+     :type 'user-error)))
+
+(ert-deftest claude-lib-test-promote-rejects-blank-destination ()
+  (claude-lib-test--with-temp-library lib
+    (should-error
+     (claude-lib-promote "(defun claude-lib-test-blank-dest (x)\n  \"Return X unchanged.\"\n  x)"
+                          "   " "problem")
+     :type 'user-error)))
+
+(ert-deftest claude-lib-test-promote-rejects-blank-problem ()
+  (claude-lib-test--with-temp-library lib
+    (should-error
+     (claude-lib-promote "(defun claude-lib-test-blank-problem (x)\n  \"Return X unchanged.\"\n  x)"
+                          "edmacs" "")
+     :type 'user-error)))
+
+(ert-deftest claude-lib-test-promote-nil-destination-defaults-to-edmacs ()
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (claude-lib-promote "(defun claude-lib-test-default-dest (x)\n  \"Return X unchanged.\"\n  x)"
+                               nil "problem")
+          (should (string-match-p "Destination: edmacs\\."
+                                  (with-temp-buffer
+                                    (insert-file-contents lib)
+                                    (buffer-string)))))
+      (when (fboundp 'claude-lib-test-default-dest) (fmakunbound 'claude-lib-test-default-dest)))))
+
+(ert-deftest claude-lib-test-promote-duplicate-rejected-then-allowed ()
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (claude-lib-promote "(defun claude-lib-test-dup (x)\n  \"Return X unchanged.\"\n  x)"
+                               "edmacs" "first promotion")
+          (should-error
+           (claude-lib-promote "(defun claude-lib-test-dup (x)\n  \"Return X, again.\"\n  x)"
+                                "edmacs" "second promotion")
+           :type 'user-error)
+          (should (claude-lib-promote "(defun claude-lib-test-dup (x)\n  \"Return X, again.\"\n  x)"
+                                       "edmacs" "second promotion, allowed" t)))
+      (when (fboundp 'claude-lib-test-dup) (fmakunbound 'claude-lib-test-dup)))))
+
+(declare-function claude-lib-test-valid nil (x))
+
+(ert-deftest claude-lib-test-promote-valid-defines-live-and-persists ()
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (should (eq (claude-lib-promote "(defun claude-lib-test-valid (x)\n  \"Return X unchanged.\"\n  x)"
+                                           "edmacs" "valid promotion")
+                      'claude-lib-test-valid))
+          (should (fboundp 'claude-lib-test-valid))
+          (should (equal (claude-lib-test-valid 5) 5))
+          (should (string-match-p "defun claude-lib-test-valid"
+                                  (with-temp-buffer
+                                    (insert-file-contents lib)
+                                    (buffer-string)))))
+      (when (fboundp 'claude-lib-test-valid) (fmakunbound 'claude-lib-test-valid)))))
+
+(ert-deftest claude-lib-test-promote-errors-on-modified-buffer ()
+  (claude-lib-test--with-temp-library lib
+    (let ((buf (find-file-noselect lib)))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf (insert ";; unsaved local edit\n"))
+            (should-error
+             (claude-lib-promote "(defun claude-lib-test-guarded (x)\n  \"Return X unchanged.\"\n  x)"
+                                  "edmacs" "problem")
+             :type 'user-error))
+        (kill-buffer buf)))))
+
+;; ============================================================================
+;; Phase 3 AC5 -- no gptel dependency, no tool-registry
+;; ============================================================================
+
+(ert-deftest claude-lib-test-no-gptel-or-registry-references ()
+  (let ((text (with-temp-buffer
+                (insert-file-contents (expand-file-name "claude-lib.el" claude-lib-test--repo-root))
+                (buffer-string))))
+    (should-not (string-match-p "gptel\\|llm-tool-collection" text))))
+
+;; ============================================================================
+;; Phase 3 AC6 -- interactive-driving convention documented; per-project override
+;; ============================================================================
+
+(ert-deftest claude-lib-test-relevant-functions-safe-local-variable ()
+  (let ((pred (get 'claude-lib-relevant-functions 'safe-local-variable)))
+    (should (funcall pred '(claude-lib-demo foo)))
+    (should-not (funcall pred "not-a-list"))
+    (should-not (funcall pred '(claude-lib-demo "not-a-symbol")))))
+
+(ert-deftest claude-lib-test-header-documents-interactive-driving-convention ()
+  (let ((text (with-temp-buffer
+                (insert-file-contents (expand-file-name "claude-lib.el" claude-lib-test--repo-root))
+                (buffer-string))))
+    (should (string-match-p "completing-read-function" text))
+    (should (string-match-p "unread-command-events" text))))
 
 (provide 'claude-lib-test)
 ;;; claude-lib-test.el ends here

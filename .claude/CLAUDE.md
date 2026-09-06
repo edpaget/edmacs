@@ -9,6 +9,7 @@ This is **edmacs**, a modern, modular Emacs configuration with evil-mode, versio
 - Top-level Emacs configuration files (`init.el`, `early-init.el`, etc.)
 - Multiple configuration modules in `modules/` directory
 - A `claude-term` integration (`modules/claude-term.el`, `modules/claude-term-registry.el`) that hosts the interactive Claude CLI in a ghostel terminal buffer
+- `modules/claude-lib.el` -- the Bash-driven `emacsclient` eval channel (namespace `edmacs-claude-lib-`) plus Claude's own promoted-code staging library (namespace `claude-lib-`, grown via `claude-lib-promote`)
 
 ## Working on the Emacs Modules
 
@@ -59,6 +60,10 @@ test infrastructure belongs, not a fresh copy-paste into the new file.
 Tests are plain [ERT](https://www.gnu.org/software/emacs/manual/html_node/ert/)
 suites living beside the code they cover, as `modules/<module>-test.el`:
 
+- `modules/claude-lib-test.el` -- pure-function coverage of the eval channel
+  and the promotion library's validation/provenance logic
+- `modules/claude-lib-live-test.el` -- eval channel through a real throwaway
+  daemon, plus a promoted function's persistence across a fresh Emacs process
 - `modules/claude-term-test.el` -- pure-function coverage of `claude-term.el`
 - `modules/claude-term-live-test.el` -- kill/restart/exit lifecycle against real subprocesses
 - `modules/claude-term-registry-test.el` -- pure-function coverage of the session registry
@@ -506,6 +511,7 @@ edmacs/
 │   ├── completion.el      # Vertico, Corfu, Consult
 │   ├── programming.el     # LSP, Flycheck, Apheleia
 │   ├── ai.el              # Markdown editor polish
+│   ├── claude-lib.el      # Bash-driven eval channel + Claude's promoted-code library
 │   ├── claude-term.el     # Claude CLI hosted in a ghostel terminal
 │   ├── claude-term-registry.el # Session registry + SPC a keymap
 │   ├── git-common-dir.el  # Worktree-aware git dir resolution

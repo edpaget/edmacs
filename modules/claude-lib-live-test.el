@@ -25,6 +25,15 @@
 ;; a subprocess; skips are not expected in a normal dev environment, so
 ;; none are built in here (contrast the pty-only suites in CLAUDE.md's
 ;; Testing section, which this is not one of).
+;;
+;; Also covers phase 3's AC1 for the promotion library built on top of
+;; this same file: a function `claude-lib-promote'd in one plain batch
+;; Emacs process must be `fboundp' in a second, wholly separate batch
+;; process that freshly loads the (temp-copied) library afterward --
+;; proving persistence across a process boundary, not merely within one
+;; image. That check needs a real forked `emacs' but no daemon or
+;; `emacsclient' at all, so it drives `call-process' directly rather
+;; than going through the daemon helpers above.
 
 ;;; Code:
 
@@ -206,6 +215,41 @@ runs BODY, then kills it in `unwind-protect' regardless of outcome."
               (should-not (file-exists-p output-file))))
         (ignore-errors (delete-file form-file))
         (when (file-exists-p output-file) (delete-file output-file))))))
+
+;; ============================================================================
+;; Phase 3 AC1 -- promotion survives to a fresh, separate Emacs process
+;; ============================================================================
+
+(ert-deftest claude-lib-live-test-promote-persists-across-process-boundary ()
+  "A function `claude-lib-promote'd in one batch Emacs process must be
+`fboundp' in a second, wholly separate batch Emacs process that
+freshly loads the same (temp-copied) library file afterward."
+  (let* ((tmp-lib (make-temp-file "claude-lib-live-test-lib" nil ".el"))
+         (source-lib (expand-file-name "modules/claude-lib.el" claude-lib-live-test--repo-root))
+         (process-environment (cons "TERM=dumb" process-environment)))
+    (unwind-protect
+        (progn
+          (copy-file source-lib tmp-lib t)
+          (let ((promote-form
+                 `(progn
+                    (load ,tmp-lib nil t)
+                    (claude-lib-promote
+                     "(defun claude-lib-live-test-promoted (x)\n  \"Return X unchanged.\"\n  x)"
+                     "edmacs" "live-test fixture")
+                    (kill-emacs 0))))
+            (with-temp-buffer
+              (let ((exit (call-process "emacs" nil t nil "-Q" "--batch"
+                                         "--eval" (prin1-to-string promote-form))))
+                (unless (zerop exit)
+                  (error "claude-lib-live-test: promote process failed (exit %d): %s"
+                         exit (buffer-string))))))
+          (let ((check-form
+                 `(progn
+                    (load ,tmp-lib nil t)
+                    (kill-emacs (if (fboundp 'claude-lib-live-test-promoted) 0 1)))))
+            (should (zerop (call-process "emacs" nil nil nil "-Q" "--batch"
+                                          "--eval" (prin1-to-string check-form))))))
+      (ignore-errors (delete-file tmp-lib)))))
 
 (provide 'claude-lib-live-test)
 ;;; claude-lib-live-test.el ends here
