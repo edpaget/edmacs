@@ -123,10 +123,25 @@ Re-applied from `enable-theme-functions' because `load-theme' resets
 faces: ui.el reloads the theme on the first graphical frame, which would
 otherwise discard these the moment a GUI frame appears."
   (when (eq (frame-parameter nil 'background-mode) 'dark)
-    (set-face-attribute 'nano-modeline-active nil
-                        :background "#073642" :foreground "#93a1a1")
-    (set-face-attribute 'nano-modeline-inactive nil
-                        :background "#073642" :foreground "#586e75")))
+    ;; The box is what solarized uses to fake padding, but its colour is the
+    ;; OLD background (#002b36) -- invisible before, a 1px outline once the
+    ;; background moved to #073642. Keep the box for its height, recoloured
+    ;; to the background so it stops drawing a line; drop the theme's
+    ;; overline/underline, which draw one across the top and bottom edges.
+    (dolist (spec '((nano-modeline-active . "#93a1a1")
+                    (nano-modeline-inactive . "#586e75")))
+      (set-face-attribute (car spec) nil
+                          :background "#073642" :foreground (cdr spec)
+                          :box '(:line-width 1 :color "#073642")
+                          :overline nil :underline nil))
+    ;; nano renders through its own faces, but Emacs still paints the row
+    ;; with the stock ones -- their overline/underline show through as the
+    ;; same stray line.
+    (dolist (face '(mode-line mode-line-inactive))
+      (set-face-attribute face nil
+                          :background "#073642"
+                          :box '(:line-width 1 :color "#073642")
+                          :overline nil :underline nil))))
 
 (defvar nano-modeline-faces)
 

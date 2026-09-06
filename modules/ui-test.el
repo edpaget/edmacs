@@ -216,4 +216,23 @@ re-running it never stacks a duplicate."
                     (cdr (assq 'status-RW-inactive nano-modeline-faces))))
     (should (= 1 (cl-count 'status-RW-inactive nano-modeline-faces :key #'car)))))
 
+(ert-deftest edmacs-ui-test-modeline-contrast-draws-no-line ()
+  "No mode-line face draws a visible edge. solarized boxes the mode line in
+the OLD background colour and adds an overline/underline; once the
+background moved, each of those became a stray line across the bar. The
+box is kept (it supplies the bar's height) but recoloured to the
+background, and the overline/underline are dropped."
+  ;; nano-modeline is not loadable under `-Q', so its faces may not exist.
+  (dolist (f '(nano-modeline-active nano-modeline-inactive))
+    (unless (facep f) (make-face f)))
+  (cl-letf (((symbol-function 'frame-parameter) (lambda (&rest _) 'dark)))
+    (edmacs--apply-modeline-contrast))
+  (dolist (face '(nano-modeline-active nano-modeline-inactive
+                  mode-line mode-line-inactive))
+    (should-not (face-attribute face :overline nil t))
+    (should-not (face-attribute face :underline nil t))
+    ;; A box whose colour equals the background cannot draw a visible line.
+    (should (equal (face-attribute face :background nil t)
+                    (plist-get (face-attribute face :box nil t) :color)))))
+
 ;;; ui-test.el ends here
