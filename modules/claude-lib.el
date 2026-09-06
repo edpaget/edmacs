@@ -143,26 +143,33 @@ rather than silently writing a truncated file that looks complete.")
     (skip-chars-forward "^\n")
     (skip-chars-forward " \t\n\r\f")))
 
-(defun edmacs-claude-lib--read-all-forms (form-file)
-  "Read every top-level form in FORM-FILE, in order, as a list.
+(defun edmacs-claude-lib--read-forms-in-current-buffer (context)
+  "Read every top-level form in the current buffer, in order, as a list.
 Deliberately does not rely on `read' signaling `end-of-file' to mean
 \"nothing left\": that same signal is what a genuinely truncated
 trailing form (an unbalanced paren at EOF) raises too, so catching it
-unconditionally would misreport a malformed file as a clean, empty
+unconditionally would misreport malformed input as a clean, empty
 stop. Instead, whitespace/comments are skipped by hand and `eobp'
 alone decides whether more input remains; a `read' past that point
-that itself hits EOF is a real error and is left to propagate."
+that itself hits EOF is a real error and is left to propagate. CONTEXT
+names the input in the error signaled when no forms are found at all."
+  (goto-char (point-min))
+  (edmacs-claude-lib--skip-form-whitespace)
+  (let (forms)
+    (while (not (eobp))
+      (push (read (current-buffer)) forms)
+      (edmacs-claude-lib--skip-form-whitespace))
+    (unless forms
+      (error "edmacs-claude-lib: no forms in %s" context))
+    (nreverse forms)))
+
+(defun edmacs-claude-lib--read-all-forms (form-file)
+  "Read every top-level form in FORM-FILE, in order, as a list.
+See `edmacs-claude-lib--read-forms-in-current-buffer' for the reader
+loop this delegates to; a read error here propagates raw."
   (with-temp-buffer
     (insert-file-contents form-file)
-    (goto-char (point-min))
-    (edmacs-claude-lib--skip-form-whitespace)
-    (let (forms)
-      (while (not (eobp))
-        (push (read (current-buffer)) forms)
-        (edmacs-claude-lib--skip-form-whitespace))
-      (unless forms
-        (error "edmacs-claude-lib: no forms in %s" form-file))
-      (nreverse forms))))
+    (edmacs-claude-lib--read-forms-in-current-buffer form-file)))
 
 (defun edmacs-claude-lib--format-value (value)
   "Render VALUE for OUTPUT-FILE's value section.
@@ -335,25 +342,16 @@ Internal helper for `claude-lib-demo'; deliberately not itself a
 
 (defun claude-lib--read-source-forms (source)
   "Read every top-level Lisp form in the string SOURCE.
-Reuses `edmacs-claude-lib--skip-form-whitespace' so blank lines and
-`;'-comments around/between forms in SOURCE are tolerated exactly as
-they are in a FORM-FILE. Wraps a malformed SOURCE (unbalanced parens,
-nothing but comments) in a `user-error' rather than letting a raw
-reader error escape: SOURCE is a string a Claude session hand-built for
-this call, not a file already known to parse."
+Reuses `edmacs-claude-lib--read-forms-in-current-buffer' so blank lines
+and `;'-comments around/between forms in SOURCE are tolerated exactly
+as they are in a FORM-FILE. Wraps a malformed SOURCE (unbalanced
+parens, nothing but comments) in a `user-error' rather than letting a
+raw reader error escape: SOURCE is a string a Claude session
+hand-built for this call, not a file already known to parse."
   (with-temp-buffer
     (insert source)
-    (goto-char (point-min))
     (condition-case err
-        (progn
-          (edmacs-claude-lib--skip-form-whitespace)
-          (let (forms)
-            (while (not (eobp))
-              (push (read (current-buffer)) forms)
-              (edmacs-claude-lib--skip-form-whitespace))
-            (unless forms
-              (error "no forms in SOURCE"))
-            (nreverse forms)))
+        (edmacs-claude-lib--read-forms-in-current-buffer "SOURCE")
       (error (user-error "claude-lib-promote: SOURCE does not parse as elisp: %s"
                           (error-message-string err))))))
 
