@@ -436,6 +436,12 @@ STARTUP_CHECK_EVAL='(princ (format "assert: %S\n" window-sides-slots))' \
 rdm roadmaps and tasks get their own git worktree under
 `../edmacs__worktrees/<slug>/`, so several Claude sessions edit this config
 at once. Module sources are per-worktree; **the package tree is not**.
+`modules/claude-lib.el`'s promotion path is an exception to the "module
+sources are per-worktree" rule: `claude-lib-promote` always targets the
+main checkout's copy (the one instance `init.el` loads at daemon boot),
+regardless of which worktree's claude-term session calls it, so a
+worktree's own tracked copy of that file is inert until that worktree
+merges to main.
 
 `.gitignore` ignores `straight/*` except `straight/versions/`, so a fresh
 worktree has a lockfile and nothing else -- no `straight/repos/`, no

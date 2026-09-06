@@ -45,7 +45,7 @@
 (defvar claude-lib-relevant-functions)
 (declare-function edmacs-claude-lib-eval-file "claude-lib" (form-file output-file root))
 (declare-function claude-lib-demo "claude-lib" (root &optional depth))
-(declare-function claude-lib-promote "claude-lib" (source destination problem &optional allow-redefine))
+(declare-function claude-lib-promote "claude-lib" (source destination problem))
 
 (defvar claude-lib-test--repo-root
   (file-name-directory (or load-file-name buffer-file-name))
@@ -298,6 +298,20 @@ what propagates: it is the one that actually explains the failure."
      (claude-lib-promote "(defun claude-lib-test-bad-doc (x)\n  \"Return X\"\n  x)" "edmacs" "problem")
      :type 'user-error)))
 
+(ert-deftest claude-lib-test-promote-accepts-bang-or-question-mark-terminator ()
+  "The complete-sentence heuristic accepts `!' and `?', not just `.'."
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (should (claude-lib-promote
+                   "(defun claude-lib-test-bang-doc (x)\n  \"Return X, doubled!\"\n  (* 2 x))"
+                   "edmacs" "bang terminator"))
+          (should (claude-lib-promote
+                   "(defun claude-lib-test-question-doc (x)\n  \"Did X arrive unchanged?\"\n  x)"
+                   "edmacs" "question terminator")))
+      (when (fboundp 'claude-lib-test-bang-doc) (fmakunbound 'claude-lib-test-bang-doc))
+      (when (fboundp 'claude-lib-test-question-doc) (fmakunbound 'claude-lib-test-question-doc)))))
+
 (ert-deftest claude-lib-test-promote-rejects-wrong-prefix ()
   (claude-lib-test--with-temp-library lib
     (should-error
@@ -371,7 +385,10 @@ a multi-line PROBLEM is."
                                     (buffer-string)))))
       (when (fboundp 'claude-lib-test-default-dest) (fmakunbound 'claude-lib-test-default-dest)))))
 
-(ert-deftest claude-lib-test-promote-duplicate-rejected-then-allowed ()
+(ert-deftest claude-lib-test-promote-duplicate-name-in-file-text-rejected ()
+  "A name already present as `(defun NAME ...)' text in the target file
+must be rejected outright -- there is no override; a genuine
+replacement needs a new name and its own provenance comment."
   (claude-lib-test--with-temp-library lib
     (unwind-protect
         (progn
@@ -380,10 +397,33 @@ a multi-line PROBLEM is."
           (should-error
            (claude-lib-promote "(defun claude-lib-test-dup (x)\n  \"Return X, again.\"\n  x)"
                                 "edmacs" "second promotion")
-           :type 'user-error)
-          (should (claude-lib-promote "(defun claude-lib-test-dup (x)\n  \"Return X, again.\"\n  x)"
-                                       "edmacs" "second promotion, allowed" t)))
+           :type 'user-error))
       (when (fboundp 'claude-lib-test-dup) (fmakunbound 'claude-lib-test-dup)))))
+
+(ert-deftest claude-lib-test-promote-duplicate-fboundp-in-session-rejected ()
+  "A name already `fboundp' in the running session must be rejected even
+when it is ABSENT from the target file's text -- the file-text check
+and the `fboundp' check are independent signals of the same underlying
+cause (one shared file, one shared process across every worktree's
+claude-term session), and neither subsumes the other. This is the
+session-state-vs-file-text divergence this design must guard: an
+earlier ad hoc `eval', or a genuinely concurrent promotion from another
+worktree's session, can define a symbol process-wide before any file
+write mentioning it exists."
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (fset 'claude-lib-test-fboundp-only (lambda (x) x))
+          (should-not (string-match-p "claude-lib-test-fboundp-only"
+                                      (with-temp-buffer
+                                        (insert-file-contents lib)
+                                        (buffer-string))))
+          (should-error
+           (claude-lib-promote
+            "(defun claude-lib-test-fboundp-only (x)\n  \"Return X unchanged.\"\n  x)"
+            "edmacs" "already fboundp elsewhere")
+           :type 'user-error))
+      (when (fboundp 'claude-lib-test-fboundp-only) (fmakunbound 'claude-lib-test-fboundp-only)))))
 
 (declare-function claude-lib-test-valid nil (x))
 
@@ -466,6 +506,7 @@ its own docstring and validation both advertise all three shapes."
 ;; ============================================================================
 
 (ert-deftest claude-lib-test-relevant-functions-safe-local-variable ()
+  (should (null (default-value 'claude-lib-relevant-functions)))
   (let ((pred (get 'claude-lib-relevant-functions 'safe-local-variable)))
     (should (funcall pred '(claude-lib-demo foo)))
     (should-not (funcall pred "not-a-list"))

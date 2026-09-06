@@ -56,6 +56,21 @@
 ;; every daemon start) finds it too, not just the promoting session's
 ;; own live image.
 ;;
+;; THERE IS NO PER-WORKTREE ISOLATION FOR THIS FILE. `claude-lib-file'
+;; (see its own docstring) resolves once, at daemon boot, to the main
+;; checkout's absolute path -- there is exactly one live copy for the
+;; whole shared daemon. A claude-term session running inside a
+;; worktree that calls `claude-lib-promote' is directly mutating the
+;; MAIN CHECKOUT's working tree and the one shared Emacs process, ahead
+;; of any branch/PR boundary for that worktree's own change set -- no
+;; different in kind from live-editing any other module via
+;; `eval-buffer' against the one loaded instance. A worktree's own
+;; git-tracked copy of this file is inert text until that worktree
+;; merges to main. Practical consequence: this file in the main
+;; checkout can accrue uncommitted changes from unrelated concurrent
+;; worktree sessions, so commit it deliberately rather than assuming it
+;; is clean.
+;;
 ;; DISCOVERY IS SOLVED, and needs no second tool -- Emacs already does
 ;; it, verified against Emacs 31.1 in batch mode:
 ;;
@@ -72,8 +87,8 @@
 ;;
 ;; A promoted function's docstring is the interface: `claude-lib-promote'
 ;; hard-requires one whose first line is a complete sentence (ends in
-;; `.') naming what the function returns, because that line is what a
-;; library listing shows.
+;; `.', `!' or `?') naming what the function returns, because that
+;; line is what a library listing shows.
 ;;
 ;; GRADUATION does not always mean "stays in edmacs" -- a prototype may
 ;; belong to another repository entirely (e.g. an rdm Emacs package
@@ -264,7 +279,20 @@ as this call's error."
 whichever copy of the library is actually loaded into this Emacs
 image -- never a hard-coded location that could silently diverge from
 it (e.g. when this file is loaded from a worktree's own checkout under
-test, or from a temp copy in a test).")
+test, or from a temp copy in a test).
+
+In production there is exactly ONE live value of this variable for the
+whole system: `init.el' is loaded exactly once per daemon lifetime,
+always from the main checkout (this repo never points
+`--init-directory' at a worktree -- see its CLAUDE.md's Worktrees
+section), so this resolves once, at daemon boot, to the main
+checkout's absolute path. A claude-term session opened inside a
+worktree is a different project root inside that SAME daemon, not a
+second Emacs, so `claude-lib-promote' called from such a session still
+writes to the main checkout's file on disk and defines the function in
+that same shared process -- never to the worktree's own git-tracked
+copy of this file, which stays inert text until that worktree merges
+to main. Neither the write nor the eval is worktree-scoped.")
 
 (defvar-local claude-lib-relevant-functions nil
   "Project-specific subset of `claude-lib-' symbols worth using here.
@@ -343,7 +371,9 @@ Meant to be called with `claude-lib-file's buffer current. Checks the
 buffer's TEXT directly, not `fboundp': a previous promotion may already
 be on disk without yet being loaded into this image (a fresh daemon
 that has not reloaded claude-lib.el since), and a text search still
-catches that case."
+catches that case. `claude-lib-promote' also checks `fboundp'
+separately -- neither check subsumes the other, since the shared file
+and the shared running process can diverge (see its docstring)."
   (save-excursion
     (goto-char (point-min))
     (re-search-forward
@@ -370,18 +400,21 @@ confirmation, which would hang a non-interactive caller."
           buf)
       (find-file-noselect file))))
 
-(defun claude-lib-promote (source destination problem &optional allow-redefine)
+(defun claude-lib-promote (source destination problem)
   "Promote SOURCE into this library as a permanent, provenance-tracked entry.
 
 SOURCE is a string containing exactly one top-level `defun',
 `cl-defun' or `defmacro' form, passed verbatim (so its own formatting
 is preserved on disk) -- the tested, session-evaluated code to keep.
 Its name must carry the `claude-lib-' prefix, and its docstring is
-required and must have a first line ending in `.' (a complete sentence
-naming what it returns): this is the one hard gate promotion enforces,
-because an undocumented promoted function is invisible to discovery.
-The period is a necessary, not sufficient, proxy for that -- it is not
-a check that the sentence actually says anything useful.
+required and must have a first line ending in `.', `!' or `?' (a
+complete sentence naming what it returns): this is the one hard gate
+promotion enforces, because an undocumented promoted function is
+invisible to discovery. Terminal punctuation is a necessary, not
+sufficient, proxy for that -- it is not a check that the sentence
+actually says anything useful, and it can false-reject a docstring
+ending in a closing parenthesis or quote after the period; false
+rejections are the safe failure direction (Claude can rephrase).
 
 DESTINATION names where the promotion is meant to graduate to --
 \"edmacs\" (the default, used when DESTINATION is nil) or another
@@ -395,15 +428,25 @@ provenance comment is a single `;;'-prefixed line, and a raw embedded
 newline would splice uncommented text straight into this file's Lisp
 source.
 
-Unless NAME is already defined in this file, in which case
-ALLOW-REDEFINE must be non-nil to re-promote it -- promotion never
-silently overwrites an existing entry's history; a re-promotion is
-appended after the old one, not in place of it.
+NAME must not already exist -- checked BOTH as literal `(defun NAME
+...)'/`(cl-defun NAME ...)'/`(defmacro NAME ...)' text in
+`claude-lib-file's current on-disk contents AND as `(fboundp NAME)' in
+this running Emacs. Neither check alone is enough: because every
+worktree's claude-term session shares this one main-checkout file and
+this one running daemon (see `claude-lib-file'), a name can be
+`fboundp' here from an earlier ad hoc `eval' or a concurrent promotion
+from another session's buffer before either has written to disk, or
+present in the file's text from a promotion this process has not yet
+reloaded -- either signal alone means NAME is taken, so both are hard
+errors with no override. A genuine replacement is a new name plus a
+provenance comment noting what it supersedes, not a silent redefine.
 
 On success: evaluates the parsed form into this Emacs, appends the
 provenance comment and SOURCE to the file (ahead of the trailing
 `(provide \\='claude-lib)' form), saves it, and returns the defined
-symbol."
+symbol. Both the file write and the eval land in the one shared
+main-checkout file/process regardless of which worktree's session
+called this -- see `claude-lib-file'."
   (let ((destination
          (cond
           ((null destination) "edmacs")
@@ -433,15 +476,18 @@ symbol."
             (unless (and (stringp docstring) (not (string-empty-p docstring)))
               (user-error "claude-lib-promote: %s has no docstring" name))
             (let ((first-line (car (split-string docstring "\n"))))
-              (unless (string-suffix-p "." first-line)
+              (unless (string-match-p "[.!?]\\'" first-line)
                 (user-error
-                 "claude-lib-promote: %s's docstring first line must end in a complete sentence (a period): %S"
+                 "claude-lib-promote: %s's docstring first line must end in a complete sentence (., ! or ?): %S"
                  name first-line))))
+          (when (fboundp name)
+            (user-error
+             "claude-lib-promote: %s is already fboundp in this running Emacs" name))
           (let ((buf (claude-lib--ensure-fresh-buffer claude-lib-file)))
             (with-current-buffer buf
-              (when (and (not allow-redefine) (claude-lib--name-defined-in-file-p name))
+              (when (claude-lib--name-defined-in-file-p name)
                 (user-error
-                 "claude-lib-promote: %s is already defined in %s; pass a non-nil allow-redefine to re-promote"
+                 "claude-lib-promote: %s is already defined in %s"
                  name claude-lib-file))
               (goto-char (point-min))
               (unless (re-search-forward "^(provide 'claude-lib)" nil t)
