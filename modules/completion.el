@@ -6,6 +6,23 @@
 ;;; Code:
 
 ;; ============================================================================
+;; Minibuffer Behavior
+;; ============================================================================
+
+;; Lets Embark's self-prompting actions (`embark-become', etc.) and
+;; `vertico-suspend' open a minibuffer from inside another one.
+(setq enable-recursive-minibuffers t)
+(minibuffer-depth-indicate-mode 1)
+
+;; M-x stops offering commands that cannot run in the current mode/buffer.
+(setq read-extended-command-predicate #'command-completion-default-include-p)
+
+;; Keeps point out of the prompt text itself.
+(setq minibuffer-prompt-properties
+      (append minibuffer-prompt-properties '(cursor-intangible t)))
+(add-hook 'minibuffer-setup-hook #'cursor-intangible-mode)
+
+;; ============================================================================
 ;; Vertico - Vertical completion UI
 ;; ============================================================================
 
@@ -56,8 +73,7 @@
   :init
   (marginalia-mode)
   :config
-  (setq marginalia-annotators
-        '(marginalia-annotators-heavy marginalia-annotators-light nil)))
+  (setq marginalia-align 'right))
 
 ;; ============================================================================
 ;; Consult - Enhanced commands

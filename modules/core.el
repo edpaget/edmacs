@@ -225,7 +225,8 @@ binary degrades to a warning instead."
 
 (use-package savehist
   :config
-  (setq history-length 25)
+  (setq history-length 300
+        savehist-additional-variables '(search-ring regexp-search-ring))
   (savehist-mode 1))
 
 ;; ============================================================================
