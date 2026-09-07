@@ -439,7 +439,14 @@ tab in GROUP (via `tab-bar-new-tab'/`tab-bar-rename-tab'/
 tab unless it also appears in CHILDREN -- modeling \"no open main
 tab\" by default, since that is this phase's own new edge case."
       (declare (indent 1))
-      `(let ((edmacs-sidebar-test--tab-count-before (length (tab-bar-tabs)))
+      ;; Fixture roots ("/repoA/main/" and friends) name no real
+      ;; directory, so the real `file-directory-p' probe would render
+      ;; every row as a missing worktree. Bound to `always' here: these
+      ;; tests are about shape, glyph and current-tab hue, not staleness
+      ;; -- `edmacs-sidebar-test-missing-worktree-row-is-marked' below
+      ;; drives the probe deliberately, against real directories.
+      `(let ((edmacs-sidebar-worktree-live-p-function #'always)
+             (edmacs-sidebar-test--tab-count-before (length (tab-bar-tabs)))
              (edmacs-sidebar-test--primed-roots nil))
          (unwind-protect
              (progn
@@ -1558,6 +1565,107 @@ selected tab gets `edmacs-sidebar-worktree-child-face' (AC3's
                 (forward-line 1)
                 (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-worktree-child-face))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+
+    ;; ==========================================================================
+    ;; A stamped worktree root that has been deleted from disk
+    ;; ==========================================================================
+    ;; The per-row replacement for the frames model's whole-frame "repo
+    ;; missing" warning row (`edmacs-sidebar--insert-missing-repo-warning',
+    ;; deleted with `edmacs-repo-missing'). These two drive the REAL
+    ;; `file-directory-p' probe against real directories, rebinding
+    ;; `edmacs-sidebar-worktree-live-p-function' back from the `always'
+    ;; that `edmacs-sidebar-test--with-project' installs for every other
+    ;; test in this file.
+
+    (defmacro edmacs-sidebar-test--with-real-roots (names bindings &rest body)
+      "Create one real temp directory per symbol in NAMES, bind each to its
+own directory name, run BODY, then delete whichever of them still
+exist. BINDINGS is a list of extra `let*' bindings evaluated after the
+directories exist."
+      (declare (indent 2))
+      `(let* (,@(mapcar (lambda (name)
+                          `(,name (file-name-as-directory
+                                   (make-temp-file
+                                    ,(format "edmacs-sidebar-test-%s-" name) t))))
+                        names)
+              ,@bindings)
+         (unwind-protect (progn ,@body)
+           (dolist (dir (list ,@names))
+             (when (file-directory-p dir) (delete-directory dir t))))))
+
+    (ert-deftest edmacs-sidebar-test-missing-worktree-row-is-marked ()
+      "A worktree child row whose stamped root has been deleted from disk
+renders with `edmacs-sidebar-missing-worktree-face' and a trailing
+\" (missing)\"; a sibling row whose root still exists keeps the ordinary
+`edmacs-sidebar-worktree-child-face' and carries no marker."
+      (edmacs-sidebar-test--with-real-roots (main gone alive) ()
+        (edmacs-sidebar-test--with-project
+            (list (list "repoMW" main (expand-file-name ".git" main)
+                        (list main "main")
+                        (list gone "gone")
+                        (list alive "alive")))
+          (let ((edmacs-sidebar-worktree-live-p-function #'file-directory-p))
+            (unwind-protect
+                (progn
+                  ;; The worktree directory disappears out from under an
+                  ;; already-open tab -- `rm -rf' of a landed worktree.
+                  (delete-directory gone t)
+                  (tab-bar-switch-to-tab "main")
+                  (edmacs-sidebar-show (selected-frame))
+                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+                      (should (string-match-p "gone (missing)" text))
+                      (should-not (string-match-p "alive (missing)" text)))
+                    (goto-char (point-min))
+                    ;; Row 0 is the project row (main, still on disk).
+                    (should (eq (get-text-property (point) 'face)
+                                'edmacs-sidebar-current-tab-face))
+                    (forward-line 1)
+                    (should (eq (get-text-property (point) 'face)
+                                'edmacs-sidebar-missing-worktree-face))
+                    (forward-line 1)
+                    (should (eq (get-text-property (point) 'face)
+                                'edmacs-sidebar-worktree-child-face))))
+              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+
+    (ert-deftest edmacs-sidebar-test-missing-worktree-outranks-current-tab-face ()
+      "The missing-worktree face wins over the current-tab face: a row
+pointing at a directory that no longer exists says so even while it is
+the frame's own selected tab, and the project row for a repo whose main
+worktree is gone is marked the same way."
+      (edmacs-sidebar-test--with-real-roots (main child) ()
+        (edmacs-sidebar-test--with-project
+            (list (list "repoMW2" main (expand-file-name ".git" main)
+                        (list main "main")
+                        (list child "roadmap-child")))
+          (let ((edmacs-sidebar-worktree-live-p-function #'file-directory-p))
+            (unwind-protect
+                (progn
+                  ;; Leaves "roadmap-child" the frame's current tab.
+                  (delete-directory main t)
+                  (delete-directory child t)
+                  (edmacs-sidebar-show (selected-frame))
+                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                    (goto-char (point-min))
+                    (should (eq (get-text-property (point) 'face)
+                                'edmacs-sidebar-missing-worktree-face))
+                    (forward-line 1)
+                    (should (eq (get-text-property (point) 'face)
+                                'edmacs-sidebar-missing-worktree-face))))
+              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+
+    (ert-deftest edmacs-sidebar-test-missing-worktree-probe-skips-remote-roots ()
+      "A remote root is never probed: `file-directory-p' on one blocks on
+the network, which the redisplay-path redraw cannot afford. The row
+renders as an ordinary live one, and the probe function is not called."
+      (let* ((called nil)
+             (edmacs-sidebar-worktree-live-p-function
+              (lambda (root) (push root called) nil)))
+        (should-not (edmacs-sidebar--root-missing-p "/ssh:host:/srv/repo/"))
+        (should-not called)
+        ;; A local root of the same shape still goes through the probe.
+        (should (edmacs-sidebar--root-missing-p "/srv/repo/"))
+        (should (equal called '("/srv/repo/")))))
 
     (ert-deftest edmacs-sidebar-test-reapply-width-restores-a-resized-sidebar ()
       "`edmacs-sidebar-reapply-width' resizes a drifted sidebar back to target.

@@ -725,12 +725,34 @@ tab-bar group at all (the daemon's boot/spare frame) -- see
 ;; `edmacs-sidebar--enclosing-worktree', and every RET/d/r dispatch below
 ;; keep working unchanged), but carry a `(GROUP . ROOT)' cons as their
 ;; section value instead of a bare ROOT string or tab-number -- see
-;; `edmacs-sidebar-activate''s own dispatch. A stale open tab (its
-;; worktree directory since deleted from disk) gets no warning face in
-;; this render path, unlike the old per-repo one: that check needs a
-;; `file-directory-p' probe this phase deliberately does not add (no AC
-;; in this phase body asks for it); `edmacs-sidebar-missing-worktree-face'
-;; stays defined for whichever later phase picks this back up.
+;; `edmacs-sidebar-activate''s own dispatch. A row whose stamped root has
+;; been deleted from disk is marked with `edmacs-sidebar-missing-worktree-face'
+;; and a trailing " (missing)" -- the per-row replacement for the old
+;; per-frame "repo missing" warning row, which could only speak for a
+;; frame's single repo.
+
+(defvar edmacs-sidebar-worktree-live-p-function #'file-directory-p
+  "Predicate deciding whether a stamped worktree root still exists.
+Called with the root directory, once per rendered row. Must stay a
+local stat, never a shell-out: `edmacs-sidebar--redraw' runs off
+redisplay. Rebindable so a suite whose fixture roots name no real
+directory can render them as live -- production never rebinds it.")
+
+(defun edmacs-sidebar--root-missing-p (root)
+  "Non-nil when ROOT is stamped but its directory is gone from disk.
+A nil ROOT is not missing -- there is no stamp to be stale. A remote
+root is never probed: `file-directory-p' on one blocks on the network,
+which a redisplay-path redraw cannot afford."
+  (and root
+       (not (file-remote-p root))
+       (not (funcall edmacs-sidebar-worktree-live-p-function root))))
+
+(defconst edmacs-sidebar--missing-marker " (missing)"
+  "Suffix appended to a row whose stamped worktree root is gone.
+Concatenated before `edmacs-sidebar--truncate-label' so it competes for
+the sidebar's width like any other part of the label rather than
+overflowing it -- on a narrow sidebar the marker truncates away and
+`edmacs-sidebar-missing-worktree-face' carries the signal alone.")
 
 (defun edmacs-sidebar--active-group (frame)
   "Return FRAME's active tab-bar group: the group of its current tab."
@@ -754,20 +776,26 @@ contract."
 root \(possibly derived via `edmacs-sidebar--derive-main-root', not
 necessarily backed by an open tab\). CURRENT-P marks GROUP as FRAME's
 active tab-bar group \(AC2\) -- the filled `current-tab' glyph/face when
-non-nil, the hollow `open-tab' one otherwise; a project row has no
-`stale' case of its own, unlike a worktree child row's tab-bar-current
-check. COUNT is the number of non-main open tabs in GROUP, appended to
-the label \(AC1\). BODY-FN, if given, is called with no arguments as the
-last form inside this row's own section body."
+non-nil, the hollow `open-tab' one otherwise. A MAIN-ROOT gone from
+disk takes `edmacs-sidebar-missing-worktree-face' and a
+\" (missing)\" marker instead, outranking the current-tab face: a row
+pointing at a directory that no longer exists is the more urgent thing
+to say about it. COUNT is the number of non-main open tabs in GROUP,
+appended to the label \(AC1\). BODY-FN, if given, is called with no
+arguments as the last form inside this row's own section body."
   (let* ((glyph (edmacs-sidebar--glyph (if current-p 'current-tab 'open-tab)))
          (agent-suffix (funcall edmacs-sidebar-worktree-label-suffix-function main-root))
+         (missing-p (edmacs-sidebar--root-missing-p main-root))
          (label (edmacs-sidebar--truncate-label
-                 (concat glyph " " group (format " [%d]" count) (or agent-suffix ""))
+                 (concat glyph " " group (format " [%d]" count) (or agent-suffix "")
+                         (and missing-p edmacs-sidebar--missing-marker))
                  frame))
+         (face (cond (missing-p 'edmacs-sidebar-missing-worktree-face)
+                     (current-p 'edmacs-sidebar-current-tab-face)))
          (value (cons group main-root)))
     (magit-insert-section (edmacs-sidebar-tab value)
       (magit-insert-heading
-        (if current-p (propertize label 'face 'edmacs-sidebar-current-tab-face) label))
+        (if face (propertize label 'face face) label))
       (when body-fn (funcall body-fn)))))
 
 (defun edmacs-sidebar--insert-worktree-child-row (group root kind tab frame body-fn)
@@ -782,7 +810,9 @@ so a renamed-away tab \(whose name no longer carries that prefix\)
 degrades harmlessly to `string-remove-prefix's own no-op. Face is the
 ordinary current-tab-face when TAB is FRAME's literal current tab, else
 `edmacs-sidebar-worktree-child-face' -- distinct from a project row's
-own current/open-tab pairing, per AC3's \"worktree hue\" language.
+own current/open-tab pairing, per AC3's \"worktree hue\" language --
+and `edmacs-sidebar-missing-worktree-face' plus a \" (missing)\" marker
+when ROOT itself is gone from disk, which outranks both.
 BODY-FN, if given, is called with no arguments as the last form inside
 this row's own section body."
   (let* ((glyph-key (edmacs-sidebar--worktree-kind-glyph-key kind))
@@ -793,13 +823,16 @@ this row's own section body."
                      (_ name)))
          (suffix (funcall edmacs-sidebar-worktree-label-suffix-function root))
          (current-p (eq (car tab) 'current-tab))
+         (missing-p (edmacs-sidebar--root-missing-p root))
          (label (edmacs-sidebar--truncate-label
-                 (concat "  " (edmacs-sidebar--glyph glyph-key) " " stripped (or suffix ""))
+                 (concat "  " (edmacs-sidebar--glyph glyph-key) " " stripped (or suffix "")
+                         (and missing-p edmacs-sidebar--missing-marker))
                  frame)))
     (magit-insert-section (edmacs-sidebar-tab (cons group root))
       (magit-insert-heading
-        (propertize label 'face (if current-p 'edmacs-sidebar-current-tab-face
-                                   'edmacs-sidebar-worktree-child-face)))
+        (propertize label 'face (cond (missing-p 'edmacs-sidebar-missing-worktree-face)
+                                      (current-p 'edmacs-sidebar-current-tab-face)
+                                      (t 'edmacs-sidebar-worktree-child-face))))
       (when body-fn (funcall body-fn)))))
 
 (defun edmacs-sidebar--redraw-projects (frame)
