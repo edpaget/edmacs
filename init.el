@@ -91,6 +91,11 @@ LANGUAGE should be the name without the .el extension."
 ;; Before its consumers below: they only `declare-function' it, so
 ;; nothing loads it on demand.
 (load-module "git-common-dir")
+;; New identity model (roadmap edmacs-tab-groups). Self-contained: no
+;; call site anywhere else in init.el yet, and no load-time side effect
+;; of its own -- see its Commentary. `frames' below is untouched by this
+;; phase and keeps driving `SPC p p'.
+(load-module "workspaces")
 (load-module "claude-term")
 (load-module "claude-term-registry")
 ;; (load-module "org-config")
