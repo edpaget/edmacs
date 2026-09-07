@@ -534,7 +534,10 @@ by selecting the target tab and displaying the buffer there."
                      (target (edmacs-workspaces--stray-tab-number buf frame)))
                 (when target
                   (push (cons window (cons buf target)) moves)))))
-          (dolist (move (nreverse moves))
+          ;; `nreverse' is destructive: reassign, or the second loop walks
+          ;; only the last cons and every earlier move is dropped.
+          (setq moves (nreverse moves))
+          (dolist (move moves)
             (let ((window (car move)))
               (when (window-live-p window)
                 (with-selected-window window

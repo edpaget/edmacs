@@ -578,6 +578,54 @@ post-open hook rather than surviving its absence."
                                   (mapcar #'window-buffer (window-list nil 'never))))))
           (when (buffer-live-p stray) (kill-buffer stray)))))))
 
+(ert-deftest edmacs-workspaces-test-two-strays-in-one-sweep-both-relocate ()
+  "Every stray found in one sweep moves, not just the last one discovered.
+The sweep collects its moves with `push' and walks them twice -- once to
+un-display, once to relocate -- so the reversed list has to be captured,
+not produced inline in the first `dolist'. Reversed inline, the variable
+is left holding only the final cons and every earlier buffer is
+un-displayed and then relocated nowhere. A single-window scenario cannot
+see it: `nreverse' on a one-element list is a structural no-op.
+
+The stray buffers are dired buffers of SUBDIRECTORIES of their target
+worktrees. A dired buffer of the root itself is the very buffer
+`edmacs-workspaces--open-tab' already displayed there, so the arrival
+assertion would hold without the sweep having moved anything."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (let* ((a (edmacs-workspaces-test--dir "repoA"))
+             (b (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x"))
+             (c (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-y"))
+             (b-sub (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x/sub"))
+             (c-sub (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-y/sub"))
+             (stray-b nil)
+             (stray-c nil))
+        (edmacs-workspaces-open-project a)
+        (edmacs-workspaces-open-worktree b)
+        (edmacs-workspaces-open-worktree c)
+        (edmacs-workspaces-select-tab "repoA" a)
+        (unwind-protect
+            (progn
+              (setq stray-b (dired-noselect b-sub))
+              (setq stray-c (dired-noselect c-sub))
+              ;; Two ordinary windows in A's tab, each showing a buffer that
+              ;; belongs in a different sibling tab.
+              (delete-other-windows)
+              (let ((w1 (selected-window))
+                    (w2 (split-window-below)))
+                (set-window-buffer w1 stray-b)
+                (set-window-buffer w2 stray-c))
+              (should (edmacs-workspaces--stray-tab-number stray-b))
+              (should (edmacs-workspaces--stray-tab-number stray-c))
+              (edmacs-workspaces--relocate-stray-visits (selected-frame))
+              ;; Both arrived, not just whichever was discovered last.
+              (edmacs-workspaces-select-tab "repoA" b)
+              (should (memq stray-b (mapcar #'window-buffer (window-list nil 'never))))
+              (edmacs-workspaces-select-tab "repoA" c)
+              (should (memq stray-c (mapcar #'window-buffer (window-list nil 'never)))))
+          (when (buffer-live-p stray-b) (kill-buffer stray-b))
+          (when (buffer-live-p stray-c) (kill-buffer stray-c)))))))
+
 (ert-deftest edmacs-workspaces-test-stray-tab-number-nil-for-own-tab ()
   "A buffer already in the right tab is not a stray."
   (edmacs-workspaces-test--with-repos
