@@ -241,11 +241,6 @@ collapsed strip.")
   "Per-frame tab/worktree list in a left side window."
   :group 'convenience)
 
-(defface edmacs-sidebar-worktree-closed-face
-  '((t :inherit shadow))
-  "Face for a worktree row with no open tab."
-  :group 'edmacs-sidebar)
-
 (defface edmacs-sidebar-missing-worktree-face
   '((t :inherit warning))
   "Face for an open tab whose worktree directory no longer exists."
