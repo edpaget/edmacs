@@ -34,6 +34,16 @@
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
 ;;         -l modules/sessions-live-test.el -f ert-run-tests-batch-and-exit
 ;;
+;; Two tests here need a REAL graphical frame -- they drive the daemon's
+;; own restore bridge and count graphical frames afterward, which a batch
+;; frame cannot answer. They `ert-skip' in batch; run them with:
+;;
+;;   scripts/gui-ert.sh modules/sessions-live-test.el
+;;
+;; from the MAIN checkout (never a worktree: see CLAUDE.md on
+;; `--init-directory'). That script starts a throwaway daemon of its own
+;; and never touches the user's.
+;;
 ;; None of this exercises the launchd daemon, the Dock, or NS hide/show --
 ;; those need a real GUI login session and are not ERT-testable. The
 ;; daemon-and-Dock-frame roadmap phase's AC4 is the manual checklist that
@@ -96,7 +106,18 @@ a real Emacs session) to enable this suite"))
     ;; make every frame look healthy here.
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
     (load (expand-file-name "modules/frames.el" default-directory) nil t)
+    ;; The new model, and what `edmacs-sessions--stash-frameset-for-daemon'
+    ;; now puts the desktop frameset through before stashing it.
+    (load (expand-file-name "modules/workspaces.el" default-directory) nil t)
     (load (expand-file-name "modules/sessions.el" default-directory) nil t)
+
+    ;; workspaces.el installs a `window-buffer-change-functions' entry that
+    ;; schedules a stray-visit sweep on a zero-delay timer, and this suite
+    ;; both changes window buffers and waits on timers -- a sweep firing
+    ;; between a test's setup and its assertions would move the very windows
+    ;; under test. Its own kill switch turns off both the scheduler and the
+    ;; sweep; workspaces-test.el covers that machinery directly.
+    (setq edmacs-workspaces-stray-visit-relocate nil)
 
     ;; ========================================================================
     ;; Test helpers
@@ -194,7 +215,7 @@ function except the sidebar (needs magit-section) and the worktree watch
                         ((symbol-function
                           'edmacs-sessions--ensure-worktree-tracking)
                          #'ignore))
-                (edmacs-sessions--finish-frameset-restore))
+                (edmacs-sessions--finish-frameset-restore frame))
 
               (should (equal (edmacs-frames--tab-root
                               (tab-bar--current-tab-find nil frame))
@@ -230,7 +251,7 @@ it entirely alone."
                     ((symbol-function 'edmacs-sessions--ensure-worktree-tracking)
                      #'ignore))
             (should-not (edmacs-sessions--restorable-frame-p frame))
-            (edmacs-sessions--finish-frameset-restore))
+            (edmacs-sessions--finish-frameset-restore frame))
           (should-not (edmacs-frames--tab-root
                        (tab-bar--current-tab-find nil frame)))
           (should-not (frame-parameter frame 'edmacs-repo)))))
@@ -259,6 +280,265 @@ deliberately drops on restore."
                 (should (frame-live-p frame))
                 (should (frame-parameter frame 'edmacs-sidebar-collapsed)))
             (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)))))
+
+
+    ;; ========================================================================
+    ;; AC1 -- groups, per-tab roots and the selected tab survive a real
+    ;; frameset save/restore
+    ;; ========================================================================
+
+    (defmacro edmacs-sessions-live-test--with-scratch-tabs (frame &rest body)
+      "Run BODY on FRAME with a fresh single-tab tab list, restored afterward."
+      (declare (indent 1))
+      (let ((f (gensym "frame")) (saved (gensym "tabs")))
+        `(let* ((,f ,frame)
+                (,saved (frame-parameter ,f 'tabs)))
+           (unwind-protect
+               (progn
+                 (set-frame-parameter ,f 'tabs nil)
+                 (tab-bar-tabs ,f)
+                 ,@body)
+             (set-frame-parameter ,f 'tabs ,saved)))))
+
+    (defun edmacs-sessions-live-test--build-workspace-tabs (frame)
+      "Build three grouped, rooted tabs on FRAME and return their (GROUP . ROOT)s.
+Two projects, one of them with two worktrees -- the shape a migrated
+desktop produces. The roots are synthetic: nothing here resolves them
+through git, they are only the `equal'-compared keys
+`edmacs-workspaces-find-tab' matches on."
+      (let ((specs '(("edmacs" . "/w/edmacs/")
+                     ("edmacs" . "/w/edmacs__worktrees/roadmap-x/")
+                     ("cloudcitydotgay" . "/w/cloudcitydotgay/"))))
+        (with-selected-frame frame
+          (let ((first t))
+            (dolist (spec specs)
+              (unless first (tab-bar-new-tab))
+              (setq first nil)
+              (edmacs-workspaces-set-tab-root (cdr spec) frame)
+              (edmacs-workspaces-assign-group (car spec) nil frame))))
+        specs))
+
+    (ert-deftest edmacs-sessions-live-test-frameset-round-trips-groups-and-roots ()
+      "AC1: every project group, every worktree tab within it, each tab's
+`edmacs-workspace-root' and the previously selected tab all come back
+from a real `frameset-save'/`desktop-restore-frameset' round trip.
+
+Two upstream facts carry this and are pinned here rather than argued:
+`frameset-filter-tabs' strips only the `wc-*' keys on save, so `group'
+and a custom root parameter survive; and the `group' parameter needs no
+stamping of this module's own -- tab-bar persists it itself."
+      (let ((frame (selected-frame)))
+        (edmacs-sessions-live-test--with-scratch-tabs frame
+          (let* ((specs (edmacs-sessions-live-test--build-workspace-tabs frame))
+                 (selected (nth 1 specs)))
+            (edmacs-workspaces-select-tab (car selected) (cdr selected) frame)
+            (let ((name (alist-get 'name (cdr (tab-bar--current-tab-find nil frame)))))
+              (let ((desktop-saved-frameset (frameset-save (list frame)))
+                    (desktop-restore-frames t)
+                    (desktop-restore-reuses-frames t))
+                ;; Genuinely gone before the restore, so nothing below can
+                ;; pass by simply never having been cleared.
+                (set-frame-parameter frame 'tabs nil)
+                (with-selected-frame frame (desktop-restore-frameset)))
+              (should (frame-live-p frame))
+              (should (equal (sort (copy-sequence (edmacs-workspaces-groups frame))
+                                   #'string<)
+                             '("cloudcitydotgay" "edmacs")))
+              (should (= 2 (length (edmacs-workspaces-tabs-in-group "edmacs" frame))))
+              (dolist (spec specs)
+                (should (edmacs-workspaces-find-tab (car spec) (cdr spec) frame)))
+              (should (equal (alist-get 'name (cdr (tab-bar--current-tab-find nil frame)))
+                             name)))))))
+
+    (ert-deftest edmacs-sessions-live-test-migrated-frameset-restores-groups-and-roots ()
+      "The same assertions over a frameset that went through the real
+migration first: two frames-model states in, one frame with both
+projects' tabs out. This is the desktop half of AC1/AC2 end to end --
+`workspaces-test.el' proves the transform, this proves Emacs restores
+what the transform produced."
+      (let ((frame (selected-frame)))
+        (edmacs-sessions-live-test--with-scratch-tabs frame
+          (let* ((saved
+                  (progn
+                    (with-selected-frame frame
+                      (edmacs-workspaces-set-tab-root "/w/edmacs/" frame))
+                    ;; A frames-model desktop: the root under the LEGACY
+                    ;; parameter, no group anywhere, one frame per repo.
+                    (setf (alist-get 'edmacs-workspace-root
+                                     (cdr (tab-bar--current-tab-find nil frame))
+                                     nil t)
+                          nil)
+                    (setf (alist-get 'edmacs-root
+                                     (cdr (tab-bar--current-tab-find nil frame)))
+                          "/w/edmacs/")
+                    (frameset-save (list frame))))
+                 (state (car (frameset-states saved)))
+                 (other (cons (append '((frameset--id . "1111-2222-3333-4444")
+                                        (tabs (current-tab (edmacs-root . "/w/cloud/")
+                                                           (name . "cloud")
+                                                           (explicit-name . t))))
+                                      (seq-remove
+                                       (lambda (cell)
+                                         (memq (car-safe cell) '(frameset--id tabs)))
+                                       (car state)))
+                              (cdr state)))
+                 (fs (progn (setf (frameset-states saved)
+                                  (list state other))
+                            saved))
+                 (migrated
+                  (cl-letf (((symbol-function 'edmacs-workspaces-group-name)
+                             (lambda (root)
+                               (if (string-prefix-p "/w/edmacs" root) "edmacs" "cloud"))))
+                    (edmacs-workspaces-migrate-frameset fs))))
+            (should (= 1 (length (frameset-states migrated))))
+            (let ((desktop-saved-frameset migrated)
+                  (desktop-restore-frames t)
+                  (desktop-restore-reuses-frames t))
+              (set-frame-parameter frame 'tabs nil)
+              (with-selected-frame frame (desktop-restore-frameset)))
+            (should (frame-live-p frame))
+            (should (equal (sort (copy-sequence (edmacs-workspaces-groups frame)) #'string<)
+                           '("cloud" "edmacs")))
+            (should (edmacs-workspaces-find-tab "edmacs" "/w/edmacs/" frame))
+            (should (edmacs-workspaces-find-tab "cloud" "/w/cloud/" frame))
+            ;; The legacy parameter is gone from every restored tab.
+            (should-not (seq-some (lambda (tab) (alist-get 'edmacs-root (cdr tab)))
+                                  (tab-bar-tabs frame)))))))
+
+    ;; ========================================================================
+    ;; AC5 -- bufferlo already scopes buffers per TAB, with no configuration
+    ;; ========================================================================
+
+    (ert-deftest edmacs-sessions-live-test-bufferlo-scopes-buffers-per-tab ()
+      "Verified, not configured: the bare `(bufferlo-mode 1)' sessions.el
+already enables scopes the buffer list per TAB, so one frame holding
+every project is as isolated as one frame per project was. bufferlo does
+this through `tab-bar-tab-post-open-functions' and its own advice on
+`tab-bar-select-tab'; nothing in it is frame-per-repo specific."
+      (let ((dir (expand-file-name "bufferlo" edmacs-sessions-live-test--build-root)))
+        (unless (file-directory-p dir)
+          (ert-skip "bufferlo's straight build was not found in this checkout \
+or its sibling main checkout"))
+        (add-to-list 'load-path dir)
+        (require 'bufferlo)
+        (let ((frame (selected-frame))
+              (a (generate-new-buffer "edmacs-live-bufferlo-a"))
+              (b (generate-new-buffer "edmacs-live-bufferlo-b")))
+          (unwind-protect
+              (edmacs-sessions-live-test--with-scratch-tabs frame
+                (bufferlo-mode 1)
+                (with-selected-frame frame
+                  (delete-other-windows)
+                  ;; Both tabs start from the same neutral buffer: a new tab
+                  ;; inherits the one it was created from, so opening each
+                  ;; test buffer AFTER both tabs exist is what makes the
+                  ;; assertions below about scope rather than about creation
+                  ;; order.
+                  (switch-to-buffer (get-buffer-create "*scratch*"))
+                  (tab-bar-new-tab)
+                  (switch-to-buffer b)
+                  (tab-bar-select-tab 1)
+                  (switch-to-buffer a)
+                  ;; A buffer opened in one tab does not appear in the other's.
+                  (should (memq a (bufferlo-buffer-list frame)))
+                  (should-not (memq b (bufferlo-buffer-list frame)))
+                  (tab-bar-select-tab 2)
+                  (should (memq b (bufferlo-buffer-list frame)))
+                  (should-not (memq a (bufferlo-buffer-list frame)))
+                  ;; Switching back restores the first tab's list.
+                  (tab-bar-select-tab 1)
+                  (should (memq a (bufferlo-buffer-list frame)))
+                  (should-not (memq b (bufferlo-buffer-list frame)))))
+            (bufferlo-mode -1)
+            (when (buffer-live-p a) (kill-buffer a))
+            (when (buffer-live-p b) (kill-buffer b))))))
+
+    ;; ========================================================================
+    ;; AC4 -- GUI-only: the real bridge, on a real graphical frame
+    ;; ========================================================================
+
+    (defun edmacs-sessions-live-test--skip-unless-graphic ()
+      "Skip unless this Emacs has a real graphical frame.
+`emacs --batch' has no window system at all, so `display-graphic-p' is
+nil for every frame and neither `frameset-restore''s frame reuse nor a
+count of graphical frames means anything there."
+      (unless (display-graphic-p)
+        (ert-skip "needs a real graphical frame: run \
+`scripts/gui-ert.sh modules/sessions-live-test.el' from the main checkout")))
+
+    (defmacro edmacs-sessions-live-test--drive-bridge (frameset &rest body)
+      "Stash FRAMESET, run the real restore bridge on the selected frame, BODY.
+The bridge defers its work onto a zero-delay timer, so the `sit-for'
+below is what actually runs it; the two steps with an external
+dependency -- the sidebar (needs magit-section) and the worktree watch
+\(arms a real `file-notify') -- are stubbed for the duration, exactly as
+the non-GUI tests above stub them."
+      (declare (indent 1))
+      `(let ((edmacs-sessions--pending-frameset ,frameset))
+         (cl-letf (((symbol-function 'edmacs-sessions--ensure-sidebar) #'ignore)
+                   ((symbol-function 'edmacs-sessions--ensure-worktree-tracking)
+                    #'ignore))
+           (edmacs-sessions--restore-pending-frameset (selected-frame))
+           (sit-for 0.3)
+           ,@body)))
+
+    (ert-deftest edmacs-sessions-live-test-bridge-restores-into-one-gui-frame ()
+      "AC4: a migrated frameset holds ONE state, so `frameset-restore'
+reuses the frame it was handed and creates no second one. The frame
+count is the whole point of this test, and it is unfalsifiable in batch
+-- where `display-graphic-p' is nil for every frame, so the count is
+always zero."
+      (edmacs-sessions-live-test--skip-unless-graphic)
+      (let ((frame (selected-frame)))
+        (edmacs-sessions-live-test--with-restored-frame frame
+          (edmacs-sessions-live-test--with-scratch-tabs frame
+            (edmacs-workspaces-set-tab-root "/w/edmacs/" frame)
+            (edmacs-workspaces-assign-group "edmacs" nil frame)
+            (let ((migrated (edmacs-workspaces-migrate-frameset
+                             (frameset-save (list frame)))))
+              (edmacs-sessions-live-test--drive-bridge migrated
+                (should (= 1 (seq-count (lambda (f)
+                                          (and (frame-live-p f) (display-graphic-p f)))
+                                        (frame-list))))
+                (should (frame-live-p frame))
+                (should (edmacs-workspaces-find-tab "edmacs" "/w/edmacs/" frame))))))))
+
+    (ert-deftest edmacs-sessions-live-test-bridge-restores-a-selectable-folded-tab ()
+      "A tab folded out of a second frame carries that frame's whole window
+state as its `ws', and `tab-bar-select-tab' puts it back -- a restored
+tab has no live `wc', so `ws' is the only layout it has. Selecting one
+must yield real windows, not an empty frame."
+      (edmacs-sessions-live-test--skip-unless-graphic)
+      (let ((frame (selected-frame)))
+        (edmacs-sessions-live-test--with-restored-frame frame
+          (edmacs-sessions-live-test--with-scratch-tabs frame
+            (edmacs-workspaces-set-tab-root "/w/edmacs/" frame)
+            (edmacs-workspaces-assign-group "edmacs" nil frame)
+            (let* ((saved (frameset-save (list frame)))
+                   (state (car (frameset-states saved)))
+                   (other (cons (append '((frameset--id . "1111-2222-3333-4444")
+                                          (tabs (current-tab
+                                                 (edmacs-workspace-root . "/w/cloud/")
+                                                 (group . "cloud")
+                                                 (name . "cloud")
+                                                 (explicit-name . t))))
+                                        (seq-remove
+                                         (lambda (cell)
+                                           (memq (car-safe cell) '(frameset--id tabs)))
+                                         (car state)))
+                                (cdr state)))
+                   (migrated (progn (setf (frameset-states saved) (list state other))
+                                    (edmacs-workspaces-migrate-frameset saved))))
+              (edmacs-sessions-live-test--drive-bridge migrated
+                (should (= 1 (seq-count (lambda (f)
+                                          (and (frame-live-p f) (display-graphic-p f)))
+                                        (frame-list))))
+                (let ((folded (edmacs-workspaces-select-tab "cloud" "/w/cloud/" frame)))
+                  (should folded)
+                  (should (equal (edmacs-workspaces-tab-root
+                                  (tab-bar--current-tab-find nil frame))
+                                 "/w/cloud/"))
+                  (should (window-live-p (frame-selected-window frame))))))))))
 
     (provide 'sessions-live-test)))
 ;;; sessions-live-test.el ends here

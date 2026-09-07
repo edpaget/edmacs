@@ -49,6 +49,36 @@
 ;; `frames.el''s copy into an unpick instead of a clean removal.
 ;;
 ;; ============================================================================
+;; Desktop migration: the frames model's saved framesets
+;; ============================================================================
+;; `edmacs-workspaces-migrate-frameset' converts a frameset written by
+;; the frames model -- one frame state per repo, each carrying
+;; `edmacs-repo', with tabs carrying `frames.el''s `edmacs-root' -- into
+;; a single frame state whose tabs carry native `group' parameters and
+;; this module's `edmacs-workspace-root'. It is a pure data transform:
+;; it reads nothing from the live session, mutates neither its input nor
+;; any frame or tab, never signals, and is a fixed point on its own
+;; output, so `sessions.el' can leave it in the daemon's boot path
+;; permanently instead of gating it on a one-shot flag.
+;;
+;; It rests on two upstream facts (Emacs 31.1):
+;;
+;; - `frameset-filter-tabs' strips only `wc wc-point wc-bl wc-bbl
+;;   wc-history-back wc-history-forward' when saving, so `group', `ws'
+;;   and a custom root parameter all survive a desktop round trip.
+;; - `tab-bar-select-tab' falls back to `window-state-put' on a tab's
+;;   `ws' whenever its `wc' is not a live window configuration -- which
+;;   is every restored tab. That is why a folded frame's whole window
+;;   state becomes its tab's `ws', and it is also what carries bufferlo's
+;;   per-tab buffer list across a restart, bufferlo reading
+;;   `bufferlo-buffer-list' out of `ws' once desktop has stripped
+;;   `wc-bl'/`wc-bbl'.
+;;
+;; It reads `edmacs-root'/`edmacs-repo' as legacy DATA only and calls
+;; nothing in `frames.el', so phase 5's deletion of that file stays a
+;; removal.
+;;
+;; ============================================================================
 ;; The symlink question (roadmap dependency)
 ;; ============================================================================
 ;; `edmacs-workspaces-group-name' derives a group name via
@@ -110,6 +140,9 @@
 (require 'subr-x)
 (require 'seq)
 (require 'tab-bar)
+;; For `frameset-p'/`frameset-states'/`frameset-timestamp', which the desktop
+;; migration below reads.
+(require 'frameset)
 ;; For `project-current-directory-override', which `project-switch-project'
 ;; binds before dispatching to `edmacs-workspaces-open-project'.
 (require 'project)
@@ -558,6 +591,226 @@ or buffer work happens here directly -- only a zero-delay timer."
     (run-at-time 0 nil #'edmacs-workspaces--relocate-stray-visits frame)))
 
 (add-hook 'window-buffer-change-functions #'edmacs-workspaces--on-window-buffer-change)
+
+;; ============================================================================
+;; Desktop migration -- frames model -> groups and tabs in one frame
+;; ============================================================================
+
+(defconst edmacs-workspaces--legacy-root-parameter 'edmacs-root
+  "`frames.el''s own per-tab worktree-root parameter.
+Read here as legacy DATA out of a saved frameset and never written --
+this module still neither reads nor writes it on a live tab. Keeping the
+name local to the migration is what keeps phase 5's deletion of
+`frames.el' a removal.")
+
+(defun edmacs-workspaces--normalize-root (root)
+  "Return ROOT normalized the way `edmacs-workspaces--open-tab' stamps one.
+Nil for a non-string. The truename-plus-trailing-slash form is not
+cosmetic: `edmacs-workspaces-find-tab' matches with `equal', so a
+migrated tab that is not normalized identically would never be found
+and every reopen would duplicate it."
+  (and (stringp root) (file-name-as-directory (file-truename root))))
+
+(defun edmacs-workspaces--tab-root-of (params)
+  "Return the worktree root recorded in tab alist PARAMS, or nil.
+Prefers this module's own parameter (already normalized when it was
+written) and falls back to the legacy one, normalizing that."
+  (or (alist-get edmacs-workspaces-root-parameter params)
+      (edmacs-workspaces--normalize-root
+       (alist-get edmacs-workspaces--legacy-root-parameter params))))
+
+(defun edmacs-workspaces--primary-state (states)
+  "Return the frameset state of STATES whose frame survives the fold.
+The focused frame when one is marked, else the first state: its
+`current-tab' stays the selected tab and its geometry is the geometry
+the single surviving frame keeps."
+  (or (seq-find (lambda (state) (alist-get 'last-focus-update (car state))) states)
+      (car states)))
+
+(defun edmacs-workspaces--state-group (state)
+  "Return the project group name for frameset STATE, or nil. Never signals.
+Derived through `edmacs-workspaces-group-name' on one of the state's own
+tab roots, so the string is `equal' to what the runtime open paths
+compute -- anything else would silently duplicate a group the first time
+a migrated project is reopened. Falls back to the pure repo-name of the
+legacy `edmacs-repo' frame parameter, which keeps a tab whose worktree
+directory is gone inside its project rather than dropping it."
+  (let* ((params (car state))
+         (root (seq-some (lambda (tab) (edmacs-workspaces--tab-root-of (cdr tab)))
+                         (alist-get 'tabs params))))
+    (or (and root (ignore-errors (edmacs-workspaces-group-name root)))
+        (let ((repo (alist-get 'edmacs-repo params)))
+          (and (stringp repo)
+               (ignore-errors (edmacs-git-common-dir-repo-name repo)))))))
+
+(defun edmacs-workspaces--state-group-if-needed (state)
+  "Return STATE's group name only when some tab of STATE still needs one.
+Deriving a group reaches git, and this migration runs on every daemon
+boot, not once: a frameset already carrying groups must cost nothing."
+  (let ((tabs (alist-get 'tabs (car state))))
+    (when (or (null tabs)
+              (seq-some (lambda (tab) (null (alist-get 'group (cdr tab)))) tabs))
+      (edmacs-workspaces--state-group state))))
+
+(defun edmacs-workspaces--migrate-tab (tab group)
+  "Return a fresh copy of TAB carrying a `group' and this module's root.
+Ensures rather than re-derives: an existing non-nil `group' or
+`edmacs-workspace-root' is kept untouched -- and nothing then reaches
+git at all -- so this is a fixed point on its own output. The legacy
+root parameter is dropped: a migrated tab the new model cannot read is
+the whole failure this rename guards against. TAB's car (`tab' vs
+`current-tab') is preserved.
+
+A missing group is derived from TAB's OWN root first, and only then from
+GROUP, its frame's. The frames model let a tab sit in a frame belonging
+to another repo (`sessions.el''s tab namer has a case for exactly that),
+and a frame-wide group would file such a tab under the wrong project."
+  (let* ((params (cdr tab))
+         (had-group (alist-get 'group params))
+         (had-root (alist-get edmacs-workspaces-root-parameter params))
+         (root (or had-root
+                   (edmacs-workspaces--normalize-root
+                    (alist-get edmacs-workspaces--legacy-root-parameter params))))
+         (group (or had-group
+                    (and root (ignore-errors (edmacs-workspaces-group-name root)))
+                    group))
+         ;; The legacy root always goes; a nil-valued `group'/root
+         ;; placeholder goes too, re-appended below with a real value or
+         ;; not at all. An entry that already holds a value is kept where
+         ;; it is and never re-appended -- appending a second cons would
+         ;; shadow nothing but would make this transform grow its output
+         ;; on every pass instead of being a fixed point.
+         (drop (delq nil (list edmacs-workspaces--legacy-root-parameter
+                               (and (null had-group) 'group)
+                               (and (null had-root) edmacs-workspaces-root-parameter))))
+         (kept (seq-remove (lambda (cell) (memq (car-safe cell) drop)) params)))
+    (cons (car tab)
+          (append (mapcar (lambda (cell) (cons (car cell) (cdr cell))) kept)
+                  (and (null had-group) group (list (cons 'group group)))
+                  (and (null had-root) root
+                       (list (cons edmacs-workspaces-root-parameter root)))))))
+
+(defun edmacs-workspaces--fold-state (state group time)
+  "Return the tabs a non-primary frameset STATE contributes to the fold.
+STATE's `current-tab' becomes an ordinary `tab' carrying the frame's
+whole window state as its `ws': a `current-tab' has none by construction
+\(the frame's own window state is its layout), and `tab-bar-select-tab'
+falls back to `window-state-put' on `ws' exactly when the saved `wc' is
+not a live window configuration -- which is every restored tab. That
+same `ws' is what carries bufferlo's per-tab buffer list across the
+restart, since desktop strips `wc-bl'/`wc-bbl' on save and bufferlo
+falls back to the `bufferlo-buffer-list' entry inside `ws'.
+
+A state carrying no `tabs' parameter at all contributes one synthesized
+tab rather than losing the frame's layout. TIME is the stamp a folded
+`current-tab' gains; it is derived from the frameset's own timestamp so
+that migrating twice yields `equal' results."
+  (let* ((params (car state))
+         (window-state (cdr state))
+         (tabs (alist-get 'tabs params)))
+    (if (null tabs)
+        (list (edmacs-workspaces--migrate-tab
+               `(tab (name . ,(or (alist-get 'name params) "tab"))
+                     (time . ,time)
+                     (ws . ,window-state))
+               group))
+      (mapcar
+       (lambda (tab)
+         (let ((migrated (edmacs-workspaces--migrate-tab tab group)))
+           (if (eq (car tab) 'current-tab)
+               (cons 'tab
+                     (append (seq-remove (lambda (cell) (memq (car-safe cell) '(ws time)))
+                                         (cdr migrated))
+                             (list (cons 'time time) (cons 'ws window-state))))
+             migrated)))
+       tabs))))
+
+(defun edmacs-workspaces--sort-tabs-by-group (tabs)
+  "Return TABS stably reordered so each group's tabs are contiguous.
+Groups keep first-seen order. `tab-bar-move-tab-to-group' -- which keeps
+a group contiguous for a live frame -- is not running while a frameset
+is being assembled, so contiguity has to be built in here."
+  (let ((order '()) (next 0))
+    (dolist (tab tabs)
+      (let ((group (alist-get 'group (cdr tab))))
+        (unless (assoc group order)
+          (push (cons group next) order)
+          (setq next (1+ next)))))
+    (sort (copy-sequence tabs)
+          (lambda (a b)
+            (< (cdr (assoc (alist-get 'group (cdr a)) order))
+               (cdr (assoc (alist-get 'group (cdr b)) order)))))))
+
+(defun edmacs-workspaces-migrate-frameset (fs)
+  "Return FS converted from the frames model to groups and tabs in one frame.
+A pure data transform: FS is never mutated, no frame or tab object is
+touched, nothing is read from the live session, and the result is a
+fixed point -- migrating it again returns an `equal' frameset. That is
+what makes this safe to leave permanently in the daemon's boot path
+rather than gating it on a one-shot flag, which would re-fire for as
+long as `frames.el' keeps re-stamping `edmacs-root' onto live tabs.
+
+Every frame state folds into the one `edmacs-workspaces--primary-state'
+picks: each other frame's tabs join it, its `current-tab' demoted to an
+ordinary tab carrying that frame's window state as its `ws'. Tabs gain
+the project `group' their frame's `edmacs-repo'/root implies and this
+module's `edmacs-workspace-root' in place of `frames.el''s `edmacs-root';
+`edmacs-repo'/`edmacs-repo-missing' are dropped from the surviving
+frame, which now holds several projects and can no longer name one.
+
+A frameset that is not one, or that carries no states at all, is
+returned untouched -- the empty-frameset guard on the restore side must
+keep seeing exactly what it sees today."
+  (if (or (not (frameset-p fs)) (null (frameset-states fs)))
+      fs
+    (let* ((states (frameset-states fs))
+           (primary (edmacs-workspaces--primary-state states))
+           (time (float-time (frameset-timestamp fs)))
+           (tabs '())
+           (seen '()))
+      (dolist (tab (alist-get 'tabs (car primary)))
+        (let ((migrated (edmacs-workspaces--migrate-tab
+                         tab (edmacs-workspaces--state-group-if-needed primary))))
+          (push migrated tabs)
+          (push (cons (alist-get 'group (cdr migrated))
+                      (alist-get edmacs-workspaces-root-parameter (cdr migrated)))
+                seen)))
+      (dolist (state states)
+        (unless (eq state primary)
+          (dolist (tab (edmacs-workspaces--fold-state
+                        state (edmacs-workspaces--state-group-if-needed state) time))
+            (let ((key (cons (alist-get 'group (cdr tab))
+                             (alist-get edmacs-workspaces-root-parameter (cdr tab)))))
+              ;; Dedupe only on a real (group, root) pair: two rootless tabs
+              ;; are not evidence of the same worktree, and AC2 loses nothing.
+              (unless (and (cdr key) (member key seen))
+                (push key seen)
+                (push tab tabs))))))
+      (setq tabs (edmacs-workspaces--sort-tabs-by-group (nreverse tabs)))
+      ;; `tab-bar--current-tab-find' is a bare `(assq 'current-tab tabs)', so
+      ;; a fold that produced none would leave the frame with no selected tab.
+      (when (and tabs (not (assq 'current-tab tabs)))
+        (setcar (car tabs) 'current-tab))
+      ;; The `tabs' entry is rewritten in place rather than dropped and
+      ;; re-appended, so a frameset already in the new shape comes back
+      ;; `equal' to its input rather than merely equivalent to it.
+      (let* ((had-tabs nil)
+             (params (delq nil
+                           (mapcar
+                            (lambda (cell)
+                              (cond
+                               ((memq (car-safe cell) '(edmacs-repo edmacs-repo-missing))
+                                nil)
+                               ((eq (car-safe cell) 'tabs)
+                                (setq had-tabs t)
+                                (and tabs (cons 'tabs tabs)))
+                               (t (cons (car cell) (cdr cell)))))
+                            (car primary))))
+             (new-fs (copy-sequence fs)))
+        (when (and tabs (not had-tabs))
+          (setq params (append params (list (cons 'tabs tabs)))))
+        (setf (frameset-states new-fs) (list (cons params (cdr primary))))
+        new-fs))))
 
 (provide 'workspaces)
 ;;; workspaces.el ends here

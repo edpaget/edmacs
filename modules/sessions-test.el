@@ -16,15 +16,28 @@
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;         -l modules/sessions-test.el -f ert-run-tests-batch-and-exit
+;;         -l modules/workspaces.el -l modules/sessions-test.el \
+;;         -f ert-run-tests-batch-and-exit
 ;;
-;; This reports 0 unexpected with 4 SKIPPED under a shell with no
-;; controlling tty (a headless CI runner, some IDE terminals): those four
+;; `workspaces.el' is on that line because the daemon stash hook now puts
+;; `desktop-saved-frameset' through `edmacs-workspaces-migrate-frameset'
+;; before stashing it; without it two tests here would exercise a stub of
+;; their own subject.
+;;
+;; This reports 0 unexpected with 2 SKIPPED under a shell with no
+;; controlling tty (a headless CI runner, some IDE terminals): those two
 ;; route through `edmacs-sessions-test--make-second-frame-or-skip', which
 ;; opens `/dev/tty' to create a real second frame and `ert-skip's when
-;; there is none -- environment-dependent, not an invocation gap. Run
-;; under a real or pseudo tty (e.g. `script -q /dev/null emacs -Q --batch
-;; ...' with the same arguments above) to get all 59 including those four.
+;; there is none -- environment-dependent, not an invocation gap. (It was
+;; four before `edmacs-sessions--finish-frameset-restore' became
+;; single-frame: the two walk tests that needed a second frame only to
+;; prove the walk reached it no longer need one at all.) Run under a real
+;; or pseudo tty to get every test including those two:
+;;
+;;   python3 -c 'import pty,sys; pty.spawn(sys.argv[1:])' \
+;;     emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;           -l modules/workspaces.el -l modules/sessions-test.el \
+;;           -f ert-run-tests-batch-and-exit
 ;;
 ;; Also covers the daemon lifecycle commands `SPC q' dispatches to. They
 ;; exist because homebrew.mxcl.emacs-plus@31.plist sets `KeepAlive'
@@ -196,46 +209,102 @@ cannot drift apart on what counts as a frame a repo may live on."
         (should-not (edmacs-sessions--restorable-frame-p 'f1))
         (should-not (edmacs-sessions--restorable-frame-p 'dead))))
 
-    (ert-deftest edmacs-sessions-test-finish-frameset-restore-skips-tty-placeholder ()
+    (defmacro edmacs-sessions-test--with-stubbed-steps (calls &rest body)
+      "Run BODY with each per-frame restore step recording into CALLS.
+Each entry is (STEP . FRAME), pushed in call order. frames.el is not
+loaded in this harness (see Commentary), so its two entry points are
+stubbed here alongside sessions.el's own."
+      (declare (indent 1))
+      `(cl-letf (((symbol-function 'edmacs-sessions--drop-dead-tab-roots)
+                  (lambda (f) (push (cons 'drop-dead f) ,calls)))
+                 ((symbol-function 'edmacs-frames-stamp-frame-tabs)
+                  (lambda (f) (push (cons 'stamp f) ,calls)))
+                 ((symbol-function 'edmacs-sessions--backfill-repo-param)
+                  (lambda (f) (push (cons 'backfill f) ,calls)))
+                 ((symbol-function 'edmacs-sessions--regenerate-frame-title)
+                  (lambda (f) (push (cons 'title f) ,calls)))
+                 ((symbol-function 'edmacs-sessions--ensure-worktree-tracking)
+                  (lambda (f) (push (cons 'tracking f) ,calls)))
+                 ((symbol-function 'edmacs-sessions--ensure-sidebar)
+                  (lambda (f) (push (cons 'sidebar f) ,calls))))
+         ,@body))
+
+    (ert-deftest edmacs-sessions-test-finish-frameset-restore-declines-unusable-frame ()
       "The daemon's initial tty frame is in `frame-list' but in no desktop
-save, and the walk must not stamp it, rename it, give it a sidebar or
-arm a `file-notify' watch on it. Observed live as a second frame named
-after a repo it could never display. The eligible frame is processed in
-full, with dead-tab-root cleanup running even before the tab stamp --
-back-fill resolves a frame's repo from its tabs' own roots, which a
-pre-stamp desktop file does not carry until
-`edmacs-frames-stamp-frame-tabs' has written them, and a root pointing at
-a deleted worktree must be dropped before either step touches it."
+save, and it must never be stamped, renamed, given a sidebar or made to
+hold a `file-notify' watch -- observed live as a second frame named
+after a repo it could never display. Handed that frame explicitly, the
+finish-up declines it and does no per-frame work at all; it must not
+fall back to scanning for some other frame either, or an explicit
+argument would stop meaning anything."
       (let (calls)
-        (cl-letf (((symbol-function 'frame-list) (lambda () '(f1 gui)))
-                  ((symbol-function 'frame-live-p) (lambda (f) (memq f '(f1 gui))))
+        (cl-letf (((symbol-function 'frame-live-p) (lambda (f) (memq f '(f1 gui))))
                   ((symbol-function 'daemonp) (lambda (&rest _) t))
                   ((symbol-function 'display-graphic-p)
                    (lambda (&optional f) (eq f 'gui)))
                   ((symbol-function 'frame-initial-p) (lambda (f) (eq f 'f1)))
-                  ;; frames.el is not loaded in this harness (see Commentary);
-                  ;; this is `edmacs-frames-frame-usable-p''s own shape, and
-                  ;; frames-test.el covers the real predicate directly.
+                  ;; `edmacs-frames-frame-usable-p''s own shape; frames-test.el
+                  ;; covers the real predicate directly.
                   ((symbol-function 'edmacs-frames-frame-usable-p)
                    (lambda (f) (and (not (and (daemonp) (frame-initial-p f)))
                                     (display-graphic-p f))))
-                  ((symbol-function 'edmacs-sessions--drop-dead-tab-roots)
-                   (lambda (f) (push (cons 'drop-dead f) calls)))
-                  ((symbol-function 'edmacs-frames-stamp-frame-tabs)
-                   (lambda (f) (push (cons 'stamp f) calls)))
-                  ((symbol-function 'edmacs-sessions--backfill-repo-param)
-                   (lambda (f) (push (cons 'backfill f) calls)))
-                  ((symbol-function 'edmacs-sessions--regenerate-frame-title)
-                   (lambda (f) (push (cons 'title f) calls)))
-                  ((symbol-function 'edmacs-sessions--ensure-worktree-tracking)
-                   (lambda (f) (push (cons 'tracking f) calls)))
-                  ((symbol-function 'edmacs-sessions--ensure-sidebar)
-                   (lambda (f) (push (cons 'sidebar f) calls))))
-          (edmacs-sessions--finish-frameset-restore))
+                  ((symbol-function 'edmacs-sessions--gui-frame)
+                   (lambda () (ert-fail "an explicit FRAME must not be second-guessed"))))
+          (edmacs-sessions-test--with-stubbed-steps calls
+            (edmacs-sessions--finish-frameset-restore 'f1)))
+        (should-not calls)))
+
+    (ert-deftest edmacs-sessions-test-finish-frameset-restore-runs-every-step-in-order ()
+      "The frame it was given is processed in full, with dead-tab-root
+cleanup running even before the tab stamp -- back-fill resolves a
+frame's repo from its tabs' own roots, which a pre-stamp desktop file
+does not carry until `edmacs-frames-stamp-frame-tabs' has written them,
+and a root pointing at a deleted worktree must be dropped before either
+step touches it."
+      (let (calls)
+        (cl-letf (((symbol-function 'frame-live-p) (lambda (f) (memq f '(f1 gui))))
+                  ((symbol-function 'edmacs-frames-frame-usable-p)
+                   (lambda (f) (eq f 'gui))))
+          (edmacs-sessions-test--with-stubbed-steps calls
+            (edmacs-sessions--finish-frameset-restore 'gui)))
         (setq calls (nreverse calls))
-        (should-not (seq-find (lambda (c) (eq (cdr c) 'f1)) calls))
+        (should (seq-every-p (lambda (c) (eq (cdr c) 'gui)) calls))
         (should (equal (mapcar #'car calls)
                        '(drop-dead stamp backfill title tracking sidebar)))))
+
+    (ert-deftest edmacs-sessions-test-finish-frameset-restore-falls-back-to-the-gui-frame ()
+      "With no FRAME -- and with no GUI frame at all -- it does nothing
+rather than guessing. The fallback matters because
+`edmacs-sessions--ensure-gui-frame' may have had to create a replacement
+for a frame `frameset-restore' deleted, and the caller then has only a
+dead frame to hand over."
+      (let (calls)
+        (cl-letf (((symbol-function 'frame-live-p) (lambda (_f) t))
+                  ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_f) t))
+                  ((symbol-function 'edmacs-sessions--gui-frame) (lambda () 'replacement)))
+          (edmacs-sessions-test--with-stubbed-steps calls
+            (edmacs-sessions--finish-frameset-restore nil)))
+        (should (seq-every-p (lambda (c) (eq (cdr c) 'replacement)) calls))
+        (should (= 6 (length calls))))
+      (let (calls)
+        (cl-letf (((symbol-function 'edmacs-sessions--gui-frame) (lambda () nil)))
+          (edmacs-sessions-test--with-stubbed-steps calls
+            (edmacs-sessions--finish-frameset-restore nil)))
+        (should-not calls)))
+
+    (ert-deftest edmacs-sessions-test-gui-frame-finds-only-a-live-graphic-frame ()
+      "`edmacs-sessions--gui-frame' is the one place that answers \"which
+frame is the session's\", shared by the finish-up's fallback and
+`edmacs-sessions--ensure-gui-frame' -- so the two cannot drift apart on
+what counts."
+      (cl-letf (((symbol-function 'frame-list) (lambda () '(dead tty gui)))
+                ((symbol-function 'frame-live-p) (lambda (f) (memq f '(tty gui))))
+                ((symbol-function 'display-graphic-p) (lambda (&optional f) (eq f 'gui))))
+        (should (eq (edmacs-sessions--gui-frame) 'gui)))
+      (cl-letf (((symbol-function 'frame-list) (lambda () '(tty)))
+                ((symbol-function 'frame-live-p) (lambda (_f) t))
+                ((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
+        (should-not (edmacs-sessions--gui-frame))))
 
     ;; ==========================================================================
     ;; AC1 -- edmacs-sessions--backfill-repo-param
@@ -516,13 +585,77 @@ another empty frameset for the next boot to find."
           (should-not edmacs-sessions--pending-frameset))))
 
     (ert-deftest edmacs-sessions-test-stash-takes-populated-frameset ()
+      "The guard's positive case. The migration is stubbed to identity here
+so this stays about the guard; the handoff to the real one is pinned by
+`edmacs-sessions-test-stash-migrates-the-frameset'."
       (let* ((fs (edmacs-sessions-test--frameset edmacs-sessions-test--one-state))
              (edmacs-sessions--pending-frameset nil)
              (desktop-saved-frameset fs))
         (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
-                  ((symbol-function 'desktop-restoring-frameset-p) (lambda () nil)))
+                  ((symbol-function 'desktop-restoring-frameset-p) (lambda () nil))
+                  ((symbol-function 'edmacs-workspaces-migrate-frameset) #'identity))
           (edmacs-sessions--stash-frameset-for-daemon)
           (should (eq edmacs-sessions--pending-frameset fs)))))
+
+    (ert-deftest edmacs-sessions-test-stash-migrates-the-frameset ()
+      "What the daemon stashes is the MIGRATED frameset: one frame state
+holding every project as a tab group. That is the whole mechanism behind
+\"a restart produces exactly one GUI frame\" -- `frameset-restore' reuses
+the boot frame and never creates a second one, rather than a second one
+being created and then deleted."
+      (let* ((fs (edmacs-sessions-test--frameset edmacs-sessions-test--one-state))
+             (migrated (edmacs-sessions-test--frameset edmacs-sessions-test--one-state))
+             (seen nil)
+             (edmacs-sessions--pending-frameset nil)
+             (desktop-saved-frameset fs))
+        (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
+                  ((symbol-function 'desktop-restoring-frameset-p) (lambda () nil))
+                  ((symbol-function 'edmacs-workspaces-migrate-frameset)
+                   (lambda (arg) (setq seen arg) migrated)))
+          (edmacs-sessions--stash-frameset-for-daemon)
+          (should (eq seen fs))
+          (should (eq edmacs-sessions--pending-frameset migrated)))))
+
+    (ert-deftest edmacs-sessions-test-stash-survives-a-signalling-migration ()
+      "An error out of `desktop-after-read-hook' in a frameless daemon
+reaches top level and exits Emacs 255 (see core.el). A failing migration
+must therefore warn and stash the frameset unmigrated -- degraded, two
+frames, but never nil and never frameless."
+      (let* ((fs (edmacs-sessions-test--frameset edmacs-sessions-test--one-state))
+             (warnings nil)
+             (edmacs-sessions--pending-frameset nil)
+             (desktop-saved-frameset fs))
+        (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
+                  ((symbol-function 'desktop-restoring-frameset-p) (lambda () nil))
+                  ((symbol-function 'edmacs-workspaces-migrate-frameset)
+                   (lambda (_arg) (error "boom")))
+                  ((symbol-function 'display-warning)
+                   (lambda (_type msg &rest _) (push msg warnings))))
+          (edmacs-sessions--stash-frameset-for-daemon)
+          (should (eq edmacs-sessions--pending-frameset fs))
+          (should (= 1 (length warnings)))
+          (should (string-match-p "boom" (car warnings))))))
+
+    (ert-deftest edmacs-sessions-test-stash-uses-the-real-migration ()
+      "The real `edmacs-workspaces-migrate-frameset' is what the hook calls,
+not a stub of it -- so `workspaces.el' belongs on this suite's own
+invocation line (see Commentary). Two frame states in, one out."
+      (let* ((fs (edmacs-sessions-test--frameset
+                  (list (cons '((last-focus-update . t)
+                                (tabs (current-tab (name . "a"))))
+                              nil)
+                        (cons '((name . "b") (tabs (current-tab (name . "b"))))
+                              nil))))
+             (edmacs-sessions--pending-frameset nil)
+             (desktop-saved-frameset fs))
+        (unless (fboundp 'edmacs-workspaces-migrate-frameset)
+          (ert-skip "workspaces.el is not loaded; add -l modules/workspaces.el"))
+        (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
+                  ((symbol-function 'desktop-restoring-frameset-p) (lambda () nil)))
+          (edmacs-sessions--stash-frameset-for-daemon)
+          (should (= 1 (length (frameset-states edmacs-sessions--pending-frameset))))
+          (should (= 2 (length (alist-get 'tabs (car (car (frameset-states
+                                                           edmacs-sessions--pending-frameset))))))))))
 
     (ert-deftest edmacs-sessions-test-restore-pending-ignores-empty-frameset ()
       "The same guard on the restore side, so an empty frameset that reached
@@ -539,6 +672,11 @@ as far as `frameset-restore''s frame-deleting cleanup pass."
           (should (= scheduled 0))
           (should-not restored))))
 
+    (defvar edmacs-sessions-test--finish-frame 'unset
+      "The FRAME argument the restore timer passed to the finish-up step.
+Recorded out of band by `edmacs-sessions-test--run-restore-timer' so the
+step ORDER that helper returns stays a flat list of symbols.")
+
     (defun edmacs-sessions-test--run-restore-timer (restore-fn)
       "Drive the deferred body `edmacs-sessions--restore-pending-frameset\='
 schedules, with RESTORE-FN standing in for `desktop-restore-frameset\='.
@@ -546,6 +684,7 @@ Returns (ORDER . WARNINGS): the sequence of steps the timer reached and
 any `display-warning\=' text it produced. RESTORE-FN is called with the
 frame handed to the sweep so a stub can simulate `frameset-restore\='
 deleting it."
+      (setq edmacs-sessions-test--finish-frame 'unset)
       (let ((edmacs-sessions--pending-frameset
              (edmacs-sessions-test--frameset edmacs-sessions-test--one-state))
             (deferred nil) (order nil) (warnings nil))
@@ -559,7 +698,9 @@ deleting it."
                   ((symbol-function 'edmacs-sessions--ensure-gui-frame)
                    (lambda () (push 'ensure order)))
                   ((symbol-function 'edmacs-sessions--finish-frameset-restore)
-                   (lambda () (push 'finish order)))
+                   (lambda (&optional frame)
+                     (push 'finish order)
+                     (setq edmacs-sessions-test--finish-frame frame)))
                   ((symbol-function 'display-warning)
                    (lambda (_type msg &rest _) (push msg warnings))))
           (edmacs-sessions--restore-pending-frameset (selected-frame))
@@ -574,7 +715,10 @@ the back-fill -- so a frame it creates to replace one `frameset-restore\='
 deleted still gets its title, worktree tracking, and sidebar."
       (let ((result (edmacs-sessions-test--run-restore-timer #'ignore)))
         (should (equal (car result) '(restore sweep ensure finish)))
-        (should-not (cdr result))))
+        (should-not (cdr result))
+        ;; The frame the restore landed on is handed over explicitly, so the
+        ;; finish-up never has to guess which frame it is finishing.
+        (should (eq edmacs-sessions-test--finish-frame (selected-frame)))))
 
     (ert-deftest edmacs-sessions-test-restore-pending-skips-sweep-on-deleted-frame ()
       "`frameset-restore\=' deletes the very frame it was handed when its
@@ -592,7 +736,10 @@ frameless state that goes on to save an empty frameset."
                  (lambda () (setq deleted t))))))
         (should (equal (car result) '(restore ensure finish)))
         (should-not (memq 'sweep (car result)))
-        (should-not (cdr result))))
+        (should-not (cdr result))
+        ;; A dead frame is passed as nil, not passed on: the finish-up then
+        ;; falls back to whatever frame `--ensure-gui-frame' left behind.
+        (should-not edmacs-sessions-test--finish-frame)))
 
     (ert-deftest edmacs-sessions-test-restore-pending-nets-a-signalling-restore ()
       "Any error out of the restore still leaves a GUI frame behind: the
@@ -684,41 +831,37 @@ the wrong name forever."
           (edmacs-sessions--ensure-sidebar (selected-frame))
           (should (equal show-calls (list (selected-frame)))))))
 
-    (ert-deftest edmacs-sessions-test-finish-restore-shows-sidebar-for-every-live-frame ()
-      "Every live frame gets `edmacs-sidebar-show' called on it, regardless
-of whether `edmacs-sidebar--window' already finds one -- see
+    (ert-deftest edmacs-sessions-test-finish-restore-shows-sidebar-for-the-frame-it-was-given ()
+      "The frame handed over gets `edmacs-sidebar-show' called on it,
+regardless of whether `edmacs-sidebar--window' already finds one -- see
 `edmacs-sessions-test-ensure-sidebar-always-shows-even-with-window' for
-why skipping an already-windowed frame is wrong."
-      (let* ((f1 (selected-frame))
-             (f2 (edmacs-sessions-test--make-second-frame-or-skip))
-             (show-calls nil))
-        (unwind-protect
-            (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
-                      ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
-                      ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
-                      ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_) t))
-                      ((symbol-function 'edmacs-frames-stamp-frame-tabs) #'ignore)
-                      ((symbol-function 'edmacs-sidebar--window)
-                       (lambda (frame) (if (eq frame f2) 'has-window nil)))
-                      ((symbol-function 'edmacs-sidebar-show)
-                       (lambda (frame) (push frame show-calls))))
-              (edmacs-sessions--finish-frameset-restore)
-              (should (member f1 show-calls))
-              (should (member f2 show-calls)))
-          (when (frame-live-p f2) (delete-frame f2)))))
+why skipping an already-windowed frame is wrong. No second frame is
+needed to pin this any more: the frameset the daemon replays is migrated
+to a single state, so there is one frame to finish."
+      (let ((frame (selected-frame))
+            (show-calls nil))
+        (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
+                  ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
+                  ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
+                  ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_) t))
+                  ((symbol-function 'edmacs-frames-stamp-frame-tabs) #'ignore)
+                  ((symbol-function 'edmacs-sidebar--window) (lambda (_) 'has-window))
+                  ((symbol-function 'edmacs-sidebar-show)
+                   (lambda (f) (push f show-calls))))
+          (edmacs-sessions--finish-frameset-restore frame)
+          (should (equal show-calls (list frame))))))
 
-    (ert-deftest edmacs-sessions-test-finish-restore-tracks-worktrees-for-every-repo-frame ()
-      "Every live frame carrying a resolvable `edmacs-repo' after backfill
-gets its worktree cache/watch warmed, not just its sidebar shown --
-otherwise a restored frame's sidebar renders an empty worktree list
-until some unrelated event happens to trigger a refresh."
-      (let* ((f1 (selected-frame))
-             (f2 (edmacs-sessions-test--make-second-frame-or-skip))
-             (dir1 (file-name-as-directory (make-temp-file "edmacs-sessions-test-f1-" t)))
-             (tracked nil))
+    (ert-deftest edmacs-sessions-test-finish-restore-tracks-worktrees-for-the-frame-it-was-given ()
+      "A frame carrying a resolvable `edmacs-repo' after backfill gets its
+worktree cache/watch warmed, not just its sidebar shown -- otherwise a
+restored frame's sidebar renders an empty worktree list until some
+unrelated event happens to trigger a refresh."
+      (let ((frame (selected-frame))
+            (dir (file-name-as-directory (make-temp-file "edmacs-sessions-test-f1-" t)))
+            (tracked nil))
         (unwind-protect
-            (edmacs-sessions-test--with-clean-frame-params f1 '(edmacs-repo)
-              (set-frame-parameter f1 'edmacs-repo dir1)
+            (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
+              (set-frame-parameter frame 'edmacs-repo dir)
               (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
                         ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
                         ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
@@ -728,15 +871,13 @@ until some unrelated event happens to trigger a refresh."
                         ((symbol-function 'edmacs-sidebar-show) (lambda (_) nil))
                         ((symbol-function 'edmacs-frames--ensure-repo-tracking)
                          (lambda (common) (push common tracked))))
-                (edmacs-sessions--finish-frameset-restore)
-                (should (member dir1 tracked))
-                (should (= 1 (length tracked)))))
-          (delete-directory dir1 t)
-          (when (frame-live-p f2) (delete-frame f2)))))
+                (edmacs-sessions--finish-frameset-restore frame)
+                (should (equal tracked (list dir)))))
+          (delete-directory dir t))))
 
     (ert-deftest edmacs-sessions-test-finish-restore-never-calls-make-frame ()
       "`frameset-restore's own `:reuse-frames t' owns all frame creation/reuse;
-this orchestrator only mutates already-live frames."
+this orchestrator only mutates the already-live frame it is handed."
       (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
                 ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
                 ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
@@ -747,7 +888,7 @@ this orchestrator only mutates already-live frames."
                 ((symbol-function 'make-frame)
                  (lambda (&rest _)
                    (error "edmacs-sessions--finish-frameset-restore must never call make-frame"))))
-        (edmacs-sessions--finish-frameset-restore)))
+        (edmacs-sessions--finish-frameset-restore (selected-frame))))
 
     ;; ============================================================================
     ;; edmacs-quit -- close the frame under a daemon, kill the terminal otherwise

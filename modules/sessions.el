@@ -52,6 +52,7 @@
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-frames--frame-content-window "frames")
 (declare-function edmacs-workspaces-open-worktree "workspaces")
+(declare-function edmacs-workspaces-migrate-frameset "workspaces")
 
 (defun edmacs-sessions--tab-name-for-frame (frame)
   "Name FRAME's current tab after its project/worktree, falling back sanely.
@@ -216,11 +217,34 @@ itself across restarts."
 (defun edmacs-sessions--stash-frameset-for-daemon ()
   "Stash `desktop-saved-frameset' when daemon boot skipped restoring it.
 Runs on `desktop-after-read-hook', which fires after the frameset is
-loaded but before `desktop-read' unconditionally nils it back out."
+loaded but before `desktop-read' unconditionally nils it back out.
+
+What is stashed is the frameset put through
+`edmacs-workspaces-migrate-frameset', which folds the frames model's
+one-frame-per-repo states into a single state whose tabs carry native
+`group' parameters. Because the stashed frameset then holds exactly one
+state, `frameset-restore' reuses the boot GUI frame and creates no
+second one -- no frame is ever deleted to get there. The migration is a
+fixed point, so leaving it in the boot path permanently is a no-op once
+the desktop is already in the new shape.
+
+Guarded: an error escaping `desktop-after-read-hook' in a frameless
+daemon reaches top level and exits Emacs 255 (see core.el). Falling back
+to the unmigrated frameset is degraded -- two frames -- but never
+frameless."
   (when (and (daemonp)
              (edmacs-sessions--frameset-has-frames-p desktop-saved-frameset)
              (not (desktop-restoring-frameset-p)))
-    (setq edmacs-sessions--pending-frameset desktop-saved-frameset)))
+    (setq edmacs-sessions--pending-frameset
+          (condition-case err
+              (edmacs-workspaces-migrate-frameset desktop-saved-frameset)
+            (error
+             (display-warning
+              'edmacs-sessions
+              (format "desktop frameset migration failed, restoring it unmigrated: %s"
+                      err)
+              :warning)
+             desktop-saved-frameset)))))
 
 (add-hook 'desktop-after-read-hook #'edmacs-sessions--stash-frameset-for-daemon)
 
@@ -374,19 +398,28 @@ renamed after a repo, given a sidebar side window, or made to hold a
   (and (frame-live-p frame)
        (edmacs-frames-frame-usable-p frame)))
 
-(defun edmacs-sessions--finish-frameset-restore ()
-  "Back-fill tab roots, `edmacs-repo', title, tracking and sidebar per frame.
-Runs synchronously right after `desktop-restore-frameset', by which
-point `frameset-restore''s own `:reuse-frames t' (the default) has
-already reused/created every saved frame -- this never itself creates or
-deletes a frame. Frames `edmacs-sessions--restorable-frame-p' rejects
-are skipped entirely.
+(defun edmacs-sessions--finish-frameset-restore (&optional frame)
+  "Back-fill tab roots, `edmacs-repo', title, tracking and sidebar on FRAME.
+FRAME defaults to `edmacs-sessions--gui-frame'; with neither, this does
+nothing at all rather than guessing at a frame. Runs synchronously right
+after `desktop-restore-frameset', by which point `frameset-restore''s
+own `:reuse-frames t' (the default) has already reused the saved frame --
+this never itself creates or deletes one. A FRAME
+`edmacs-sessions--restorable-frame-p' rejects (the daemon's initial tty
+placeholder, most of all) is declined outright.
+
+Single-frame, not a walk over `frame-list': the desktop frameset the
+daemon replays is migrated to exactly one state before it is stashed
+(see `edmacs-sessions--stash-frameset-for-daemon'), so the session has
+one GUI frame holding every project as a tab group. Passing the frame in
+explicitly also means the frame the restore actually landed on is the
+one finished, rather than whichever one a scan happens to find first.
 
 Tab roots are stamped FIRST: `edmacs-sessions--backfill-repo-param'
 resolves a frame's repo from its tabs' own roots, which for a tab
 restored from a desktop file written before the stamp was mandatory are
 only there once `edmacs-frames-stamp-frame-tabs' has written them."
-  (dolist (frame (frame-list))
+  (when-let* ((frame (or frame (edmacs-sessions--gui-frame))))
     (when (edmacs-sessions--restorable-frame-p frame)
       (edmacs-sessions--drop-dead-tab-roots frame)
       (edmacs-frames-stamp-frame-tabs frame)
@@ -418,6 +451,14 @@ deleted out from under the daemon went unnoticed -- warn instead."
                       :warning)
      nil)))
 
+(defun edmacs-sessions--gui-frame ()
+  "Return the session's graphical frame, or nil when it has none.
+A daemon's frame list also holds its initial tty placeholder, which is
+never graphical; the session is meant to hold exactly one graphical
+frame, so the first match is the answer rather than an arbitrary pick."
+  (seq-find (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
+            (frame-list)))
+
 (defun edmacs-sessions--ensure-gui-frame ()
   "Create a graphical frame when the session has none left.
 The net under every path that can end with a frameless daemon -- most
@@ -426,8 +467,7 @@ when the frameset it replays has no state to reassign to it. A daemon
 with no GUI frame saves an empty frameset, which poisons its own next
 boot (see `edmacs-sessions--frameset-has-frames-p'), so restoring one
 here is what keeps a single bad restore from becoming permanent."
-  (unless (seq-find (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
-                    (frame-list))
+  (unless (edmacs-sessions--gui-frame)
     (edmacs-sessions--make-gui-frame)))
 
 (defun edmacs-sessions--restore-pending-frameset (frame)
@@ -469,7 +509,11 @@ timer so the frame is fully created before frameset-restore touches it."
                      ;; a frame created here to replace one `frameset-restore'
                      ;; deleted gets its sidebar and title like any other.
                      (edmacs-sessions--ensure-gui-frame)
-                     (edmacs-sessions--finish-frameset-restore))))))
+                     ;; FRAME explicitly, so the frame the restore landed on
+                     ;; is the one finished; a frame `--ensure-gui-frame' had
+                     ;; to create in its place is picked up by the fallback.
+                     (edmacs-sessions--finish-frameset-restore
+                      (and (frame-live-p frame) frame)))))))
 
 (add-hook 'after-make-frame-functions #'edmacs-sessions--restore-pending-frameset)
 

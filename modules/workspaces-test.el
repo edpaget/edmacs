@@ -757,5 +757,313 @@ worktree must be left alone, not dragged onto it."
                (lambda (&rest _) (ert-fail "re-entered a running sweep"))))
       (edmacs-workspaces--relocate-stray-visits (selected-frame)))))
 
+;; ============================================================================
+;; Phase 4 -- desktop migration: frames model -> groups and tabs in one frame
+;; ============================================================================
+;; The fixture below mirrors the SHAPE of the user's real
+;; `~/.config/emacs/.cache/desktop/.emacs.desktop' as it stood before this
+;; roadmap: two frame states, each carrying an `edmacs-repo' frame
+;; parameter and a `tabs' list whose single `current-tab' carries
+;; `frames.el''s legacy `edmacs-root', with a window state holding the
+;; sidebar side window and bufferlo's own `bufferlo-buffer-list' entry.
+;; It is a sanitized literal, never the real file: the real one's
+;; `environment' parameter dumps the whole shell environment, tokens
+;; included. Paths are synthetic (`/w/...') so `file-truename' resolves
+;; no symlink and needs nothing on disk.
+
+(defmacro edmacs-workspaces-test--with-stub-git (&rest body)
+  "Run BODY with git resolution stubbed onto the `/w/<repo>/' fixture layout.
+Group derivation must go through the same `edmacs-workspaces-group-name'
+the runtime open paths use, or the migrated group strings would not be
+`equal' to the ones a later reopen computes."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'edmacs-git-common-dir)
+              (lambda (root)
+                ;; `/w/<repo>/' and `/w/<repo>__worktrees/<slug>/' both
+                ;; resolve to `<repo>', mirroring rdm's on-disk layout.
+                (let* ((clean (directory-file-name (file-truename root)))
+                       (parent (file-name-nondirectory
+                                (directory-file-name
+                                 (or (file-name-directory clean) "/"))))
+                       (repo (if (string-suffix-p "__worktrees" parent)
+                                 (string-remove-suffix "__worktrees" parent)
+                               (file-name-nondirectory clean))))
+                  (concat "/w/" repo "/.git"))))
+             ((symbol-function 'edmacs-git-common-dir-repo-name)
+              (lambda (common)
+                (file-name-nondirectory
+                 (directory-file-name
+                  (file-name-directory (directory-file-name common)))))))
+     ,@body))
+
+(defun edmacs-workspaces-test--window-state (buffer-names)
+  "Return a window-state literal shaped like a real saved frame's.
+Carries the sidebar side window and the `bufferlo-buffer-list' entry
+bufferlo's own `window-state-get' advice appends -- the entry that is a
+restored tab's only surviving record of its buffer scope, since desktop
+strips `wc-bl'/`wc-bbl' on save."
+  `((min-height . 4) (min-width . 42)
+    hc (pixel-width . 1508) (pixel-height . 923)
+    (leaf (pixel-width . 288)
+          (parameters (window-side . left) (window-slot . 0)
+                      (no-delete-other-windows . t) (no-other-window . t))
+          (buffer ,(format "*sidebar: %s*" (car buffer-names))
+                  (selected) (point . 1) (start . 1)))
+    (leaf (last . t) (pixel-width . 1220)
+          (parameters (edmacs-stack-popup . t) (edmacs-main . t))
+          (buffer ,(car buffer-names) (selected . t) (point . 1) (start . 1)))
+    (bufferlo-buffer-list ,buffer-names)))
+
+(defun edmacs-workspaces-test--frames-model-fixture ()
+  "Return a two-state frameset in the pre-roadmap frames model's shape.
+Deep-copied on every call: the literals below are compile-time
+constants, and the tests that reshape the fixture would otherwise mutate
+them in place for every later test in the process."
+  (copy-tree
+   (frameset--make
+   :version 1 :timestamp '(27294 4191 109240 0)
+   :app '(desktop . "208") :name "test"
+   :states
+   (list
+    (cons `((minibuffer . t)
+            (tab-bar-lines . 0)
+            (fullscreen . fullboth)
+            (frameset--id . "5BD5-09A4-276B-7EFE")
+            (tabs (current-tab (edmacs-root . "/w/cloudcitydotgay/")
+                               (name . "cloudcitydotgay")
+                               (explicit-name . t)))
+            (last-focus-update)
+            (edmacs-repo . "/w/cloudcitydotgay/.git")
+            (edmacs-repo-missing)
+            (height . 42) (width . 165))
+          (edmacs-workspaces-test--window-state '("cloudcitydotgay" " *Minibuf-1*")))
+    (cons `((minibuffer . t)
+            (tab-bar-lines . 0)
+            (fullscreen . fullboth)
+            (tabs (current-tab (edmacs-root . "/w/edmacs/")
+                               (name . "edmacs")
+                               (explicit-name . t)))
+            (last-focus-update . t)
+            (frameset--id . "9B25-4094-FC7D-6ED3")
+            (edmacs-repo . "/w/edmacs/.git")
+            (edmacs-repo-missing)
+            (height . 72) (width . 424))
+          (edmacs-workspaces-test--window-state '("edmacs" " *Minibuf-1*")))))
+   t))
+
+(defun edmacs-workspaces-test--migrated-tabs (fs)
+  "Return the tabs of the single frame state of migrated frameset FS."
+  (alist-get 'tabs (car (car (frameset-states fs)))))
+
+(defun edmacs-workspaces-test--tab-values (tabs key)
+  (delq nil (mapcar (lambda (tab) (alist-get key (cdr tab))) tabs)))
+
+(ert-deftest edmacs-workspaces-test-migrate-frames-model-fixture ()
+  "AC2: the real desktop's shape converts with no project or worktree lost.
+Every tab keeps its worktree, gains its project group, and swaps
+`frames.el''s `edmacs-root' for this module's own parameter -- a
+migration that reshaped the frames but left the old name in place would
+restore tabs the new model cannot read at all."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((out (edmacs-workspaces-migrate-frameset
+                 (edmacs-workspaces-test--frames-model-fixture)))
+           (tabs (edmacs-workspaces-test--migrated-tabs out)))
+      (should (= 1 (length (frameset-states out))))
+      (should (= 2 (length tabs)))
+      (should (equal (edmacs-workspaces-test--tab-values tabs 'group)
+                     '("edmacs" "cloudcitydotgay")))
+      (should (equal (sort (edmacs-workspaces-test--tab-values
+                            tabs edmacs-workspaces-root-parameter)
+                           #'string<)
+                     '("/w/cloudcitydotgay/" "/w/edmacs/")))
+      ;; The legacy name is gone everywhere, tab and frame alike.
+      (should-not (edmacs-workspaces-test--tab-values tabs 'edmacs-root))
+      (should-not (alist-get 'edmacs-repo (car (car (frameset-states out)))))
+      (should-not (alist-get 'edmacs-repo-missing (car (car (frameset-states out)))))
+      ;; `tab-bar--current-tab-find' is a bare `(assq 'current-tab tabs)': two
+      ;; would silently pin selection to the wrong tab, none would leave the
+      ;; frame with no selected tab at all.
+      (should (= 1 (seq-count (lambda (tab) (eq (car tab) 'current-tab)) tabs)))
+      ;; The focused frame stays primary, so its tab is the one still selected.
+      (should (equal (alist-get 'name (cdr (assq 'current-tab tabs))) "edmacs")))))
+
+(ert-deftest edmacs-workspaces-test-migrate-folds-window-state-into-ws ()
+  "AC5: a folded `current-tab' MUST gain the frame's window state as `ws'.
+A `current-tab' carries none by construction, and a restored tab has no
+live `wc' either -- so without this `tab-bar-select-tab' would have
+nothing to `window-state-put'. The same `ws' is what carries bufferlo's
+per-tab buffer list across a restart, desktop having stripped
+`wc-bl'/`wc-bbl' on save."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((out (edmacs-workspaces-migrate-frameset
+                 (edmacs-workspaces-test--frames-model-fixture)))
+           (folded (seq-filter (lambda (tab) (eq (car tab) 'tab))
+                               (edmacs-workspaces-test--migrated-tabs out))))
+      (should (= 1 (length folded)))
+      (dolist (tab folded)
+        (let ((ws (alist-get 'ws (cdr tab))))
+          (should ws)
+          (should (alist-get 'time (cdr tab)))
+          ;; bufferlo's documented fallback: `(assq 'bufferlo-buffer-list
+          ;; (assq 'ws tab))'.
+          (should (equal (car (cdr (assq 'bufferlo-buffer-list (assq 'ws (cdr tab)))))
+                         '("cloudcitydotgay" " *Minibuf-1*"))))))))
+
+(ert-deftest edmacs-workspaces-test-migrate-two-frames-yields-one-state ()
+  "AC4: one state out means `frameset-restore' reuses the boot GUI frame
+and creates no second one -- no frame has to be deleted to get there."
+  (edmacs-workspaces-test--with-stub-git
+    (should (= 1 (length (frameset-states
+                          (edmacs-workspaces-migrate-frameset
+                           (edmacs-workspaces-test--frames-model-fixture))))))))
+
+(ert-deftest edmacs-workspaces-test-migrate-keeps-groups-contiguous ()
+  "`tab-bar-move-tab-to-group' is not running while a frameset is being
+assembled, so each group's tabs have to be made contiguous here."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((fixture (edmacs-workspaces-test--frames-model-fixture))
+           (states (frameset-states fixture)))
+      ;; A second `edmacs' worktree tab on the NON-primary frame -- a real
+      ;; possibility under the frames model, whose stray-visit relocator
+      ;; only made it rare. A naive primary-then-fold concatenation would
+      ;; leave the two `edmacs' tabs split around the `cloudcitydotgay' one.
+      (setf (alist-get 'tabs (car (car states)))
+            (append (alist-get 'tabs (car (car states)))
+                    '((tab (edmacs-root . "/w/edmacs__worktrees/roadmap-x/")
+                           (name . "roadmap-x") (time . 1.0) (ws nil)))))
+      (let* ((out (edmacs-workspaces-migrate-frameset fixture))
+             (groups (mapcar (lambda (tab) (alist-get 'group (cdr tab)))
+                             (edmacs-workspaces-test--migrated-tabs out))))
+        (should (equal groups '("edmacs" "edmacs" "cloudcitydotgay")))))))
+
+(ert-deftest edmacs-workspaces-test-migrate-drops-only-duplicate-pairs ()
+  "A folded tab is dropped only when the identical (group, root) pair is
+already present: AC2 says nothing may be lost, so a second worktree of
+the same project must survive."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((fixture (edmacs-workspaces-test--frames-model-fixture))
+           (states (frameset-states fixture)))
+      (setf (alist-get 'tabs (car (car states)))
+            '((current-tab (edmacs-root . "/w/edmacs/") (name . "edmacs"))
+              (tab (edmacs-root . "/w/edmacs-other/") (name . "other")
+                   (time . 1.0) (ws nil))))
+      (let* ((out (edmacs-workspaces-migrate-frameset fixture))
+             (tabs (edmacs-workspaces-test--migrated-tabs out)))
+        ;; The duplicate `/w/edmacs/' tab folded away; the distinct one did not.
+        (should (equal (sort (edmacs-workspaces-test--tab-values
+                              tabs edmacs-workspaces-root-parameter)
+                             #'string<)
+                       '("/w/edmacs-other/" "/w/edmacs/")))))))
+
+(ert-deftest edmacs-workspaces-test-migrate-keeps-a-tab-whose-worktree-is-gone ()
+  "A root pointing at a removed worktree keeps its tab: the group falls
+back to the pure repo name of the frame's own legacy `edmacs-repo',
+which needs no disk access at all."
+  (cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_root) nil))
+            ((symbol-function 'edmacs-git-common-dir-repo-name)
+             (lambda (common)
+               (file-name-nondirectory
+                (directory-file-name
+                 (file-name-directory (directory-file-name common)))))))
+    (let* ((out (edmacs-workspaces-migrate-frameset
+                 (edmacs-workspaces-test--frames-model-fixture)))
+           (tabs (edmacs-workspaces-test--migrated-tabs out)))
+      (should (= 2 (length tabs)))
+      (should (equal (sort (edmacs-workspaces-test--tab-values tabs 'group) #'string<)
+                     '("cloudcitydotgay" "edmacs"))))))
+
+(ert-deftest edmacs-workspaces-test-migrate-state-without-tabs-keeps-its-layout ()
+  "A frame state carrying no `tabs' parameter contributes a synthesized
+ungrouped tab rather than losing that frame's whole layout."
+  (cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_root) nil))
+            ((symbol-function 'edmacs-git-common-dir-repo-name) (lambda (_) nil)))
+    (let* ((ws (edmacs-workspaces-test--window-state '("scratch")))
+           (fs (frameset--make
+                :version 1 :timestamp '(27294 4191 109240 0)
+                :app '(desktop . "208") :name "test"
+                :states (list (cons '((last-focus-update . t)
+                                      (tabs (current-tab (name . "main"))))
+                                    nil)
+                              (cons '((name . "spare")) ws))))
+           (tabs (edmacs-workspaces-test--migrated-tabs
+                  (edmacs-workspaces-migrate-frameset fs))))
+      (should (= 2 (length tabs)))
+      (should (equal (alist-get 'ws (cdr (car (last tabs)))) ws)))))
+
+;; ----------------------------------------------------------------------------
+;; AC3 -- the migration is a fixed point, not a one-shot
+;; ----------------------------------------------------------------------------
+
+(ert-deftest edmacs-workspaces-test-migrate-frameset-is-idempotent ()
+  "Running it twice is a no-op the second time. It ensures rather than
+detects: `edmacs-frames-stamp-frame-tabs' still re-adds `edmacs-root' to
+live tabs until phase 5, so a \"has edmacs-root\" detector would re-fire
+on every boot."
+  (edmacs-workspaces-test--with-stub-git
+    (let ((fixture (edmacs-workspaces-test--frames-model-fixture)))
+      (should (equal (edmacs-workspaces-migrate-frameset fixture)
+                     (edmacs-workspaces-migrate-frameset
+                      (edmacs-workspaces-migrate-frameset fixture)))))))
+
+(ert-deftest edmacs-workspaces-test-migrate-new-shape-frameset-is-a-noop ()
+  "A frameset already in the new shape comes back `equal' to its input --
+including no re-stamped `time', which is what makes leaving this in the
+daemon's boot path permanently safe."
+  (edmacs-workspaces-test--with-stub-git
+    (let ((fs (frameset--make
+               :version 1 :timestamp '(27294 4191 109240 0)
+               :app '(desktop . "208") :name "test"
+               :states (list (cons `((last-focus-update . t)
+                                     (tabs (current-tab (name . "edmacs")
+                                                        (group . "edmacs")
+                                                        (edmacs-workspace-root
+                                                         . "/w/edmacs/"))
+                                           (tab (name . "cloudcitydotgay")
+                                                (group . "cloudcitydotgay")
+                                                (time . 1.0)
+                                                (edmacs-workspace-root
+                                                 . "/w/cloudcitydotgay/")
+                                                (ws nil)))
+                                     (height . 72))
+                                   nil)))))
+      (should (equal (edmacs-workspaces-migrate-frameset fs) fs)))))
+
+(ert-deftest edmacs-workspaces-test-migrate-does-not-mutate-its-input ()
+  "Without this the idempotency assertions above could pass by aliasing."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((fixture (edmacs-workspaces-test--frames-model-fixture))
+           (before (copy-tree fixture t)))
+      (edmacs-workspaces-migrate-frameset fixture)
+      (should (equal fixture before)))))
+
+(ert-deftest edmacs-workspaces-test-migrate-empty-frameset-unchanged ()
+  "A zero-state frameset -- what a frameless daemon's own save writes --
+is returned untouched, so `edmacs-sessions--frameset-has-frames-p' keeps
+seeing exactly what it sees today."
+  (let ((empty (frameset--make :version 1 :timestamp '(0 0 0 0)
+                               :app '(desktop . "208") :name "test" :states nil)))
+    (should (eq (edmacs-workspaces-migrate-frameset empty) empty)))
+  (should-not (edmacs-workspaces-migrate-frameset nil))
+  (should (eq (edmacs-workspaces-migrate-frameset 'not-a-frameset) 'not-a-frameset)))
+
+(ert-deftest edmacs-workspaces-test-migrate-normalizes-roots-like-open-tab ()
+  "The migrated root must be normalized exactly as
+`edmacs-workspaces--open-tab' stamps one, or `edmacs-workspaces-find-tab'
+\(an `equal' match) would never find a migrated tab and every reopen
+would duplicate it."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((fs (frameset--make
+                :version 1 :timestamp '(27294 4191 109240 0)
+                :app '(desktop . "208") :name "test"
+                :states (list (cons '((last-focus-update . t)
+                                      (tabs (current-tab
+                                             (edmacs-root . "/w/edmacs")
+                                             (name . "edmacs"))))
+                                    nil))))
+           (tabs (edmacs-workspaces-test--migrated-tabs
+                  (edmacs-workspaces-migrate-frameset fs))))
+      (should (equal (alist-get edmacs-workspaces-root-parameter (cdr (car tabs)))
+                     (file-name-as-directory (file-truename "/w/edmacs")))))))
+
 (provide 'workspaces-test)
 ;;; workspaces-test.el ends here
