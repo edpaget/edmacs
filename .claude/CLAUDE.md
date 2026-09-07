@@ -114,7 +114,7 @@ form and run fine, but the guarded form is the one to copy going forward):
   (setq native-comp-enable-subr-trampolines nil))
 ```
 
-`modules/frames-test.el` carries the canonical comment to copy alongside
+`modules/sessions-test.el` carries the canonical comment to copy alongside
 it. Incident: `modules/windows-test.el` regressed from 4.2s to 282s this
 way (5 tests each paying ~28s, one of them 6 times over); the guard above
 brought it back to about 0.3s. `modules/claude-term-test.el`,
@@ -147,10 +147,13 @@ the suite still exits 0 while silently testing less:
 | suite | skips a pty clears |
 |---|---|
 | `sidebar-test.el` | 4 |
-| `sessions-test.el` | 4 |
-| `frames-live-test.el` | 16 (a 17th needs file-notify) |
 | `sidebar-buffers-live-test.el` | 2 |
 | `sidebar-agents-live-test.el` | 1 |
+| `workspaces-live-test.el` | 2 |
+
+`sessions-test.el` no longer needs a pty: its per-frame restore walk went
+single-frame, and the suite now runs 52/52 with zero skips under plain
+`-Q --batch`.
 
 `scripts/gui-ert.sh` does **not** clear these. It supplies a graphical frame,
 not a terminal, so `/dev/tty` is still absent inside it -- it is the right
@@ -367,6 +370,9 @@ edmacs/
 │   ├── claude-term.el     # Claude CLI hosted in a ghostel terminal
 │   ├── claude-term-registry.el # Session registry + SPC a keymap
 │   ├── git-common-dir.el  # Worktree-aware git dir resolution
+│   ├── workspaces.el      # Project/worktree identity on tab-bar groups
+│   ├── sidebar.el         # Grouped project/worktree tree, buffers, agents
+│   ├── windows.el         # Master-and-stack window management
 │   ├── sessions.el        # desktop.el session persistence
 │   ├── org-config.el      # Org mode configuration
 │   ├── git.el             # Magit and git tools
@@ -377,6 +383,16 @@ edmacs/
 │   └── versions/          # Package version lockfiles (committed)
 └── README.md              # Main repository documentation
 ```
+
+### The tab-group model
+
+One frame per Emacs instance. A project is a tab-bar *group*; a worktree of
+that project is a *tab* inside its group, carrying its own root as the
+`edmacs-workspace-root` tab parameter. `modules/workspaces.el` owns this
+identity model and the `SPC p p` / `SPC T p` (`C-x t p`) entry points that
+open a project's group or a worktree's tab; `modules/sidebar.el` renders the
+grouped project/worktree tree from it. This replaced an earlier
+frame-per-repo model (`frames.el`, since deleted) outright.
 
 ### Development Workflow
 
