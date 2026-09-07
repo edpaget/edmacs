@@ -439,7 +439,15 @@ GROUP is assigned unconditionally: `tab-bar-new-tab-group' is t, so the
 new tab inherited whatever group the previously selected tab had."
   (let ((display-buffer-overriding-action '(nil . nil))
         (switch-to-buffer-obey-display-actions nil))
-    (let ((edmacs-workspaces--pending-tab-root root))
+    ;; The new tab opens directly on ROOT's dired buffer. With the default
+    ;; `tab-bar-new-tab-choice' of t it would open on whatever buffer was
+    ;; current -- the PREVIOUS project's -- and `bufferlo' records a tab's
+    ;; buffers as they are displayed, so that buffer joins this tab's local
+    ;; list for good. The sidebar then renders it under this project as a
+    ;; `../other-project' row. `tab-bar-new-tab-choice' is applied before
+    ;; `tab-bar-tab-post-open-functions', so the stamper still sees ROOT.
+    (let ((edmacs-workspaces--pending-tab-root root)
+          (tab-bar-new-tab-choice (lambda () (dired-noselect root))))
       (tab-bar-new-tab))
     (dired root)
     (tab-bar-rename-tab (file-name-nondirectory (directory-file-name root)))
