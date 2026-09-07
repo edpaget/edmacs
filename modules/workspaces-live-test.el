@@ -95,6 +95,12 @@ rule out."
           (edmacs-workspaces-stray-visit-relocate nil))
       (make-directory dir-a t)
       (make-directory dir-b t)
+      ;; Real repos, not bare directories: root derivation normalizes a
+      ;; buffer's directory to its WORKTREE root, so a non-repo sandbox
+      ;; stamps nothing and the assertion below would prove nothing.
+      (dolist (d (list dir-a dir-b))
+        (let ((default-directory d))
+          (call-process "git" nil nil nil "init" "--quiet")))
       (edmacs-workspaces-live-test--with-frames (f1 f2)
         (with-selected-frame f2 (dired dir-b))
         ;; F1 is selected for the rest of the test on purpose: `make-frame'
