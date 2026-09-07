@@ -339,166 +339,226 @@ non-selected frame, making that frame's rows non-selectable via RET."
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
     ;; ==========================================================================
-    ;; Worktree discovery (edmacs-sidebar roadmap phase 3) -- AC1/AC2/AC4
+    ;; Workspaces model fixtures (edmacs-tab-groups phase 3)
     ;; ==========================================================================
-    ;; Neither frames.el nor workspaces.el is loaded by this suite's
-    ;; invocation (see this file's own Commentary), so every symbol these
-    ;; tests touch from either -- `edmacs-worktrees-for-repo',
-    ;; `edmacs-frames--tab-for-root', `edmacs-frames--tab-root',
-    ;; `edmacs-workspaces-open-worktree' -- is stubbed via `cl-letf' rather
-    ;; than real; `sidebar.el' only ever calls them through its own
-    ;; `declare-function' forward references.
+    ;; workspaces.el itself is not loaded by this suite's invocation (see
+    ;; this file's own Commentary) -- `sidebar.el' only ever calls it
+    ;; through its own `declare-function' forward references. Rather than
+    ;; `cl-letf'-stubbing each one per test (as the old `edmacs-frames--tab-
+    ;; root'/`--tab-for-root' pair was), the small, pure lookups sidebar.el's
+    ;; grouped-tree render/activate path calls -- `edmacs-workspaces-groups',
+    ;; `-tabs-in-group', `-tab-root', `-set-tab-root', `-find-tab',
+    ;; `-select-tab' -- are defined here for REAL, exact copies of
+    ;; workspaces.el's own logic against real `tab-bar.el' primitives
+    ;; (already loaded transitively via sidebar.el's own `(require 'tab-
+    ;; bar)'). This means an ordinary test that never assigns a tab-bar
+    ;; `group' parameter falls through to the flat tab list automatically,
+    ;; with no per-test stub at all -- exactly like before this phase.
+    ;;
+    ;; `edmacs-workspaces-classify-root' is also real: `edmacs-git-common-dir'/
+    ;; `-main-worktree' (git-common-dir.el) ARE loaded by this suite's own
+    ;; invocation. But a real, uncached ROOT would shell out to git, which
+    ;; the no-shellout guard tests correctly refuse to allow from inside a
+    ;; redraw -- so every fixture ROOT used below is pre-warmed into the
+    ;; real `edmacs-git-common-dir-cache' first, via
+    ;; `edmacs-sidebar-test--with-project'.
+    ;;
+    ;; `edmacs-workspaces-open-project'/`-open-worktree' (real side effects:
+    ;; `dired', `tab-bar-new-tab', a `vc-git' shell-out) are stubbed
+    ;; per-test instead, exactly as `-open-worktree' already was before
+    ;; this phase.
 
-    (defmacro edmacs-sidebar-test--with-repo-frame (common &rest body)
-      "Run BODY with the selected frame's `edmacs-repo' set to COMMON.
-Restores it to nil afterward, regardless of BODY's outcome -- the
-selected frame is shared across this whole test file."
+    (defconst edmacs-sidebar-test--root-parameter 'edmacs-workspace-root)
+
+    (defun edmacs-workspaces-groups (&optional frame)
+      (delete-dups (delq nil (mapcar (lambda (tab) (funcall tab-bar-tab-group-function tab))
+                                       (tab-bar-tabs (or frame (selected-frame)))))))
+
+    (defun edmacs-workspaces-tabs-in-group (group &optional frame)
+      (when group
+        (seq-filter (lambda (tab) (equal (funcall tab-bar-tab-group-function tab) group))
+                    (tab-bar-tabs (or frame (selected-frame))))))
+
+    (defun edmacs-workspaces-tab-root (tab)
+      (alist-get edmacs-sidebar-test--root-parameter tab))
+
+    (defun edmacs-workspaces-set-tab-root (root &optional frame)
+      (when-let* ((tab (tab-bar--current-tab-find nil frame)))
+        (setf (alist-get edmacs-sidebar-test--root-parameter (cdr tab)) root)
+        root))
+
+    (defun edmacs-workspaces-find-tab (group root &optional frame)
+      (seq-find (lambda (tab)
+                  (and (equal (funcall tab-bar-tab-group-function tab) group)
+                       (equal (edmacs-workspaces-tab-root tab) root)))
+                (tab-bar-tabs (or frame (selected-frame)))))
+
+    (defun edmacs-workspaces-select-tab (group root &optional frame)
+      (let* ((target (or frame (selected-frame)))
+             (tab (edmacs-workspaces-find-tab group root target)))
+        (when tab
+          (let ((number (1+ (tab-bar--tab-index tab (tab-bar-tabs target) target))))
+            (if frame (with-selected-frame frame (tab-bar-select-tab number))
+              (tab-bar-select-tab number))))
+        tab))
+
+    (defun edmacs-workspaces-classify-root (root)
+      (when root
+        (let* ((common (edmacs-git-common-dir root))
+               (main (and common (edmacs-git-common-dir-main-worktree common))))
+          (if (and main (equal (file-truename (file-name-as-directory root))
+                                (file-truename (file-name-as-directory main))))
+              'main
+            (let* ((clean (directory-file-name root))
+                   (leaf (file-name-nondirectory clean))
+                   (parent-dir (file-name-directory clean))
+                   (parent (and parent-dir (file-name-nondirectory (directory-file-name parent-dir)))))
+              (cond
+               ((and parent (string-suffix-p "__worktrees" parent) (string-prefix-p "roadmap-" leaf)) 'roadmap)
+               ((and parent (string-suffix-p "__worktrees" parent) (string-prefix-p "task-" leaf)) 'task)
+               (t nil)))))))
+
+    (defmacro edmacs-sidebar-test--with-project (spec &rest body)
+      "Create real tab-bar tabs per SPEC, run BODY, then close every tab
+this macro created (restoring the original tab count) and remove any
+`edmacs-git-common-dir-cache' entries it primed.
+
+SPEC is a list of (GROUP MAIN-ROOT MAIN-COMMON . CHILDREN) entries, one
+per project group -- MAIN-COMMON is the git-common-dir MAIN-ROOT's own
+repo resolves to, primed into the REAL `edmacs-git-common-dir-cache' so
+`edmacs-workspaces-classify-root'/sidebar.el's own main-root derivation
+never shells out for a fixture path that names no real directory.
+CHILDREN is a list of (ROOT NAME) pairs, each opened as its own real
+tab in GROUP (via `tab-bar-new-tab'/`tab-bar-rename-tab'/
+`tab-bar-change-tab-group'), stamped with worktree root ROOT via
+`edmacs-workspaces-set-tab-root'. MAIN-ROOT itself is NOT opened as a
+tab unless it also appears in CHILDREN -- modeling \"no open main
+tab\" by default, since that is this phase's own new edge case."
       (declare (indent 1))
-      `(unwind-protect
-           (progn (set-frame-parameter (selected-frame) 'edmacs-repo ,common)
-                  ,@body)
-         (set-frame-parameter (selected-frame) 'edmacs-repo nil)))
+      `(let ((edmacs-sidebar-test--tab-count-before (length (tab-bar-tabs)))
+             (edmacs-sidebar-test--primed-roots nil))
+         (unwind-protect
+             (progn
+               (dolist (entry ,spec)
+                 (let* ((group (nth 0 entry)) (main-root (nth 1 entry)) (main-common (nth 2 entry))
+                        (children (nthcdr 3 entry)))
+                   (push main-root edmacs-sidebar-test--primed-roots)
+                   (puthash main-root main-common edmacs-git-common-dir-cache)
+                   (dolist (child children)
+                     (let ((root (nth 0 child)) (name (nth 1 child)))
+                       (push root edmacs-sidebar-test--primed-roots)
+                       (puthash root main-common edmacs-git-common-dir-cache)
+                       (tab-bar-new-tab)
+                       (tab-bar-rename-tab name)
+                       (edmacs-workspaces-set-tab-root root)
+                       (tab-bar-change-tab-group group)))))
+               ,@body)
+           (while (> (length (tab-bar-tabs)) edmacs-sidebar-test--tab-count-before)
+             (tab-bar-close-tab))
+           (dolist (root edmacs-sidebar-test--primed-roots)
+             (remhash root edmacs-git-common-dir-cache)))))
 
-    (defmacro edmacs-sidebar-test--stub-worktree-lookup (root-alist-var &rest body)
-      "Run BODY with frames.el's worktree/tab-root lookups stubbed.
-ROOT-ALIST-VAR names a lexical variable holding an alist of
-\(TAB . ROOT) associations standing in for the `edmacs-root' stamps a
-real worktree-tab opener would have made."
-      (declare (indent 1))
-      `(cl-letf (((symbol-function 'edmacs-frames--tab-root)
-                  (lambda (tab) (cdr (assq tab ,root-alist-var))))
-                 ((symbol-function 'edmacs-frames--tab-for-root)
-                  (lambda (root &optional frame)
-                    (seq-find (lambda (tab)
-                                (equal (cdr (assq tab ,root-alist-var)) root))
-                              (tab-bar-tabs frame)))))
-         ,@body))
+    (ert-deftest edmacs-sidebar-test-redraw-projects-shape ()
+      "AC1: two project rows, worktrees only under their own project, the
+count matching the child rows -- \"repoA\" has a main tab plus one
+roadmap-worktree tab open (1 child, count \"[1]\"), \"repoB\" has only
+its main tab open (0 children, count \"[0]\"). No row exists for a
+worktree that was never opened at all."
+      (edmacs-sidebar-test--with-project
+          '(("repoA" "/repoA/main/" "/repoA/main/.git"
+             ("/repoA/main/" "main") ("/repoA__worktrees/roadmap-foo/" "roadmap-foo"))
+            ("repoB" "/repoB/main/" "/repoB/main/.git"
+             ("/repoB/main/" "main")))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show (selected-frame))
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                (let ((text (buffer-string)))
+                  (should (string-match-p "repoA \\[1\\]" text))
+                  (should (string-match-p "repoB \\[0\\]" text))
+                  (should (string-match-p "foo" text))
+                  (should-not (string-match-p "roadmap-foo" text)))
+                (let ((top (oref magit-root-section children)))
+                  (should (= 2 (length top)))
+                  (should (= 1 (length (oref (car top) children))))
+                  (should (= 0 (length (oref (cadr top) children)))))))
+          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
-    (ert-deftest edmacs-sidebar-test-redraw-worktrees-open-and-tabless-shape ()
-      "3 worktree sections, exactly 1 open (the current tab), 2 tab-less."
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist (list (cons current "/repo/wt-b/")))
-             (worktrees '(("repo" . "/repo/")
-                          ("wt-a" . "/repo/wt-a/")
-                          ("wt-b" . "/repo/wt-b/"))))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo)
-                     (lambda (_common) worktrees)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (let ((text (buffer-string)))
-                        (should (= 3 (length (split-string text "\n" t))))
-                        (should (= 1 (cl-count ?● text)))
-                        (should (= 0 (cl-count ?○ text)))
-                        (should (= 2 (cl-count ?⋯ text)))
-                        (should (string-match-p "no tab" text)))))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+    (ert-deftest edmacs-sidebar-test-redraw-projects-no-open-main-tab ()
+      "A group with only a linked worktree open (no main tab) still renders
+one project row, using the derived main root -- never a second, tabless
+project row, and never crashing."
+      (edmacs-sidebar-test--with-project
+          '(("repoC" "/repoC/main/" "/repoC/main/.git"
+             ("/repoC__worktrees/task-bar/" "task-bar")))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show (selected-frame))
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                (let ((top (oref magit-root-section children)))
+                  (should (= 1 (length top)))
+                  (should (equal (cons "repoC" "/repoC/main/") (oref (car top) value)))
+                  (should (= 1 (length (oref (car top) children)))))))
+          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
-    (ert-deftest edmacs-sidebar-test-redraw-worktrees-cache-miss-renders-empty ()
-      "A cache miss (nil from `edmacs-worktrees-for-repo') renders zero
-sections -- never an error, and never a fallback compute."
-      (let ((root-alist nil))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) nil)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (should (= 0 (length (split-string (buffer-string) "\n" t))))))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
-
-    (ert-deftest edmacs-sidebar-test-redraw-worktrees-stale-tab-gets-warning-face ()
-      "A tab whose root has dropped out of a fresh, non-empty worktree list
-is kept, rendered with the missing-worktree warning face."
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist (list (cons current "/repo/gone/")))
-             (worktrees '(("repo" . "/repo/"))))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo)
-                     (lambda (_common) worktrees)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (let ((text (buffer-string)))
-                        ;; "repo" (tab-less) + the stale tab itself.
-                        (should (= 2 (length (split-string text "\n" t))))
-                        (should (string-match-p "no tab" text))
-                        (should (text-property-any
-                                 (point-min) (point-max)
-                                 'face 'edmacs-sidebar-missing-worktree-face)))))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
-
-    (ert-deftest edmacs-sidebar-test-activate-tabless-row-opens-once-then-reselects ()
-      "RET on a tab-less row opens a tab exactly once; RET again reselects
-rather than opening a second (AC2's core duplicate-prevention claim).
-A second worktree entry is stamped onto the frame's own (only) real tab
-so that tab is never mistaken for a stale row here -- this test is about
-the SECOND entry, \"wt\", which starts with no tab of its own."
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist (list (cons current "/repo/main/")))
-             (worktrees '(("main" . "/repo/main/") ("wt" . "/repo/wt/")))
-             (open-calls 0)
-             (select-calls nil))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees))
-                    ((symbol-function 'edmacs-workspaces-open-worktree)
+    (ert-deftest edmacs-sidebar-test-activate-project-row-opens-once-then-reselects ()
+      "RET on a project row whose main tab isn't open calls
+`edmacs-workspaces-open-project' exactly once; RET again finds the
+now-open main tab and reselects rather than opening a second -- the
+regression test for AC5's stale `edmacs-root' lookup phase 2 left
+behind, and for AC7's \"never `edmacs-workspaces-open-worktree' on a
+project row\" claim."
+      (edmacs-sidebar-test--with-project
+          '(("repoD" "/repoD/main/" "/repoD/main/.git"
+             ("/repoD__worktrees/roadmap-y/" "roadmap-y")))
+        (let ((open-calls 0) (worktree-open-calls 0))
+          (cl-letf (((symbol-function 'edmacs-workspaces-open-project)
                      (lambda (root)
                        (setq open-calls (1+ open-calls))
-                       ;; Simulate the real effect: the current tab now
-                       ;; also carries ROOT (a single-tab frame, as here).
-                       (push (cons current root) root-alist)))
-                    ((symbol-function 'tab-bar-select-tab)
-                     (lambda (n) (push n select-calls))))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      ;; Row order follows `worktrees': "main" then "wt".
-                      (goto-char (point-min))
-                      (forward-line 1)
-                      (edmacs-sidebar-activate))
-                    (should (= 1 open-calls))
-                    (should-not select-calls)
-                    ;; Redraw now sees the (stubbed) newly-open tab.
+                       (tab-bar-new-tab)
+                       (tab-bar-rename-tab "main")
+                       (edmacs-workspaces-set-tab-root root)
+                       (tab-bar-change-tab-group "repoD")))
+                    ((symbol-function 'edmacs-workspaces-open-worktree)
+                     (lambda (_root) (setq worktree-open-calls (1+ worktree-open-calls)))))
+            (unwind-protect
+                (progn
+                  (edmacs-sidebar-show (selected-frame))
+                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                    (goto-char (point-min))
+                    (edmacs-sidebar-activate))
+                  (should (= 1 open-calls))
+                  (let ((before (length (tab-bar-tabs))))
                     (edmacs-sidebar--redraw (selected-frame))
                     (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
                       (goto-char (point-min))
-                      (forward-line 1)
                       (edmacs-sidebar-activate))
                     (should (= 1 open-calls))
-                    (should select-calls))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+                    (should (= before (length (tab-bar-tabs)))))
+                  (should (= 0 worktree-open-calls)))
+              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
 
-    (ert-deftest edmacs-sidebar-test-close-worktree-open-row-closes-tabless-row-noops ()
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist (list (cons current "/repo/wt/")))
-             (worktrees '(("wt" . "/repo/wt/") ("wt2" . "/repo/wt2/")))
-             (closed nil))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees))
-                    ((symbol-function 'tab-bar-close-tab) (lambda (n) (push n closed))))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      ;; First row: "wt", open (current tab).
-                      (goto-char (point-min))
-                      (edmacs-sidebar-close-worktree)
-                      (should closed)
-                      ;; Second row: "wt2", tab-less -- a no-op.
-                      (setq closed nil)
-                      (forward-line 1)
-                      (edmacs-sidebar-close-worktree)
-                      (should-not closed)))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+    (ert-deftest edmacs-sidebar-test-close-worktree-project-row-noop-child-row-closes ()
+      "`d' on a project row whose main tab isn't open is a no-op (never
+opens one); `d' on an open worktree child row closes its tab."
+      (edmacs-sidebar-test--with-project
+          '(("repoE" "/repoE/main/" "/repoE/main/.git"
+             ("/repoE__worktrees/roadmap-x/" "roadmap-x")))
+        (let (closed)
+          (cl-letf (((symbol-function 'tab-bar-close-tab) (lambda (n) (push n closed))))
+            (unwind-protect
+                (progn
+                  (edmacs-sidebar-show (selected-frame))
+                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                    ;; First (top-level) row: the project, main tab closed.
+                    (goto-char (point-min))
+                    (edmacs-sidebar-close-worktree)
+                    (should-not closed)
+                    ;; Its child row: "x", open.
+                    (forward-line 1)
+                    (edmacs-sidebar-close-worktree)
+                    (should closed)))
+              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
 
     ;; ==========================================================================
     ;; edmacs-sidebar-activate direct-call coverage, one per row-type in the
@@ -507,55 +567,74 @@ the SECOND entry, \"wt\", which starts with no tab of its own."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-test-activate-worktree-row-tab-opens-tab ()
-      "A worktree row whose bare-ROOT value resolves (via
-`edmacs-sidebar--root-tab-number', stubbed here through
-`edmacs-frames--tab-for-root'/`tab-bar--tab-index') to an open tab
-number selects that tab and never calls
-`edmacs-workspaces-open-worktree'."
+      "A `(GROUP . ROOT)' row value that `edmacs-workspaces-find-tab'
+resolves to an open tab selects it via `edmacs-workspaces-select-tab',
+never `edmacs-workspaces-open-project'/`-open-worktree' -- and passes
+GROUP through, so a same-root match in a different group could never
+be mistaken for this one (AC4)."
       (with-temp-buffer
         (edmacs-sidebar-mode)
         (let ((inhibit-read-only t))
           (magit-insert-section (edmacs-sidebar-root)
-            (magit-insert-section (edmacs-sidebar-tab "/repo/wt/")
+            (magit-insert-section (edmacs-sidebar-tab (cons "g1" "/repo/wt/"))
               (magit-insert-heading "wt row"))))
         (goto-char (point-min))
-        (let (select-calls open-calls)
-          (cl-letf (((symbol-function 'tab-bar-select-tab)
-                     (lambda (n) (push n select-calls)))
+        (let (select-calls open-project-calls open-worktree-calls found-calls)
+          (cl-letf (((symbol-function 'edmacs-workspaces-select-tab)
+                     (lambda (group root) (push (cons group root) select-calls)))
+                    ((symbol-function 'edmacs-workspaces-open-project)
+                     (lambda (root) (push root open-project-calls)))
                     ((symbol-function 'edmacs-workspaces-open-worktree)
-                     (lambda (root) (push root open-calls)))
-                    ((symbol-function 'edmacs-frames--tab-for-root)
-                     (lambda (_root &optional _frame) 'fake-tab))
-                    ((symbol-function 'tab-bar--tab-index)
-                     (lambda (_tab &optional _tabs _frame) 1)))
+                     (lambda (root) (push root open-worktree-calls)))
+                    ((symbol-function 'edmacs-workspaces-find-tab)
+                     (lambda (group root) (push (cons group root) found-calls) 'fake-tab)))
             (edmacs-sidebar-activate))
-          (should (equal select-calls '(2)))
-          (should-not open-calls))))
+          (should (equal found-calls '(("g1" . "/repo/wt/"))))
+          (should (equal select-calls '(("g1" . "/repo/wt/"))))
+          (should-not open-project-calls)
+          (should-not open-worktree-calls))))
 
-    (ert-deftest edmacs-sidebar-test-activate-worktree-row-tabless-opens-worktree ()
-      "A worktree row whose bare-ROOT value resolves to no open tab
-(`edmacs-frames--tab-for-root' stubbed to return nil) opens one via
-`edmacs-workspaces-open-worktree', never `tab-bar-select-tab' -- a
-direct, minimal unit test of the same dispatch already exercised
-end-to-end by
-`edmacs-sidebar-test-activate-tabless-row-opens-once-then-reselects'."
+    (ert-deftest edmacs-sidebar-test-activate-worktree-row-no-match-main-opens-project ()
+      "A `(GROUP . ROOT)' row whose ROOT classifies `main' but has no
+matching open tab opens the whole project via
+`edmacs-workspaces-open-project', never `-open-worktree' -- the
+defensive fallback AC7 says only a project row can reach."
       (with-temp-buffer
         (edmacs-sidebar-mode)
         (let ((inhibit-read-only t))
           (magit-insert-section (edmacs-sidebar-root)
-            (magit-insert-section (edmacs-sidebar-tab "/repo/wt/")
+            (magit-insert-section (edmacs-sidebar-tab (cons "g1" "/repo/main/"))
+              (magit-insert-heading "project row"))))
+        (goto-char (point-min))
+        (let (select-calls open-project-calls open-worktree-calls)
+          (cl-letf (((symbol-function 'edmacs-workspaces-select-tab)
+                     (lambda (group root) (push (cons group root) select-calls)))
+                    ((symbol-function 'edmacs-workspaces-open-project)
+                     (lambda (root) (push root open-project-calls)))
+                    ((symbol-function 'edmacs-workspaces-open-worktree)
+                     (lambda (root) (push root open-worktree-calls)))
+                    ((symbol-function 'edmacs-workspaces-find-tab) (lambda (_group _root) nil))
+                    ((symbol-function 'edmacs-workspaces-classify-root) (lambda (_root) 'main)))
+            (edmacs-sidebar-activate))
+          (should (equal open-project-calls '("/repo/main/")))
+          (should-not open-worktree-calls)
+          (should-not select-calls))))
+
+    (ert-deftest edmacs-sidebar-test-activate-worktree-row-no-match-non-main-reports ()
+      "A `(GROUP . ROOT)' row with no matching open tab and a non-`main'
+classification (the never-should-happen defensive case for a worktree
+child row, whose value is always drawn from an already-open tab)
+signals `user-error' rather than opening anything."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (edmacs-sidebar-root)
+            (magit-insert-section (edmacs-sidebar-tab (cons "g1" "/repo/wt/"))
               (magit-insert-heading "wt row"))))
         (goto-char (point-min))
-        (let (select-calls open-calls)
-          (cl-letf (((symbol-function 'tab-bar-select-tab)
-                     (lambda (n) (push n select-calls)))
-                    ((symbol-function 'edmacs-workspaces-open-worktree)
-                     (lambda (root) (push root open-calls)))
-                    ((symbol-function 'edmacs-frames--tab-for-root)
-                     (lambda (_root &optional _frame) nil)))
-            (edmacs-sidebar-activate))
-          (should (equal open-calls '("/repo/wt/")))
-          (should-not select-calls))))
+        (cl-letf (((symbol-function 'edmacs-workspaces-find-tab) (lambda (_group _root) nil))
+                  ((symbol-function 'edmacs-workspaces-classify-root) (lambda (_root) 'roadmap)))
+          (should-error (edmacs-sidebar-activate) :type 'user-error))))
 
     (ert-deftest edmacs-sidebar-test-activate-flat-tab-row-selects-tab ()
       "A repo-less flat tab row's bare integer value selects that tab
@@ -658,87 +737,58 @@ real EIEIO `magit-section' instance always has its `value' slot bound
     ;; the direct regression test for THIS phase's own no-shellout claim,
     ;; covering both a populated cache and a cache miss.
 
-    (ert-deftest edmacs-sidebar-test-redraw-worktrees-never-shell-out ()
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist (list (cons current "/repo/")))
-             (worktrees '(("repo" . "/repo/")
-                          ("wt-a" . "/repo/wt-a/")
-                          ("wt-b" . "/repo/wt-b/")))
-             (violations nil)
-             (guarded '(call-process call-process-region process-file
-                        start-process start-file-process make-process)))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo)
-                     (lambda (_common) worktrees))
-                    ;; Correctness of RET's open-vs-select dispatch is
-                    ;; already covered by the AC2 tests above; this stub only
-                    ;; needs to do nothing, so the tab-less row's activation
-                    ;; below cannot itself register a (real) subprocess call.
-                    ((symbol-function 'edmacs-workspaces-open-worktree)
-                     (lambda (_root) nil))
-                    ;; Real `tab-bar-close-tab' would actually close the one
-                    ;; live tab this whole suite shares -- recorded instead,
-                    ;; since all that matters here is that closing an
-                    ;; already-open row never reaches a subprocess primitive.
+    (ert-deftest edmacs-sidebar-test-redraw-projects-never-shell-out ()
+      "The grouped-tree render/activate/close path -- including the
+`edmacs-git-common-dir'-based classify-root/main-root derivation this
+phase adds -- never shells out, PROVIDED every root it touches is
+already cached (`edmacs-sidebar-test--with-project' pre-warms
+`edmacs-git-common-dir-cache' for exactly that reason; see this file's
+own Commentary on the workspaces fixtures above)."
+      (edmacs-sidebar-test--with-project
+          '(("repoG" "/repoG/main/" "/repoG/main/.git"
+             ("/repoG/main/" "main") ("/repoG__worktrees/roadmap-z/" "roadmap-z")))
+        (let ((violations nil)
+              (guarded '(call-process call-process-region process-file
+                         start-process start-file-process make-process)))
+          (cl-letf (((symbol-function 'edmacs-workspaces-open-project) (lambda (_root) nil))
+                    ;; `edmacs-workspaces-find-tab' stays real (it is the
+                    ;; lookup this test's own classify-root/main-root claim
+                    ;; is about), but a REAL `edmacs-workspaces-select-tab'
+                    ;; would call the real `tab-bar-select-tab' and re-fire
+                    ;; `edmacs-sidebar--on-tab-select''s nested redraw from
+                    ;; inside this loop's own `with-current-buffer' --
+                    ;; recorded instead, since all that matters here is that
+                    ;; activating an already-open row never reaches a
+                    ;; subprocess primitive.
+                    ((symbol-function 'edmacs-workspaces-select-tab) (lambda (&rest _) nil))
                     ((symbol-function 'tab-bar-close-tab) (lambda (&optional _n) nil)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (dolist (fn guarded)
-                      (advice-add fn :before
-                                  (lambda (&rest _) (push fn violations))
-                                  `((name . ,(intern (format "edmacs-sidebar-test--guard-wt-%s" fn))))))
-                    (edmacs-sidebar-show (selected-frame))
-                    (dotimes (_ 50)
-                      (edmacs-sidebar--redraw (selected-frame))
-                      (edmacs-sidebar--redraw-worktrees (selected-frame) "/repo/.git")
-                      (edmacs-sidebar--on-tab-select nil nil)
-                      (edmacs-sidebar--on-tab-open nil)
-                      (edmacs-sidebar--on-tab-pre-close nil nil)
-                      (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                        ;; First row ("repo") is the open one (stamped onto
-                        ;; the current tab above) -- activating/closing it
-                        ;; stays on the tab-number branch.
-                        (goto-char (point-min))
-                        (edmacs-sidebar-activate)
-                        (edmacs-sidebar-close-worktree)
-                        ;; Second row ("wt-a") is tab-less -- both must no-op
-                        ;; rather than reach for a subprocess.
-                        (goto-char (point-min))
-                        (forward-line 1)
-                        (edmacs-sidebar-activate)
-                        (edmacs-sidebar-close-worktree)))
-                    (sleep-for 0.2)
-                    (sit-for 0)
-                    (should-not violations))
-                (dolist (fn guarded)
-                  (advice-remove fn (intern (format "edmacs-sidebar-test--guard-wt-%s" fn))))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
-
-    (ert-deftest edmacs-sidebar-test-redraw-worktrees-cache-miss-never-shell-out ()
-      "The cache-miss render path (nil from `edmacs-worktrees-for-repo') is
-just as much a no-shellout surface as the populated-cache one -- it must
-never fall back to a compute/subprocess call, only an empty render."
-      (let ((violations nil)
-            (guarded '(call-process call-process-region process-file
-                       start-process start-file-process make-process)))
-        (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) nil)))
-          (edmacs-sidebar-test--with-repo-frame "/repo/.git"
             (unwind-protect
                 (progn
                   (dolist (fn guarded)
                     (advice-add fn :before
                                 (lambda (&rest _) (push fn violations))
-                                `((name . ,(intern (format "edmacs-sidebar-test--guard-wtmiss-%s" fn))))))
+                                `((name . ,(intern (format "edmacs-sidebar-test--guard-wt-%s" fn))))))
                   (edmacs-sidebar-show (selected-frame))
                   (dotimes (_ 50)
                     (edmacs-sidebar--redraw (selected-frame))
-                    (edmacs-sidebar--redraw-worktrees (selected-frame) "/repo/.git"))
+                    (edmacs-sidebar--redraw-projects (selected-frame))
+                    (edmacs-sidebar--on-tab-select nil nil)
+                    (edmacs-sidebar--on-tab-open nil)
+                    (edmacs-sidebar--on-tab-pre-close nil nil)
+                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                      ;; First (top-level) row: the project, main tab open.
+                      (goto-char (point-min))
+                      (edmacs-sidebar-activate)
+                      (edmacs-sidebar-close-worktree)
+                      ;; Its child row: "z", open too.
+                      (forward-line 1)
+                      (edmacs-sidebar-activate)
+                      (edmacs-sidebar-close-worktree)))
                   (sleep-for 0.2)
                   (sit-for 0)
                   (should-not violations))
               (dolist (fn guarded)
-                (advice-remove fn (intern (format "edmacs-sidebar-test--guard-wtmiss-%s" fn))))
+                (advice-remove fn (intern (format "edmacs-sidebar-test--guard-wt-%s" fn))))
               (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
 
     ;; ==========================================================================
@@ -774,29 +824,41 @@ to universally present in terminfo databases."
 batch environment (no controlling terminal? run under `script -q /dev/null \
 emacs ...' to exercise this test): %s" e)))))
 
-    (ert-deftest edmacs-sidebar-test-per-frame-buffers-distinct-and-delete-frame-scoped ()
+    (ert-deftest edmacs-sidebar-test-singleton-buffer-shared-across-frames ()
+      "Since edmacs-tab-groups phase 3's buffer collapse, two frames'
+sidebars resolve to the `eq' SAME buffer object -- there is no more
+per-frame `*sidebar: <repo>*' name to be distinct. Deleting the
+NON-last frame showing it leaves the buffer alive for the remaining
+frame; deleting the LAST frame showing it kills the buffer."
       (let* ((f1 (selected-frame))
              (f2 (edmacs-sidebar-test--make-second-frame-or-skip)))
         (unwind-protect
             (progn
               (edmacs-sidebar-show f1)
               (with-selected-frame f2 (edmacs-sidebar-show f2))
-              (let ((buf1 (edmacs-sidebar--buffer f1))
-                    (buf2 (edmacs-sidebar--buffer f2)))
-                (should (buffer-live-p buf1))
-                (should (buffer-live-p buf2))
-                (should-not (eq buf1 buf2))
-                ;; RET on f2's (non-selected-relative-to-f1) buffer still
-                ;; selects the right tab on f2 -- exercises the same
-                ;; frame-explicit lookup as the regression test above,
-                ;; against a genuinely different frame.
-                (with-current-buffer buf2
-                  (goto-char (point-min))
-                  (edmacs-sidebar-activate))
+              (let ((buf (edmacs-sidebar--buffer f1)))
+                (should (buffer-live-p buf))
+                (should (eq buf (edmacs-sidebar--buffer f2)))
+                ;; RET on f2's window still selects the right tab on f2 --
+                ;; exercises the same frame-explicit lookup as the
+                ;; regression test above, against a genuinely different
+                ;; frame, even though the buffer itself is shared.
+                (with-selected-frame f2
+                  (with-current-buffer buf
+                    (goto-char (point-min))
+                    (edmacs-sidebar-activate)))
                 (should (= 0 (with-selected-frame f2 (tab-bar--current-tab-index))))
+                ;; f1 still shows the buffer -- deleting f2 (not the last
+                ;; frame showing it) must not kill it out from under f1.
                 (delete-frame f2)
-                (should-not (buffer-live-p buf2))
-                (should (buffer-live-p buf1))))
+                (should (buffer-live-p buf))
+                ;; f1 is this whole suite's shared frame and can't actually
+                ;; be deleted -- hide its window (so no frame shows BUF any
+                ;; more) and call the delete-frame hook directly, exactly
+                ;; as `delete-frame' would invoke it on f1's own deletion.
+                (edmacs-sidebar-hide f1)
+                (edmacs-sidebar--cleanup-frame f1)
+                (should-not (buffer-live-p buf))))
           (edmacs-sidebar-test--cleanup-sidebar f1)
           (when (frame-live-p f2) (delete-frame f2)))))
 
@@ -1000,26 +1062,21 @@ model \"freshly restored, buffer excluded from the save\" rather than
                   (should (= 2 (length (split-string (buffer-string) "\n" t)))))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
-    (ert-deftest edmacs-sidebar-test-ensure-buffer-renames-stale-buffer-name ()
-      "A restored frame's sidebar buffer can be created before the frame's
-real title is regenerated -- exactly the daemon-boot frameset-restore
-race `edmacs-sessions--ensure-sidebar' (sessions.el) documents, and
-reproduced live via a real multi-frame daemon restart: the sidebar
-buffer's own name locked in as the frame's stale/generic name and never
-caught up once the frame was correctly retitled. `edmacs-sidebar--
-ensure-buffer' must rename an already-live buffer to match, not just
-leave a stale name on an otherwise-correct buffer."
+    (ert-deftest edmacs-sidebar-test-ensure-buffer-is-always-the-singleton-name ()
+      "Since edmacs-tab-groups phase 3's buffer collapse, there is no
+per-frame title-derived name to drift out of sync any more (the race
+`-ensure-buffer-renames-stale-buffer-name' used to cover) -- FRAME's
+`name' parameter changing has no bearing on the buffer's own name at
+all, which stays the fixed singleton `*sidebar*'."
       (let ((frame (selected-frame))
             (original-name (frame-parameter (selected-frame) 'name)))
         (unwind-protect
             (progn
               (edmacs-sidebar--ensure-buffer frame)
-              (with-current-buffer (edmacs-sidebar--buffer frame)
-                (rename-buffer "*sidebar: stale-name*" t))
+              (should (equal (buffer-name (edmacs-sidebar--buffer frame)) "*sidebar*"))
               (set-frame-parameter frame 'name "real-repo-name")
               (edmacs-sidebar--ensure-buffer frame)
-              (should (equal (buffer-name (edmacs-sidebar--buffer frame))
-                              "*sidebar: real-repo-name*")))
+              (should (equal (buffer-name (edmacs-sidebar--buffer frame)) "*sidebar*")))
           (set-frame-parameter frame 'name original-name)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
@@ -1445,28 +1502,27 @@ a keypress; that spec calls `read-from-minibuffer' via a normal
 (stubbable) Lisp call, unlike a bare string interactive spec's C-level
 argument reading, which `fset'/`cl-letf' cannot intercept -- confirmed
 against a real tab's name actually changing, not a mock call count.
-`r' user-errors on a tab-less worktree row, and with no recognized row
-at all."
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist (list (cons current "/repo/wt-open/")))
-             (worktrees '(("wt-open" . "/repo/wt-open/") ("wt-closed" . "/repo/wt-closed/"))))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees))
-                    ((symbol-function 'read-from-minibuffer)
-                     (lambda (&rest _) "edmacs-sidebar-test-renamed")))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (goto-char (point-min))
-                      (edmacs-sidebar-rename-at-point)
-                      (should (equal "edmacs-sidebar-test-renamed"
-                                      (alist-get 'name (tab-bar--current-tab-find))))
-                      (forward-line 1)
-                      (should-error (edmacs-sidebar-rename-at-point) :type 'user-error)))
-                (ignore-errors (tab-bar-rename-tab ""))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+`r' user-errors on a project row whose main tab isn't open, and with no
+recognized row at all."
+      (edmacs-sidebar-test--with-project
+          '(("repoH" "/repoH/main/" "/repoH/main/.git"
+             ("/repoH__worktrees/roadmap-wt/" "roadmap-wt")))
+        (cl-letf (((symbol-function 'read-from-minibuffer)
+                   (lambda (&rest _) "edmacs-sidebar-test-renamed")))
+          (unwind-protect
+              (progn
+                (edmacs-sidebar-show (selected-frame))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  ;; First (top-level) row: the project, main tab not open.
+                  (goto-char (point-min))
+                  (should-error (edmacs-sidebar-rename-at-point) :type 'user-error)
+                  ;; Its child row: "wt", open.
+                  (forward-line 1)
+                  (edmacs-sidebar-rename-at-point)
+                  (should (equal "edmacs-sidebar-test-renamed"
+                                  (alist-get 'name (tab-bar--current-tab-find))))))
+            (ignore-errors (tab-bar-rename-tab ""))
+            (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
       (with-temp-buffer
         (edmacs-sidebar-mode)
         (should-error (edmacs-sidebar-rename-at-point) :type 'user-error)))
@@ -1501,22 +1557,28 @@ through explicitly instead of `call-interactively'-ing blind."
                                 (alist-get 'name (tab-bar--current-tab-find))))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
-    (ert-deftest edmacs-sidebar-test-current-tab-and-worktree-closed-faces ()
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist (list (cons current "/repo/wt-open/")))
-             (worktrees '(("wt-open" . "/repo/wt-open/") ("wt-closed" . "/repo/wt-closed/"))))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (goto-char (point-min))
-                      (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-current-tab-face))
-                      (forward-line 1)
-                      (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-worktree-closed-face))))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+    (ert-deftest edmacs-sidebar-test-project-row-current-face-and-worktree-child-face ()
+      "The project row for the active group gets
+`edmacs-sidebar-current-tab-face' when its main tab is the frame's own
+selected tab (AC2); a worktree child row that is not itself the
+selected tab gets `edmacs-sidebar-worktree-child-face' (AC3's
+\"worktree hue\")."
+      (edmacs-sidebar-test--with-project
+          '(("repoI" "/repoI/main/" "/repoI/main/.git"
+             ("/repoI/main/" "main") ("/repoI__worktrees/roadmap-wt/" "roadmap-wt")))
+        (unwind-protect
+            (progn
+              ;; The LAST tab this fixture creates ("roadmap-wt") is left
+              ;; current -- switch back to "main" so it (and therefore the
+              ;; project row) is the frame's active/current one instead.
+              (tab-bar-switch-to-tab "main")
+              (edmacs-sidebar-show (selected-frame))
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                (goto-char (point-min))
+                (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-current-tab-face))
+                (forward-line 1)
+                (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-worktree-child-face))))
+          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
     (ert-deftest edmacs-sidebar-test-reapply-width-restores-a-resized-sidebar ()
       "`edmacs-sidebar-reapply-width' resizes a drifted sidebar back to target.
@@ -2057,14 +2119,14 @@ nil rather than dedicating and keeping it."
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-header-line-shows-repo-name ()
-      (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) nil)))
-        (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-          (unwind-protect
-              (progn
-                (edmacs-sidebar-show (selected-frame))
-                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                  (should (equal "repo" (substring-no-properties header-line-format)))))
-            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
+      (unwind-protect
+          (progn
+            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (edmacs-sidebar-show (selected-frame))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (should (equal "repo" (substring-no-properties header-line-format)))))
+        (set-frame-parameter (selected-frame) 'edmacs-repo nil)
+        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
 
     (ert-deftest edmacs-sidebar-test-header-line-shows-frame-name-when-repo-less ()
       (let ((frame (selected-frame))
@@ -2090,8 +2152,18 @@ nil rather than dedicating and keeping it."
       "With no `nerd-icons', every kind falls back to its plain marker."
       (should (equal "●" (edmacs-sidebar--glyph 'current-tab)))
       (should (equal "○" (edmacs-sidebar--glyph 'open-tab)))
-      (should (equal "⋯" (edmacs-sidebar--glyph 'no-tab)))
+      (should (equal "◆" (edmacs-sidebar--glyph 'roadmap-worktree)))
+      (should (equal "◇" (edmacs-sidebar--glyph 'task-worktree)))
+      (should (equal "·" (edmacs-sidebar--glyph 'worktree)))
       (should (equal "?" (edmacs-sidebar--glyph 'some-unknown-kind))))
+
+    (ert-deftest edmacs-sidebar-test-worktree-kind-glyph-key-maps-classification ()
+      "AC3: a roadmap and a task worktree row map to distinct glyph keys,
+distinct from each other and from an unclassified worktree's generic key."
+      (should (eq 'roadmap-worktree (edmacs-sidebar--worktree-kind-glyph-key 'roadmap)))
+      (should (eq 'task-worktree (edmacs-sidebar--worktree-kind-glyph-key 'task)))
+      (should (eq 'worktree (edmacs-sidebar--worktree-kind-glyph-key nil)))
+      (should (eq 'worktree (edmacs-sidebar--worktree-kind-glyph-key 'main))))
 
     (ert-deftest edmacs-sidebar-test-glyph-prefers-nerd-icons-when-available ()
       "When `nerd-icons' is (simulated) present, its icon wins over the
@@ -2101,7 +2173,9 @@ plain fallback."
                 ((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons))))
         (should (equal "NERD-nf-oct-arrow_right" (edmacs-sidebar--glyph 'current-tab)))
         (should (equal "NERD-nf-oct-circle" (edmacs-sidebar--glyph 'open-tab)))
-        (should (equal "NERD-nf-oct-dash" (edmacs-sidebar--glyph 'no-tab)))))
+        (should (equal "NERD-nf-oct-git_branch" (edmacs-sidebar--glyph 'roadmap-worktree)))
+        (should (equal "NERD-nf-oct-checklist" (edmacs-sidebar--glyph 'task-worktree)))
+        (should (equal "NERD-nf-oct-file_directory" (edmacs-sidebar--glyph 'worktree)))))
 
     (ert-deftest edmacs-sidebar-test-glyph-nerd-icon-error-falls-back ()
       "A `nerd-icons' call that errors falls back to plain text, never signals."
@@ -2436,60 +2510,60 @@ preventing it from leaking onto the buffer that replaces the sidebar."
     ;; section, so a contributed section is a real child, not a sibling
     ;; ==========================================================================
 
-    (ert-deftest edmacs-sidebar-test-redraw-worktrees-hook-runs-inside-row-section ()
+    (ert-deftest edmacs-sidebar-test-redraw-projects-hook-runs-inside-child-row-section ()
       "A function on `edmacs-sidebar-worktree-section-functions' inserts a
-child section from inside the callback the row hands it -- the
-resulting section's PARENT is the row's own `edmacs-sidebar-tab'
-section, not `magit-root-section', proving the hook now runs inside the
-row's body rather than after it closes."
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist (list (cons current "/repo/wt/")))
-             (worktrees '(("wt" . "/repo/wt/")))
-             (child-section nil)
-             (edmacs-sidebar-worktree-section-functions
-              (list (lambda (_root _has-tab _frame _tab-number)
-                      (setq child-section
-                            (magit-insert-section (edmacs-sidebar-test-child nil)
-                              (magit-insert-heading "  test child")))))))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (should child-section)
-                      (let ((parent (oref child-section parent)))
-                        (should parent)
-                        (should (eq (oref parent type) 'edmacs-sidebar-tab))
-                        (should (equal (oref parent value) "/repo/wt/")))))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+child section from inside the callback a worktree CHILD row hands it --
+the resulting section's PARENT is that child row's own
+`edmacs-sidebar-tab' section, not `magit-root-section' or the project
+row, proving the hook still runs inside each row's own body."
+      (edmacs-sidebar-test--with-project
+          '(("repoJ" "/repoJ/main/" "/repoJ/main/.git"
+             ("/repoJ/main/" "main") ("/repoJ__worktrees/roadmap-wt/" "roadmap-wt")))
+        (let* (child-section
+               (edmacs-sidebar-worktree-section-functions
+                (list (lambda (root _has-tab _frame _tab-number)
+                       (when (equal root "/repoJ__worktrees/roadmap-wt/")
+                         (setq child-section
+                               (magit-insert-section (edmacs-sidebar-test-child nil)
+                                 (magit-insert-heading "    test child"))))))))
+          (unwind-protect
+              (progn
+                (edmacs-sidebar-show (selected-frame))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (should child-section)
+                  (let ((parent (oref child-section parent)))
+                    (should parent)
+                    (should (eq (oref parent type) 'edmacs-sidebar-tab))
+                    (should (equal (oref parent value) (cons "repoJ" "/repoJ__worktrees/roadmap-wt/"))))))
+            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
 
-    (ert-deftest edmacs-sidebar-test-redraw-worktrees-hook-runs-inside-tabless-row-section ()
-      "Same contract on a tab-less (dimmed) worktree row: the hook still
-fires (HAS-TAB nil), and its contributed section still nests under
-that row rather than the root."
-      (let* ((root-alist nil)
-             (worktrees '(("wt" . "/repo/wt/")))
-             (child-section nil)
-             (edmacs-sidebar-worktree-section-functions
-              (list (lambda (_root _has-tab _frame _tab-number)
-                      (setq child-section
-                            (magit-insert-section (edmacs-sidebar-test-child nil)
-                              (magit-insert-heading "  test child")))))))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (should child-section)
-                      (let ((parent (oref child-section parent)))
-                        (should parent)
-                        (should (eq (oref parent type) 'edmacs-sidebar-tab))
-                        (should (equal (oref parent value) "/repo/wt/")))))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+    (ert-deftest edmacs-sidebar-test-redraw-projects-hook-runs-inside-project-row-with-no-main-tab ()
+      "Same contract on a project row whose own main tab isn't open: the
+hook still fires (HAS-TAB nil, ROOT the derived main root), and its
+contributed section still nests under the project row rather than the
+root."
+      (edmacs-sidebar-test--with-project
+          '(("repoK" "/repoK/main/" "/repoK/main/.git"
+             ("/repoK__worktrees/roadmap-wt/" "roadmap-wt")))
+        (let* (child-section has-tab-seen
+               (edmacs-sidebar-worktree-section-functions
+                (list (lambda (root has-tab _frame _tab-number)
+                       (when (equal root "/repoK/main/")
+                         (setq has-tab-seen has-tab)
+                         (setq child-section
+                               (magit-insert-section (edmacs-sidebar-test-child nil)
+                                 (magit-insert-heading "  test child"))))))))
+          (unwind-protect
+              (progn
+                (edmacs-sidebar-show (selected-frame))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (should child-section)
+                  (should-not has-tab-seen)
+                  (let ((parent (oref child-section parent)))
+                    (should parent)
+                    (should (eq (oref parent type) 'edmacs-sidebar-tab))
+                    (should (equal (oref parent value) (cons "repoK" "/repoK/main/"))))))
+            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
 
     ;; ==========================================================================
     ;; AC2 -- visit/close/rename/toggle all resolve through one shared
@@ -2506,7 +2580,7 @@ past more than one level, unlike the old bespoke single-level walks."
         (let (agent-section)
           (let ((inhibit-read-only t))
             (magit-insert-section (edmacs-sidebar-root)
-              (magit-insert-section (edmacs-sidebar-tab "/repo/wt/")
+              (magit-insert-section (edmacs-sidebar-tab (cons "g1" "/repo/wt/"))
                 (magit-insert-heading "tab row")
                 (magit-insert-section (edmacs-sidebar-agents-group nil)
                   (magit-insert-heading "  agents group")
@@ -2517,8 +2591,8 @@ past more than one level, unlike the old bespoke single-level walks."
           (should (eq (magit-current-section) agent-section))
           (let (closed)
             (cl-letf (((symbol-function 'tab-bar-close-tab) (lambda (n) (push n closed)))
-                      ((symbol-function 'edmacs-frames--tab-for-root)
-                       (lambda (_root &optional _frame) 'fake-tab))
+                      ((symbol-function 'edmacs-workspaces-find-tab)
+                       (lambda (_group _root) 'fake-tab))
                       ((symbol-function 'tab-bar--tab-index)
                        (lambda (_tab &optional _tabs _frame) 2)))
               (edmacs-sidebar-close-worktree))
@@ -2533,7 +2607,7 @@ tab -- the generic (non-agent) branch of the shared walk."
         (let (buf-section)
           (let ((inhibit-read-only t))
             (magit-insert-section (edmacs-sidebar-root)
-              (magit-insert-section (edmacs-sidebar-tab "/repo/wt/")
+              (magit-insert-section (edmacs-sidebar-tab (cons "g1" "/repo/wt/"))
                 (magit-insert-heading "tab row")
                 (magit-insert-section (edmacs-sidebar-buffers-root (cons "/repo/wt/" 2))
                   (magit-insert-heading "  buffers")
@@ -2549,8 +2623,8 @@ tab -- the generic (non-agent) branch of the shared walk."
                        (lambda (name n) (push (cons name n) renamed)))
                       ((symbol-function 'read-from-minibuffer)
                        (lambda (&rest _) "edmacs-sidebar-test-nested-rename"))
-                      ((symbol-function 'edmacs-frames--tab-for-root)
-                       (lambda (_root &optional _frame) 'fake-tab))
+                      ((symbol-function 'edmacs-workspaces-find-tab)
+                       (lambda (_group _root) 'fake-tab))
                       ((symbol-function 'tab-bar--tab-index)
                        (lambda (_tab &optional _tabs _frame) 1)))
               (edmacs-sidebar-rename-at-point))
@@ -2562,50 +2636,50 @@ tab -- the generic (non-agent) branch of the shared walk."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-test-point-survives-redraw-through-label-change ()
-      "Point starts on a tab-less worktree row (label ends in \" (no
-tab)\"), preceded by an unrelated warning row so the worktree row is
-not already sitting at `point-min'; the same root then gains an open
-tab -- a different label, glyph, and face -- and a direct `--redraw'
-call still resolves point back to that same worktree section
-afterward, proven via `magit-section-ident' equality, rather than
-falling to `point-min' or drifting onto the warning row. Keying
-identity on the rendered label (as before this phase) would have
-missed this, since the label itself is what changed; keying it on a
-`(ROOT . TAB-NUMBER)' cons (also before this phase) would have missed
-it too, since that cons's `equal'-identity breaks the moment TAB-NUMBER
-goes from nil to non-nil -- the bare ROOT string used now is what stays
-`equal'-stable across that transition."
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist nil)
-             (worktrees '(("wt" . "/repo/wt/"))))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (set-frame-parameter (selected-frame) 'edmacs-repo-missing t)
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (goto-char (point-min))
-                      (forward-line 1)
-                      ;; `--capture-positions' reads each window's own
-                      ;; `window-point', which redisplay (never run under
-                      ;; `-Q --batch') would otherwise sync from the
-                      ;; buffer's actual point on its own.
-                      (set-window-point (edmacs-sidebar--window (selected-frame)) (point))
-                      (should (string-match-p "no tab" (buffer-string)))
-                      (should (equal (oref (magit-current-section) value) "/repo/wt/"))
-                      (let ((section-before (magit-current-section)))
-                        ;; The root now has an open tab -- a differently
-                        ;; shaped label, no " (no tab)" suffix.
-                        (push (cons current "/repo/wt/") root-alist)
-                        (edmacs-sidebar--redraw (selected-frame))
-                        (should-not (string-match-p "no tab" (buffer-string)))
-                        (should (equal (oref (magit-current-section) value) "/repo/wt/"))
-                        (should (equal (magit-section-ident (magit-current-section))
-                                       (magit-section-ident section-before))))))
-                (set-frame-parameter (selected-frame) 'edmacs-repo-missing nil)
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+      "Point starts on a project row that is NOT the frame's active group
+\(hollow glyph, plain label\); that group's own main tab then becomes
+the frame's current tab -- a differently shaped label \(filled glyph,
+`edmacs-sidebar-current-tab-face'\) -- and a direct `--redraw' call
+still resolves point back to that same project section afterward,
+proven via `magit-section-ident' equality, rather than falling to
+`point-min' or drifting onto the other project's row. The section value
+is an `equal'-stable `(GROUP . ROOT)' cons -- keying identity on the
+rendered label instead (as before this phase) would have missed this,
+since the label itself is what changed."
+      (edmacs-sidebar-test--with-project
+          '(("repoL" "/repoL/main/" "/repoL/main/.git" ("/repoL/main/" "main"))
+            ("repoM" "/repoM/main/" "/repoM/main/.git" ("/repoM/main/" "main")))
+        (unwind-protect
+            (progn
+              ;; This fixture leaves "repoM" current -- point-min is
+              ;; "repoL"'s row, the inactive one.
+              (edmacs-sidebar-show (selected-frame))
+              (let (section-before)
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (goto-char (point-min))
+                  ;; `--capture-positions' reads each window's own
+                  ;; `window-point', which redisplay (never run under `-Q
+                  ;; --batch') would otherwise sync from the buffer's actual
+                  ;; point on its own.
+                  (set-window-point (edmacs-sidebar--window (selected-frame)) (point))
+                  (should (equal (oref (magit-current-section) value) (cons "repoL" "/repoL/main/")))
+                  (should (eq (get-text-property (point) 'face) nil))
+                  (setq section-before (magit-current-section)))
+                ;; "repoL" is now the frame's active group -- a differently
+                ;; shaped label, filled glyph, current-tab-face. Outside the
+                ;; `with-current-buffer' above: the real `tab-bar-select-tab'
+                ;; this calls changes the frame's own selected window/buffer
+                ;; as a side effect, which would otherwise hijack "current
+                ;; buffer" away from the sidebar buffer for the rest of that
+                ;; form.
+                (edmacs-workspaces-select-tab "repoL" "/repoL/main/")
+                (edmacs-sidebar--redraw (selected-frame))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (should (equal (oref (magit-current-section) value) (cons "repoL" "/repoL/main/")))
+                  (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-current-tab-face))
+                  (should (equal (magit-section-ident (magit-current-section))
+                                  (magit-section-ident section-before))))))
+          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
     ;; ==========================================================================
     ;; AC2 -- fold state survives a redraw, via magit-section's own
@@ -2613,52 +2687,56 @@ goes from nil to non-nil -- the bare ROOT string used now is what stays
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-test-fold-state-survives-redraw-through-label-change ()
-      "A worktree row's own child section, folded before a redraw that
-changes the row's label (tab-less to tabbed, same transition AC1's test
-drives), is still folded afterward -- with no bespoke fold-preservation
-code of this phase's own: `magit-section-cache-visibility' defaults to
-t, so `magit-section-hide' already cached this child's hidden state
-under its `magit-section-ident', and the freshly recreated child gets
-that same ident (its own value is constant, and its parent -- the
-worktree row -- now has the `equal'-stable bare-ROOT ident AC1 relies
-on), so `magit-section-cached-visibility' restores it as hidden without
-this phase adding anything beyond the Step-1 data-shape fix."
-      (let* ((current (tab-bar--current-tab-find))
-             (root-alist nil)
-             (worktrees '(("wt" . "/repo/wt/")))
-             (edmacs-sidebar-worktree-section-functions
-              (list (lambda (_root _has-tab _frame _tab-number)
-                      (magit-insert-section (edmacs-sidebar-test-child nil)
-                        (magit-insert-heading "  test child")
-                        (insert "  test child body\n"))))))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (progn
-                    (edmacs-sidebar-show (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (let (child)
-                        (edmacs-sidebar--map-sections
-                         magit-root-section
-                         (lambda (s) (when (eq (oref s type) 'edmacs-sidebar-test-child)
-                                       (setq child s))))
-                        (should child)
-                        (should (eq nil (oref child hidden)))
-                        (magit-section-hide child))
-                      ;; The root now has an open tab -- a differently
-                      ;; shaped label, no " (no tab)" suffix.
-                      (push (cons current "/repo/wt/") root-alist)
-                      (edmacs-sidebar--redraw (selected-frame))
-                      (should-not (string-match-p "no tab" (buffer-string)))
-                      (let (child)
-                        (edmacs-sidebar--map-sections
-                         magit-root-section
-                         (lambda (s) (when (eq (oref s type) 'edmacs-sidebar-test-child)
-                                       (setq child s))))
-                        (should child)
-                        (should (eq t (oref child hidden))))))
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+      "A project row's own child section, folded before a redraw that
+changes the row's label (inactive to active group, same transition
+AC1's test drives), is still folded afterward -- with no bespoke
+fold-preservation code of this phase's own: `magit-section-cache-
+visibility' defaults to t, so `magit-section-hide' already cached this
+child's hidden state under its `magit-section-ident', and the freshly
+recreated child gets that same ident (its own value is constant, and
+its parent -- the project row -- now has the `equal'-stable `(GROUP
+. ROOT)' ident AC1 relies on), so `magit-section-cached-visibility'
+restores it as hidden without this phase adding anything beyond the
+Step-1 data-shape fix."
+      (edmacs-sidebar-test--with-project
+          '(("repoL" "/repoL/main/" "/repoL/main/.git" ("/repoL/main/" "main"))
+            ("repoM" "/repoM/main/" "/repoM/main/.git" ("/repoM/main/" "main")))
+        (let ((edmacs-sidebar-worktree-section-functions
+               (list (lambda (root _has-tab _frame _tab-number)
+                       (when (equal root "/repoL/main/")
+                         (magit-insert-section (edmacs-sidebar-test-child nil)
+                           (magit-insert-heading "  test child")
+                           (insert "  test child body\n")))))))
+          (unwind-protect
+              (progn
+                (edmacs-sidebar-show (selected-frame))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (let (child)
+                    (edmacs-sidebar--map-sections
+                     magit-root-section
+                     (lambda (s) (when (eq (oref s type) 'edmacs-sidebar-test-child)
+                                   (setq child s))))
+                    (should child)
+                    (should (eq nil (oref child hidden)))
+                    (magit-section-hide child)))
+                ;; "repoL" is now the frame's active group -- a differently
+                ;; shaped label, filled glyph, current-tab-face. Outside the
+                ;; `with-current-buffer' above: the real `tab-bar-select-tab'
+                ;; this calls changes the frame's own selected window/buffer
+                ;; as a side effect, which would otherwise hijack "current
+                ;; buffer" away from the sidebar buffer for the rest of that
+                ;; form.
+                (edmacs-workspaces-select-tab "repoL" "/repoL/main/")
+                (edmacs-sidebar--redraw (selected-frame))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (let (child)
+                    (edmacs-sidebar--map-sections
+                     magit-root-section
+                     (lambda (s) (when (eq (oref s type) 'edmacs-sidebar-test-child)
+                                   (setq child s))))
+                    (should child)
+                    (should (eq t (oref child hidden))))))
+            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
 
     ;; ==========================================================================
     ;; Window-start half of `edmacs-sidebar--capture-positions'/
@@ -2667,53 +2745,46 @@ this phase adding anything beyond the Step-1 data-shape fix."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-test-window-start-survives-redraw-through-shifted-content ()
-      "Window-start, scrolled onto one worktree row while point sits on a
-later row, is restored to that same row (by section identity, not the
-stale raw integer) after a redraw that inserts a missing-repo warning
-above every row -- shifting each row's buffer position down.
+      "Window-start, scrolled onto one worktree child row while point sits
+on a later one, is restored to that same row (by section identity, not
+the stale raw integer) after a redraw that inserts a missing-repo
+warning above every row -- shifting each row's buffer position down.
 `edmacs-sidebar--restore-positions' first tries `magit-section-equal' on
 the old raw integer, which -- after the shift -- now lands on the wrong
 row entirely, so a correct restore has to fall through to its
 `magit-section-goto-successor--same' recovery branch instead of
 silently keeping a wrong-looking-but-live window-start."
-      (let* (;; Forces `tab-bar-tabs's one-time lazy frame-init (and the
-             ;; `tab-bar-tab-post-open-functions' it runs) to happen here,
-             ;; not on the first `tab-bar-tabs' call inside
-             ;; `edmacs-sidebar--redraw-worktrees' below -- every other test
-             ;; in this file gets this for free via an earlier
-             ;; `tab-bar--current-tab-find', which this test has no other
-             ;; reason to call.
-             (_ (tab-bar-tabs))
-             (worktrees (cl-loop for i from 0 below 8
-                                 collect (cons (format "wt-%d" i)
-                                               (format "/repo/wt-%d/" i))))
-             (root-alist nil))
-        (edmacs-sidebar-test--stub-worktree-lookup root-alist
-          (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees)))
-            (edmacs-sidebar-test--with-repo-frame "/repo/.git"
-              (unwind-protect
-                  (let ((window nil))
-                    (edmacs-sidebar-show (selected-frame))
-                    (setq window (edmacs-sidebar--window (selected-frame)))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (goto-char (point-min))
-                      (forward-line 2)
-                      (should (equal (oref (magit-current-section) value) "/repo/wt-2/"))
-                      (set-window-start window (point) t)
-                      (goto-char (point-min))
-                      (forward-line 6)
-                      (should (equal (oref (magit-current-section) value) "/repo/wt-6/"))
-                      (set-window-point window (point)))
-                    ;; The warning row inserted ahead of the worktree list
-                    ;; shifts every row's buffer position down, so the old
-                    ;; raw `window-start' integer no longer names wt-2's row.
-                    (set-frame-parameter (selected-frame) 'edmacs-repo-missing t)
-                    (edmacs-sidebar--redraw (selected-frame))
-                    (with-selected-window window
-                      (should (equal (oref (magit-section-at (window-start)) value)
-                                     "/repo/wt-2/"))))
-                (set-frame-parameter (selected-frame) 'edmacs-repo-missing nil)
-                (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))))
+      (edmacs-sidebar-test--with-project
+          (list (append (list "repoP" "/repoP/main/" "/repoP/main/.git" (list "/repoP/main/" "main"))
+                        (cl-loop for i from 0 below 8
+                                 collect (list (format "/repoP__worktrees/roadmap-%d/" i)
+                                               (format "roadmap-%d" i)))))
+        (unwind-protect
+            (let ((window nil))
+              (edmacs-sidebar-show (selected-frame))
+              (setq window (edmacs-sidebar--window (selected-frame)))
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                ;; Line 0: the project row. Lines 1-8: children 0-7.
+                (goto-char (point-min))
+                (forward-line 3)
+                (should (equal (oref (magit-current-section) value)
+                                (cons "repoP" "/repoP__worktrees/roadmap-2/")))
+                (set-window-start window (point) t)
+                (goto-char (point-min))
+                (forward-line 7)
+                (should (equal (oref (magit-current-section) value)
+                                (cons "repoP" "/repoP__worktrees/roadmap-6/")))
+                (set-window-point window (point)))
+              ;; The warning row inserted ahead of the tree shifts every
+              ;; row's buffer position down, so the old raw `window-start'
+              ;; integer no longer names roadmap-2's row.
+              (set-frame-parameter (selected-frame) 'edmacs-repo-missing t)
+              (edmacs-sidebar--redraw (selected-frame))
+              (with-selected-window window
+                (should (equal (oref (magit-section-at (window-start)) value)
+                               (cons "repoP" "/repoP__worktrees/roadmap-2/")))))
+          (set-frame-parameter (selected-frame) 'edmacs-repo-missing nil)
+          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
     ;; ==========================================================================
     ;; Sanitiser and collision prevention for repo-less frames
@@ -2767,89 +2838,18 @@ silently keeping a wrong-looking-but-live window-start."
       "Real example: My Frame - Emacs → My Frame."
       (should (string-equal (edmacs-sidebar--sanitise-frame-title "My Frame - Emacs") "My Frame")))
 
-    (ert-deftest edmacs-sidebar-test-buffer-name-collision-prevention ()
-      "Two repo-less frames get distinct sidebar buffer names even with same sanitised title."
-      (let* ((f1 (selected-frame))
-             (f2 (edmacs-sidebar-test--make-second-frame-or-skip)))
-        (unwind-protect
-            (progn
-              ;; Set both frames to have the same raw name
-              (set-frame-parameter f1 'name "*Minibuf-0* - Emacs")
-              (set-frame-parameter f2 'name "*Minibuf-1* - Emacs")
-              ;; Remove edmacs-repo so they're treated as repo-less
-              (set-frame-parameter f1 'edmacs-repo nil)
-              (set-frame-parameter f2 'edmacs-repo nil)
-              ;; Ensure buffers are created for both frames
-              (let ((buf1 (edmacs-sidebar--ensure-buffer f1))
-                    (buf2 (edmacs-sidebar--ensure-buffer f2)))
-                (should (buffer-live-p buf1))
-                (should (buffer-live-p buf2))
-                ;; Buffer names should be distinct even though sanitised names are empty
-                (should-not (string-equal (buffer-name buf1) (buffer-name buf2)))))
-          (edmacs-sidebar-test--cleanup-sidebar f1)
-          (when (frame-live-p f2)
-            (edmacs-sidebar-test--cleanup-sidebar f2)
-            (delete-frame f2)))))
-
-    (ert-deftest edmacs-sidebar-test-permanent-name-collision-does-not-poison-quit-restore ()
-      "edmacs-verification-gap phase 6 (AC5) investigation: unlike the
-transient boot-race `-ensure-buffer-renames-stale-buffer-name' covers,
-two frames that converge on the exact same FINAL sanitised title (e.g.
-two frames restoring the identical worktree) hit a PERMANENT collision
--- the losing frame's buffer can never win the rename race back to the
-canonical name, because the winning frame already holds it. Reproduced
-live via a real second frame, confirmed by asserting the `<2>' suffix
-survives a second `--ensure-buffer' call after both frames' names change
-again to the same new value.
-
-This does NOT, however, poison the losing frame's `quit-restore' window
-parameter into the \"buffer quadruple\" shape phase 3
-\(phase-3-quit-restore-geometry\) found blocked `display-buffer-in-side-
-window' from ever honouring a width request again: every sidebar
-buffer/window lookup in this file (`--buffer', `--window', `--ensure-
-buffer') goes through a frame parameter or buffer/window IDENTITY, never
-buffer NAME matching, so a `<2>'-suffixed name has no path to
-`quit-restore' at all -- confirmed here by asserting slot 1 still holds
-the healthy `window' symbol, not a displaced buffer's quadruple, exactly
-as phase 3 describes. And even if some future window WERE reused into a
-poisoned shape, `edmacs-sidebar--enforce-width' (phase 3's fix) no
-longer reads `quit-restore' before resizing, so the collapse/expand
-width guarantee holds independently of this name collision either way.
-No further fix is needed for the name collision itself: it is real and
-permanent, but harmless."
-      (let* ((f1 (selected-frame))
-             (f2 (edmacs-sidebar-test--make-second-frame-or-skip)))
-        (unwind-protect
-            (progn
-              ;; A real terminal-frame's initial size can be arbitrarily
-              ;; small on a controlling tty `ioctl' cannot query (e.g. a
-              ;; pty-less sandbox) -- force a workable size explicitly so
-              ;; `display-buffer-in-side-window' can actually place a
-              ;; window rather than refusing for lack of room, independent
-              ;; of what this test happens to run under.
-              (set-frame-size f2 80 24)
-              (set-frame-parameter f1 'name "same-name")
-              (set-frame-parameter f2 'name "same-name")
-              (edmacs-sidebar-show f1)
-              (with-selected-frame f2 (edmacs-sidebar-show f2))
-              (should (equal (buffer-name (edmacs-sidebar--buffer f1)) "*sidebar: same-name*"))
-              (should (equal (buffer-name (edmacs-sidebar--buffer f2)) "*sidebar: same-name*<2>"))
-              ;; Both frames' titles regenerate to the SAME new final name --
-              ;; the permanent-trigger scenario, not the transient boot race.
-              (set-frame-parameter f1 'name "same-repo")
-              (set-frame-parameter f2 'name "same-repo")
-              (edmacs-sidebar--ensure-buffer f1)
-              (edmacs-sidebar--ensure-buffer f2)
-              (should (equal (buffer-name (edmacs-sidebar--buffer f1)) "*sidebar: same-repo*"))
-              (should (equal (buffer-name (edmacs-sidebar--buffer f2)) "*sidebar: same-repo*<2>"))
-              (let ((w2 (edmacs-sidebar--window f2)))
-                (should (window-live-p w2))
-                (should (eq (window-parameter w2 'window-side) 'left))
-                (should (eq (nth 1 (window-parameter w2 'quit-restore)) 'window))))
-          (edmacs-sidebar-test--cleanup-sidebar f1)
-          (when (frame-live-p f2)
-            (edmacs-sidebar-test--cleanup-sidebar f2)
-            (delete-frame f2)))))
+    ;; The two buffer-NAME-collision tests that used to live here
+    ;; (`-buffer-name-collision-prevention',
+    ;; `-permanent-name-collision-does-not-poison-quit-restore') no longer
+    ;; have a premise: since edmacs-tab-groups phase 3's singleton-buffer
+    ;; collapse there is no per-frame title-derived name to collide on at
+    ;; all -- see `edmacs-sidebar-test-singleton-buffer-shared-across-frames'
+    ;; and `edmacs-sidebar-test-ensure-buffer-is-always-the-singleton-name'
+    ;; above for this phase's replacement coverage. A second frame's own
+    ;; `quit-restore' health (the other half of the old permanent-collision
+    ;; test) is unrelated to buffer naming and stays covered by
+    ;; `edmacs-sidebar-test-show-into-mainless-frame-yields-side-window-and-main'
+    ;; and the window-parameter tests nearby.
 
     ;; ==========================================================================
     ;; edmacs-sidebar-polish phase 13 -- bottom-anchor the usage section

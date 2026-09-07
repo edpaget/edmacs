@@ -74,7 +74,8 @@ a real Emacs session) to enable this suite"))
     (defun edmacs-sidebar--buffer (_frame) nil)
     (defun edmacs-sidebar--redraw (_frame) nil)
     (defun edmacs-sidebar--find-buffer-section (_name) nil)
-    (defun edmacs-frames--tab-for-root (_root &optional _frame) nil)
+    (defun edmacs-workspaces-group-name (_root) nil)
+    (defun edmacs-workspaces-find-tab (_group _root &optional _frame) nil)
     (defun edmacs-main-window () nil)
     (defun edmacs-window-pop-buffer-to-main (_buffer) nil)
     (defun bufferlo-buffer-list (&optional _frame _tabnum _include-hidden) nil)
@@ -377,7 +378,12 @@ or a module-global instead of the FRAME actually passed in."
           (cl-letf (((symbol-function 'frame-parameter)
                      (lambda (frame param) (push (list frame param) calls) nil))
                     ((symbol-function 'bufferlo-buffer-list) (lambda (&rest _) nil))
-                    ((symbol-function 'edmacs-frames--tab-for-root) (lambda (&rest _) nil)))
+                    ;; `--on-worktree-section' now reads TAB straight off
+                    ;; `tab-bar-tabs' by TAB-NUMBER index (see its own
+                    ;; docstring) instead of a root-keyed lookup -- SENTINEL
+                    ;; is not a live frame, so the real `tab-bar-tabs' is
+                    ;; stubbed too.
+                    ((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil)))
             (edmacs-sidebar-buffers-test--with-sidebar-buffer
               ;; Nested under an outer root, matching how the real
               ;; `edmacs-sidebar--redraw' always wraps this call -- called
@@ -417,9 +423,7 @@ a DIFFERENT TAB-NUMBER (simulating that shift), and confirm
 `magit-section-cached-visibility' -- magit-section.el's own free
 mechanism, keyed on ident -- restores it hidden, with no bespoke
 fold-preservation code of this phase's own."
-      (cl-letf (((symbol-function 'edmacs-frames--tab-for-root)
-                 (lambda (&rest _) (cons 'current-tab nil))))
-        (with-temp-buffer
+      (with-temp-buffer
           (magit-section-mode)
           (let ((inhibit-read-only t))
             (magit-insert-section (edmacs-sidebar-root nil nil)
@@ -435,7 +439,7 @@ fold-preservation code of this phase's own."
             (let ((root-sec (edmacs-sidebar-buffers-test--find-child-of-type
                               magit-root-section 'edmacs-sidebar-buffers-root)))
               (should root-sec)
-              (should (eq t (oref root-sec hidden))))))))
+              (should (eq t (oref root-sec hidden)))))))
 
     ))
 

@@ -1,28 +1,34 @@
 ;;; sidebar.el --- Per-frame tab list in a left side window -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; One `magit-section-mode' buffer per frame, shown in a left side window at
-;; slot 0, listing the frame's tabs (`tab-bar-tabs') as top-level sections.
-;; `tab-bar-mode' stays on as the model -- only its strip (`tab-bar-show') is
-;; hidden -- so every `SPC T' binding sessions.el already provides keeps
-;; working unchanged; this module only adds the visual list and an
-;; `SPC t s' toggle.
+;; One singleton `magit-section-mode' buffer (`*sidebar*'), shown in a left
+;; side window at slot 0 on whichever frame(s) ask for it, listing either a
+;; flat list of `tab-bar-tabs' or -- since edmacs-tab-groups phase 3 -- a
+;; grouped tree of every open project. `tab-bar-mode' stays on as the model
+;; -- only its strip (`tab-bar-show') is hidden -- so every `SPC T' binding
+;; sessions.el already provides keeps working unchanged; this module only
+;; adds the visual list and an `SPC t s' toggle.
 ;;
 ;; This is the foundation phase of the edmacs-sidebar roadmap: tab-row
 ;; rendering is kept in its own `magit-insert-section' block inside
 ;; `edmacs-sidebar--redraw' so a later phase can append further sections
-;; (e.g. agent-pane status) without restructuring the per-frame buffer/hook
-;; plumbing built here.
+;; (e.g. agent-pane status) without restructuring the buffer/hook plumbing
+;; built here.
 ;;
-;; A repo frame (one carrying an `edmacs-repo' parameter -- see frames.el)
-;; instead renders one section per worktree of that repo, via
-;; `edmacs-sidebar--redraw-worktrees': open ones as an ordinary tab row,
-;; tab-less ones dimmed with a "no tab" hint, and any tab whose own
-;; worktree has since disappeared kept with a warning face. `RET'
-;; (`edmacs-sidebar-activate') opens/raises through frames.el's own
-;; find-or-create path; `d' (`edmacs-sidebar-close-worktree') closes an
-;; open one's tab and no-ops on a tab-less row. A repo-less frame (the
-;; daemon's boot/spare frame) keeps the original flat tab list.
+;; A frame carrying at least one tab-bar GROUP (`edmacs-workspaces-groups',
+;; workspaces.el) instead renders `edmacs-sidebar--redraw-projects': one
+;; top-level row per project GROUP, its main worktree's own row, with every
+;; other OPEN tab in that group nested underneath as a worktree child row --
+;; never a tab-less one; an unopened worktree is reached through `C-x t p'
+;; instead, not this tree (edmacs-tab-groups phase 3, superseding this
+;; file's original per-repo/tabless-row model). `RET' (`edmacs-sidebar-
+;; activate') selects an already-open tab via `edmacs-workspaces-find-tab'/
+;; `-select-tab', or -- on a project row whose main tab isn't open -- opens
+;; one via `edmacs-workspaces-open-project'; a worktree child row's value is
+;; always backed by an open tab, so it can never reach that fallback. `d'
+;; (`edmacs-sidebar-close-worktree') closes an open row's tab and no-ops
+;; when none is open. A frame with no tab-bar group at all (the daemon's
+;; boot/spare frame) keeps the original flat tab list.
 ;;
 ;; The sidebar claims the LEFT element of `window-sides-slots' (cap 1)
 ;; through `modules/windows.el's `edmacs-windows-claim-side', the single
@@ -98,21 +104,31 @@
 ;; reference.
 (declare-function general-define-key "general")
 
-;; frames.el loads AFTER sidebar.el (see init.el's `load-module' order),
-;; so these forward references are needed for the byte-compiler even
-;; though the shared-obarray runtime calls resolve fine once both
+;; workspaces.el loads AFTER sidebar.el (see init.el's `load-module'
+;; order), so these forward references are needed for the byte-compiler
+;; even though the shared-obarray runtime calls resolve fine once both
 ;; modules have loaded -- mirroring frames.el's own
 ;; `(declare-function edmacs-sidebar-show "sidebar")' in the other
-;; direction.
-(declare-function edmacs-worktrees-for-repo "frames")
-(declare-function edmacs-frames--tab-for-root "frames")
-(declare-function edmacs-frames--tab-root "frames")
+;; direction. This is the one lookup surface AC6 requires: no module
+;; outside frames.el resolves a tab from a root except through these.
+(declare-function edmacs-workspaces-groups "workspaces")
+(declare-function edmacs-workspaces-tabs-in-group "workspaces")
+(declare-function edmacs-workspaces-tab-root "workspaces")
+(declare-function edmacs-workspaces-find-tab "workspaces")
+(declare-function edmacs-workspaces-select-tab "workspaces")
+(declare-function edmacs-workspaces-classify-root "workspaces")
+(declare-function edmacs-workspaces-open-project "workspaces")
 (declare-function edmacs-workspaces-open-worktree "workspaces")
 
 ;; git-common-dir.el loads BEFORE sidebar.el (init.el's `load-module'
-;; order), so this one resolves at real load time too; declared anyway
-;; for this file's own standalone `-Q --batch' test harness, which does
-;; not always load it first.
+;; order), so these resolve at real load time too; declared anyway for
+;; this file's own standalone `-Q --batch' test harness, which does not
+;; always load it first. `edmacs-git-common-dir'/`-main-worktree' are
+;; what a project row whose main tab isn't open derives its own root
+;; from, directly -- see `edmacs-sidebar--derive-main-root' -- rather
+;; than adding a new workspaces.el function of its own for it.
+(declare-function edmacs-git-common-dir "git-common-dir")
+(declare-function edmacs-git-common-dir-main-worktree "git-common-dir")
 (declare-function edmacs-git-common-dir-repo-name "git-common-dir")
 
 ;; sidebar-agents.el (phase 6) loads AFTER this file (init.el's
@@ -159,18 +175,20 @@ sidebar-agents.el reassigns this to append its per-worktree agent
 count.")
 
 (defvar edmacs-sidebar-worktree-section-functions nil
-  "Hook run with (ROOT HAS-TAB FRAME TAB-NUMBER) from inside each worktree
-row's own section body, via the BODY-FN callback
-`edmacs-sidebar--insert-tab-row'/`--insert-no-tab-row' invoke before
-their `magit-insert-section' form closes -- ROOT is that worktree's
-truename, HAS-TAB is non-nil when an open tab row was inserted (nil for
-a tab-less row), FRAME is the frame being redrawn, and TAB-NUMBER is
-that tab's 1-based `tab-bar-tabs' index (nil when HAS-TAB is nil). Lets
-sidebar-agents.el append its own `agents' child section, and
-sidebar-buffers.el its own `buffers' child section, as real magit
-children of the row's own section -- not top-level siblings following
-it -- without this file needing to know anything about agents or
-buffers.")
+  "Hook run with (ROOT HAS-TAB FRAME TAB-NUMBER) from inside each project
+or worktree-child row's own section body, via the BODY-FN callback
+`edmacs-sidebar--insert-project-row'/`--insert-worktree-child-row' invoke
+before their `magit-insert-section' form closes -- ROOT is that row's
+own worktree truename (a project row's main worktree root, possibly
+derived rather than backed by an open tab), HAS-TAB is non-nil when
+ROOT has an open tab (a worktree-child row's is always non-nil; a
+project row's is nil when its main tab isn't open), FRAME is the frame
+being redrawn, and TAB-NUMBER is that tab's 1-based `tab-bar-tabs' index
+(nil when HAS-TAB is nil). Lets sidebar-agents.el append its own
+`agents' child section, and sidebar-buffers.el its own `buffers' child
+section, as real magit children of the row's own section -- not
+top-level siblings following it -- without this file needing to know
+anything about agents or buffers.")
 
 (defvar edmacs-sidebar-extra-section-functions nil
   "Hook run with FRAME at the end of `edmacs-sidebar--redraw', after
@@ -244,6 +262,16 @@ restore bridge."
 (defface edmacs-sidebar-current-tab-face
   '((t :inherit magit-section-heading))
   "Face for the current tab's own row label."
+  :group 'edmacs-sidebar)
+
+(defface edmacs-sidebar-worktree-child-face
+  '((t :inherit shadow))
+  "Face for a worktree child row's own label when it is not the frame's
+literal current tab -- gives a project's nested worktree rows a hue
+distinct from the project row's own plain/current-tab pairing (AC3's
+\"worktree hue\" vs \"project hue\"). Superseded by
+`edmacs-sidebar-current-tab-face' when the row's own tab IS the
+frame's current one."
   :group 'edmacs-sidebar)
 
 (defface edmacs-sidebar-header-face
@@ -410,40 +438,47 @@ leak into any other buffer."
 ;; Per-frame buffer management
 ;; ============================================================================
 
+(defconst edmacs-sidebar--buffer-name "*sidebar*"
+  "The sidebar's single buffer name.
+Since edmacs-tab-groups phase 3 there is one grouped tree showing every
+project, so one frame's sidebar is the same content as any other's --
+there is no more per-frame `*sidebar: <repo>*' name to collide on or
+drift out of sync with a frame's title.")
+
 (defun edmacs-sidebar--buffer (frame)
-  "Return FRAME's sidebar buffer, or nil if it has none."
-  (frame-parameter frame 'edmacs-sidebar-buffer))
+  "Return the singleton sidebar buffer, or nil if it does not exist yet.
+FRAME is accepted (and ignored) so every existing call site -- written
+against the old per-frame notion -- keeps working unchanged; every
+frame answers with the same buffer object."
+  (ignore frame)
+  (get-buffer edmacs-sidebar--buffer-name))
 
 (defun edmacs-sidebar--ensure-buffer (frame)
-  "Return a live, freshly redrawn sidebar buffer for FRAME.
-Creates one, lazily, the first time FRAME needs it -- not eagerly for
-every frame at load time. Renames an already-live buffer whose name has
-drifted from FRAME's current `name' parameter: on a daemon-boot
-frameset restore, `edmacs-sidebar--on-desktop-read' shows every frame's
-sidebar synchronously, before `edmacs-sessions--finish-frameset-restore'
-(deferred a tick later) has regenerated that frame's real title from its
-`edmacs-repo' -- so a restored frame's sidebar buffer was reproduced
-live coming back permanently mis-named after the daemon's generic
-default frame name (e.g. \"*sidebar: F1*\") instead of its repo."
-  (let* ((buf (edmacs-sidebar--buffer frame))
-         (sanitised (edmacs-sidebar--sanitise-frame-title (or (frame-parameter frame 'name) "")))
-         (expected (format "*sidebar: %s*" (if (string-empty-p sanitised) "sidebar" sanitised))))
-    (if (buffer-live-p buf)
-        (unless (equal (buffer-name buf) expected)
-          (with-current-buffer buf (rename-buffer expected t)))
-      (setq buf (generate-new-buffer expected))
-      (set-frame-parameter frame 'edmacs-sidebar-buffer buf)
+  "Return the live, freshly redrawn singleton sidebar buffer.
+Creates it, lazily, the first time any frame needs it -- not eagerly at
+load time. `edmacs-sidebar--redraw' always renders FRAME's own tabs/
+groups into this one buffer, so showing the sidebar on a second frame
+redraws the same buffer with that frame's content instead of FRAME's."
+  (let ((buf (edmacs-sidebar--buffer frame)))
+    (unless (buffer-live-p buf)
+      (setq buf (generate-new-buffer edmacs-sidebar--buffer-name))
       (with-current-buffer buf
         (edmacs-sidebar-mode)))
     (edmacs-sidebar--redraw frame)
     buf))
 
 (defun edmacs-sidebar--cleanup-frame (frame)
-  "Kill FRAME's sidebar buffer, if any, when FRAME is deleted.
-Scoped to exactly FRAME's own buffer/parameter -- every other frame's
-sidebar buffer is untouched."
+  "Kill the singleton sidebar buffer when FRAME's delete leaves no other
+live frame still showing it.
+The buffer is shared across every frame now (see
+`edmacs-sidebar--buffer-name's docstring), so deleting one of several
+frames must not strand the rest with no sidebar -- \"still showing it\"
+is checked via `get-buffer-window-list' across every live frame's
+windows, not a per-frame parameter."
   (let ((buf (edmacs-sidebar--buffer frame)))
-    (when (buffer-live-p buf)
+    (when (and (buffer-live-p buf)
+               (null (seq-remove (lambda (w) (eq (window-frame w) frame))
+                                  (get-buffer-window-list buf nil t))))
       (kill-buffer buf))))
 
 (add-hook 'delete-frame-functions #'edmacs-sidebar--cleanup-frame)
@@ -500,10 +535,12 @@ position'), and -- separately -- the section at the window's
 
 Relies entirely on `magit-section-ident' stability (via
 `magit-section-goto-successor' in `edmacs-sidebar--restore-positions')
-rather than any bespoke per-row-type identity scheme: a worktree row's
-and an agents-group's section values are now the bare, `equal'-stable
-root string (see `edmacs-sidebar--insert-tab-row' and
-`edmacs-sidebar-agents--insert-group'), a buffer row's value is already
+rather than any bespoke per-row-type identity scheme: a project or
+worktree-child row's own value is an `equal'-stable `(GROUP . ROOT)'
+cons (see `edmacs-sidebar--insert-project-row'/
+`--insert-worktree-child-row'), an agents-group's section value is the
+bare, `equal'-stable root string (`edmacs-sidebar-agents--insert-group'),
+a buffer row's value is already
 a stable buffer object, and an agent row's value -- a raw `edmacs-agent'
 struct that `edmacs-agents-set-status' rebuilds fresh on every change --
 gets a `magit-section-ident-value' specializer of its own
@@ -569,8 +606,13 @@ before."
 ;; ============================================================================
 
 (defconst edmacs-sidebar--fallback-glyphs
-  '((current-tab . "●") (open-tab . "○") (no-tab . "⋯"))
-  "Plain-Unicode fallback marker glyph per row KIND.")
+  '((current-tab . "●") (open-tab . "○")
+    (roadmap-worktree . "◆") (task-worktree . "◇") (worktree . "·"))
+  "Plain-Unicode fallback marker glyph per row KIND.
+`current-tab'/`open-tab' mark a project row's active/inactive state
+\(AC2\); `roadmap-worktree'/`task-worktree'/`worktree' mark a worktree
+child row's own kind, from `edmacs-workspaces-classify-root' (AC3) --
+see `edmacs-sidebar--worktree-kind-glyph-key'.")
 
 (declare-function nerd-icons-octicon "nerd-icons")
 
@@ -585,9 +627,19 @@ as if nerd-icons were not loaded at all -- mirrors
            (pcase kind
              ('current-tab (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-arrow_right")))
              ('open-tab (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-circle")))
-             ('no-tab (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-dash")))
+             ('roadmap-worktree (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-git_branch")))
+             ('task-worktree (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-checklist")))
+             ('worktree (and (fboundp 'nerd-icons-octicon) (nerd-icons-octicon "nf-oct-file_directory")))
              (_ nil))
          (error nil))))
+
+(defun edmacs-sidebar--worktree-kind-glyph-key (classification)
+  "Map CLASSIFICATION (`edmacs-workspaces-classify-root's `roadmap'/
+`task'/nil) to this file's own glyph-table KIND key."
+  (pcase classification
+    ('roadmap 'roadmap-worktree)
+    ('task 'task-worktree)
+    (_ 'worktree)))
 
 (defun edmacs-sidebar--glyph (kind)
   "Return the display glyph for KIND: a nerd-icon if available and not
@@ -646,91 +698,149 @@ pathologically narrow strip -- mirrors `--truncate-label's own `(max 0
   (concat (edmacs-sidebar--glyph (if (eq (car tab) 'current-tab) 'current-tab 'open-tab))
           " " (alist-get 'name tab)))
 
-(defun edmacs-sidebar--insert-tab-row (tab tabs frame &optional root stale body-fn)
+(defun edmacs-sidebar--insert-tab-row (tab tabs frame)
   "Insert a row for TAB, an element of TABS in FRAME.
-With ROOT, the section value is the bare ROOT string (the worktree-aware
-shape `edmacs-sidebar-activate' dispatches on) -- equal-stable across a
-tab-number change, unlike a `(ROOT . TAB-NUMBER)' cons, so it is what
-keeps this row's `magit-section-ident' stable across a redraw that opens
-or closes its tab; without ROOT, the section value is the bare 1-based
-TAB-NUMBER (the repo-less flat-list shape). STALE renders the label with
-`edmacs-sidebar-missing-worktree-face' -- TAB's own worktree directory
-has disappeared from the fresh worktree list (phase body Steps item 6);
-otherwise the current tab's row gets `edmacs-sidebar-current-tab-face'.
-BODY-FN, if given, is called with no arguments as the last form inside
-this row's own section body -- before it closes -- so anything it
-inserts becomes a real child of this row's section rather than a
-sibling following it."
+The section value is the bare 1-based TAB-NUMBER -- the group-less
+flat-list shape used only by `edmacs-sidebar--redraw-tabs' now; a
+grouped frame's project/worktree-child rows are inserted by
+`edmacs-sidebar--insert-project-row'/`--insert-worktree-child-row'
+instead, whose own section values are a `(GROUP . ROOT)' cons."
   ;; `tabs'/`frame' passed explicitly: the 0-arg form of
   ;; `tab-bar--tab-index' defaults to `(selected-frame)' and would
   ;; silently return nil for a tab belonging to a non-selected frame.
   (let* ((tab-number (1+ (tab-bar--tab-index tab tabs frame)))
-         (suffix (and root (funcall edmacs-sidebar-worktree-label-suffix-function root)))
-         (label (edmacs-sidebar--truncate-label
-                 (concat (edmacs-sidebar--tab-label tab) (or suffix "")) frame))
-         (value (or root tab-number)))
-    (magit-insert-section (edmacs-sidebar-tab value)
+         (label (edmacs-sidebar--truncate-label (edmacs-sidebar--tab-label tab) frame)))
+    (magit-insert-section (edmacs-sidebar-tab tab-number)
       (magit-insert-heading
-        (cond
-         (stale (propertize label 'face 'edmacs-sidebar-missing-worktree-face))
-         ((eq (car tab) 'current-tab) (propertize label 'face 'edmacs-sidebar-current-tab-face))
-         (t label)))
-      (when body-fn (funcall body-fn)))))
-
-(defun edmacs-sidebar--insert-no-tab-row (entry frame &optional body-fn)
-  "Insert a dimmed, tab-less row for worktree ENTRY, a (NAME . ROOT) pair,
-in FRAME's sidebar. The section value is the bare ROOT string (CDR of
-ENTRY) -- see `edmacs-sidebar--insert-tab-row's own value docstring.
-BODY-FN, if given, is called with no arguments as the last form inside
-this row's own section body -- see
-`edmacs-sidebar--insert-tab-row's own BODY-FN."
-  (let* ((suffix (funcall edmacs-sidebar-worktree-label-suffix-function (cdr entry)))
-         (label (edmacs-sidebar--truncate-label
-                 (concat (edmacs-sidebar--glyph 'no-tab) " " (car entry) (or suffix "") " (no tab)")
-                 frame)))
-    (magit-insert-section (edmacs-sidebar-tab (cdr entry))
-      (magit-insert-heading
-        (propertize label 'face 'edmacs-sidebar-worktree-closed-face))
-      (when body-fn (funcall body-fn)))))
+        (if (eq (car tab) 'current-tab)
+            (propertize label 'face 'edmacs-sidebar-current-tab-face)
+          label)))))
 
 (defun edmacs-sidebar--redraw-tabs (frame)
-  "Render FRAME's tabs as a flat list -- the repo-less fallback.
+  "Render FRAME's tabs as a flat list -- the group-less fallback.
 Unchanged from before worktree-awareness: used only for a frame with no
-`edmacs-repo' parameter (the daemon's boot/spare frame)."
+tab-bar group at all (the daemon's boot/spare frame) -- see
+`edmacs-sidebar--redraw''s own branch."
   (let ((tabs (tab-bar-tabs frame)))
     (dolist (tab tabs)
       (edmacs-sidebar--insert-tab-row tab tabs frame))))
 
-(defun edmacs-sidebar--redraw-worktrees (frame common)
-  "Render one top-level section per COMMON worktree, tab or not.
-Reads `edmacs-worktrees-for-repo' -- a pure cache read, never a
-subprocess call -- so this never shells out even on a cache miss.
-A real, populated worktree list always includes at least the main
-worktree, so an empty/nil result is a cache miss, not a real repo with
-zero worktrees -- rendered as zero worktree sections, including no
-stale-tab rows, rather than guessing at anything. Open worktrees render
-as an ordinary tab row; tab-less ones dimmed with a dotted marker and a
-\"no tab\" hint; a tab whose own worktree directory has since
-disappeared from a genuinely fresh (non-empty) list is kept, rendered
-with a warning face."
-  (let ((worktrees (edmacs-worktrees-for-repo common)))
-    (when worktrees
-      (let ((roots (mapcar #'cdr worktrees))
-            (tabs (tab-bar-tabs frame)))
-        (dolist (entry worktrees)
-          (let* ((root (cdr entry))
-                 (tab (edmacs-frames--tab-for-root root frame))
-                 (tab-number (and tab (1+ (tab-bar--tab-index tab tabs frame))))
-                 (body-fn (lambda ()
-                            (run-hook-with-args 'edmacs-sidebar-worktree-section-functions
-                                                 root (and tab t) frame tab-number))))
-            (if tab
-                (edmacs-sidebar--insert-tab-row tab tabs frame root nil body-fn)
-              (edmacs-sidebar--insert-no-tab-row entry frame body-fn))))
-        (dolist (tab tabs)
-          (let ((root (edmacs-frames--tab-root tab)))
-            (unless (member root roots)
-              (edmacs-sidebar--insert-tab-row tab tabs frame root t))))))))
+;; ============================================================================
+;; Grouped tree: one project row per tab-bar GROUP, worktree child rows
+;; nested underneath (edmacs-tab-groups phase 3)
+;; ============================================================================
+;; Both row kinds share the `edmacs-sidebar-tab' section type (so J/K,
+;; `edmacs-sidebar--enclosing-worktree', and every RET/d/r dispatch below
+;; keep working unchanged), but carry a `(GROUP . ROOT)' cons as their
+;; section value instead of a bare ROOT string or tab-number -- see
+;; `edmacs-sidebar-activate''s own dispatch. A stale open tab (its
+;; worktree directory since deleted from disk) gets no warning face in
+;; this render path, unlike the old per-repo one: that check needs a
+;; `file-directory-p' probe this phase deliberately does not add (no AC
+;; in this phase body asks for it); `edmacs-sidebar-missing-worktree-face'
+;; stays defined for whichever later phase picks this back up.
+
+(defun edmacs-sidebar--active-group (frame)
+  "Return FRAME's active tab-bar group: the group of its current tab."
+  (funcall tab-bar-tab-group-function (tab-bar--current-tab-find nil frame)))
+
+(defun edmacs-sidebar--derive-main-root (tabs)
+  "Return the main worktree root shared by TABS' repo, derived directly
+via `edmacs-git-common-dir'/`edmacs-git-common-dir-main-worktree' rather
+than through an open main tab -- used only when no member of TABS is
+itself classified `main'. Every worktree of one repo shares the same
+git-common-dir, so which member of TABS anchors the lookup does not
+matter. Returns nil when TABS is empty or no member's root resolves at
+all -- `edmacs-git-common-dir' never signals on that, per its own
+contract."
+  (when-let* ((anchor (seq-some #'edmacs-workspaces-tab-root tabs))
+              (common (edmacs-git-common-dir anchor)))
+    (file-name-as-directory (file-truename (edmacs-git-common-dir-main-worktree common)))))
+
+(defun edmacs-sidebar--insert-project-row (group main-root current-p count frame body-fn)
+  "Insert GROUP's project row on FRAME. MAIN-ROOT is its main worktree
+root \(possibly derived via `edmacs-sidebar--derive-main-root', not
+necessarily backed by an open tab\). CURRENT-P marks GROUP as FRAME's
+active tab-bar group \(AC2\) -- the filled `current-tab' glyph/face when
+non-nil, the hollow `open-tab' one otherwise; a project row has no
+`stale' case of its own, unlike a worktree child row's tab-bar-current
+check. COUNT is the number of non-main open tabs in GROUP, appended to
+the label \(AC1\). BODY-FN, if given, is called with no arguments as the
+last form inside this row's own section body."
+  (let* ((glyph (edmacs-sidebar--glyph (if current-p 'current-tab 'open-tab)))
+         (agent-suffix (funcall edmacs-sidebar-worktree-label-suffix-function main-root))
+         (label (edmacs-sidebar--truncate-label
+                 (concat glyph " " group (format " [%d]" count) (or agent-suffix ""))
+                 frame))
+         (value (cons group main-root)))
+    (magit-insert-section (edmacs-sidebar-tab value)
+      (magit-insert-heading
+        (if current-p (propertize label 'face 'edmacs-sidebar-current-tab-face) label))
+      (when body-fn (funcall body-fn)))))
+
+(defun edmacs-sidebar--insert-worktree-child-row (group root kind tab frame body-fn)
+  "Insert a worktree child row for ROOT on FRAME, nested under GROUP's
+project row. TAB is ROOT's own open tab -- this row exists only for an
+already-open tab, never a tab-less worktree (AC7); KIND is
+`edmacs-workspaces-classify-root's `roadmap'/`task'/nil classification
+of ROOT, driving both the row's glyph (AC3, via
+`edmacs-sidebar--worktree-kind-glyph-key') and its displayed name --
+TAB's own `name' with the matching `roadmap-'/`task-' prefix stripped,
+so a renamed-away tab \(whose name no longer carries that prefix\)
+degrades harmlessly to `string-remove-prefix's own no-op. Face is the
+ordinary current-tab-face when TAB is FRAME's literal current tab, else
+`edmacs-sidebar-worktree-child-face' -- distinct from a project row's
+own current/open-tab pairing, per AC3's \"worktree hue\" language.
+BODY-FN, if given, is called with no arguments as the last form inside
+this row's own section body."
+  (let* ((glyph-key (edmacs-sidebar--worktree-kind-glyph-key kind))
+         (name (alist-get 'name tab))
+         (stripped (pcase kind
+                     ('roadmap (string-remove-prefix "roadmap-" name))
+                     ('task (string-remove-prefix "task-" name))
+                     (_ name)))
+         (suffix (funcall edmacs-sidebar-worktree-label-suffix-function root))
+         (current-p (eq (car tab) 'current-tab))
+         (label (edmacs-sidebar--truncate-label
+                 (concat "  " (edmacs-sidebar--glyph glyph-key) " " stripped (or suffix ""))
+                 frame)))
+    (magit-insert-section (edmacs-sidebar-tab (cons group root))
+      (magit-insert-heading
+        (propertize label 'face (if current-p 'edmacs-sidebar-current-tab-face
+                                   'edmacs-sidebar-worktree-child-face)))
+      (when body-fn (funcall body-fn)))))
+
+(defun edmacs-sidebar--redraw-projects (frame)
+  "Render one top-level project row per `edmacs-workspaces-groups', each
+with its non-main open tabs nested underneath as worktree child rows.
+See this file's Commentary and the roadmap's \"Sidebar presentation\"
+spec; `edmacs-sidebar-activate' is the matching activation dispatch."
+  (let ((active-group (edmacs-sidebar--active-group frame)))
+    (dolist (group (edmacs-workspaces-groups frame))
+      (let* ((tabs (edmacs-workspaces-tabs-in-group group frame))
+             (all-tabs (tab-bar-tabs frame))
+             (main-tab (seq-find (lambda (tab)
+                                    (let ((root (edmacs-workspaces-tab-root tab)))
+                                      (and root (eq (edmacs-workspaces-classify-root root) 'main))))
+                                  tabs))
+             (main-root (or (and main-tab (edmacs-workspaces-tab-root main-tab))
+                            (edmacs-sidebar--derive-main-root tabs)))
+             (child-tabs (if main-tab (remq main-tab tabs) tabs))
+             (main-tab-number (and main-tab (1+ (tab-bar--tab-index main-tab all-tabs frame)))))
+        (edmacs-sidebar--insert-project-row
+         group main-root (equal group active-group) (length child-tabs) frame
+         (lambda ()
+           (run-hook-with-args 'edmacs-sidebar-worktree-section-functions
+                                main-root (and main-tab t) frame main-tab-number)
+           (dolist (tab child-tabs)
+             (let* ((root (edmacs-workspaces-tab-root tab))
+                    (kind (edmacs-workspaces-classify-root root))
+                    (tab-number (1+ (tab-bar--tab-index tab all-tabs frame))))
+               (edmacs-sidebar--insert-worktree-child-row
+                group root kind tab frame
+                (lambda ()
+                  (run-hook-with-args 'edmacs-sidebar-worktree-section-functions
+                                       root t frame tab-number)))))))))))
 
 (defun edmacs-sidebar--insert-missing-repo-warning ()
   "Insert a warning heading for a frame whose whole repo is gone.
@@ -885,8 +995,9 @@ the tab/worktree render, the missing-repo warning, the extra-section
 hook -- is skipped entirely in favor of
 `edmacs-sidebar-collapsed-section-functions' run with (FRAME WIDTH),
 and the header line is nil'd; the two renders never both run against
-the same window on the same pass. Otherwise branches on FRAME's
-`edmacs-repo' parameter: a repo frame gets the worktree-aware render,
+the same window on the same pass. Otherwise branches on whether FRAME
+carries any tab-bar group at all (`edmacs-workspaces-groups'): a
+grouped frame gets the projects tree (`edmacs-sidebar--redraw-projects'),
 everything else keeps the original flat tab list, with a warning
 section ahead of everything else when `edmacs-repo-missing' is set.
 
@@ -902,7 +1013,6 @@ contract its registrants already follow."
       (with-current-buffer buf
         (let* ((inhibit-read-only t)
                (collapsed (frame-parameter frame 'edmacs-sidebar-collapsed))
-               (common (frame-parameter frame 'edmacs-repo))
                (positions (edmacs-sidebar--capture-positions buf))
                anchor-start anchor-end)
           (erase-buffer)
@@ -919,8 +1029,8 @@ contract its registrants already follow."
               (progn
                 (when (frame-parameter frame 'edmacs-repo-missing)
                   (edmacs-sidebar--insert-missing-repo-warning))
-                (if common
-                    (edmacs-sidebar--redraw-worktrees frame common)
+                (if (edmacs-workspaces-groups frame)
+                    (edmacs-sidebar--redraw-projects frame)
                   (edmacs-sidebar--redraw-tabs frame))
                 (run-hook-with-args 'edmacs-sidebar-extra-section-functions frame)
                 (let ((anchor-start-pos (point)))
@@ -962,46 +1072,41 @@ sidebar buffer."
 ;; Commands
 ;; ============================================================================
 
-(defun edmacs-sidebar--root-tab-number (root &optional frame)
-  "Return ROOT's open tab's 1-based `tab-bar-tabs' index in FRAME
-(default the selected frame), or nil when ROOT has no open tab.
-Looks the tab up via `edmacs-frames--tab-for-root' rather than reading a
-tab-number off any section value -- a worktree row's section value is
-now the bare ROOT string alone (see `edmacs-sidebar--insert-tab-row'),
-so nothing else in this buffer carries that number any more. Mirrors
-the same `(1+ (tab-bar--tab-index ...))' computation
-`edmacs-sidebar--redraw-worktrees' already does inline."
-  (when-let* ((tab (edmacs-frames--tab-for-root root frame)))
-    (1+ (tab-bar--tab-index tab (tab-bar-tabs frame) frame))))
-
 (defun edmacs-sidebar-activate ()
   "Act on the section at point: switch to its tab, or open/create one.
 Resolves point to its enclosing `edmacs-sidebar-tab' row first (see
 `edmacs-sidebar--enclosing-worktree'), so this also reaches the
 worktree from a nested descendant -- e.g. sidebar-buffers.el's own
 `buffers' heading -- not only from the tab row itself. An integer
-section value (the repo-less flat tab list) is already the 1-based
+section value (the group-less flat tab list) is already the 1-based
 tab-number `tab-bar-select-tab' expects -- it treats 0 as a \"reselect
 current tab\" sentinel, so redraw stores `(1+ index)', never the raw
-0-based index. A string section value (the worktree-aware list, always
-a root truename) is looked up via `edmacs-sidebar--root-tab-number':
-selects that tab-number when it has one; with no open tab yet, opens
-one via `edmacs-workspaces-open-worktree', which performs its own
-find-or-create dance, so a second activation of what is now an open row
-takes the tab-number branch instead and simply reselects, never
-duplicating.
-Every other case -- no enclosing worktree row at all, or an unbound or
-nil value slot (a usage row, deliberately valueless) -- signals
-`user-error' instead of silently doing nothing."
+0-based index. A `(GROUP . ROOT)' cons (a project or worktree child row,
+edmacs-tab-groups phase 3) is looked up via `edmacs-workspaces-find-tab',
+passing GROUP explicitly -- this is what makes a row unable to select a
+tab in a different project structurally, not merely by path uniqueness
+\(AC4\): a match selects that tab via `edmacs-workspaces-select-tab';
+with no match, a project row whose ROOT is itself the repo's main
+worktree \(`edmacs-workspaces-classify-root' returns `main') opens the
+whole project via `edmacs-workspaces-open-project' -- find-or-create,
+correct in every state per that function's own contract, so repeat
+activations never duplicate a tab. A worktree child row's value is
+always drawn from an already-open tab (AC7), so it can never reach the
+`user-error' fallback below in practice -- that branch is defensive
+only. Every other case -- no enclosing worktree row at all, or an
+unbound or nil value slot (a usage row, deliberately valueless) --
+signals `user-error' instead of silently doing nothing."
   (interactive)
   (let* ((section (edmacs-sidebar--enclosing-worktree (magit-current-section)))
          (value (and section (slot-boundp section 'value) (oref section value))))
     (cond
      ((integerp value) (tab-bar-select-tab value))
-     ((stringp value)
-      (if-let* ((tab-number (edmacs-sidebar--root-tab-number value)))
-          (tab-bar-select-tab tab-number)
-        (edmacs-workspaces-open-worktree value)))
+     ((consp value)
+      (let ((group (car value)) (root (cdr value)))
+        (cond
+         ((edmacs-workspaces-find-tab group root) (edmacs-workspaces-select-tab group root))
+         ((eq (edmacs-workspaces-classify-root root) 'main) (edmacs-workspaces-open-project root))
+         (t (user-error "No open tab for this worktree")))))
      (t (user-error "Nothing to do on this row")))))
 
 (defun edmacs-sidebar-visit-at-point ()
@@ -1094,14 +1199,22 @@ to the first row and DELTA < 0 is a no-op."
 
 (defun edmacs-sidebar--section-tab-number (section)
   "Return the open tab-number for tab-row SECTION's value, or nil.
-An integer value (the repo-less flat tab list) is itself always an open
-tab's number; a string value (the worktree-aware list, always a root
-truename) is looked up via `edmacs-sidebar--root-tab-number', returning
-nil for a tab-less worktree row. Also used by
-`edmacs-sidebar-close-worktree' and `edmacs-sidebar-rename-at-point'."
+An integer value (the group-less flat tab list) is itself always an
+open tab's number; a `(GROUP . ROOT)' cons (a project or worktree child
+row) is looked up via `edmacs-workspaces-find-tab', returning nil when
+GROUP has no open tab at ROOT -- e.g. a project row whose main tab isn't
+open, which is what makes `d' on it a no-op rather than opening one
+\(only RET/`edmacs-sidebar-activate' is allowed to open\). Ambient on the
+selected frame, like every other command in this section -- a
+worktree/project row is always acted on relative to the frame its own
+sidebar buffer is showing. Also used by `edmacs-sidebar-close-worktree'
+and `edmacs-sidebar-rename-at-point'."
   (let ((value (and section (slot-boundp section 'value) (oref section value))))
     (cond ((integerp value) value)
-          ((stringp value) (edmacs-sidebar--root-tab-number value)))))
+          ((consp value)
+           (when-let* ((tab (edmacs-workspaces-find-tab (car value) (cdr value))))
+             ;; No FRAME argument on this call chain to prefer -- ambient-reads: ok
+             (1+ (tab-bar--tab-index tab (tab-bar-tabs) (selected-frame))))))))
 
 ;;;###autoload
 (defun edmacs-sidebar-rename-at-point ()

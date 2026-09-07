@@ -143,17 +143,72 @@ worktree in a real Emacs session) to enable this suite"))
     (bufferlo-mode 1)
     (require 'magit-section)
 
-    ;; frames.el is not loaded (see this file's own Commentary); its
-    ;; worktree-list/tab-root seam is stood in for the same way
-    ;; sidebar-test.el/sidebar-agents-live-test.el do for their own
-    ;; suites -- a plain alist cache and `edmacs-root' tab-parameter
-    ;; lookups, no subprocess/git involved.
+    ;; workspaces.el is not loaded (see this file's own Commentary); the
+    ;; small pure lookups sidebar.el's redraw/activate path calls are real,
+    ;; unstubbed reimplementations of its own logic against real tab-bar
+    ;; primitives, the same convention sidebar-test.el/sidebar-agents-live-
+    ;; test.el use for their own suites. `edmacs-worktrees-for-repo' and its
+    ;; cache are kept as inert no-ops purely so this file's many existing
+    ;; `--register-worktrees' call sites keep compiling -- no production
+    ;; code reads either any more.
     (defvar edmacs-sidebar-buffers-live-test--worktrees-cache (make-hash-table :test #'equal))
     (defun edmacs-worktrees-for-repo (common)
       (gethash common edmacs-sidebar-buffers-live-test--worktrees-cache))
-    (defun edmacs-frames--tab-for-root (root &optional frame)
-      (seq-find (lambda (tab) (equal (alist-get 'edmacs-root tab) root)) (tab-bar-tabs frame)))
-    (defun edmacs-frames--tab-root (tab) (alist-get 'edmacs-root tab))
+    (defconst edmacs-sidebar-buffers-live-test--root-parameter 'edmacs-workspace-root)
+    (defun edmacs-workspaces-groups (&optional frame)
+      (delete-dups (delq nil (mapcar (lambda (tab) (funcall tab-bar-tab-group-function tab))
+                                       (tab-bar-tabs (or frame (selected-frame)))))))
+    (defun edmacs-workspaces-tabs-in-group (group &optional frame)
+      (when group (seq-filter (lambda (tab) (equal (funcall tab-bar-tab-group-function tab) group))
+                               (tab-bar-tabs (or frame (selected-frame))))))
+    (defun edmacs-workspaces-tab-root (tab) (alist-get edmacs-sidebar-buffers-live-test--root-parameter tab))
+    (defun edmacs-workspaces-find-tab (group root &optional frame)
+      (seq-find (lambda (tab) (and (equal (funcall tab-bar-tab-group-function tab) group)
+                                    (equal (edmacs-workspaces-tab-root tab) root)))
+                (tab-bar-tabs (or frame (selected-frame)))))
+    (defun edmacs-workspaces-select-tab (group root &optional frame)
+      (let* ((target (or frame (selected-frame))) (tab (edmacs-workspaces-find-tab group root target)))
+        (when tab
+          (let ((number (1+ (tab-bar--tab-index tab (tab-bar-tabs target) target))))
+            (if frame (with-selected-frame frame (tab-bar-select-tab number)) (tab-bar-select-tab number))))
+        tab))
+    ;; GROUP -> the first ROOT `--stamp-current-tab-root' ever stamped for
+    ;; it, treated as that group's `main' worktree -- exactly one test
+    ;; fixture's stand-in for `edmacs-workspaces-classify-root's real
+    ;; git-common-dir-based main-worktree comparison, which this file's
+    ;; roots (fresh temp directories, never real git worktrees) cannot
+    ;; satisfy at all.
+    (defvar edmacs-sidebar-buffers-live-test--group-main-roots (make-hash-table :test #'equal))
+    (defun edmacs-workspaces-classify-root (root)
+      (catch 'edmacs-sidebar-buffers-live-test--classify-found
+        (maphash (lambda (_group main)
+                   (when (equal main root)
+                     (throw 'edmacs-sidebar-buffers-live-test--classify-found 'main)))
+                 edmacs-sidebar-buffers-live-test--group-main-roots)
+        nil))
+    (defun edmacs-workspaces-group-name (root)
+      "Return ROOT's already-assigned tab-bar group, found by scanning
+every live frame's tabs for one whose stamped root equals ROOT. This
+fixture's roots never resolve via git-common-dir at all (stubbed to nil
+below), so group identity here is exactly whatever
+`--stamp-current-tab-root' already assigned, discovered by lookup
+instead of re-derived -- what `edmacs-sidebar-buffers--tab-number-for-
+root' (sidebar-buffers.el) needs to resolve RET/`[`/`]` against a real
+open tab."
+      (catch 'edmacs-sidebar-buffers-live-test--group-found
+        (dolist (frame (frame-list))
+          (dolist (tab (tab-bar-tabs frame))
+            (when (equal (edmacs-workspaces-tab-root tab) root)
+              (throw 'edmacs-sidebar-buffers-live-test--group-found
+                     (funcall tab-bar-tab-group-function tab)))))
+        nil))
+    ;; Overrides git-common-dir.el's real (loaded) function: none of this
+    ;; file's fixture roots name a real git worktree, so returning nil
+    ;; unconditionally keeps `edmacs-sidebar--derive-main-root' (and
+    ;; sidebar-buffers.el's own `--tab-number-for-root') from ever
+    ;; attempting a real (and here, pointlessly failing) `git' subprocess
+    ;; -- critical for this file's own composed no-shellout guard test.
+    (defun edmacs-git-common-dir (_root) nil)
     (defun edmacs-workspaces-open-worktree (_dir) nil)
 
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
@@ -186,9 +241,27 @@ worktree in a real Emacs session) to enable this suite"))
       (puthash common worktrees edmacs-sidebar-buffers-live-test--worktrees-cache))
 
     (defun edmacs-sidebar-buffers-live-test--stamp-current-tab-root (root)
-      "Stamp ROOT as the selected frame's current tab's `edmacs-root', and
-mark the selected window as that tab's main window."
-      (push (cons 'edmacs-root root) (cdr (tab-bar--current-tab-find)))
+      "Stamp ROOT as the selected frame's current tab's workspace root, and
+mark the selected window as that tab's main window. The tab's GROUP is
+derived from the frame's `edmacs-repo' parameter -- every call site
+sets that immediately before calling this, mirroring the old frames.el
+per-repo model closely enough that a shared value across multiple
+`--stamp-current-tab-root' calls in one test still puts every root
+under the SAME project row, exactly as before. Also renames the tab to
+ROOT's own leaf directory name, matching what a real
+`edmacs-workspaces--open-tab' always does -- without this, a bare
+`tab-bar-new-tab' inherits the CURRENT BUFFER's name (tab-bar.el's own
+auto-naming), which can coincidentally match a filename this module
+renders lower down and confuse a test's own text-matching assertions."
+      (let ((group (or (frame-parameter (selected-frame) 'edmacs-repo)
+                        "edmacs-sidebar-buffers-live-test-group")))
+        (setf (alist-get edmacs-sidebar-buffers-live-test--root-parameter
+                          (cdr (tab-bar--current-tab-find)))
+              root)
+        (tab-bar-rename-tab (file-name-nondirectory (directory-file-name root)))
+        (tab-bar-change-tab-group group)
+        (unless (gethash group edmacs-sidebar-buffers-live-test--group-main-roots)
+          (puthash group root edmacs-sidebar-buffers-live-test--group-main-roots)))
       (edmacs-window-set-main (selected-window)))
 
     (defun edmacs-sidebar-buffers-live-test--close-extra-tabs (n)
@@ -213,7 +286,12 @@ mark the selected window as that tab's main window."
         (set-frame-parameter frame 'edmacs-sidebar-buffer nil))
       (set-frame-parameter frame 'edmacs-repo nil)
       (set-frame-parameter frame 'edmacs-sidebar-buffers-flat nil)
-      (clrhash edmacs-sidebar-buffers-live-test--worktrees-cache))
+      (clrhash edmacs-sidebar-buffers-live-test--worktrees-cache)
+      ;; `edmacs-repo' values like "/repo/.git" are reused verbatim across
+      ;; many tests' own scenarios; without this a later test's root could
+      ;; be wrongly classified `main' by a stale entry an earlier test left
+      ;; behind under the same group string.
+      (clrhash edmacs-sidebar-buffers-live-test--group-main-roots))
 
     (defmacro edmacs-sidebar-buffers-live-test--with-scenario (roots &rest body)
       "Run BODY with a clean single-tab frame, then unwind: close any
@@ -817,7 +895,18 @@ f1 must be captured before calling the helper and its own setup done
 under an explicit `with-selected-frame' -- otherwise f2 and
 `(selected-frame)' alias to the same frame and \"frame 1\"'s setup below
 would silently run against f2 too (see this file's own Commentary
-above)."
+above).
+
+Since edmacs-tab-groups phase 3's singleton-buffer collapse, showing
+the sidebar on f2 redraws the very buffer f1 was just shown in -- so
+this now asserts each frame's OWN redraw reflects that frame's own tab
+list correctly, captured immediately after that frame's own `--show'
+and before the other frame's redraw overwrites it, rather than that
+the two frames hold simultaneously-distinct buffers (no longer true by
+design; see `edmacs-sidebar-test-singleton-buffer-shared-across-frames'
+in sidebar-test.el). Still catches the same frame-argument-mixup bug
+class: a wrong FRAME threaded into `bufferlo-buffer-list' renders the
+wrong tab's buffers regardless of how many buffers exist at once."
       (let* ((f1 (selected-frame))
              (f2 (edmacs-sidebar-buffers-live-test--make-second-frame-or-skip))
              (r1 (edmacs-sidebar-buffers-live-test--make-root))
@@ -834,15 +923,15 @@ above)."
                 (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
                 (find-file p)
                 (edmacs-sidebar-show f1))
+              (let ((text1 (edmacs-sidebar-buffers-live-test--sidebar-text f1)))
+                (should (string-match-p "p.el" text1))
+                (should-not (string-match-p "q.el" text1)))
               (with-selected-frame f2
                 (set-frame-parameter f2 'edmacs-repo "/repo2/.git")
                 (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r2)
                 (find-file q)
                 (edmacs-sidebar-show f2))
-              (let ((text1 (edmacs-sidebar-buffers-live-test--sidebar-text f1))
-                    (text2 (edmacs-sidebar-buffers-live-test--sidebar-text f2)))
-                (should (string-match-p "p.el" text1))
-                (should-not (string-match-p "q.el" text1))
+              (let ((text2 (edmacs-sidebar-buffers-live-test--sidebar-text f2)))
                 (should (string-match-p "q.el" text2))
                 (should-not (string-match-p "p.el" text2))))
           (edmacs-sidebar-buffers-live-test--kill-buffers-under r1)

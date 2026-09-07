@@ -4,10 +4,13 @@
 ;; Phase 6 of the edmacs-sidebar roadmap: renders phase 5's agent table
 ;; (`modules/agents.el', `edmacs-agents--table') into phase 1's sidebar
 ;; (`modules/sidebar.el'), under each worktree section -- matched by
-;; truename against phase 3's worktree list (`modules/frames.el') so a
-;; tmux agent running in a worktree with no open tab still shows up,
-;; dimmed -- and again in a global ALL AGENTS section at the bottom of
-;; every frame's sidebar. Generalizes sidebar.el's RET into a
+;; truename against each open tab's own root (`workspaces.el', via
+;; `edmacs-workspaces-tab-root') -- and again in a global ALL AGENTS
+;; section at the bottom of every frame's sidebar. Since
+;; edmacs-tab-groups phase 3, the header-line roll-up and per-worktree
+;; matching both operate on every tracked agent regardless of which
+;; project's rows are on screen -- see `edmacs-sidebar-agents--agents-for-frame'.
+;; Generalizes sidebar.el's RET into a
 ;; type-dispatching visit command (raise the repo's frame, open/select
 ;; the worktree's tab, then either drive tmux or select an in-Emacs side
 ;; window), adds a repeatable `SPC a TAB' attention-cycling command, and
@@ -66,11 +69,10 @@
 ;; ============================================================================
 ;; Every one of these resolves at real init.el runtime (see this file's
 ;; own Commentary on load order); declared for byte-compile hygiene only,
-;; matching sidebar.el's own `(declare-function edmacs-worktrees-for-repo
-;; "frames")' pattern for a module that loads later.
+;; matching sidebar.el's own forward-declaration block for a module that
+;; loads later.
 
 (declare-function edmacs-workspaces-open-worktree "workspaces")
-(declare-function edmacs-worktrees-for-repo "frames")
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar-hide "sidebar")
@@ -210,9 +212,9 @@ of taking down the whole redraw."
 
 (defun edmacs-sidebar-agents--agent-root-truename (agent)
   "Return AGENT's root, truename-normalized.
-Both `edmacs-agent-root' (agents.el) and `edmacs-worktrees-for-repo'
-(frames.el) already return truenames from their own producers, so this
-re-normalize is defensive, not the primary comparison -- it only
+Both `edmacs-agent-root' (agents.el) and `edmacs-workspaces-tab-root'
+(workspaces.el) already return truenames from their own producers, so
+this re-normalize is defensive, not the primary comparison -- it only
 matters if either producer's own contract ever drifts. This is the
 single implementation of \"does this agent belong to this worktree
 root\"; `--for-root' below is its only caller."
@@ -234,7 +236,7 @@ is already \"every agent across frames\", no per-frame aggregation."
 (defun edmacs-sidebar-agents--for-root (root)
   "Return every tracked agent whose truename-normalized root equals ROOT.
 ROOT is expected to already be a truename (every caller passes one from
-`edmacs-worktrees-for-repo'); see `--agent-root-truename'."
+`edmacs-workspaces-tab-root'); see `--agent-root-truename'."
   (seq-filter (lambda (agent)
                 (equal (edmacs-sidebar-agents--agent-root-truename agent) root))
               (edmacs-sidebar-agents--all)))
@@ -337,13 +339,16 @@ row's worktree-row value is, so this needs no
 
 (defun edmacs-sidebar-agents--on-worktree-section (root _has-tab &optional _frame _tab-number)
   "Append ROOT's `agents' child section, if it has any tracked agents.
-Registered on `edmacs-sidebar-worktree-section-functions'; a worktree
-with no agents renders no extra section at all, so an ordinary
-agent-less worktree row is unchanged from before this phase. HAS-TAB is
-unused here: an agent still renders under a tab-less (dimmed) worktree
-row exactly the same as under an open one -- only the worktree row
-itself carries the dimmed face, per AC1. FRAME/TAB-NUMBER (added by
-sidebar-buffers.el, phase 7) are unused here too -- accepted only so
+Registered on `edmacs-sidebar-worktree-section-functions', which fires
+from both a project row's own BODY-FN (edmacs-tab-groups phase 3) and
+every worktree child row's -- a worktree with no agents renders no
+extra section at all, so an ordinary agent-less row is unchanged from
+before this phase. HAS-TAB is unused here: this hook still fires for a
+project row whose main tab isn't open (ROOT then names the derived main
+worktree, not an open tab's own root), and an agent tracked against
+that root renders exactly the same either way -- only the row's own
+glyph/face reflects HAS-TAB, not this section. FRAME/TAB-NUMBER (added
+by sidebar-buffers.el, phase 7) are unused here too -- accepted only so
 this function's arity still matches the now-4-arg
 `run-hook-with-args' call in sidebar.el."
   (let ((agents (edmacs-sidebar-agents--for-root root)))
@@ -366,28 +371,23 @@ swappable seam below."
 ;; ============================================================================
 
 (defun edmacs-sidebar-agents--agents-for-frame (frame)
-  "Return the agents belonging to FRAME's own repo, or all of them.
-An agent is keyed by its worktree root, and a frame owns exactly the
-worktrees of its stamped `edmacs-repo' common-dir -- so the roll-up
-counts this project's work, not every project's. Falls back to the whole
-table when the frame carries no repo stamp or the worktree cache has not
-been populated (a miss returns nil, which is not the same as a repo with
-no worktrees), since a global count is a better answer than an empty one."
-  (let* ((common (and frame (frame-parameter frame 'edmacs-repo)))
-         (worktrees (and common (edmacs-worktrees-for-repo common)))
-         (roots (and worktrees (mapcar #'cdr worktrees))))
-    (if (null roots)
-        (edmacs-sidebar-agents--all)
-      (seq-filter (lambda (a) (member (edmacs-agent-root a) roots))
-                  (edmacs-sidebar-agents--all)))))
+  "Return every tracked agent, regardless of FRAME.
+Under one frame the sidebar tree shows every project at once (see
+`edmacs-sidebar--redraw-projects'), so a roll-up scoped to one project's
+worktrees no longer matches what the sidebar displays -- this is now
+just `edmacs-sidebar-agents--all', its own pre-existing fallback path.
+FRAME is accepted (and ignored) only so the call site below need not
+change; reverse this only by scoping to the active group's tabs from
+`workspaces.el', never by resurrecting a worktree enumeration."
+  (ignore frame)
+  (edmacs-sidebar-agents--all))
 
 (defun edmacs-sidebar-agents--header-line (frame)
   "Return a \"  [N⟳ N💬 N✓]\" roll-up suffix, or nil when no agent is
 tracked at all. Assigned to sidebar.el's
 `edmacs-sidebar-header-line-function' swappable seam, mirroring
-`--label-suffix's own assignment above; the
-agent table is scoped to FRAME's own repo by
-`edmacs-sidebar-agents--agents-for-frame'.
+`--label-suffix's own assignment above. The roll-up is global (every
+tracked agent, every project) -- see `edmacs-sidebar-agents--agents-for-frame'.
 
 Glyphs, not words, and zero counts omitted: the prose form
 (\"  [1 working, 0 waiting, 0 done]\") is 31 columns and this suffix

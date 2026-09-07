@@ -58,14 +58,14 @@
 ;; sidebar-agents.el's own forward-ref blocks.
 
 (declare-function bufferlo-buffer-list "bufferlo")
-(declare-function edmacs-frames--tab-for-root "frames")
+(declare-function edmacs-workspaces-group-name "workspaces")
+(declare-function edmacs-workspaces-find-tab "workspaces")
 (declare-function edmacs-main-window "windows")
 (declare-function edmacs-window-pop-buffer-to-main "windows")
 (declare-function edmacs-sidebar--buffer "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar--find-buffer-section "sidebar")
-(declare-function edmacs-sidebar--root-tab-number "sidebar")
 (declare-function nerd-icons-octicon "nerd-icons")
 (defvar edmacs-sidebar-worktree-section-functions)
 (defvar edmacs-sidebar-extra-section-functions)
@@ -552,10 +552,16 @@ Registered on `edmacs-sidebar-worktree-section-functions'. A no-op when
 HAS-TAB is nil -- a tab-less worktree has no `bufferlo' buffer list at
 all. `bufferlo-buffer-list' takes a 0-based TABNUM while this feature's
 own TAB-NUMBER convention (like every other consumer of this hook) is
-1-based, so the single `(1- tab-number)' boundary lives here."
+1-based, so the single `(1- tab-number)' boundary lives here.
+TAB-NUMBER already names ROOT's own tab unambiguously (HAS-TAB is only
+ever non-nil when the caller resolved one), so TAB is read straight off
+`tab-bar-tabs' by that index -- no separate root/tab lookup, matching
+AC6's \"no module outside frames.el resolves a tab from a root except
+through workspaces.el\" (this reads the tab-bar's own tab LIST, not a
+root-keyed lookup at all)."
   (when has-tab
     (edmacs-sidebar-buffers--ensure-cleared-this-pass)
-    (let* ((tab (edmacs-frames--tab-for-root root frame))
+    (let* ((tab (nth (1- tab-number) (tab-bar-tabs frame)))
            (bufs (seq-filter #'edmacs-sidebar-buffers--listable-p
                               (bufferlo-buffer-list frame (1- tab-number))))
            (prev-names (edmacs-sidebar-buffers--main-window-prev-names frame tab))
@@ -595,14 +601,33 @@ own TAB-NUMBER convention (like every other consumer of this hook) is
          (slot-boundp section 'value)
          (oref section value))))
 
-(defun edmacs-sidebar-buffers--select-tab-if-needed (root tab-number)
-  "Select ROOT's tab (TAB-NUMBER) on the selected frame, unless it is
-already the current one. The sidebar's own frame is always the selected
-frame here: a row is only ever visited with point already inside its
-frame's sidebar window."
-  (let ((tab (edmacs-frames--tab-for-root root)))
+(defun edmacs-sidebar-buffers--select-tab-if-needed (tab-number)
+  "Select tab TAB-NUMBER on the selected frame, unless it is already the
+current one. The sidebar's own frame is always the selected frame here:
+a row is only ever visited with point already inside its frame's
+sidebar window. TAB-NUMBER already names the tab unambiguously, read
+straight off `tab-bar-tabs' -- see
+`edmacs-sidebar-buffers--on-worktree-section's own docstring on why
+this needs no root-keyed lookup at all."
+  (let ((tab (nth (1- tab-number) (tab-bar-tabs))))
     (unless (and tab (eq (car tab) 'current-tab))
       (tab-bar-select-tab tab-number))))
+
+(defun edmacs-sidebar-buffers--tab-number-for-root (root &optional frame)
+  "Return ROOT's open tab's 1-based `tab-bar-tabs' index in FRAME
+(default the selected frame), or nil when ROOT has no open tab.
+Routed entirely through workspaces.el -- `edmacs-workspaces-group-name'
+derives ROOT's own project group, `edmacs-workspaces-find-tab' the open
+tab in it -- the one tab/root lookup surface AC6 requires; frames.el's
+`edmacs-frames--tab-for-root' is gone. Needed here (unlike
+`--on-worktree-section'/`--select-tab-if-needed', which already have a
+TAB-NUMBER in hand) because RET/`[`/`]` resolve a row's tab long after
+render time, from nothing but the buffers-root section's own stable
+ROOT value."
+  (let ((target (or frame (selected-frame))))
+    (when-let* ((group (edmacs-workspaces-group-name root))
+                (tab (edmacs-workspaces-find-tab group root target)))
+      (1+ (tab-bar--tab-index tab (tab-bar-tabs target) target)))))
 
 ;;;###autoload
 (defun edmacs-sidebar-buffers-visit ()
@@ -614,10 +639,10 @@ usable tab identity, rather than doing nothing."
   (let* ((buf (edmacs-sidebar-buffers--row-buffer-at-point))
          (root-section (and buf (edmacs-sidebar-buffers--enclosing-root (magit-current-section))))
          (root (and root-section (slot-boundp root-section 'value) (oref root-section value)))
-         (tab-number (and root (edmacs-sidebar--root-tab-number root))))
+         (tab-number (and root (edmacs-sidebar-buffers--tab-number-for-root root))))
     (if (and buf tab-number)
         (progn
-          (edmacs-sidebar-buffers--select-tab-if-needed root tab-number)
+          (edmacs-sidebar-buffers--select-tab-if-needed tab-number)
           (when (buffer-live-p buf)
             (edmacs-window-pop-buffer-to-main buf)))
       (user-error "Nothing to do on this row"))))
@@ -653,10 +678,10 @@ point is not inside any buffers subsection."
 `SPC b p' already run -- then redraw FRAME's sidebar and follow point
 to the resulting buffer's row."
   (let* ((root (edmacs-sidebar-buffers--enclosing-root-tab))
-         (tab-number (and root (edmacs-sidebar--root-tab-number root))))
+         (tab-number (and root (edmacs-sidebar-buffers--tab-number-for-root root))))
     (if (null tab-number)
         (message "edmacs-sidebar-buffers: point is not in a buffers subsection")
-      (edmacs-sidebar-buffers--select-tab-if-needed root tab-number)
+      (edmacs-sidebar-buffers--select-tab-if-needed tab-number)
       (let ((main (edmacs-main-window)))
         (when main
           (with-selected-window main

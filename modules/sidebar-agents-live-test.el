@@ -89,25 +89,49 @@ a real Emacs session) to enable this suite"))
     (edmacs-sidebar-agents-live-test--add-magit-section-deps
      edmacs-sidebar-agents-live-test--build-root)
 
-    ;; frames.el is not loaded (see this file's own Commentary); its two
-    ;; symbols sidebar.el's redraw path touches are stood in for, the
-    ;; same way sidebar-test.el does for its own worktree-render tests.
-    (defvar edmacs-frames--worktrees-cache (make-hash-table :test #'equal))
-    (defun edmacs-worktrees-for-repo (common) (gethash common edmacs-frames--worktrees-cache))
-    (defun edmacs-frames--tab-for-root (root &optional frame)
-      (seq-find (lambda (tab) (equal (alist-get 'edmacs-root tab) root))
-                (tab-bar-tabs frame)))
-    (defun edmacs-frames--tab-root (tab) (alist-get 'edmacs-root tab))
+    ;; workspaces.el is not loaded (see this file's own Commentary); the
+    ;; small pure lookups sidebar.el's redraw/activate path calls are real,
+    ;; unstubbed reimplementations of its own logic against real tab-bar
+    ;; primitives -- the same convention sidebar-test.el uses for its own
+    ;; worktree-render tests (see that file's own Commentary).
+    (defconst edmacs-sidebar-agents-live-test--root-parameter 'edmacs-workspace-root)
+    (defun edmacs-workspaces-groups (&optional frame)
+      (delete-dups (delq nil (mapcar (lambda (tab) (funcall tab-bar-tab-group-function tab))
+                                       (tab-bar-tabs (or frame (selected-frame)))))))
+    (defun edmacs-workspaces-tabs-in-group (group &optional frame)
+      (when group (seq-filter (lambda (tab) (equal (funcall tab-bar-tab-group-function tab) group))
+                               (tab-bar-tabs (or frame (selected-frame))))))
+    (defun edmacs-workspaces-tab-root (tab) (alist-get edmacs-sidebar-agents-live-test--root-parameter tab))
+    (defun edmacs-workspaces-find-tab (group root &optional frame)
+      (seq-find (lambda (tab) (and (equal (funcall tab-bar-tab-group-function tab) group)
+                                    (equal (edmacs-workspaces-tab-root tab) root)))
+                (tab-bar-tabs (or frame (selected-frame)))))
+    (defun edmacs-workspaces-select-tab (group root &optional frame)
+      (let* ((target (or frame (selected-frame))) (tab (edmacs-workspaces-find-tab group root target)))
+        (when tab
+          (let ((number (1+ (tab-bar--tab-index tab (tab-bar-tabs target) target))))
+            (if frame (with-selected-frame frame (tab-bar-select-tab number)) (tab-bar-select-tab number))))
+        tab))
+    (defun edmacs-workspaces-classify-root (root) (ignore root) nil)
+    ;; Overrides git-common-dir.el's real (loaded) function: none of this
+    ;; file's fixture roots name a real git worktree, and none of these
+    ;; tests care about main/roadmap/task classification -- returning nil
+    ;; unconditionally keeps `edmacs-sidebar--derive-main-root' from ever
+    ;; attempting a real (and here, pointlessly failing) `git' subprocess.
+    (defun edmacs-git-common-dir (_root) nil)
     (defvar edmacs-sidebar-agents-live-test--open-worktree-tab-calls nil)
     (defun edmacs-workspaces-open-worktree (dir)
       (push dir edmacs-sidebar-agents-live-test--open-worktree-tab-calls)
       (select-frame-set-input-focus (selected-frame))
-      (let ((root (file-truename dir)))
-        (unless (edmacs-frames--tab-for-root root (selected-frame))
+      (let* ((root (file-truename dir))
+             (group (file-name-nondirectory (directory-file-name root))))
+        (unless (edmacs-workspaces-find-tab group root (selected-frame))
           (tab-bar-new-tab)
-          (push (cons 'edmacs-root root) (cdr (tab-bar--current-tab-find))))
-        (let ((tab (edmacs-frames--tab-for-root root (selected-frame))))
-          (tab-bar-select-tab (1+ (tab-bar--tab-index tab (tab-bar-tabs) (selected-frame)))))))
+          (setf (alist-get edmacs-sidebar-agents-live-test--root-parameter
+                            (cdr (tab-bar--current-tab-find)))
+                root)
+          (tab-bar-change-tab-group group))
+        (edmacs-workspaces-select-tab group root (selected-frame))))
 
     ;; windows.el first: sidebar.el `require's it for `edmacs-windows-claim-side'.
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
@@ -405,12 +429,16 @@ struct, so the row's `magit-section-ident' stays stable across the
 refresh and `magit-section-goto-successor' finds the row itself."
       (edmacs-sidebar-agents-live-test--with-clean-state
         (let ((agent (edmacs-sidebar-agents-live-test--make-agent
-                      :root "/repo/wt/" :status 'working :status-ts (float-time))))
-          (puthash "/repo/" (list (cons "wt" "/repo/wt/")) edmacs-frames--worktrees-cache)
+                      :root "/repo/wt/" :status 'working :status-ts (float-time)))
+              (tab-count-before (length (tab-bar-tabs))))
           (puthash (edmacs-agent-key agent) agent edmacs-agents--table)
           (unwind-protect
               (progn
-                (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/")
+                (tab-bar-new-tab)
+                (setf (alist-get edmacs-sidebar-agents-live-test--root-parameter
+                                  (cdr (tab-bar--current-tab-find)))
+                      "/repo/wt/")
+                (tab-bar-change-tab-group "repo")
                 (edmacs-sidebar-show (selected-frame))
                 (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
                   (goto-char (oref (edmacs-sidebar--find-agent-section (edmacs-agent-key agent))
@@ -434,9 +462,9 @@ refresh and `magit-section-goto-successor' finds the row itself."
                   (should (eq (oref (magit-current-section) type) 'edmacs-sidebar-agent))
                   (should (equal (edmacs-agent-key (oref (magit-current-section) value))
                                  (edmacs-agent-key agent)))))
-            (remhash "/repo/" edmacs-frames--worktrees-cache)
             (edmacs-sidebar-agents-live-test--cleanup-sidebar (selected-frame))
-            (set-frame-parameter (selected-frame) 'edmacs-repo nil)))))
+            (while (> (length (tab-bar-tabs)) tab-count-before)
+              (tab-bar-close-tab))))))
 
     ;; ==========================================================================
     ;; Phase 9 -- a REAL claude-term row, visited and reaped end to end

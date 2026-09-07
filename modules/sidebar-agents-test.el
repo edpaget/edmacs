@@ -786,34 +786,29 @@ whether or not `claude-term-registry.el' happens to be loaded first."
         (should (equal "  [1⟳ 1💬 1✓]"
                         (edmacs-sidebar-agents--header-line (selected-frame))))))
 
-    (ert-deftest edmacs-sidebar-agents-test-header-line-scopes-to-frame-repo ()
-      "The roll-up counts this frame's project only -- an agent in another
-repo's worktree does not inflate it."
+    (ert-deftest edmacs-sidebar-agents-test-header-line-counts-every-agent-regardless-of-frame ()
+      "Since edmacs-tab-groups phase 3, the roll-up is global: an agent in
+a DIFFERENT project's worktree still counts, on a frame carrying no
+`edmacs-repo' parameter at all -- one frame now shows every project, so
+a roll-up scoped to one no longer matches what the sidebar displays."
       (edmacs-sidebar-agents-test--with-clean-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/other/wt/" :instance "%1" :status 'working))
-        (cl-letf (((symbol-function 'edmacs-worktrees-for-repo)
-                   (lambda (_common) (list (cons "wt" "/mine/wt/")))))
-          (set-frame-parameter (selected-frame) 'edmacs-repo "/mine/.git")
-          (unwind-protect
-              (should (equal "  [1⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))
-            (set-frame-parameter (selected-frame) 'edmacs-repo nil)))))
+        (should (equal "  [2⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))))
 
-    (ert-deftest edmacs-sidebar-agents-test-header-line-falls-back-when-cache-misses ()
-      "A worktree-cache miss (nil) counts everything rather than reporting
-an empty project -- nil is a miss, not a repo with no worktrees."
+    (ert-deftest edmacs-sidebar-agents-test-agents-for-frame-ignores-frame-identity ()
+      "`edmacs-sidebar-agents--agents-for-frame' returns every tracked
+agent for any FRAME argument, including nil -- it no longer reads the
+`edmacs-repo' frame parameter or calls `edmacs-worktrees-for-repo' at all."
       (edmacs-sidebar-agents-test--with-clean-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/other/wt/" :instance "%1" :status 'working))
-        (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) nil)))
-          (set-frame-parameter (selected-frame) 'edmacs-repo "/mine/.git")
-          (unwind-protect
-              (should (equal "  [2⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))
-            (set-frame-parameter (selected-frame) 'edmacs-repo nil)))))
+        (should (= 2 (length (edmacs-sidebar-agents--agents-for-frame (selected-frame)))))
+        (should (= 2 (length (edmacs-sidebar-agents--agents-for-frame nil))))))
 
     (ert-deftest edmacs-sidebar-agents-test-header-line-omits-zero-counts ()
       "Only non-zero statuses appear -- the suffix renders inside a 30-column
