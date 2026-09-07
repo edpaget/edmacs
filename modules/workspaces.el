@@ -346,6 +346,22 @@ default tab on an unset parameter AND runs
 inside itself."
   (assq 'current-tab (frame-parameter frame 'tabs)))
 
+(defun edmacs-workspaces--worktree-root-of (dir)
+  "Return the worktree root containing DIR, normalized, or nil.
+DIR is whatever directory a buffer happens to sit in, so it is usually a
+*subdirectory* of a worktree; stamping it verbatim would put a root like
+`.../edmacs/modules/' on a tab. `edmacs-workspaces--stray-tab-number'
+resolves a buffer to the tab with the LONGEST matching root, so such a
+tab then captures every buffer under that subdirectory. `vc-git-root'
+walks up for the `.git' entry -- stat-only, no subprocess -- and answers
+a linked worktree with its OWN root rather than the main checkout, which
+is what keeps sibling worktrees distinct. Remote directories are refused
+outright: this runs from a core hook and must never touch the network."
+  (and dir
+       (not (file-remote-p dir))
+       (when-let* ((root (ignore-errors (vc-git-root dir))))
+         (file-name-as-directory (file-truename root)))))
+
 (defun edmacs-workspaces--derive-root ()
   "Return the selected window's buffer directory as a normalized root, or nil.
 The fallback for a tab created outside this module's own entry points --
@@ -357,7 +373,7 @@ worktree tab should stamp that same worktree."
   (when-let* ((buf (window-buffer (selected-window)))
               ;; Read off BUF, not the ambient value -- ambient-reads: ok
               (dir (buffer-local-value 'default-directory buf)))
-    (file-name-as-directory (file-truename dir))))
+    (edmacs-workspaces--worktree-root-of dir)))
 
 (defun edmacs-workspaces--on-tab-post-open (tab)
   "Stamp TAB's worktree root. This module's only post-open hook entry.
@@ -434,7 +450,7 @@ supplies none."
   (when-let* ((window (edmacs-workspaces--frame-content-window frame))
               (buffer (and (window-live-p window) (window-buffer window)))
               (dir (buffer-local-value 'default-directory buffer)))
-    (file-name-as-directory (file-truename dir))))
+    (edmacs-workspaces--worktree-root-of dir)))
 
 (defun edmacs-workspaces-stamp-frame-tabs (frame)
   "Stamp every tab of FRAME that carries no worktree root yet.
@@ -538,15 +554,14 @@ group inside the ambient frame."
       (user-error "No project directory to open"))
     (unless group
       (user-error "Not inside a git repository: %s" root))
-    (let ((tabs (edmacs-workspaces-tabs-in-group group))
-          (main (edmacs-workspaces--main-root root)))
-      (if tabs
-          ;; A group with no main-worktree tab (only linked worktrees are
-          ;; open) still selects rather than creating a second tab.
-          (or (edmacs-workspaces-select-tab group main)
-              (progn (tab-bar-select-tab (1+ (tab-bar--tab-index (car tabs))))
-                     (car tabs)))
-        (edmacs-workspaces--open-tab main group)))))
+    (let ((main (edmacs-workspaces--main-root root)))
+      (or (edmacs-workspaces-select-tab group main)
+          ;; Open the main-worktree tab even when the group already holds
+          ;; linked-worktree tabs. Selecting a sibling instead leaves the
+          ;; main checkout unreachable from `SPC p p' for as long as any
+          ;; worktree tab is open, and sends the sidebar's project row --
+          ;; which names the main worktree -- somewhere else.
+          (edmacs-workspaces--open-tab main group)))))
 
 (defun edmacs-workspaces--read-worktree (prefix)
   "Read a worktree directory. With PREFIX, read any directory instead.
@@ -605,7 +620,12 @@ no `buffer-file-name' at all -- visible to the sweep."
                   (file-name-directory file)
                 ;; Read off BUF, not the ambient value -- ambient-reads: ok
                 (buffer-local-value 'default-directory buf))))
-    (and dir (file-name-as-directory (file-truename dir)))))
+    (and dir
+         ;; Refuse remote paths before `file-truename' touches them: this
+         ;; runs from `window-buffer-change-functions' for every buffer in
+         ;; every window, and a TRAMP round trip there stalls the sweep.
+         (not (file-remote-p dir))
+         (file-name-as-directory (file-truename dir)))))
 
 (defun edmacs-workspaces--stray-tab-number (buf &optional frame)
   "Return the 1-based number of FRAME's tab BUF belongs in, or nil.

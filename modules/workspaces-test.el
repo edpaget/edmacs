@@ -335,7 +335,28 @@ own payload -- and the hook's membership is asserted separately by
                     (lambda (common)
                       (file-name-nondirectory
                        (directory-file-name
-                        (file-name-directory (directory-file-name common)))))))
+                        (file-name-directory (directory-file-name common))))))
+                   ;; The fixture's worktrees are plain directories, so the
+                   ;; real `vc-git-root' finds no `.git' to walk up to.
+                   ;; Resolve to the fixture's own worktree level --
+                   ;; `<tmp>/repoA/' or `<tmp>/repoA__worktrees/<slug>/' --
+                   ;; so a SUBDIRECTORY normalizes the way it does on disk.
+                   ;; A Lisp function, not a subr: still no trampoline.
+                   ((symbol-function 'vc-git-root)
+                    (lambda (dir)
+                      (let* ((rel (file-relative-name
+                                   (file-truename dir)
+                                   edmacs-workspaces-test--tmp))
+                             (parts (and (not (equal rel "."))
+                                         (split-string rel "/" t))))
+                        (when (and parts (not (string-prefix-p ".." (car parts))))
+                          (let ((depth (if (string-suffix-p "__worktrees" (car parts))
+                                           2 1)))
+                            (when (>= (length parts) depth)
+                              (file-name-as-directory
+                               (expand-file-name
+                                (mapconcat #'identity (seq-take parts depth) "/")
+                                edmacs-workspaces-test--tmp)))))))))
            ,@body)
        (delete-directory edmacs-workspaces-test--tmp t))))
 
@@ -1547,6 +1568,60 @@ frame that is already there."
           (edmacs-workspaces-open-project root)
           (edmacs-workspaces-open-worktree wt))
         (should (= frames (length (frame-list))))))))
+
+
+;; ============================================================================
+;; Code-review regressions (2026-09-07)
+;; ============================================================================
+
+(ert-deftest edmacs-workspaces-test-open-project-opens-main-beside-a-worktree-tab ()
+  "`SPC p p' reaches the MAIN worktree even when a linked worktree tab is open.
+The regression: a group that had tabs but no main tab selected
+`(car tabs)' instead of creating one, so opening any rdm worktree left
+the project's own checkout unreachable from `SPC p p' -- and sent the
+sidebar's project row, which names the main worktree, to a sibling."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (let* ((main (edmacs-workspaces-test--dir "repoA"))
+             (wt (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x"))
+             (group (edmacs-workspaces-group-name main)))
+        (edmacs-workspaces-open-worktree wt)
+        (should (equal (edmacs-workspaces-tab-root
+                        (edmacs-workspaces-test--current-tab))
+                       wt))
+        (edmacs-workspaces-open-project main)
+        ;; The main worktree, not the sibling that happened to be open.
+        (should (equal (edmacs-workspaces-tab-root
+                        (edmacs-workspaces-test--current-tab))
+                       main))
+        ;; Opened alongside it, not in place of it.
+        (should (= 2 (length (edmacs-workspaces-tabs-in-group group))))))))
+
+(ert-deftest edmacs-workspaces-test-worktree-root-of-normalizes-a-subdirectory ()
+  "A buffer's subdirectory resolves to its worktree root, never to itself.
+Stamping `.../repoA/modules/' on a tab would make that tab the
+longest-prefix match for every buffer under `modules/', so the stray
+sweep would drag them all onto it."
+  (edmacs-workspaces-test--with-repos
+    (let ((main (edmacs-workspaces-test--dir "repoA"))
+          (sub (edmacs-workspaces-test--dir "repoA/modules"))
+          (wt (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x"))
+          (wtsub (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x/modules")))
+      (should (equal (edmacs-workspaces--worktree-root-of sub) main))
+      (should (equal (edmacs-workspaces--worktree-root-of main) main))
+      ;; A LINKED worktree resolves to itself, not to the main checkout --
+      ;; this is what keeps sibling worktrees distinct.
+      (should (equal (edmacs-workspaces--worktree-root-of wtsub) wt)))))
+
+(ert-deftest edmacs-workspaces-test-remote-paths-never-reach-the-filesystem ()
+  "Neither the sweep nor root derivation may touch a remote path.
+Both run from `window-buffer-change-functions' for every buffer in every
+window, and a TRAMP round trip there stalls the sweep on the network."
+  (should (file-remote-p "/ssh:host:/srv/app/"))
+  (should-not (edmacs-workspaces--worktree-root-of "/ssh:host:/srv/app/"))
+  (with-temp-buffer
+    (setq-local default-directory "/ssh:host:/srv/app/")
+    (should-not (edmacs-workspaces--buffer-dir (current-buffer)))))
 
 (provide 'workspaces-test)
 ;;; workspaces-test.el ends here
