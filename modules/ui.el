@@ -22,34 +22,56 @@
                         :font font-name
                         :height (* size 10))))
 
-;; Font size presets
-(defvar font-size-standard 18
+(defconst edmacs-mono-family "Iosevka Term"
+  "Monospace family for `default' and `fixed-pitch'.
+Iosevka's `Term' cut, not the plain family: plain Iosevka draws the
+markers Claude's CLI emits (⏺ ✻ ✓ ✔ ✗ → … ▪ ★) two cells wide, and
+ghostel rescales any glyph overflowing its cell, so claude-term renders
+them at half size.  The Term cut sizes every symbol to one cell, so
+ghostel leaves them alone.")
+
+;; Font size presets.  Both are divisible by 4, which `edmacs-emoji-pin-size'
+;; requires to land emoji on the cell grid.
+(defvar font-size-standard 16
   "Standard font size in points.")
 
-(defvar font-size-large 28
+(defvar font-size-large 20
   "Large font size in points.")
 
 (defvar font-size-current font-size-standard
   "Current font size in use.")
 
+(defun edmacs-emoji-pin-size (size)
+  "Emoji font size that fills exactly two cells at text SIZE.
+Apple Color Emoji advances at 4/3 of its requested size, and an Iosevka
+Term cell is half the text size, so two cells are covered exactly when
+the emoji is pinned to three quarters of SIZE.  Whole-numbered only when
+SIZE is divisible by 4; other sizes land a pixel or two off."
+  (/ (* size 3) 4))
+
 (defun set-iosevka-font (size)
-  "Set Iosevka font at SIZE points.
-`default' and `fixed-pitch' use monospace Iosevka.  `variable-pitch'
-uses Iosevka Etoile (Iosevka's proportional slab sibling) so that
+  "Set `edmacs-mono-family' at SIZE points.
+`default' and `fixed-pitch' use it directly.  `variable-pitch' uses
+Iosevka Etoile (Iosevka's proportional slab sibling) so that
 `variable-pitch-mode' is not a no-op; if Etoile is not installed on
 this machine, `variable-pitch' is left alone rather than failing the
-whole function."
-  (when (find-font (font-spec :name "Iosevka"))
+whole function.  Emoji are pinned rather than left to their natural
+advance, which is wider than two cells at every size."
+  (when (find-font (font-spec :name edmacs-mono-family))
     (set-face-attribute 'default nil
-                        :font "Iosevka"
+                        :font edmacs-mono-family
                         :height (* size 10))
     (set-face-attribute 'fixed-pitch nil
-                        :font "Iosevka"
+                        :font edmacs-mono-family
                         :height (* size 10))
     (when (find-font (font-spec :name "Iosevka Etoile"))
       (set-face-attribute 'variable-pitch nil
                           :font "Iosevka Etoile"
                           :height (* size 10)))
+    (when (find-font (font-spec :family "Apple Color Emoji"))
+      (set-fontset-font t 'emoji
+                        (font-spec :family "Apple Color Emoji"
+                                   :size (edmacs-emoji-pin-size size))))
     (setq font-size-current size)))
 
 (defun toggle-font-size ()

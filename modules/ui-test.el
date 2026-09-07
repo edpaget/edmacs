@@ -350,4 +350,43 @@ fallback); a plain ghostel/vterm terminal keeps the unchanged \">_\"."
         (edmacs-modeline-ghostel-status))
       (should (equal captured "AI")))))
 
+;; ============================================================================
+;; Font configuration
+;; ============================================================================
+
+(ert-deftest edmacs-ui-test-mono-family-is-the-term-cut ()
+  "Plain `Iosevka' draws the CLI's marker glyphs two cells wide, which
+ghostel corrects by halving them.  Only the `Term' (or `Fixed') cut sizes
+every symbol to one cell, so the family name must carry that qualifier."
+  (should (equal edmacs-mono-family "Iosevka Term")))
+
+(ert-deftest edmacs-ui-test-emoji-pin-is-three-quarters-of-the-text-size ()
+  (should (= (edmacs-emoji-pin-size 16) 12))
+  (should (= (edmacs-emoji-pin-size 20) 15))
+  (should (= (edmacs-emoji-pin-size 12) 9)))
+
+(ert-deftest edmacs-ui-test-font-size-presets-keep-emoji-on-the-grid ()
+  "Both presets must be divisible by 4, or `edmacs-emoji-pin-size' truncates
+and emoji stop covering exactly two cells."
+  (dolist (size (list font-size-standard font-size-large))
+    (should (zerop (mod size 4)))
+    (should (= (* 4 (edmacs-emoji-pin-size size)) (* 3 size)))))
+
+(ert-deftest edmacs-ui-test-toggle-font-size-alternates-between-presets ()
+  "`toggle-font-size' switches on `font-size-current' alone, so it has to
+survive a value that is neither preset by falling back to standard."
+  (let ((font-size-current font-size-standard)
+        applied)
+    (cl-letf (((symbol-function 'set-iosevka-font)
+               (lambda (size) (push size applied) (setq font-size-current size))))
+      (toggle-font-size)
+      (should (equal applied (list font-size-large)))
+      (toggle-font-size)
+      (should (equal applied (list font-size-standard font-size-large)))
+      ;; An off-preset value (a stray `text-scale' or a hand-set size) must
+      ;; not wedge the toggle.
+      (setq font-size-current 99)
+      (toggle-font-size)
+      (should (= (car applied) font-size-standard)))))
+
 ;;; ui-test.el ends here
