@@ -118,6 +118,7 @@
 (declare-function edmacs-workspaces-open-project "workspaces")
 (declare-function edmacs-workspaces-open-worktree "workspaces")
 (declare-function edmacs-workspaces-current-group "workspaces")
+(declare-function edmacs-workspaces-frame-usable-p "workspaces")
 (declare-function edmacs-workspaces-tab-number "workspaces")
 (declare-function edmacs-workspaces-main-root "workspaces")
 
@@ -1578,6 +1579,14 @@ Sized by `edmacs-sidebar--target-width', so a manual resize survives a
 hide/show cycle and a poisoned remembered width self-heals on the very
 next show."
   (interactive (list (selected-frame)))
+  ;; The daemon's initial tty placeholder must never get a sidebar. Under
+  ;; the old per-frame `*sidebar: <repo>*' naming each frame drew into its
+  ;; own buffer, so this cost nothing; with one shared `*sidebar*' buffer a
+  ;; redraw for that frame -- which has no project group -- overwrites the
+  ;; real frame's tree with an empty one, leaving one stale row under an
+  ;; `F1' header. `edmacs-workspaces-frame-usable-p' already answers "may
+  ;; this config drive FRAME"; the sidebar simply never asked.
+  (when (edmacs-workspaces-frame-usable-p frame)
   ;; A frame with no non-side window would otherwise just have its
   ;; existing slot-0 left window reused, leaving it wedged.
   (when (edmacs-windows-frame-wedged-p frame)
@@ -1631,7 +1640,7 @@ next show."
       ;; not a full `--redraw': that would rerun every section-contributing
       ;; hook a second time on every single show, not just the first.
       (edmacs-sidebar--reapply-bottom-anchor frame)
-      window))))
+      window)))))
 
 (defun edmacs-sidebar-reapply-width (frame)
   "Resize FRAME's sidebar window back to `edmacs-sidebar--target-width'.

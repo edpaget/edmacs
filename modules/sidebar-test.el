@@ -347,7 +347,7 @@ non-selected frame, making that frame's rows non-selectable via RET."
     ;; `cl-letf'-stubbing each one per test, the small, pure lookups sidebar.el's
     ;; grouped-tree render/activate path calls -- `edmacs-workspaces-groups',
     ;; `-tabs-in-group', `-tab-root', `-set-tab-root', `-find-tab',
-    ;; `-select-tab', `-current-group', `-tab-number', `-main-root' -- are defined here for REAL, exact copies of
+    ;; `-select-tab', `-current-group', `-tab-number', `-main-root', `-frame-usable-p' -- are defined here for REAL, exact copies of
     ;; workspaces.el's own logic against real `tab-bar.el' primitives
     ;; (already loaded transitively via sidebar.el's own `(require 'tab-
     ;; bar)'). This means an ordinary test that never assigns a tab-bar
@@ -410,6 +410,14 @@ non-selected frame, making that frame's rows non-selectable via RET."
             (if frame (with-selected-frame frame (tab-bar-select-tab number))
               (tab-bar-select-tab number))))
         tab))
+
+    (defun edmacs-workspaces-frame-usable-p (frame)
+      (and (frame-live-p frame)
+           (not (frame-parameter frame 'parent-frame))
+           (not (and (daemonp) (frame-initial-p frame)))
+           (or (display-graphic-p frame)
+               (not (seq-some (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
+                              (frame-list))))))
 
     (defun edmacs-workspaces-main-root (root)
       (let ((main (when-let* ((common (edmacs-git-common-dir root)))
@@ -3200,6 +3208,22 @@ direct caller) are gone entirely, not merely unused."
       (should-not (fboundp 'edmacs-sidebar--point-identity))
       (should-not (fboundp 'edmacs-sidebar--goto-identity))
       (should-not (fboundp 'edmacs-sidebar--find-worktree-section)))
+
+    (ert-deftest edmacs-sidebar-test-show-refuses-an-unusable-frame ()
+      "`edmacs-sidebar-show' must create no window on a frame this config may
+not drive -- the daemon's initial tty placeholder above all. Under the
+old per-frame `*sidebar: <repo>*' naming this cost nothing, since each
+frame drew into its own buffer. With one shared `*sidebar*' buffer a
+redraw for the placeholder -- which belongs to no project group --
+overwrites the real frame's tree with an empty one, which is how a
+three-project sidebar rendered as one stale row under an `F1' header."
+      (let ((frame (selected-frame)))
+        (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_f) nil)))
+          (should-not (edmacs-sidebar-show frame))
+          (should-not (seq-find
+                       (lambda (w)
+                         (string-prefix-p "*sidebar" (buffer-name (window-buffer w))))
+                       (window-list frame 'never))))))
 
     )) ; end of build-root-found branch
 
