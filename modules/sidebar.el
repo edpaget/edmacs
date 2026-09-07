@@ -107,7 +107,7 @@
 (declare-function edmacs-worktrees-for-repo "frames")
 (declare-function edmacs-frames--tab-for-root "frames")
 (declare-function edmacs-frames--tab-root "frames")
-(declare-function edmacs-frames-open-worktree-tab "frames")
+(declare-function edmacs-workspaces-open-worktree "workspaces")
 
 ;; git-common-dir.el loads BEFORE sidebar.el (init.el's `load-module'
 ;; order), so this one resolves at real load time too; declared anyway
@@ -986,7 +986,7 @@ current tab\" sentinel, so redraw stores `(1+ index)', never the raw
 0-based index. A string section value (the worktree-aware list, always
 a root truename) is looked up via `edmacs-sidebar--root-tab-number':
 selects that tab-number when it has one; with no open tab yet, opens
-one via `edmacs-frames-open-worktree-tab', which performs its own
+one via `edmacs-workspaces-open-worktree', which performs its own
 find-or-create dance, so a second activation of what is now an open row
 takes the tab-number branch instead and simply reselects, never
 duplicating.
@@ -1001,7 +1001,7 @@ nil value slot (a usage row, deliberately valueless) -- signals
      ((stringp value)
       (if-let* ((tab-number (edmacs-sidebar--root-tab-number value)))
           (tab-bar-select-tab tab-number)
-        (edmacs-frames-open-worktree-tab value)))
+        (edmacs-workspaces-open-worktree value)))
      (t (user-error "Nothing to do on this row")))))
 
 (defun edmacs-sidebar-visit-at-point ()

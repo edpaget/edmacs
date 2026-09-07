@@ -8,6 +8,21 @@
 ;; showing its sidebar (sidebar.el). Every tab inside that frame is a
 ;; worktree of that repo, tagged with its own `edmacs-root' parameter.
 ;;
+;; NOTE (roadmap `edmacs-tab-groups', phase 2): this module is DETACHED.
+;; Its three tab/window hooks -- `tab-bar-tab-post-open-functions',
+;; `tab-bar-tab-post-select-functions' and
+;; `window-buffer-change-functions' -- are no longer installed;
+;; workspaces.el owns the first and the third, and nothing needs the
+;; second once nothing writes `edmacs-root'. No live call site reaches
+;; this module's project/worktree openers either: `SPC p p' and
+;; `SPC T p' / `C-x t p' now run `edmacs-workspaces-open-project' and
+;; `edmacs-workspaces-open-worktree'. The functions below are left
+;; defined only so the existing suites keep exercising them until a
+;; later phase retires this file. Everything the rest of this Commentary
+;; describes about tab stamping and reconciliation is therefore history,
+;; not current behaviour; the frame-teardown and fullscreen hooks are
+;; the only ones still live.
+;;
 ;; Identity is STAMPED, never sniffed. `edmacs-root' is written when the
 ;; tab is created (`edmacs-frames--on-tab-post-open', which covers every
 ;; tab-creating route including a plain `tab-bar-new-tab'), repaired when
@@ -26,10 +41,10 @@
 ;; `edmacs-frames-for-repo' reconciles duplicates and returns a healthy
 ;; frame rather than whichever one `frame-list' happens to yield first.
 ;;
-;; `SPC p p' (`project-switch-project') lands in a repo's frame via
-;; `edmacs-frames-open-project'; `SPC T p' / `C-x t p'
-;; (`edmacs-frames-open-worktree-tab', wired from sessions.el) opens or
-;; raises a worktree's tab inside that frame. A duplicate tab for the
+;; `edmacs-frames-open-project' and `edmacs-frames-open-worktree-tab'
+;; USED to back `SPC p p' (`project-switch-project') and `SPC T p' /
+;; `C-x t p'; both chords now dispatch to workspaces.el instead, and
+;; neither function below has a live caller. A duplicate tab for the
 ;; same worktree is prevented before creation by both of those, and
 ;; folded after the fact -- for any tab created through some other route
 ;; (the stock `project-other-tab-command' prefix, `M-x tab-bar-new-tab',
@@ -747,7 +762,8 @@ buffer would reintroduce the cross-frame derivation this module removed."
       (setf (alist-get 'edmacs-root (cdr tab)) root)))
   (edmacs-frames--reconcile-tab-after-open tab))
 
-(add-hook 'tab-bar-tab-post-open-functions #'edmacs-frames--on-tab-post-open)
+;; Not hooked: workspaces.el owns `tab-bar-tab-post-open-functions' now, with a
+;; stamp-only entry. Left defined for the tests until frames.el is retired.
 
 (defun edmacs-frames--on-tab-post-select (_from _to)
   "Stamp the newly selected tab's root when it still carries none.
@@ -764,7 +780,8 @@ frame's tab list."
       (when-let* ((root (edmacs-frames--derive-root frame)))
         (setf (alist-get 'edmacs-root (cdr tab)) root)))))
 
-(add-hook 'tab-bar-tab-post-select-functions #'edmacs-frames--on-tab-post-select)
+;; Not hooked: `tab-bar-tab-post-select-functions' repaired an `edmacs-root'
+;; nothing writes any more. Left defined for the tests until frames.el is retired.
 
 ;; ============================================================================
 ;; Stray visits -- catch a file opened in the wrong repo's frame
@@ -829,7 +846,8 @@ reason."
   (when edmacs-frames-stray-visit-relocate
     (run-at-time 0 nil #'edmacs-frames--relocate-stray-visits frame)))
 
-(add-hook 'window-buffer-change-functions #'edmacs-frames--on-window-buffer-change)
+;; Not hooked: workspaces.el owns `window-buffer-change-functions' now, with a
+;; tab-scoped sweep. Left defined for the tests until frames.el is retired.
 
 ;; ============================================================================
 ;; Closing a frame's last tab

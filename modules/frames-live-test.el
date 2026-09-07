@@ -292,7 +292,13 @@ call raises that exact same one rather than creating another."
     ;; AC3 -- SPC T p routes a worktree tab to its OWN repo's frame
     ;; ==========================================================================
 
+    ;; Detached by roadmap `edmacs-tab-groups' phase 2: `edmacs-frames-open-worktree-tab'
+    ;; stamped `edmacs-root' through the post-open hook this phase unhooks, so
+    ;; the tabs it creates now carry no root.
+    ;; A declared expected failure, not a skip -- phase 5 retires frames.el and
+    ;; this file together, and removes this marker with them.
     (ert-deftest edmacs-frames-live-test-worktree-tab-routes-and-dedupes ()
+      :expected-result :failed
       (edmacs-frames-live-test--with-sandbox sandbox
         (let* ((repo-a (expand-file-name "repoA" sandbox))
                (repo-b (expand-file-name "repoB" sandbox))
@@ -346,6 +352,10 @@ no root section yet."
                          (equal (oref s value) root)))
                   (oref magit-root-section children))))
 
+    ;; Detached by roadmap `edmacs-tab-groups' phase 2: sidebar.el's worktree row now calls
+    ;; `edmacs-workspaces-open-worktree' instead of this module's opener.
+    ;; A declared expected failure, not a skip -- phase 5 retires frames.el and
+    ;; this file together, and removes this marker with them.
     (ert-deftest edmacs-frames-live-test-sidebar-ret-opens-worktree-without-duplicate ()
       "The sidebar-RET counterpart to
 `edmacs-frames-live-test-worktree-tab-routes-and-dedupes' above, which
@@ -356,6 +366,7 @@ against a freshly opened repo frame with no pre-existing tab/frame
 state for it -- the \"cold daemon start\" this phase's AC names. Nothing
 here is stubbed: sidebar.el's row rendering/value shape and frames.el's
 tab-identity/reconciliation logic (phases 3/7/8) both run for real."
+      :expected-result :failed
       (edmacs-frames-live-test--with-sandbox sandbox
         ;; `repo' is truenamed *before* any git call touches it: on
         ;; macOS, `make-temp-file''s `/var/...' is a symlink to
@@ -419,7 +430,13 @@ tab-identity/reconciliation logic (phases 3/7/8) both run for real."
     ;; AC4 -- reconciliation folds a duplicate tab opened via any other route
     ;; ==========================================================================
 
+    ;; Detached by roadmap `edmacs-tab-groups' phase 2: the reconciler is no longer on
+    ;; `tab-bar-tab-post-open-functions'; it closed the very tab it had just
+    ;; stamped, which is why it went.
+    ;; A declared expected failure, not a skip -- phase 5 retires frames.el and
+    ;; this file together, and removes this marker with them.
     (ert-deftest edmacs-frames-live-test-reconcile-folds-duplicate-tab ()
+      :expected-result :failed
       (edmacs-frames-live-test--with-sandbox sandbox
         (let* ((repo (expand-file-name "repoA" sandbox))
                (edmacs-git-common-dir-cache (make-hash-table :test #'equal)))
@@ -1038,11 +1055,17 @@ unit tests hid the bug behind fixtures already missing the wrapper."
           (should-not (memq (car ws) '(leaf vc hc)))
           (should (memq (car (cdr ws)) '(leaf vc hc))))))
 
+    ;; Detached by roadmap `edmacs-tab-groups' phase 2: workspaces.el's stamp-only hook owns
+    ;; `tab-bar-tab-post-open-functions' now, and writes
+    ;; `edmacs-workspace-root' rather than `edmacs-root'.
+    ;; A declared expected failure, not a skip -- phase 5 retires frames.el and
+    ;; this file together, and removes this marker with them.
     (ert-deftest edmacs-frames-live-test-plain-new-tab-is-stamped ()
       "A plain `tab-bar-new-tab' -- no route through this module at all --
 still lands a tab carrying `edmacs-root', exactly once. Exactly once is
 the assertion that pins the `setf' stamp: a `push' would leave a
 shadowed stale cons that `tab-bar--tab' copies forward on every switch."
+      :expected-result :failed
       (edmacs-frames-live-test--with-sandbox sandbox
         (let* ((repo (expand-file-name "repoA" sandbox))
                (other (expand-file-name "unrelated" sandbox))
@@ -1061,12 +1084,17 @@ shadowed stale cons that `tab-bar--tab' copies forward on every switch."
                 (should (= 1 (seq-count (lambda (e) (eq (car-safe e) 'edmacs-root))
                                         (cdr tab))))))))))
 
+    ;; Detached by roadmap `edmacs-tab-groups' phase 2: `edmacs-frames-open-worktree-tab'
+    ;; stamped `edmacs-root' through the post-open hook this phase unhooks.
+    ;; A declared expected failure, not a skip -- phase 5 retires frames.el and
+    ;; this file together, and removes this marker with them.
     (ert-deftest edmacs-frames-live-test-worktree-tab-open-is-idempotent ()
       "Opening the same worktree twice never grows the tab list -- first via
 the pre-creation lookup, then, with that lookup neutralized to simulate
 a missed match, via the reconciliation net. That net is what the old
 `edmacs-frames--suppress-reconcile' binding disabled for precisely this
 call; the pending-root binding that replaced it re-arms it."
+      :expected-result :failed
       (edmacs-frames-live-test--with-sandbox raw-sandbox
         ;; Truenamed: `git rev-parse --git-common-dir' answers a LINKED
         ;; worktree with the resolved path and the main worktree with the

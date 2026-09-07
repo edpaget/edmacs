@@ -280,20 +280,21 @@ binary degrades to a warning instead."
 
 (use-package project
   :config
-  ;; `edmacs-frames-open-project' (modules/frames.el) is the sole
-  ;; `project-switch-commands' entry point: `SPC p p' lands in the chosen
-  ;; project's repo frame rather than running one of a menu of in-place
+  ;; `edmacs-workspaces-open-project' (modules/workspaces.el) is the sole
+  ;; `project-switch-commands' entry point: `SPC p p' selects the chosen
+  ;; project's tab-bar group -- creating the group and its main worktree
+  ;; tab the first time -- rather than running one of a menu of in-place
   ;; commands. `project-switch-project' calls it with
   ;; `project-current-directory-override' bound to the chosen directory.
-  (declare-function edmacs-frames-open-project "frames")
-  (setq project-switch-commands #'edmacs-frames-open-project)
+  (declare-function edmacs-workspaces-open-project "workspaces")
+  (setq project-switch-commands #'edmacs-workspaces-open-project)
 
   ;; rdm worktrees vendor their own straight checkouts and caches; never
   ;; remember those as projects. Worktrees themselves are excluded too --
   ;; not "/__worktrees/" with a leading slash, since the directories are
   ;; ~/Projects/<repo>__worktrees/ with no slash before the marker -- so
   ;; the picker lists repos only; a worktree is reached from the sidebar
-  ;; or `SPC T p' (modules/frames.el) instead.
+  ;; or `SPC T p' (modules/workspaces.el) instead.
   (setq project-list-exclude '("/straight/repos/" "/\\.eldev/" "/node_modules/"
                                 "__worktrees/"))
   ;; rdm reaps worktrees on disk; drop entries that no longer exist.

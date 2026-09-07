@@ -341,12 +341,13 @@ non-selected frame, making that frame's rows non-selectable via RET."
     ;; ==========================================================================
     ;; Worktree discovery (edmacs-sidebar roadmap phase 3) -- AC1/AC2/AC4
     ;; ==========================================================================
-    ;; frames.el is NOT loaded by this suite's invocation (see this file's own
-    ;; Commentary), so every frames.el symbol these tests touch --
-    ;; `edmacs-worktrees-for-repo', `edmacs-frames--tab-for-root',
-    ;; `edmacs-frames--tab-root', `edmacs-frames-open-worktree-tab' -- is
-    ;; stubbed via `cl-letf' rather than real; `sidebar.el' only ever calls
-    ;; them through its own `declare-function' forward references.
+    ;; Neither frames.el nor workspaces.el is loaded by this suite's
+    ;; invocation (see this file's own Commentary), so every symbol these
+    ;; tests touch from either -- `edmacs-worktrees-for-repo',
+    ;; `edmacs-frames--tab-for-root', `edmacs-frames--tab-root',
+    ;; `edmacs-workspaces-open-worktree' -- is stubbed via `cl-letf' rather
+    ;; than real; `sidebar.el' only ever calls them through its own
+    ;; `declare-function' forward references.
 
     (defmacro edmacs-sidebar-test--with-repo-frame (common &rest body)
       "Run BODY with the selected frame's `edmacs-repo' set to COMMON.
@@ -361,8 +362,8 @@ selected frame is shared across this whole test file."
     (defmacro edmacs-sidebar-test--stub-worktree-lookup (root-alist-var &rest body)
       "Run BODY with frames.el's worktree/tab-root lookups stubbed.
 ROOT-ALIST-VAR names a lexical variable holding an alist of
-\(TAB . ROOT) associations standing in for `edmacs-root' stamps a real
-`edmacs-frames-open-worktree-tab' would have made."
+\(TAB . ROOT) associations standing in for the `edmacs-root' stamps a
+real worktree-tab opener would have made."
       (declare (indent 1))
       `(cl-letf (((symbol-function 'edmacs-frames--tab-root)
                   (lambda (tab) (cdr (assq tab ,root-alist-var))))
@@ -446,7 +447,7 @@ the SECOND entry, \"wt\", which starts with no tab of its own."
              (select-calls nil))
         (edmacs-sidebar-test--stub-worktree-lookup root-alist
           (cl-letf (((symbol-function 'edmacs-worktrees-for-repo) (lambda (_common) worktrees))
-                    ((symbol-function 'edmacs-frames-open-worktree-tab)
+                    ((symbol-function 'edmacs-workspaces-open-worktree)
                      (lambda (root)
                        (setq open-calls (1+ open-calls))
                        ;; Simulate the real effect: the current tab now
@@ -510,7 +511,7 @@ the SECOND entry, \"wt\", which starts with no tab of its own."
 `edmacs-sidebar--root-tab-number', stubbed here through
 `edmacs-frames--tab-for-root'/`tab-bar--tab-index') to an open tab
 number selects that tab and never calls
-`edmacs-frames-open-worktree-tab'."
+`edmacs-workspaces-open-worktree'."
       (with-temp-buffer
         (edmacs-sidebar-mode)
         (let ((inhibit-read-only t))
@@ -521,7 +522,7 @@ number selects that tab and never calls
         (let (select-calls open-calls)
           (cl-letf (((symbol-function 'tab-bar-select-tab)
                      (lambda (n) (push n select-calls)))
-                    ((symbol-function 'edmacs-frames-open-worktree-tab)
+                    ((symbol-function 'edmacs-workspaces-open-worktree)
                      (lambda (root) (push root open-calls)))
                     ((symbol-function 'edmacs-frames--tab-for-root)
                      (lambda (_root &optional _frame) 'fake-tab))
@@ -534,7 +535,7 @@ number selects that tab and never calls
     (ert-deftest edmacs-sidebar-test-activate-worktree-row-tabless-opens-worktree ()
       "A worktree row whose bare-ROOT value resolves to no open tab
 (`edmacs-frames--tab-for-root' stubbed to return nil) opens one via
-`edmacs-frames-open-worktree-tab', never `tab-bar-select-tab' -- a
+`edmacs-workspaces-open-worktree', never `tab-bar-select-tab' -- a
 direct, minimal unit test of the same dispatch already exercised
 end-to-end by
 `edmacs-sidebar-test-activate-tabless-row-opens-once-then-reselects'."
@@ -548,7 +549,7 @@ end-to-end by
         (let (select-calls open-calls)
           (cl-letf (((symbol-function 'tab-bar-select-tab)
                      (lambda (n) (push n select-calls)))
-                    ((symbol-function 'edmacs-frames-open-worktree-tab)
+                    ((symbol-function 'edmacs-workspaces-open-worktree)
                      (lambda (root) (push root open-calls)))
                     ((symbol-function 'edmacs-frames--tab-for-root)
                      (lambda (_root &optional _frame) nil)))
@@ -673,7 +674,7 @@ real EIEIO `magit-section' instance always has its `value' slot bound
                     ;; already covered by the AC2 tests above; this stub only
                     ;; needs to do nothing, so the tab-less row's activation
                     ;; below cannot itself register a (real) subprocess call.
-                    ((symbol-function 'edmacs-frames-open-worktree-tab)
+                    ((symbol-function 'edmacs-workspaces-open-worktree)
                      (lambda (_root) nil))
                     ;; Real `tab-bar-close-tab' would actually close the one
                     ;; live tab this whole suite shares -- recorded instead,

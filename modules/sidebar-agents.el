@@ -69,7 +69,7 @@
 ;; matching sidebar.el's own `(declare-function edmacs-worktrees-for-repo
 ;; "frames")' pattern for a module that loads later.
 
-(declare-function edmacs-frames-open-worktree-tab "frames")
+(declare-function edmacs-workspaces-open-worktree "workspaces")
 (declare-function edmacs-worktrees-for-repo "frames")
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
@@ -454,13 +454,14 @@ identical on every frame."
 ;; ============================================================================
 
 (defun edmacs-sidebar-agents--visit-common (agent)
-  "Raise AGENT's repo frame, open/select its worktree tab, mark it read,
-then redraw every frame's sidebar so the row's bold face clears
-immediately. Shared by the full RET visit and the attention-jump
-command below; the difference between the two is only the
+  "Open or select AGENT's worktree tab, mark it read, then redraw every
+frame's sidebar so the row's bold face clears immediately.
+A worktree is a tab inside its project's tab-bar group (workspaces.el);
+no frame is raised or created. Shared by the full RET visit and the
+attention-jump command below; the difference between the two is only the
 source-specific extra step in `edmacs-sidebar-agents--visit-source-extra'."
   (when agent
-    (edmacs-frames-open-worktree-tab (edmacs-agent-root agent))
+    (edmacs-workspaces-open-worktree (edmacs-agent-root agent))
     (edmacs-agents-mark-read (edmacs-agent-key agent))
     (edmacs-sidebar-agents--redraw-all)))
 
@@ -472,7 +473,7 @@ since claude-term stopped allocating right-hand side slots. Any other
 source (including a `nil', unattached row) is a deliberate no-op: this
 pcase has no catch-all, so a row with no jump target simply does
 nothing here, after `edmacs-sidebar-agents--visit-common' has already
-raised the frame and marked it read. Called unguarded on purpose: the
+selected the worktree tab and marked it read. Called unguarded on purpose: the
 `fboundp' guard this replaced turned a renamed-away function into a
 silent no-op rather than an error."
   (pcase (edmacs-agent-source agent)

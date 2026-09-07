@@ -91,10 +91,12 @@ LANGUAGE should be the name without the .el extension."
 ;; Before its consumers below: they only `declare-function' it, so
 ;; nothing loads it on demand.
 (load-module "git-common-dir")
-;; New identity model (roadmap edmacs-tab-groups). Self-contained: no
-;; call site anywhere else in init.el yet, and no load-time side effect
-;; of its own -- see its Commentary. `frames' below is untouched by this
-;; phase and keeps driving `SPC p p'.
+;; New identity model (roadmap edmacs-tab-groups): a project is a tab-bar
+;; group, a worktree a tab inside it. Drives `SPC p p' (via core.el's
+;; `project-switch-commands') and `SPC T p' / `C-x t p' (sessions.el),
+;; and installs the tab-stamping and stray-visit hooks `frames' below no
+;; longer does. Loads before its callers, which only reference it by
+;; symbol at dispatch time.
 (load-module "workspaces")
 (load-module "claude-term")
 (load-module "claude-term-registry")

@@ -93,7 +93,7 @@ Mirrors sidebar.el's implementation for tests."
          ((<= width 0) "")
          ((<= (string-width label) width) label)
          (t (concat (truncate-string-to-width label (max 0 (1- width))) "…")))))
-    (defun edmacs-frames-open-worktree-tab (_dir) nil)
+    (defun edmacs-workspaces-open-worktree (_dir) nil)
     (defun claude-term-registry-rename (_root _old _new) nil)
 
     (load (expand-file-name "modules/agents.el" default-directory) nil t)
@@ -372,7 +372,7 @@ assertions passing untouched."
                        :root "/repo/wt/" :status 'done :unread t))
                (opened nil) (redraws 0))
           (edmacs-sidebar-agents-test--put agent)
-          (cl-letf (((symbol-function 'edmacs-frames-open-worktree-tab)
+          (cl-letf (((symbol-function 'edmacs-workspaces-open-worktree)
                      (lambda (dir) (push dir opened)))
                     ((symbol-function 'edmacs-sidebar--redraw)
                      (lambda (_frame) (setq redraws (1+ redraws)))))
@@ -410,7 +410,7 @@ so this must return without calling anything and without signalling."
 the source-specific jump half is a no-op."
       (let* ((agent (edmacs-sidebar-agents-test--make-agent :source nil :root "/repo/wt/"))
              (opened nil) (marked-key nil))
-        (cl-letf (((symbol-function 'edmacs-frames-open-worktree-tab)
+        (cl-letf (((symbol-function 'edmacs-workspaces-open-worktree)
                    (lambda (dir) (push dir opened)))
                   ((symbol-function 'edmacs-agents-mark-read)
                    (lambda (key) (setq marked-key key)))

@@ -11,7 +11,7 @@
 ;; sidebar.el and frames.el ARE loaded for real here (unlike the pure
 ;; suite) -- this file needs `edmacs-sidebar-mode'/`edmacs-sidebar-show'
 ;; for real sidebar buffers/windows, and stubs only
-;; `edmacs-frames-open-worktree-tab' (frames.el's own real
+;; `edmacs-workspaces-open-worktree' (workspaces.el's own real
 ;; implementation shells out to git and manages real tab-bar state well
 ;; beyond what these tests are about).
 ;;
@@ -99,7 +99,7 @@ a real Emacs session) to enable this suite"))
                 (tab-bar-tabs frame)))
     (defun edmacs-frames--tab-root (tab) (alist-get 'edmacs-root tab))
     (defvar edmacs-sidebar-agents-live-test--open-worktree-tab-calls nil)
-    (defun edmacs-frames-open-worktree-tab (dir)
+    (defun edmacs-workspaces-open-worktree (dir)
       (push dir edmacs-sidebar-agents-live-test--open-worktree-tab-calls)
       (select-frame-set-input-focus (selected-frame))
       (let ((root (file-truename dir)))

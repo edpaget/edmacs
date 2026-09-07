@@ -154,7 +154,7 @@ worktree in a real Emacs session) to enable this suite"))
     (defun edmacs-frames--tab-for-root (root &optional frame)
       (seq-find (lambda (tab) (equal (alist-get 'edmacs-root tab) root)) (tab-bar-tabs frame)))
     (defun edmacs-frames--tab-root (tab) (alist-get 'edmacs-root tab))
-    (defun edmacs-frames-open-worktree-tab (_dir) nil)
+    (defun edmacs-workspaces-open-worktree (_dir) nil)
 
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)

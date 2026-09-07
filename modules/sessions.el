@@ -51,6 +51,7 @@
 (declare-function edmacs-sidebar-show "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-frames--frame-content-window "frames")
+(declare-function edmacs-workspaces-open-worktree "workspaces")
 
 (defun edmacs-sessions--tab-name-for-frame (frame)
   "Name FRAME's current tab after its project/worktree, falling back sanely.
@@ -227,8 +228,8 @@ loaded but before `desktop-read' unconditionally nils it back out."
 ;; Multi-frame finish-up after `frameset-restore': `frameset-restore' (via
 ;; `desktop-restore-frameset') only reuses/creates frames and replays their
 ;; window/tab layout -- it knows nothing about `edmacs-repo', frame titles,
-;; or sidebars, all of which `edmacs-frames-open' would normally set up for
-;; a freshly opened repo frame. This walks every live frame afterward and
+;; or sidebars, all of which frames.el's own repo-frame opener would
+;; normally set up for a freshly opened repo frame. This walks every live frame afterward and
 ;; back-fills each.
 
 (defun edmacs-sessions--frame-tab-roots (frame)
@@ -284,9 +285,9 @@ guessed at."
   "Regenerate FRAME's title from its `edmacs-repo' parameter.
 `frameset-filter-alist' marks `name' `:never' (frameset.el's own
 `frame-internal-parameters' list), so a saved title is never restored
-and must be recomputed here, the same way `edmacs-frames-open' sets it
-on first creation. When COMMON's directory is gone, marks the frame
-`edmacs-repo-missing' and warns instead of erroring -- see AC3.
+and must be recomputed here, the same way frames.el's own repo-frame
+opener sets it on first creation. When COMMON's directory is gone, marks
+the frame `edmacs-repo-missing' and warns instead of erroring -- see AC3.
 
 Also re-derives the current tab's own label via
 `edmacs-sessions--tab-name-for-frame' -- never hardcoded to the bare
@@ -354,10 +355,10 @@ stale check) ever revisits it to fix that."
 empty on every daemon boot, so a restored repo frame's sidebar would
 otherwise render an empty worktree list and never see a live update
 until something else happens to touch that repo -- unlike a frame
-`edmacs-frames-open' creates itself, which always warms both as part of
-opening. Skipped for a missing repo (`edmacs-repo-missing'): nothing
-in `edmacs-frames--ensure-repo-tracking' needs to shell out for a
-directory that no longer exists."
+frames.el's own repo-frame opener creates itself, which always warms
+both as part of opening. Skipped for a missing repo
+(`edmacs-repo-missing'): nothing in `edmacs-frames--ensure-repo-tracking'
+needs to shell out for a directory that no longer exists."
   (when-let* ((common (frame-parameter frame 'edmacs-repo)))
     (when (file-directory-p common)
       (edmacs-frames--ensure-repo-tracking common))))
@@ -676,11 +677,11 @@ to close a window or kill a buffer, never a frame, so they never reach
 ;; ============================================================================
 ;; Registered via evil-config.el's extension point rather than a competing
 ;; `define-key' on `C-x', so this works regardless of module load order.
-;; "t p" targets `edmacs-frames-open-worktree-tab' (modules/frames.el, loaded
-;; after this module) rather than the stock `project-other-tab-command': a
-;; plain quoted symbol here carries no forward-reference/compile issue, and
-;; is only ever looked up once evil actually dispatches the chord.
-(dolist (chord '(("t p" . edmacs-frames-open-worktree-tab)
+;; "t p" targets `edmacs-workspaces-open-worktree' (modules/workspaces.el)
+;; rather than the stock `project-other-tab-command': a plain quoted symbol
+;; here carries no forward-reference/compile issue, and is only ever looked
+;; up once evil actually dispatches the chord.
+(dolist (chord '(("t p" . edmacs-workspaces-open-worktree)
                   ("v w w" . vc-switch-working-tree)
                   ("v w s" . vc-working-tree-switch-project)
                   ("v w k" . vc-kill-other-working-tree-buffers)
@@ -696,7 +697,7 @@ to close a window or kill a buffer, never a frame, so they never reach
  :states 'normal
  :prefix "SPC T"
  "" '(:ignore t :which-key "tabs")
- "p" '(edmacs-frames-open-worktree-tab :which-key "open worktree in its repo frame")
+ "p" '(edmacs-workspaces-open-worktree :which-key "open worktree tab")
  "n" '(tab-bar-new-tab :which-key "new tab")
  "d" '(tab-bar-close-tab :which-key "close tab")
  "r" '(tab-bar-rename-tab :which-key "rename tab")
