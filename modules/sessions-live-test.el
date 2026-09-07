@@ -6,20 +6,15 @@
 ;; its call ORDER but proves nothing about what a restored tab ends up
 ;; carrying. This suite closes that gap: it drives a REAL
 ;; `desktop-restore-frameset' over a real `frameset-save', then runs the
-;; walk with the real `edmacs-frames-stamp-frame-tabs' and asserts the tab
-;; comes back with a real `edmacs-root' -- and that the back-fill which
-;; reads those roots then resolves the frame's `edmacs-repo' from them.
-;; That whole chain is the desktop half of "every tab-creating path stamps
-;; `edmacs-root'"; the plain `tab-bar-new-tab' half lives in
-;; frames-live-test.el.
+;; finish-up with the real `edmacs-workspaces-stamp-frame-tabs' and
+;; asserts the tab comes back carrying a real `edmacs-workspace-root'.
+;; That is the desktop half of "every tab-creating path stamps a root";
+;; the plain `tab-bar-new-tab' half lives in workspaces-test.el.
 ;;
-;; Unlike sessions-test.el this loads the REAL frames.el (and windows.el,
-;; which frames.el's healthy-frame predicate calls into), because the
-;; function under test is precisely the frames.el/sessions.el seam. Only
-;; the two steps with an external dependency are stubbed:
-;; `edmacs-sessions--ensure-sidebar' (needs magit-section) and
-;; `edmacs-sessions--ensure-worktree-tracking' (arms a real `file-notify'
-;; watch). Stamping, back-fill and title regeneration all run for real.
+;; Unlike sessions-test.el this loads the REAL workspaces.el, because the
+;; function under test is precisely the workspaces.el/sessions.el seam.
+;; Only `edmacs-sessions--ensure-sidebar' is stubbed (it needs
+;; magit-section); the stamping runs for real.
 ;;
 ;; No frame is created here. `frameset-restore' reuses the ambient frame
 ;; every Emacs has, even under `-Q --batch' -- which is also why every
@@ -101,13 +96,13 @@ a real Emacs session) to enable this suite"))
         "Stub for tests: sessions.el's real target lives in evil-config.el."
         nil))
 
-    ;; windows.el before frames.el: `edmacs-frames--frame-healthy-p' calls
-    ;; `edmacs-windows-frame-wedged-p', and an absent one would silently
-    ;; make every frame look healthy here.
+    ;; windows.el before sessions.el: `edmacs-stack-sweep-stale-panes' is
+    ;; called from the restore bridge, and an absent one would turn a real
+    ;; restore into a caught warning instead of the path under test.
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
-    (load (expand-file-name "modules/frames.el" default-directory) nil t)
-    ;; The new model, and what `edmacs-sessions--stash-frameset-for-daemon'
-    ;; now puts the desktop frameset through before stashing it.
+    ;; The identity model: what the finish-up stamps through, and what
+    ;; `edmacs-sessions--stash-frameset-for-daemon' puts the desktop
+    ;; frameset through before stashing it.
     (load (expand-file-name "modules/workspaces.el" default-directory) nil t)
     (load (expand-file-name "modules/sessions.el" default-directory) nil t)
 
@@ -137,45 +132,41 @@ a real Emacs session) to enable this suite"))
     (defmacro edmacs-sessions-live-test--with-restored-frame (frame &rest body)
       "Run BODY, then put FRAME back the way this suite found it.
 The ambient frame is shared with every other test in this process, so its
-repo parameters, its tab list and its current tab's own `edmacs-root'
-stamp are all rolled back. The stamp is restored separately because tab
-parameters are mutated in the cons the frame already holds -- putting the
-saved tab LIST back would hand over the very conses BODY just wrote to."
+`name', its tab list and its current tab's own workspace-root stamp are
+all rolled back. The stamp is restored separately because tab parameters
+are mutated in the cons the frame already holds -- putting the saved tab
+LIST back would hand over the very conses BODY just wrote to."
       (declare (indent 1))
       (let ((f (gensym "frame")) (tabs (gensym "tabs")) (root (gensym "root")))
         `(let* ((,f ,frame)
                 (,tabs (frame-parameter ,f 'tabs))
-                (,root (edmacs-frames--tab-root
+                (,root (edmacs-workspaces-tab-root
                         (tab-bar--current-tab-find nil ,f))))
            (unwind-protect
                (progn ,@body)
-             (dolist (p '(edmacs-repo edmacs-repo-missing name))
-               (set-frame-parameter ,f p nil))
+             (set-frame-parameter ,f 'name nil)
              (set-frame-parameter ,f 'tabs ,tabs)
              ;; A nil ROOT removes the entry outright rather than storing nil,
              ;; so an unstamped tab goes back to being unstamped.
-             (setf (alist-get 'edmacs-root
+             (setf (alist-get edmacs-workspaces-root-parameter
                               (cdr (tab-bar--current-tab-find nil ,f))
                               nil t)
                    ,root)))))
 
     ;; ========================================================================
-    ;; The desktop half of "every tab-creating path stamps `edmacs-root'"
+    ;; The desktop half of "every tab-creating path stamps a worktree root"
     ;; ========================================================================
 
     (ert-deftest edmacs-sessions-live-test-desktop-restore-stamps-tab-root ()
-      "A tab restored from a real frameset comes back stamped, and the
-back-fill then reads that stamp.
+      "A tab restored from a real frameset comes back stamped.
 
-The regression this pins is the whole reason the walk stamps FIRST: a
-desktop file written before the stamp was mandatory carries no
-`edmacs-root' at all, `edmacs-frames--tab-root' is now a pure read that
-will not guess one, and `edmacs-sessions--frame-tab-roots' bails on the
-first unresolved tab -- so without `edmacs-frames-stamp-frame-tabs'
-running ahead of `edmacs-sessions--backfill-repo-param' such a frame
-would silently decline back-fill forever. Every step here is the real
-function except the sidebar (needs magit-section) and the worktree watch
-(arms a real `file-notify')."
+The regression this pins: a desktop file written before the stamp
+existed carries no worktree root at all, and `edmacs-workspaces-tab-root'
+is a pure read that will not guess one -- so without
+`edmacs-workspaces-stamp-frame-tabs' the restored tab would stay
+rootless forever and the sidebar could file it under no project. Every
+step here is the real function except the sidebar, which needs
+magit-section."
       ;; `file-truename' up front: the derived root is a truename, and on
       ;; macOS `make-temp-file' hands back the /var symlink to /private/var.
       (let* ((sandbox (file-name-as-directory
@@ -190,12 +181,11 @@ function except the sidebar (needs magit-section) and the worktree watch
               (with-selected-frame frame
                 (delete-other-windows)
                 (set-window-buffer (frame-selected-window frame) buffer))
-              ;; A desktop file written before the stamp was mandatory.
-              (setf (alist-get 'edmacs-root
+              ;; A desktop file written before the stamp existed.
+              (setf (alist-get edmacs-workspaces-root-parameter
                                (cdr (tab-bar--current-tab-find nil frame))
                                nil t)
                     nil)
-              (set-frame-parameter frame 'edmacs-repo nil)
 
               ;; The real round trip the daemon's restore timer performs.
               (let ((desktop-saved-frameset (frameset-save (list frame)))
@@ -207,67 +197,57 @@ function except the sidebar (needs magit-section) and the worktree watch
               ;; Nothing derives identity any more, so the restored tab is
               ;; genuinely unstamped at this point -- if it were not, the
               ;; assertion below would pass for the wrong reason.
-              (should-not (edmacs-frames--tab-root
+              (should-not (edmacs-workspaces-tab-root
                            (tab-bar--current-tab-find nil frame)))
 
               (cl-letf (((symbol-function 'edmacs-sessions--ensure-sidebar)
-                         #'ignore)
-                        ((symbol-function
-                          'edmacs-sessions--ensure-worktree-tracking)
                          #'ignore))
                 (edmacs-sessions--finish-frameset-restore frame))
 
-              (should (equal (edmacs-frames--tab-root
+              (should (equal (edmacs-workspaces-tab-root
                               (tab-bar--current-tab-find nil frame))
-                             (file-truename repo)))
+                             (file-name-as-directory (file-truename repo))))
               ;; Exactly one stamp: `tab-bar--tab' copies unrecognized tab
               ;; parameters forward on every switch, so a shadowed second
               ;; cons would outlive the session and be re-persisted.
-              (should (= 1 (seq-count (lambda (cell) (eq (car-safe cell) 'edmacs-root))
-                                      (cdr (tab-bar--current-tab-find nil frame)))))
-              ;; Stamp-first is load-bearing, not cosmetic: the back-fill
-              ;; resolved the frame's repo from the root written above.
-              (should (equal (frame-parameter frame 'edmacs-repo)
-                             (edmacs-frames--repo-of repo))))
+              (should (= 1 (seq-count
+                            (lambda (cell)
+                              (eq (car-safe cell) edmacs-workspaces-root-parameter))
+                            (cdr (tab-bar--current-tab-find nil frame))))))
           (when (buffer-live-p buffer) (kill-buffer buffer))
           (delete-directory sandbox t))))
 
     (ert-deftest edmacs-sessions-live-test-restore-walk-skips-an-unusable-frame ()
       "The gate holds against the real predicate, not just a stubbed one.
-`edmacs-frames-frame-usable-p' is loaded for real here, so this is the
-end-to-end form of sessions-test.el's stubbed placeholder test: with the
-ambient frame reported as the daemon's initial one, the walk must leave
-it entirely alone."
+`edmacs-workspaces-frame-usable-p' is loaded for real here, so this is
+the end-to-end form of sessions-test.el's stubbed placeholder test: with
+the ambient frame reported as the daemon's initial one, the finish-up
+must leave it entirely alone."
       (let ((frame (selected-frame)))
         (edmacs-sessions-live-test--with-restored-frame frame
-          (set-frame-parameter frame 'edmacs-repo nil)
-          (setf (alist-get 'edmacs-root
+          (setf (alist-get edmacs-workspaces-root-parameter
                            (cdr (tab-bar--current-tab-find nil frame))
                            nil t)
                 nil)
           (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
                     ((symbol-function 'frame-initial-p) (lambda (_f) t))
-                    ((symbol-function 'edmacs-sessions--ensure-sidebar) #'ignore)
-                    ((symbol-function 'edmacs-sessions--ensure-worktree-tracking)
-                     #'ignore))
-            (should-not (edmacs-sessions--restorable-frame-p frame))
+                    ((symbol-function 'edmacs-sessions--ensure-sidebar) #'ignore))
+            (should-not (edmacs-workspaces-frame-usable-p frame))
             (edmacs-sessions--finish-frameset-restore frame))
-          (should-not (edmacs-frames--tab-root
-                       (tab-bar--current-tab-find nil frame)))
-          (should-not (frame-parameter frame 'edmacs-repo)))))
+          (should-not (edmacs-workspaces-tab-root
+                       (tab-bar--current-tab-find nil frame))))))
 
     ;; ========================================================================
     ;; edmacs-sidebar-polish -- `edmacs-sidebar-collapsed' round-trips a real
-    ;; frameset save/restore, exactly like `edmacs-repo' above
+    ;; frameset save/restore
     ;; ========================================================================
 
     (ert-deftest edmacs-sessions-live-test-frameset-round-trips-sidebar-collapsed ()
       "`edmacs-sidebar-collapsed' is pinned into `frameset-filter-alist'
-alongside `edmacs-repo' (see sessions.el) with the same pass-through
-\(non-`:never') action, so it must survive the same real
-`frameset-save'/`desktop-restore-frameset' round trip `edmacs-repo'
-already does -- unlike the colour/geometry parameters this file
-deliberately drops on restore."
+(see sessions.el) with a pass-through \(non-`:never') action, so it must
+survive a real `frameset-save'/`desktop-restore-frameset' round trip --
+unlike the colour/geometry parameters this file deliberately drops on
+restore."
       (let ((frame (selected-frame)))
         (edmacs-sessions-live-test--with-restored-frame frame
           (unwind-protect
@@ -469,15 +449,12 @@ count of graphical frames means anything there."
     (defmacro edmacs-sessions-live-test--drive-bridge (frameset &rest body)
       "Stash FRAMESET, run the real restore bridge on the selected frame, BODY.
 The bridge defers its work onto a zero-delay timer, so the `sit-for'
-below is what actually runs it; the two steps with an external
-dependency -- the sidebar (needs magit-section) and the worktree watch
-\(arms a real `file-notify') -- are stubbed for the duration, exactly as
-the non-GUI tests above stub them."
+below is what actually runs it; the one step with an external dependency
+-- the sidebar, which needs magit-section -- is stubbed for the
+duration, exactly as the non-GUI tests above stub it."
       (declare (indent 1))
       `(let ((edmacs-sessions--pending-frameset ,frameset))
-         (cl-letf (((symbol-function 'edmacs-sessions--ensure-sidebar) #'ignore)
-                   ((symbol-function 'edmacs-sessions--ensure-worktree-tracking)
-                    #'ignore))
+         (cl-letf (((symbol-function 'edmacs-sessions--ensure-sidebar) #'ignore))
            (edmacs-sessions--restore-pending-frameset (selected-frame))
            (sit-for 0.3)
            ,@body)))

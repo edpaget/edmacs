@@ -10,11 +10,9 @@
 ;; driving real `tab-bar'/`windows.el' state, and the debounce timer.
 ;;
 ;; sidebar.el and windows.el ARE loaded for real (unlike the pure
-;; suite); frames.el is NOT -- this file stubs only the handful of its
-;; functions sidebar.el's own worktree redraw path calls
-;; (`edmacs-worktrees-for-repo', `edmacs-frames--tab-for-root',
-;; `edmacs-frames--tab-root'), the same convention
-;; sidebar-agents-live-test.el already uses for the same seam.
+;; suite); workspaces.el is NOT -- this file reimplements the handful of
+;; its pure lookups sidebar.el's own worktree redraw path calls, the same
+;; convention sidebar-agents-live-test.el already uses for the same seam.
 ;;
 ;; agents.el and sidebar-agents.el are ALSO loaded for real here, purely
 ;; so one test (`edmacs-sidebar-live-test-composed-worktree-render-
@@ -147,13 +145,15 @@ worktree in a real Emacs session) to enable this suite"))
     ;; small pure lookups sidebar.el's redraw/activate path calls are real,
     ;; unstubbed reimplementations of its own logic against real tab-bar
     ;; primitives, the same convention sidebar-test.el/sidebar-agents-live-
-    ;; test.el use for their own suites. `edmacs-worktrees-for-repo' and its
-    ;; cache are kept as inert no-ops purely so this file's many existing
-    ;; `--register-worktrees' call sites keep compiling -- no production
-    ;; code reads either any more.
-    (defvar edmacs-sidebar-buffers-live-test--worktrees-cache (make-hash-table :test #'equal))
-    (defun edmacs-worktrees-for-repo (common)
-      (gethash common edmacs-sidebar-buffers-live-test--worktrees-cache))
+    ;; test.el use for their own suites. The registered-worktrees table is
+    ;; inert -- kept only so this file's many existing `--register-worktrees'
+    ;; call sites keep working; no production code reads it any more.
+    (defvar edmacs-sidebar-buffers-live-test--registered-worktrees
+      (make-hash-table :test #'equal))
+    ;; The project group a scenario's tabs are filed under. Was the frames
+    ;; model's per-frame repo parameter; a suite-local dynamic value now,
+    ;; there being no per-frame repo to read.
+    (defvar edmacs-sidebar-buffers-live-test--group nil)
     (defconst edmacs-sidebar-buffers-live-test--root-parameter 'edmacs-workspace-root)
     (defun edmacs-workspaces-groups (&optional frame)
       (delete-dups (delq nil (mapcar (lambda (tab) (funcall tab-bar-tab-group-function tab))
@@ -162,6 +162,10 @@ worktree in a real Emacs session) to enable this suite"))
       (when group (seq-filter (lambda (tab) (equal (funcall tab-bar-tab-group-function tab) group))
                                (tab-bar-tabs (or frame (selected-frame))))))
     (defun edmacs-workspaces-tab-root (tab) (alist-get edmacs-sidebar-buffers-live-test--root-parameter tab))
+    (defun edmacs-workspaces-current-group (&optional frame)
+      (when-let* ((tab (assq 'current-tab
+                             (frame-parameter (or frame (selected-frame)) 'tabs))))
+        (funcall tab-bar-tab-group-function tab)))
     (defun edmacs-workspaces-find-tab (group root &optional frame)
       (seq-find (lambda (tab) (and (equal (funcall tab-bar-tab-group-function tab) group)
                                     (equal (edmacs-workspaces-tab-root tab) root)))
@@ -237,23 +241,22 @@ open tab."
         full))
 
     (defun edmacs-sidebar-buffers-live-test--register-worktrees (common worktrees)
-      "WORKTREES is an alist of (NAME . ROOT), as `edmacs-worktrees-for-repo' returns."
-      (puthash common worktrees edmacs-sidebar-buffers-live-test--worktrees-cache))
+      "WORKTREES is an alist of (NAME . ROOT), keyed by a repo's common dir."
+      (puthash common worktrees edmacs-sidebar-buffers-live-test--registered-worktrees))
 
     (defun edmacs-sidebar-buffers-live-test--stamp-current-tab-root (root)
       "Stamp ROOT as the selected frame's current tab's workspace root, and
-mark the selected window as that tab's main window. The tab's GROUP is
-derived from the frame's `edmacs-repo' parameter -- every call site
-sets that immediately before calling this, mirroring the old frames.el
-per-repo model closely enough that a shared value across multiple
-`--stamp-current-tab-root' calls in one test still puts every root
-under the SAME project row, exactly as before. Also renames the tab to
+mark the selected window as that tab's main window. The tab's GROUP
+comes from `edmacs-sidebar-buffers-live-test--group', which every call
+site sets immediately before calling this: a shared value across several
+`--stamp-current-tab-root' calls in one test puts every root under the
+SAME project row, which is what most scenarios here want. Also renames the tab to
 ROOT's own leaf directory name, matching what a real
 `edmacs-workspaces--open-tab' always does -- without this, a bare
 `tab-bar-new-tab' inherits the CURRENT BUFFER's name (tab-bar.el's own
 auto-naming), which can coincidentally match a filename this module
 renders lower down and confuse a test's own text-matching assertions."
-      (let ((group (or (frame-parameter (selected-frame) 'edmacs-repo)
+      (let ((group (or edmacs-sidebar-buffers-live-test--group
                         "edmacs-sidebar-buffers-live-test-group")))
         (setf (alist-get edmacs-sidebar-buffers-live-test--root-parameter
                           (cdr (tab-bar--current-tab-find)))
@@ -284,12 +287,12 @@ renders lower down and confuse a test's own text-matching assertions."
       (let ((buf (edmacs-sidebar--buffer frame)))
         (when (buffer-live-p buf) (kill-buffer buf))
         (set-frame-parameter frame 'edmacs-sidebar-buffer nil))
-      (set-frame-parameter frame 'edmacs-repo nil)
+      (setq edmacs-sidebar-buffers-live-test--group nil)
       (set-frame-parameter frame 'edmacs-sidebar-buffers-flat nil)
-      (clrhash edmacs-sidebar-buffers-live-test--worktrees-cache)
-      ;; `edmacs-repo' values like "/repo/.git" are reused verbatim across
-      ;; many tests' own scenarios; without this a later test's root could
-      ;; be wrongly classified `main' by a stale entry an earlier test left
+      (clrhash edmacs-sidebar-buffers-live-test--registered-worktrees)
+      ;; Group strings like "/repo/.git" are reused verbatim across many
+      ;; tests' own scenarios; without this a later test's root could be
+      ;; wrongly classified `main' by a stale entry an earlier test left
       ;; behind under the same group string.
       (clrhash edmacs-sidebar-buffers-live-test--group-main-roots))
 
@@ -441,7 +444,7 @@ row, but listable via `edmacs-sidebar-buffers-interactive-modes'."
                 (init (edmacs-sidebar-buffers-live-test--write-file root "init.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "repo" root)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
             (find-file sessions)
             (find-file ui)
@@ -484,7 +487,7 @@ first two rendered levels stay expanded."
                 (d (edmacs-sidebar-buffers-live-test--write-file root "p/q/r/fileD.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "repo" root)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
             (find-file chain) (find-file a) (find-file b) (find-file c) (find-file d)
             (edmacs-sidebar-show (selected-frame))
@@ -509,7 +512,7 @@ but is entirely invisible until expanded."
                 (z (edmacs-sidebar-buffers-live-test--write-file r2 "z.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "r1" r1) (cons "r2" r2)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
             (find-file x)
             (let ((tab-bar-new-tab-choice "*scratch*"))
@@ -540,7 +543,7 @@ every rank, exactly the regression this test guards against."
                 (z (edmacs-sidebar-buffers-live-test--write-file r2 "d/z.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "r1" r1) (cons "r2" r2)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
             (find-file w)
             (let ((tab-bar-new-tab-choice "*scratch*"))
@@ -565,7 +568,7 @@ every rank, exactly the regression this test guards against."
                 (b (edmacs-sidebar-buffers-live-test--write-file root "b.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "repo" root)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
             (find-file a)
             (find-file b)
@@ -585,7 +588,7 @@ that tab first, then shows the buffer in its main window."
                 (z (edmacs-sidebar-buffers-live-test--write-file r2 "z.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "r1" r1) (cons "r2" r2)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
             (find-file y)
             (let ((tab-bar-new-tab-choice "*scratch*"))
@@ -617,7 +620,7 @@ state under test."
                 (c (edmacs-sidebar-buffers-live-test--write-file root "c.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "repo" root)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
             (find-file a) (find-file b) (find-file c)
             (edmacs-sidebar-show (selected-frame))
@@ -648,7 +651,7 @@ state under test."
           (let ((a (edmacs-sidebar-buffers-live-test--write-file root "a.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "repo" root)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
             (find-file a)
             (with-current-buffer (get-file-buffer a) (set-buffer-modified-p t))
@@ -686,7 +689,7 @@ sidebar itself is selected, refresh again the moment focus leaves."
           (let ((a (edmacs-sidebar-buffers-live-test--write-file root "a.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "repo" root)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
             (find-file a)
             (let ((main (selected-window)))
@@ -722,7 +725,7 @@ sidebar itself is selected, refresh again the moment focus leaves."
                 (b (edmacs-sidebar-buffers-live-test--write-file root "b.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "repo" root)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
             (find-file a) (find-file b)
             (edmacs-sidebar-show (selected-frame))
@@ -809,7 +812,7 @@ check on top."
         (edmacs-sidebar-buffers-live-test--with-scenario (list root)
           (edmacs-sidebar-buffers-live-test--register-worktrees
            "/repo/.git" (list (cons "repo" root)))
-          (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+          (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
           (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
           (dotimes (i 30)
             (find-file (edmacs-sidebar-buffers-live-test--write-file
@@ -848,7 +851,7 @@ ever lists the other's files, whichever tab is currently selected."
                 (w (edmacs-sidebar-buffers-live-test--write-file r2 "w.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "r1" r1) (cons "r2" r2)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
             (find-file x) (find-file y)
             (let ((tab-bar-new-tab-choice "*scratch*"))
@@ -919,7 +922,7 @@ wrong tab's buffers regardless of how many buffers exist at once."
               (edmacs-sidebar-buffers-live-test--register-worktrees
                "/repo2/.git" (list (cons "r2" r2)))
               (with-selected-frame f1
-                (set-frame-parameter f1 'edmacs-repo "/repo1/.git")
+                (setq edmacs-sidebar-buffers-live-test--group "/repo1/.git")
                 (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r1)
                 (find-file p)
                 (edmacs-sidebar-show f1))
@@ -927,7 +930,7 @@ wrong tab's buffers regardless of how many buffers exist at once."
                 (should (string-match-p "p.el" text1))
                 (should-not (string-match-p "q.el" text1)))
               (with-selected-frame f2
-                (set-frame-parameter f2 'edmacs-repo "/repo2/.git")
+                (setq edmacs-sidebar-buffers-live-test--group "/repo2/.git")
                 (edmacs-sidebar-buffers-live-test--stamp-current-tab-root r2)
                 (find-file q)
                 (edmacs-sidebar-show f2))
@@ -955,7 +958,7 @@ wrong tab's buffers regardless of how many buffers exist at once."
                 (b (edmacs-sidebar-buffers-live-test--write-file root "b.el")))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "repo" root)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
             (find-file a) (find-file b)
             (edmacs-sidebar-show (selected-frame))
@@ -987,8 +990,7 @@ which neither module's own pure suite (each loads only sidebar.el) nor
 this file's other tests (no agent ever registered) exercises under a
 subprocess guard. Deliberately excludes agent-visit/tmux-jump
 \(sidebar-agents.el's own documented `start-process' exception, already
-covered by its own tests\) and the worktree-refresh subprocess call
-\(frames.el, phase 3\) -- neither is reachable from this loop's own
+covered by its own tests\) is not reachable from this loop's own
 render/navigation/rename path."
       (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
         (edmacs-sidebar-buffers-live-test--with-scenario (list root)
@@ -999,7 +1001,7 @@ render/navigation/rename path."
                             start-process start-file-process make-process)))
             (edmacs-sidebar-buffers-live-test--register-worktrees
              "/repo/.git" (list (cons "repo" root)))
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
+            (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
             (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
             (find-file a)
             (puthash agent-key

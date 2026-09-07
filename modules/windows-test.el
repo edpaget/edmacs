@@ -7,8 +7,17 @@
 ;; Run with:
 ;;   scripts/run-ert-suite.sh 30 emacs -Q --batch -l ert \
 ;;         -l modules/git-common-dir.el -l modules/claude-term.el \
-;;         -l modules/windows.el -l modules/windows-test.el \
-;;         -f ert-run-tests-batch-and-exit
+;;         -l modules/workspaces.el -l modules/windows.el \
+;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
+;;
+;; `modules/workspaces.el' is on that line because the AC4 load-order test
+;; below loads `modules/sidebar.el' for real, leaving sidebar.el's
+;; `tab-bar-tab-post-open-functions' entry installed for the rest of the
+;; run -- and its redraw calls `edmacs-workspaces-groups'. Without
+;; workspaces.el the 13 tests that drive a real `tab-bar-new-tab' after
+;; that point fail with a void-function rather than skipping; see
+;; .claude/CLAUDE.md on a header invocation not being the complete one by
+;; construction.
 ;;
 ;; The 30s budget is generous margin over the ~0.3s this suite actually
 ;; takes once native-comp-enable-subr-trampolines is disabled below (see
@@ -50,7 +59,7 @@
 ;; C subrs this file `cl-letf's; without this guard each redirected subr
 ;; makes Emacs build a native trampoline via a synchronous compiler
 ;; subprocess (~28s, almost entirely wall clock). See .claude/CLAUDE.md's
-;; Testing section and frames-test.el's precedent.
+;; Testing section.
 (when (boundp 'native-comp-enable-subr-trampolines)
   (setq native-comp-enable-subr-trampolines nil))
 

@@ -42,7 +42,7 @@
 ;; `read-string' is a C subr this file `cl-letf's; without this guard the
 ;; redirected subr makes Emacs build a native trampoline via a synchronous
 ;; compiler subprocess (~28s, almost entirely wall clock). See
-;; .claude/CLAUDE.md's Testing section and frames-test.el's precedent.
+;; .claude/CLAUDE.md's Testing section.
 (when (boundp 'native-comp-enable-subr-trampolines)
   (setq native-comp-enable-subr-trampolines nil))
 

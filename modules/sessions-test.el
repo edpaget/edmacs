@@ -53,19 +53,16 @@
 ;; harness) -- the same harmless failure claude-term-test.el's own
 ;; Commentary documents for `use-package ghostel'.
 ;;
-;; Everything here stubs the frames.el side of the boundary, so the walk's
-;; own eligibility gate and call ORDER are what this file pins -- not what a
-;; restored tab ends up carrying. `modules/sessions-live-test.el' covers
-;; that end to end, driving a real `desktop-restore-frameset' with the real
-;; frames.el loaded.
+;; The restore finish-up's own eligibility gate and call ORDER are what
+;; this file pins -- not what a restored tab ends up carrying.
+;; `modules/sessions-live-test.el' covers that end to end, driving a real
+;; `desktop-restore-frameset'.
 ;;
-;; None of frames.el or sidebar.el is loaded here: the functions under
-;; test call across that module boundary
-;; (`edmacs-frames--tab-root'/`edmacs-frames--repo-of'/
-;; `edmacs-sidebar-show'/`edmacs-sidebar--window'), and every test below
-;; stubs them via `cl-letf' rather than pulling in the real modules --
-;; matching frames-test.el's own no-real-frames-module-loaded style for
-;; its `git-common-dir'-boundary calls.
+;; sidebar.el is not loaded here (`edmacs-sidebar-show'/`--window' are
+;; stubbed via `cl-letf'). workspaces.el IS loaded, so
+;; `edmacs-workspaces-frame-usable-p'/`-stamp-frame-tabs'/
+;; `-current-tab-root' are the real functions except where a test
+;; deliberately stubs one to isolate sessions.el's own logic.
 
 ;;; Code:
 
@@ -150,90 +147,27 @@ emacs ...' to exercise this test): %s" e)))))
          (dolist (p ,params) (set-frame-parameter ,frame p nil))))
 
     ;; ==========================================================================
-    ;; edmacs-sessions--frame-tab-roots
+    ;; The restore finish-up's own eligibility gate
     ;; ==========================================================================
-
-    (ert-deftest edmacs-sessions-test-frame-tab-roots-nil-for-zero-tabs ()
-      "A frame with no tabs must not vacuously report \"every tab agrees\"."
-      (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil)))
-        (should-not (edmacs-sessions--frame-tab-roots (selected-frame)))))
-
-    (ert-deftest edmacs-sessions-test-frame-tab-roots-nil-when-a-tab-root-unresolved ()
-      (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) '(tab1 tab2)))
-                ((symbol-function 'edmacs-frames--tab-root)
-                 (lambda (tab) (and (eq tab 'tab1) "/root1/")))
-                ((symbol-function 'edmacs-frames--repo-of)
-                 (lambda (_) "/repo/.git")))
-        (should-not (edmacs-sessions--frame-tab-roots (selected-frame)))))
-
-    (ert-deftest edmacs-sessions-test-frame-tab-roots-all-resolve ()
-      (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) '(tab1 tab2)))
-                ((symbol-function 'edmacs-frames--tab-root)
-                 (lambda (tab) (symbol-name tab)))
-                ((symbol-function 'edmacs-frames--repo-of)
-                 (lambda (_) "/repo/.git")))
-        (should (equal (edmacs-sessions--frame-tab-roots (selected-frame))
-                        '("/repo/.git" "/repo/.git")))))
-
-    (ert-deftest edmacs-sessions-test-frame-tab-roots-selects-target-frame ()
-      "Deriving a background FRAME's tab roots must never read whatever
-frame the caller happens to have selected -- the cross-frame mix-up a
-daemon-boot multi-frame restore hits for every frame but whichever one
-is globally selected at the time. `edmacs-frames--tab-root' is a pure
-read of the tab's own stamp now, so this pins the `with-selected-frame'
-wrapper that keeps the guarantee for any callee that is not."
-      (let* ((f1 (selected-frame))
-             (f2 (edmacs-sessions-test--make-second-frame-or-skip)))
-        (unwind-protect
-            (with-selected-frame f1
-              (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) '(tab1)))
-                        ((symbol-function 'edmacs-frames--tab-root)
-                         (lambda (_) (if (eq (selected-frame) f2)
-                                         "/f2/root/" "/wrong-frame/")))
-                        ((symbol-function 'edmacs-frames--repo-of) (lambda (root) root)))
-                (should (equal (edmacs-sessions--frame-tab-roots f2) '("/f2/root/")))
-                (should (eq (selected-frame) f1))))
-          (when (frame-live-p f2) (delete-frame f2)))))
-
-    ;; ==========================================================================
-    ;; The restore walk's own eligibility gate
-    ;; ==========================================================================
-
-    (ert-deftest edmacs-sessions-test-restorable-frame-p-delegates-to-frames ()
-      "One shared predicate, so the restore walk and spare-frame adoption
-cannot drift apart on what counts as a frame a repo may live on."
-      (cl-letf (((symbol-function 'frame-live-p) (lambda (f) (memq f '(gui f1))))
-                ((symbol-function 'edmacs-frames-frame-usable-p)
-                 (lambda (f) (eq f 'gui))))
-        (should (edmacs-sessions--restorable-frame-p 'gui))
-        (should-not (edmacs-sessions--restorable-frame-p 'f1))
-        (should-not (edmacs-sessions--restorable-frame-p 'dead))))
 
     (defmacro edmacs-sessions-test--with-stubbed-steps (calls &rest body)
-      "Run BODY with each per-frame restore step recording into CALLS.
-Each entry is (STEP . FRAME), pushed in call order. frames.el is not
-loaded in this harness (see Commentary), so its two entry points are
-stubbed here alongside sessions.el's own."
+      "Run BODY with each restore step recording into CALLS.
+Each entry is (STEP . FRAME), pushed in call order. workspaces.el's own
+stamper is stubbed here alongside sessions.el's sidebar step so the
+order this function fixes is what is asserted, not either callee's
+behaviour."
       (declare (indent 1))
-      `(cl-letf (((symbol-function 'edmacs-sessions--drop-dead-tab-roots)
-                  (lambda (f) (push (cons 'drop-dead f) ,calls)))
-                 ((symbol-function 'edmacs-frames-stamp-frame-tabs)
+      `(cl-letf (((symbol-function 'edmacs-workspaces-stamp-frame-tabs)
                   (lambda (f) (push (cons 'stamp f) ,calls)))
-                 ((symbol-function 'edmacs-sessions--backfill-repo-param)
-                  (lambda (f) (push (cons 'backfill f) ,calls)))
-                 ((symbol-function 'edmacs-sessions--regenerate-frame-title)
-                  (lambda (f) (push (cons 'title f) ,calls)))
-                 ((symbol-function 'edmacs-sessions--ensure-worktree-tracking)
-                  (lambda (f) (push (cons 'tracking f) ,calls)))
                  ((symbol-function 'edmacs-sessions--ensure-sidebar)
                   (lambda (f) (push (cons 'sidebar f) ,calls))))
          ,@body))
 
     (ert-deftest edmacs-sessions-test-finish-frameset-restore-declines-unusable-frame ()
       "The daemon's initial tty frame is in `frame-list' but in no desktop
-save, and it must never be stamped, renamed, given a sidebar or made to
-hold a `file-notify' watch -- observed live as a second frame named
-after a repo it could never display. Handed that frame explicitly, the
+save, and it must never have its tabs stamped or be given a sidebar --
+observed live as a second frame named after a repo it could never
+display. Handed that frame explicitly, the
 finish-up declines it and does no per-frame work at all; it must not
 fall back to scanning for some other frame either, or an explicit
 argument would stop meaning anything."
@@ -243,9 +177,9 @@ argument would stop meaning anything."
                   ((symbol-function 'display-graphic-p)
                    (lambda (&optional f) (eq f 'gui)))
                   ((symbol-function 'frame-initial-p) (lambda (f) (eq f 'f1)))
-                  ;; `edmacs-frames-frame-usable-p''s own shape; frames-test.el
-                  ;; covers the real predicate directly.
-                  ((symbol-function 'edmacs-frames-frame-usable-p)
+                  ;; `edmacs-workspaces-frame-usable-p''s own shape;
+                  ;; workspaces-test.el covers the real predicate directly.
+                  ((symbol-function 'edmacs-workspaces-frame-usable-p)
                    (lambda (f) (and (not (and (daemonp) (frame-initial-p f)))
                                     (display-graphic-p f))))
                   ((symbol-function 'edmacs-sessions--gui-frame)
@@ -255,22 +189,25 @@ argument would stop meaning anything."
         (should-not calls)))
 
     (ert-deftest edmacs-sessions-test-finish-frameset-restore-runs-every-step-in-order ()
-      "The frame it was given is processed in full, with dead-tab-root
-cleanup running even before the tab stamp -- back-fill resolves a
-frame's repo from its tabs' own roots, which a pre-stamp desktop file
-does not carry until `edmacs-frames-stamp-frame-tabs' has written them,
-and a root pointing at a deleted worktree must be dropped before either
-step touches it."
+      "The frame it was given is processed in full, tabs stamped BEFORE the
+sidebar is shown: the sidebar files a tab under a project by that tab's
+own stamped root, so a sidebar drawn first would render a restored tab
+under no project at all.
+
+There is deliberately no dead-root sweep here. Under the frames model a
+tab whose worktree directory was gone had its stamp cleared, so a live
+root could be re-derived for the frame's one repo; under groups the
+stamp IS the tab's identity, and clearing it would drop the tab out of
+its project's tree rather than mark it missing."
       (let (calls)
         (cl-letf (((symbol-function 'frame-live-p) (lambda (f) (memq f '(f1 gui))))
-                  ((symbol-function 'edmacs-frames-frame-usable-p)
+                  ((symbol-function 'edmacs-workspaces-frame-usable-p)
                    (lambda (f) (eq f 'gui))))
           (edmacs-sessions-test--with-stubbed-steps calls
             (edmacs-sessions--finish-frameset-restore 'gui)))
         (setq calls (nreverse calls))
         (should (seq-every-p (lambda (c) (eq (cdr c) 'gui)) calls))
-        (should (equal (mapcar #'car calls)
-                       '(drop-dead stamp backfill title tracking sidebar)))))
+        (should (equal (mapcar #'car calls) '(stamp sidebar)))))
 
     (ert-deftest edmacs-sessions-test-finish-frameset-restore-falls-back-to-the-gui-frame ()
       "With no FRAME -- and with no GUI frame at all -- it does nothing
@@ -280,12 +217,12 @@ for a frame `frameset-restore' deleted, and the caller then has only a
 dead frame to hand over."
       (let (calls)
         (cl-letf (((symbol-function 'frame-live-p) (lambda (_f) t))
-                  ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_f) t))
+                  ((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_f) t))
                   ((symbol-function 'edmacs-sessions--gui-frame) (lambda () 'replacement)))
           (edmacs-sessions-test--with-stubbed-steps calls
             (edmacs-sessions--finish-frameset-restore nil)))
         (should (seq-every-p (lambda (c) (eq (cdr c) 'replacement)) calls))
-        (should (= 6 (length calls))))
+        (should (= 2 (length calls))))
       (let (calls)
         (cl-letf (((symbol-function 'edmacs-sessions--gui-frame) (lambda () nil)))
           (edmacs-sessions-test--with-stubbed-steps calls
@@ -307,221 +244,46 @@ what counts."
         (should-not (edmacs-sessions--gui-frame))))
 
     ;; ==========================================================================
-    ;; AC1 -- edmacs-sessions--backfill-repo-param
+    ;; edmacs-sessions--tab-name
     ;; ==========================================================================
 
-    (ert-deftest edmacs-sessions-test-backfill-repo-param-uses-non-selected-frames-own-tabs ()
-      "The same cross-frame mix-up, one level up: backfilling a background
-frame's `edmacs-repo' must resolve from ITS OWN tabs, not whichever
-frame the caller happens to have globally selected -- the exact defect
-`edmacs-sessions--finish-frameset-restore' would otherwise hit for
-every restored frame but the one already selected."
-      (let* ((f1 (selected-frame))
-             (f2 (edmacs-sessions-test--make-second-frame-or-skip)))
+    (ert-deftest edmacs-sessions-test-tab-name-reads-the-tabs-own-stamped-root ()
+      "The regression the old, buffer-derived namer produced: a tab whose
+frame correctly showed one worktree was named after some OTHER buffer
+that happened to be current when tab-bar recomputed the name (core
+re-runs `tab-bar-tab-name-function' on every `tab-bar-tabs' read of an
+unrenamed tab, not just at creation). Reading the tab's OWN stamped
+root cannot depend on ambient state, which is what this pins: an
+unrelated buffer is deliberately current throughout."
+      (let* ((frame (selected-frame))
+             (saved (frame-parameter frame 'tabs))
+             (ambient (generate-new-buffer "edmacs-sessions-test-ambient")))
         (unwind-protect
-            (edmacs-sessions-test--with-clean-frame-params f2 '(edmacs-repo)
-              (set-frame-parameter f2 'edmacs-repo nil)
-              (with-selected-frame f1
-                (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) '(tab1)))
-                          ((symbol-function 'edmacs-frames--tab-root)
-                           (lambda (_) (if (eq (selected-frame) f2)
-                                           "/f2/root/" "/f1/root/")))
-                          ((symbol-function 'edmacs-frames--repo-of)
-                           (lambda (root) (if (equal root "/f2/root/")
-                                               "/f2/repo/.git" "/f1/repo/.git"))))
-                  (edmacs-sessions--backfill-repo-param f2)
-                  (should (equal (frame-parameter f2 'edmacs-repo) "/f2/repo/.git")))))
-          (when (frame-live-p f2) (delete-frame f2)))))
+            (with-current-buffer ambient
+              (setq default-directory "/some/other/place/")
+              (set-frame-parameter
+               frame 'tabs
+               (list (list 'current-tab
+                           (cons 'edmacs-workspace-root "/repo__worktrees/roadmap-x/"))))
+              (should (equal (edmacs-sessions--tab-name) "roadmap-x")))
+          (set-frame-parameter frame 'tabs saved)
+          (kill-buffer ambient))))
 
-    (ert-deftest edmacs-sessions-test-backfill-repo-param-when-all-tabs-agree ()
-      (let ((frame (selected-frame)))
-        (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
-          (set-frame-parameter frame 'edmacs-repo nil)
-          (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) '(tab1 tab2)))
-                    ((symbol-function 'edmacs-frames--tab-root)
-                     (lambda (tab) (symbol-name tab)))
-                    ((symbol-function 'edmacs-frames--repo-of)
-                     (lambda (_) "/repo/.git")))
-            (edmacs-sessions--backfill-repo-param frame)
-            (should (equal (frame-parameter frame 'edmacs-repo) "/repo/.git"))))))
-
-    (ert-deftest edmacs-sessions-test-backfill-repo-param-skips-when-tabs-disagree ()
-      (let ((frame (selected-frame)))
-        (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
-          (set-frame-parameter frame 'edmacs-repo nil)
-          (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) '(tab1 tab2)))
-                    ((symbol-function 'edmacs-frames--tab-root)
-                     (lambda (tab) (symbol-name tab)))
-                    ((symbol-function 'edmacs-frames--repo-of)
-                     (lambda (root) (if (equal root "tab1") "/repo-a/.git" "/repo-b/.git"))))
-            (edmacs-sessions--backfill-repo-param frame)
-            (should-not (frame-parameter frame 'edmacs-repo))))))
-
-    (ert-deftest edmacs-sessions-test-backfill-repo-param-leaves-existing-param-alone ()
-      (let ((frame (selected-frame)))
-        (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
-          (set-frame-parameter frame 'edmacs-repo "/already/set/.git")
-          (cl-letf (((symbol-function 'tab-bar-tabs)
-                     (lambda (&rest _) (error "must not consult tabs when edmacs-repo is already set"))))
-            (edmacs-sessions--backfill-repo-param frame)
-            (should (equal (frame-parameter frame 'edmacs-repo) "/already/set/.git"))))))
-
-    ;; ==========================================================================
-    ;; AC1/AC3 -- edmacs-sessions--regenerate-frame-title
-    ;; ==========================================================================
-
-    (ert-deftest edmacs-sessions-test-regenerate-title-sets-name-for-existing-repo ()
+    (ert-deftest edmacs-sessions-test-tab-name-falls-back-on-an-unstamped-tab ()
+      "The daemon's boot tab and batch's own carry no root; core's
+`tab-bar-tab-name-current' is the documented answer there."
       (let* ((frame (selected-frame))
-             (dir (file-name-as-directory (make-temp-file "edmacs-sessions-test-" t))))
-        (unwind-protect
-            (edmacs-sessions-test--with-clean-frame-params
-                frame '(edmacs-repo edmacs-repo-missing name)
-              (set-frame-parameter frame 'edmacs-repo dir)
-              (set-frame-parameter frame 'edmacs-repo-missing t)
-              (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-                        ((symbol-function 'tab-bar-rename-tab) (lambda (&rest _) nil)))
-                (edmacs-sessions--regenerate-frame-title frame))
-              (should (equal (frame-parameter frame 'name)
-                              (edmacs-git-common-dir-repo-name dir)))
-              (should-not (frame-parameter frame 'edmacs-repo-missing)))
-          (delete-directory dir t))))
-
-    (ert-deftest edmacs-sessions-test-regenerate-title-noop-without-edmacs-repo ()
-      (let ((frame (selected-frame)))
-        (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo name)
-          (set-frame-parameter frame 'edmacs-repo nil)
-          (set-frame-parameter frame 'name "untouched")
-          (edmacs-sessions--regenerate-frame-title frame)
-          (should (equal (frame-parameter frame 'name) "untouched")))))
-
-    (ert-deftest edmacs-sessions-test-regenerate-title-missing-repo-warns ()
-      (let* ((frame (selected-frame))
-             (dir "/no/such/edmacs-sessions-test/path/.git/")
-             (warnings nil))
-        (edmacs-sessions-test--with-clean-frame-params
-            frame '(edmacs-repo edmacs-repo-missing name)
-          (set-frame-parameter frame 'edmacs-repo dir)
-          (cl-letf (((symbol-function 'display-warning)
-                     (lambda (&rest args) (push args warnings))))
-            (edmacs-sessions--regenerate-frame-title frame))
-          (should (eq (frame-parameter frame 'edmacs-repo-missing) t))
-          (should (string-prefix-p "MISSING: " (frame-parameter frame 'name)))
-          (should (= 1 (length warnings)))
-          (should (eq (nth 0 (car warnings)) 'edmacs-sessions))
-          (should (string-match-p (regexp-quote dir) (nth 1 (car warnings))))
-          (should (eq (nth 2 (car warnings)) :warning)))))
-
-    (ert-deftest edmacs-sessions-test-regenerate-title-forwards-frame-to-tab-namer ()
-      "`edmacs-sessions--regenerate-frame-title' must call
-`edmacs-sessions--tab-name-for-frame' with FRAME itself, not the
-zero-argument `edmacs-sessions--tab-name' -- that argument is what lets
-the namer derive the tab's project from FRAME's own content window's
-buffer instead of ambient `current-buffer'/`default-directory'. See
-`edmacs-sessions-test-tab-name-for-frame-ignores-ambient-current-buffer'
-for the regression this exists to prevent: a restore timer's own
-ambient buffer staying current while the frame being processed kept
-showing its own buffer used to corrupt tab names across a multi-frame
-restore (reproduced live before this fix)."
-      (let* ((frame (selected-frame))
-             (dir (file-name-as-directory (make-temp-file "edmacs-sessions-test-" t)))
-             (seen-frame nil))
-        (unwind-protect
-            (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
-              (set-frame-parameter frame 'edmacs-repo dir)
-              (cl-letf (((symbol-function 'edmacs-sessions--tab-name-for-frame)
-                         (lambda (f) (setq seen-frame f) "stub-name"))
-                        ((symbol-function 'tab-bar-rename-tab) (lambda (&rest _) nil)))
-                (edmacs-sessions--regenerate-frame-title frame))
-              (should (eq seen-frame frame)))
-          (delete-directory dir t))))
-
-    (ert-deftest edmacs-sessions-test-tab-name-for-frame-ignores-ambient-current-buffer ()
-      "The regression this spike's FRAME-argument refactor targets:
-`edmacs-sessions--tab-name' used to resolve its project via
-`project-current', which reads plain `default-directory' -- a
-buffer-local variable that tracks *current buffer*, not FRAME's own
-selected window. A tab whose FRAME correctly showed a `cloudcitydotgay'
-worktree was named `edmacs' whenever some OTHER buffer (e.g. a restore
-timer's own) happened to be current when tab-bar recomputed the name.
-`edmacs-sessions--tab-name-for-frame' takes FRAME explicitly and must
-derive the project root from FRAME's own content window's buffer,
-proven here by asserting `project-current' is called with THAT
-buffer's directory even while a different directory's buffer is
-ambiently current."
-      (let* ((frame (selected-frame))
-             (frame-dir (file-name-as-directory
-                         (make-temp-file "edmacs-sessions-test-framedir-" t)))
-             (ambient-dir (file-name-as-directory
-                           (make-temp-file "edmacs-sessions-test-ambientdir-" t)))
-             (frame-buf (generate-new-buffer "edmacs-sessions-test-frame-buf"))
-             (ambient-buf (generate-new-buffer "edmacs-sessions-test-ambient-buf"))
-             (dirs-queried nil))
+             (saved (frame-parameter frame 'tabs)))
         (unwind-protect
             (progn
-              (with-current-buffer frame-buf (setq default-directory frame-dir))
-              (with-current-buffer ambient-buf (setq default-directory ambient-dir))
-              (set-window-buffer (frame-selected-window frame) frame-buf)
-              (with-current-buffer ambient-buf
-                (cl-letf (((symbol-function 'edmacs-frames--frame-content-window)
-                           (lambda (f) (frame-selected-window f)))
-                          ((symbol-function 'project-current)
-                           (lambda (&optional _maybe-prompt directory)
-                             (push directory dirs-queried)
-                             (cons 'vc directory)))
-                          ((symbol-function 'project-root) #'cdr)
-                          ((symbol-function 'edmacs-frames-tab-in-own-repo-p)
-                           (lambda (&rest _) t))
-                          ((symbol-function 'edmacs-git-common-dir) (lambda (&rest _) nil)))
-                  (should (equal (edmacs-sessions--tab-name-for-frame frame)
-                                  (file-name-nondirectory (directory-file-name frame-dir))))
-                  (should (equal dirs-queried (list frame-dir))))))
-          (delete-directory frame-dir t)
-          (delete-directory ambient-dir t)
-          (kill-buffer frame-buf)
-          (kill-buffer ambient-buf))))
+              (set-frame-parameter frame 'tabs (list (list 'current-tab)))
+              (cl-letf (((symbol-function 'tab-bar-tab-name-current)
+                         (lambda () "core-fallback")))
+                (should (equal (edmacs-sessions--tab-name) "core-fallback"))))
+          (set-frame-parameter frame 'tabs saved))))
 
-    ;; ==========================================================================
-    ;; AC1 -- edmacs-sessions--ensure-worktree-tracking
-    ;; ==========================================================================
-
-    (ert-deftest edmacs-sessions-test-ensure-worktree-tracking-warms-cache-for-existing-repo ()
-      "A daemon restart starts frames.el's worktree cache and watch table
-empty, so a restored repo frame must have both warmed here -- unlike a
-frame `edmacs-frames-open' creates itself, which always does this as
-part of opening."
-      (let* ((frame (selected-frame))
-             (dir (file-name-as-directory (make-temp-file "edmacs-sessions-test-" t)))
-             (tracked nil))
-        (unwind-protect
-            (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
-              (set-frame-parameter frame 'edmacs-repo dir)
-              (cl-letf (((symbol-function 'edmacs-frames--ensure-repo-tracking)
-                         (lambda (common) (push common tracked))))
-                (edmacs-sessions--ensure-worktree-tracking frame)
-                (should (equal tracked (list dir)))))
-          (delete-directory dir t))))
-
-    (ert-deftest edmacs-sessions-test-ensure-worktree-tracking-skips-missing-repo ()
-      "AC3: nothing in the restore path may shell out for a repo whose
-directory no longer exists."
-      (let ((frame (selected-frame))
-            (tracked nil))
-        (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
-          (set-frame-parameter frame 'edmacs-repo "/no/such/edmacs-sessions-test/path/.git/")
-          (cl-letf (((symbol-function 'edmacs-frames--ensure-repo-tracking)
-                     (lambda (common) (push common tracked))))
-            (edmacs-sessions--ensure-worktree-tracking frame)
-            (should-not tracked)))))
-
-    (ert-deftest edmacs-sessions-test-ensure-worktree-tracking-noop-without-edmacs-repo ()
-      (let ((frame (selected-frame))
-            (tracked nil))
-        (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
-          (set-frame-parameter frame 'edmacs-repo nil)
-          (cl-letf (((symbol-function 'edmacs-frames--ensure-repo-tracking)
-                     (lambda (common) (push common tracked))))
-            (edmacs-sessions--ensure-worktree-tracking frame)
-            (should-not tracked)))))
+    (ert-deftest edmacs-sessions-test-tab-name-is-the-tab-bar-name-function ()
+      (should (eq tab-bar-tab-name-function #'edmacs-sessions--tab-name)))
 
     ;; ==========================================================================
     ;; Frame position (`left'/`top') is deliberately NOT restored
@@ -529,8 +291,8 @@ directory no longer exists."
 
     (ert-deftest edmacs-sessions-test-frameset-filter-drops-frame-position ()
       "Supersedes the earlier AC1, which wanted saved positions honoured.
-Every graphical frame now opens fullscreen (frames.el's
-`edmacs-frames-fullscreen'), so there is no position worth replaying --
+Every graphical frame now opens fullscreen (workspaces.el's
+`edmacs-workspaces-fullscreen'), so there is no position worth replaying --
 only the hazard that `frameset-filter-alist''s default action for
 `left'/`top' (`frameset-filter-shelve-param', which passes both through
 verbatim on a GUI-to-GUI restore) puts a restored frame back at the
@@ -811,8 +573,8 @@ from under the daemon went unnoticed for so long."
     (ert-deftest edmacs-sessions-test-ensure-sidebar-always-shows-even-with-window ()
       "A stale sidebar buffer -- mis-named because `edmacs-sidebar--on-
 desktop-read' (sidebar.el) shows every frame's sidebar synchronously at
-desktop-read time, before this frame's title has been regenerated from
-its `edmacs-repo' -- is only ever fixed by `edmacs-sidebar-show' (via
+desktop-read time, before this frame's tabs have been stamped -- is only
+ever fixed by `edmacs-sidebar-show' (via
 `edmacs-sidebar--ensure-buffer''s rename-if-stale check). Skipping the
 call whenever a window already exists (the old behavior) meant that fix
 never ran for an already-windowed frame; reproduced live via a real
@@ -841,48 +603,20 @@ to a single state, so there is one frame to finish."
       (let ((frame (selected-frame))
             (show-calls nil))
         (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
-                  ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
-                  ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
-                  ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_) t))
-                  ((symbol-function 'edmacs-frames-stamp-frame-tabs) #'ignore)
+                  ((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_) t))
+                  ((symbol-function 'edmacs-workspaces-stamp-frame-tabs) #'ignore)
                   ((symbol-function 'edmacs-sidebar--window) (lambda (_) 'has-window))
                   ((symbol-function 'edmacs-sidebar-show)
                    (lambda (f) (push f show-calls))))
           (edmacs-sessions--finish-frameset-restore frame)
           (should (equal show-calls (list frame))))))
 
-    (ert-deftest edmacs-sessions-test-finish-restore-tracks-worktrees-for-the-frame-it-was-given ()
-      "A frame carrying a resolvable `edmacs-repo' after backfill gets its
-worktree cache/watch warmed, not just its sidebar shown -- otherwise a
-restored frame's sidebar renders an empty worktree list until some
-unrelated event happens to trigger a refresh."
-      (let ((frame (selected-frame))
-            (dir (file-name-as-directory (make-temp-file "edmacs-sessions-test-f1-" t)))
-            (tracked nil))
-        (unwind-protect
-            (edmacs-sessions-test--with-clean-frame-params frame '(edmacs-repo)
-              (set-frame-parameter frame 'edmacs-repo dir)
-              (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
-                        ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
-                        ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
-                        ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_) t))
-                        ((symbol-function 'edmacs-frames-stamp-frame-tabs) #'ignore)
-                        ((symbol-function 'edmacs-sidebar--window) (lambda (_) t))
-                        ((symbol-function 'edmacs-sidebar-show) (lambda (_) nil))
-                        ((symbol-function 'edmacs-frames--ensure-repo-tracking)
-                         (lambda (common) (push common tracked))))
-                (edmacs-sessions--finish-frameset-restore frame)
-                (should (equal tracked (list dir)))))
-          (delete-directory dir t))))
-
     (ert-deftest edmacs-sessions-test-finish-restore-never-calls-make-frame ()
       "`frameset-restore's own `:reuse-frames t' owns all frame creation/reuse;
 this orchestrator only mutates the already-live frame it is handed."
       (cl-letf (((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil))
-                ((symbol-function 'edmacs-frames--tab-root) (lambda (_) nil))
-                ((symbol-function 'edmacs-frames--repo-of) (lambda (_) nil))
-                ((symbol-function 'edmacs-frames-frame-usable-p) (lambda (_) t))
-                ((symbol-function 'edmacs-frames-stamp-frame-tabs) #'ignore)
+                ((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_) t))
+                ((symbol-function 'edmacs-workspaces-stamp-frame-tabs) #'ignore)
                 ((symbol-function 'edmacs-sidebar--window) (lambda (_) t))
                 ((symbol-function 'edmacs-sidebar-show) (lambda (_) nil))
                 ((symbol-function 'make-frame)
@@ -1230,6 +964,43 @@ carry arguments -- unlike a Dock launch."
                   ((symbol-function 'display-warning)
                    (lambda (&rest _) (setq warned t))))
           (edmacs-sessions--warn-on-shadow-daemon-process)
-          (should-not warned))))))
+          (should-not warned))))
+
+    ;; ==========================================================================
+    ;; sessions.el's own Commentary and the sole GUI-frame maker
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sessions-test-commentary-does-not-relitigate-frames ()
+      "The Commentary must not carry the old tabs-over-frames rationale
+back: that argument was retired once upstream fixed the bugs it rested
+on, and the model is now one frame regardless. What it must record is
+the constraint that actually survives -- ghostel's PTY sizing."
+      (let ((text (with-temp-buffer
+                    (insert-file-contents
+                     (expand-file-name "modules/sessions.el" default-directory))
+                    (buffer-string))))
+        (should-not (string-match-p "per-frame is where manzaltu" text))
+        (should-not (string-match-p "explicitly tab-aware" text))
+        (should (string-match-p "window-adjust-process-window-size-smallest" text))))
+
+    (ert-deftest edmacs-sessions-test-sole-gui-frame-maker-documents-the-hazard ()
+      "The config's one frame-creation path, and the docstring saying why
+it cannot be removed -- naming both mechanisms that make a frameless
+daemon self-perpetuating."
+      (should (fboundp 'edmacs-sessions--make-gui-frame))
+      (let ((doc (documentation 'edmacs-sessions--ensure-gui-frame)))
+        (should doc)
+        (should (string-match-p "cannot be removed" doc))
+        (should (string-match-p "EMPTY frameset" doc))
+        (should (string-match-p "frameset-restore" doc)))
+      (let ((text (with-temp-buffer
+                    (insert-file-contents
+                     (expand-file-name "modules/sessions.el" default-directory))
+                    (buffer-string)))
+            (count 0)
+            (start 0))
+        (while (string-match "(make-frame" text start)
+          (setq count (1+ count) start (match-end 0)))
+        (should (= count 1))))))
 
 ;;; sessions-test.el ends here

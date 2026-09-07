@@ -107,10 +107,8 @@
 ;; workspaces.el loads AFTER sidebar.el (see init.el's `load-module'
 ;; order), so these forward references are needed for the byte-compiler
 ;; even though the shared-obarray runtime calls resolve fine once both
-;; modules have loaded -- mirroring frames.el's own
-;; `(declare-function edmacs-sidebar-show "sidebar")' in the other
-;; direction. This is the one lookup surface AC6 requires: no module
-;; outside frames.el resolves a tab from a root except through these.
+;; modules have loaded. This is the one lookup surface: no module
+;; resolves a tab from a root except through these.
 (declare-function edmacs-workspaces-groups "workspaces")
 (declare-function edmacs-workspaces-tabs-in-group "workspaces")
 (declare-function edmacs-workspaces-tab-root "workspaces")
@@ -119,6 +117,7 @@
 (declare-function edmacs-workspaces-classify-root "workspaces")
 (declare-function edmacs-workspaces-open-project "workspaces")
 (declare-function edmacs-workspaces-open-worktree "workspaces")
+(declare-function edmacs-workspaces-current-group "workspaces")
 
 ;; git-common-dir.el loads BEFORE sidebar.el (init.el's `load-module'
 ;; order), so these resolve at real load time too; declared anyway for
@@ -250,13 +249,6 @@ collapsed strip.")
 (defface edmacs-sidebar-missing-worktree-face
   '((t :inherit warning))
   "Face for an open tab whose worktree directory no longer exists."
-  :group 'edmacs-sidebar)
-
-(defface edmacs-sidebar-missing-repo-face
-  '((t :inherit warning :weight bold))
-  "Face for the warning row shown when FRAME's whole repo is gone.
-See `edmacs-repo-missing', set by `modules/sessions.el's frameset
-restore bridge."
   :group 'edmacs-sidebar)
 
 (defface edmacs-sidebar-current-tab-face
@@ -842,14 +834,6 @@ spec; `edmacs-sidebar-activate' is the matching activation dispatch."
                   (run-hook-with-args 'edmacs-sidebar-worktree-section-functions
                                        root t frame tab-number)))))))))))
 
-(defun edmacs-sidebar--insert-missing-repo-warning ()
-  "Insert a warning heading for a frame whose whole repo is gone.
-Only ever shown when `edmacs-sessions--regenerate-frame-title' has set
-FRAME's `edmacs-repo-missing' parameter -- see AC3."
-  (magit-insert-section (edmacs-sidebar-warning)
-    (magit-insert-heading
-      (propertize "repo missing" 'face 'edmacs-sidebar-missing-repo-face))))
-
 (defun edmacs-sidebar--sanitise-frame-title (title)
   "Sanitise a frame TITLE for use as a sidebar buffer name.
 Strips leading/trailing `*...*' earmuffs (e.g., `*Minibuf-1*' → empty),
@@ -879,13 +863,13 @@ the cleaned string. Returns empty string if nothing usable remains."
       (string-trim collapsed))))
 
 (defun edmacs-sidebar--header-line-name (frame)
-  "Return FRAME's own identity string for the header line: its repo's
-bare leaf directory name if it carries an `edmacs-repo' parameter, else
-its sanitised frame `name' parameter (the repo-less flat-tab-list case)."
-  (let ((common (frame-parameter frame 'edmacs-repo)))
-    (if common
-        (edmacs-git-common-dir-repo-name common)
-      (edmacs-sidebar--sanitise-frame-title (or (frame-parameter frame 'name) "")))))
+  "Return FRAME's own identity string for the header line.
+The ACTIVE PROJECT's name when FRAME's current tab is in a project
+group -- the group name IS the repo name, `edmacs-workspaces-group-name'
+deriving it through `edmacs-git-common-dir-repo-name' -- else FRAME's
+sanitised `name' parameter (the ungrouped flat-tab-list case)."
+  (or (edmacs-workspaces-current-group frame)
+      (edmacs-sidebar--sanitise-frame-title (or (frame-parameter frame 'name) ""))))
 
 (defun edmacs-sidebar--header-line (frame)
   "Return FRAME's sidebar header-line string: its own repo/frame
@@ -998,8 +982,7 @@ and the header line is nil'd; the two renders never both run against
 the same window on the same pass. Otherwise branches on whether FRAME
 carries any tab-bar group at all (`edmacs-workspaces-groups'): a
 grouped frame gets the projects tree (`edmacs-sidebar--redraw-projects'),
-everything else keeps the original flat tab list, with a warning
-section ahead of everything else when `edmacs-repo-missing' is set.
+everything else keeps the original flat tab list.
 
 Either branch then runs its own bottom-anchor hook
 \(`edmacs-sidebar-bottom-anchor-section-functions' or
@@ -1027,8 +1010,6 @@ contract its registrants already follow."
                     (setq anchor-end (point))
                     (setq anchor-start (edmacs-sidebar--anchor-marker-at anchor-start-pos))))
               (progn
-                (when (frame-parameter frame 'edmacs-repo-missing)
-                  (edmacs-sidebar--insert-missing-repo-warning))
                 (if (edmacs-workspaces-groups frame)
                     (edmacs-sidebar--redraw-projects frame)
                   (edmacs-sidebar--redraw-tabs frame))
@@ -1284,8 +1265,8 @@ the selected frame -- there is no other frame a keypress could mean."
 ;;;###autoload
 (defun edmacs-sidebar-redraw (frame)
   "Force a redraw of FRAME's sidebar from cached data.
-Never re-runs `edmacs-frames--worktrees-refresh' (a subprocess call) --
-this only rebuilds the section tree from data already cached, so it is
+Never shells out to enumerate worktrees -- this only rebuilds the
+section tree from data already on the frame's own tabs, so it is
 always safe to bind to a bare key. Interactively, FRAME is always the
 selected frame."
   (interactive (list (selected-frame)))
@@ -1361,7 +1342,7 @@ mere presence, is the question."
 ;; hide/show cycle: `edmacs-sidebar-show' would otherwise always fall
 ;; back to the `edmacs-sidebar-width' defcustom. So the frame's actual
 ;; window width is mirrored into a frame parameter here, debounced per
-;; frame (mirroring `edmacs-frames--worktree-refresh-timers's shape) so
+;; frame (one timer per frame, keyed in a hash table) so
 ;; a mouse drag's stream of intermediate sizes doesn't thrash.
 ;;
 ;; Not every `window-size-change-functions' firing that touches the

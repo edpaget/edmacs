@@ -102,19 +102,19 @@ HAS a frame parameter is the same bug shape as a literal `(selected-frame)'
 read: ERROR."
   (should (equal '(error)
                  (edmacs-ambient-reads-test--severities
-                  "(defun foo (frame)\n  (ignore frame)\n  (frame-parameter nil 'edmacs-repo))\n"))))
+                  "(defun foo (frame)\n  (ignore frame)\n  (frame-parameter nil 'edmacs-workspace-root))\n"))))
 
 (ert-deftest edmacs-ambient-reads-test-nil-arg-without-parameter-is-warn ()
   "No frame parameter at all: ambient by construction, WARN."
   (should (equal '(warn)
                  (edmacs-ambient-reads-test--severities
-                  "(defun foo ()\n  (frame-parameter nil 'edmacs-repo))\n"))))
+                  "(defun foo ()\n  (frame-parameter nil 'edmacs-workspace-root))\n"))))
 
 (ert-deftest edmacs-ambient-reads-test-nil-arg-explicit-value-is-clean ()
   "Passing the parameter itself, rather than nil, is the fix -- no finding."
   (should (equal '()
                  (edmacs-ambient-reads-test--severities
-                  "(defun foo (frame)\n  (frame-parameter frame 'edmacs-repo))\n"))))
+                  "(defun foo (frame)\n  (frame-parameter frame 'edmacs-workspace-root))\n"))))
 
 (ert-deftest edmacs-ambient-reads-test-nil-arg-window-list-flagged ()
   "`window-list' is in the flagged-function table too, not just
@@ -127,7 +127,7 @@ read: ERROR."
   "The same suppression comment convention applies to the nil-argument scan."
   (should (equal '()
                  (edmacs-ambient-reads-test--severities
-                  "(defun foo (frame)\n  (ignore frame)\n  ;; ambient-reads: ok\n  (frame-parameter nil 'edmacs-repo))\n"))))
+                  "(defun foo (frame)\n  (ignore frame)\n  ;; ambient-reads: ok\n  (frame-parameter nil 'edmacs-workspace-root))\n"))))
 
 (ert-deftest edmacs-ambient-reads-test-get-buffer-window-current-buffer-any-frame-exempt ()
   "`(get-buffer-window nil t)' means \"the current buffer's window, on any

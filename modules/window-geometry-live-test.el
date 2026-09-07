@@ -87,6 +87,11 @@ resolved"))
         (when (file-directory-p dir)
           (add-to-list 'load-path dir))))
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
+    ;; Before sidebar.el's first redraw: `edmacs-sidebar--redraw' branches on
+    ;; `edmacs-workspaces-groups', so without this every test that shows a
+    ;; sidebar fails with a void-function.
+    (load (expand-file-name "modules/git-common-dir.el" default-directory) nil t)
+    (load (expand-file-name "modules/workspaces.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
 
     ;; ======================================================================

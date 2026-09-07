@@ -91,12 +91,12 @@ LANGUAGE should be the name without the .el extension."
 ;; Before its consumers below: they only `declare-function' it, so
 ;; nothing loads it on demand.
 (load-module "git-common-dir")
-;; New identity model (roadmap edmacs-tab-groups): a project is a tab-bar
+;; The identity model (roadmap edmacs-tab-groups): a project is a tab-bar
 ;; group, a worktree a tab inside it. Drives `SPC p p' (via core.el's
 ;; `project-switch-commands') and `SPC T p' / `C-x t p' (sessions.el),
-;; and installs the tab-stamping and stray-visit hooks `frames' below no
-;; longer does. Loads before its callers, which only reference it by
-;; symbol at dispatch time.
+;; owns the tab-stamping and stray-visit hooks, and applies the
+;; fullscreen policy. Loads before its callers, which only reference it
+;; by symbol at dispatch time.
 (load-module "workspaces")
 (load-module "claude-term")
 (load-module "claude-term-registry")
@@ -107,19 +107,15 @@ LANGUAGE should be the name without the .el extension."
 ;; Right after sidebar: only `declare-function' forward references tie
 ;; the two together, which silence the byte-compiler but load nothing
 ;; on their own -- see git-common-dir's own comment above for the same
-;; hazard. `frames' and `agents' load later below, but every call this
-;; module makes into either is inside a function body, resolved at
-;; call/keypress time, never at this module's own load time.
+;; hazard. `agents' loads later below, but every call this module makes
+;; into it is inside a function body, resolved at call/keypress time,
+;; never at this module's own load time.
 (load-module "sidebar-agents")
 ;; Right after sidebar-agents: needs sidebar.el's extension-point vars
-;; already defined. Its own `edmacs-frames--tab-for-root'/`bufferlo-*'
-;; calls are inside function bodies, resolved at call time, so its
-;; exact position relative to `frames' below is not load-bearing.
+;; already defined. Its own `workspaces'/`bufferlo-*' calls are inside
+;; function bodies, resolved at call time.
 (load-module "sidebar-buffers")
-;; After sidebar (calls `edmacs-sidebar-show'), sessions (reuses its
-;; tab-bar/desktop setup), and evil-config (its C-x chord registrar).
-(load-module "frames")
-;; Standalone: no dependency on sidebar/frames yet (phase 6 wires the two
+;; Standalone: no dependency on sidebar yet (phase 6 wires the two
 ;; together). Pure data + tabulated-list view only -- it has no
 ;; load-time side effect of its own to arm.
 (load-module "agents")

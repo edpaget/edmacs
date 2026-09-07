@@ -8,7 +8,7 @@
 ;; the literal async `start-process' calls this module issues actually
 ;; reaching a real subprocess rather than a stubbed Lisp function.
 ;;
-;; sidebar.el and frames.el ARE loaded for real here (unlike the pure
+;; sidebar.el and windows.el ARE loaded for real here (unlike the pure
 ;; suite) -- this file needs `edmacs-sidebar-mode'/`edmacs-sidebar-show'
 ;; for real sidebar buffers/windows, and stubs only
 ;; `edmacs-workspaces-open-worktree' (workspaces.el's own real
@@ -102,6 +102,10 @@ a real Emacs session) to enable this suite"))
       (when group (seq-filter (lambda (tab) (equal (funcall tab-bar-tab-group-function tab) group))
                                (tab-bar-tabs (or frame (selected-frame))))))
     (defun edmacs-workspaces-tab-root (tab) (alist-get edmacs-sidebar-agents-live-test--root-parameter tab))
+    (defun edmacs-workspaces-current-group (&optional frame)
+      (when-let* ((tab (assq 'current-tab
+                             (frame-parameter (or frame (selected-frame)) 'tabs))))
+        (funcall tab-bar-tab-group-function tab)))
     (defun edmacs-workspaces-find-tab (group root &optional frame)
       (seq-find (lambda (tab) (and (equal (funcall tab-bar-tab-group-function tab) group)
                                     (equal (edmacs-workspaces-tab-root tab) root)))

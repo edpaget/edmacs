@@ -6,19 +6,18 @@
 ;; the one place that answers "what project is this?" and "what worktree
 ;; is this?", and -- since phase 2 -- the one that drives `SPC p p'
 ;; (`edmacs-workspaces-open-project') and `SPC T p' / `C-x t p'
-;; (`edmacs-workspaces-open-worktree'). The two models still live in
-;; separate files, which is what keeps a later phase's deletion of
-;; `frames.el' a removal rather than an unpick.
+;; (`edmacs-workspaces-open-worktree'). It replaced a frame-per-repo
+;; model (the retired `frames.el') outright rather than absorbing it,
+;; which is why nothing below carries that model's parameters.
 ;;
 ;; ============================================================================
 ;; Load-time side effects: two hooks
 ;; ============================================================================
-;; This module installs exactly two hook entries at load time, both of
-;; which `frames.el' vacated in the same phase:
+;; This module installs exactly two hook entries at load time:
 ;;
 ;; - `edmacs-workspaces--on-tab-post-open' on
-;;   `tab-bar-tab-post-open-functions'. STAMP-ONLY. `frames.el' put a
-;;   combined stamper/reconciler there; only the reconciler was the
+;;   `tab-bar-tab-post-open-functions'. STAMP-ONLY. The frames model put
+;;   a combined stamper/reconciler there; only the reconciler was the
 ;;   defect (its frame-wide, group-unaware `seq-find' closed the very
 ;;   tab it had just stamped, because at post-open time the new tab's
 ;;   window still shows the PREVIOUS buffer). Duplicate prevention moved
@@ -39,21 +38,20 @@
 ;; Root parameter: `edmacs-workspace-root', not `edmacs-root'
 ;; ============================================================================
 ;; `edmacs-workspaces-root-parameter' is a NEW tab parameter, deliberately
-;; not `frames.el''s own `edmacs-root'. The two models coexist on the same
-;; tab objects under different keys with no interaction: nothing here
-;; reads or writes `edmacs-root', and nothing in `frames.el' reads or
-;; writes `edmacs-workspace-root'. This module is the sole writer and
-;; reader of its own parameter. Reusing `edmacs-root' would have made
-;; this phase and `frames.el' contend over one parameter while both
-;; models are live, and would have turned phase 5's eventual deletion of
-;; `frames.el''s copy into an unpick instead of a clean removal.
+;; not the frames model's own `edmacs-root'. This module is the sole
+;; writer and reader of it. The two keys coexisted on the same tab
+;; objects, with no interaction, for as long as both models were live;
+;; reusing `edmacs-root' would have made them contend over one parameter
+;; instead, and would have turned the frames model's removal into an
+;; unpick. `edmacs-root' now survives only as legacy DATA in the desktop
+;; migration below.
 ;;
 ;; ============================================================================
 ;; Desktop migration: the frames model's saved framesets
 ;; ============================================================================
 ;; `edmacs-workspaces-migrate-frameset' converts a frameset written by
 ;; the frames model -- one frame state per repo, each carrying
-;; `edmacs-repo', with tabs carrying `frames.el''s `edmacs-root' -- into
+;; `edmacs-repo', with tabs carrying the model's `edmacs-root' -- into
 ;; a single frame state whose tabs carry native `group' parameters and
 ;; this module's `edmacs-workspace-root'. It is a pure data transform:
 ;; it reads nothing from the live session, mutates neither its input nor
@@ -74,9 +72,9 @@
 ;;   `bufferlo-buffer-list' out of `ws' once desktop has stripped
 ;;   `wc-bl'/`wc-bbl'.
 ;;
-;; It reads `edmacs-root'/`edmacs-repo' as legacy DATA only and calls
-;; nothing in `frames.el', so phase 5's deletion of that file stays a
-;; removal.
+;; It reads `edmacs-root'/`edmacs-repo' as legacy DATA only: they are the
+;; shape a desktop file written by the old model has on disk, not
+;; anything this session still writes.
 ;;
 ;; ============================================================================
 ;; The symlink question (roadmap dependency)
@@ -121,10 +119,10 @@
 ;; `vc-git-known-other-working-trees' on every call: no cache, no
 ;; `file-notify' watch, no polling or debounce timer. (The one
 ;; `run-at-time' in this file is the stray sweep's zero-delay hop off
-;; the redisplay path, which schedules nothing recurring.) This is the direct replacement for the
-;; ~225-line discovery layer (`frames.el' worktree cache + debounced
-;; file-notify watch) the roadmap's scope decision deletes outright in a
-;; later phase -- it must not grow one of its own. `vc-git-known-other-working-trees'
+;; the redisplay path, which schedules nothing recurring.) This replaced
+;; the ~310-line discovery layer -- a worktree cache plus a debounced
+;; `file-notify' watch -- the roadmap deleted outright, and it must not
+;; grow one of its own. `vc-git-known-other-working-trees'
 ;; excludes ROOT's own worktree by design and returns paths through
 ;; `abbreviate-file-name' (so a result can read "~/..."), which is why
 ;; ROOT's own truename is consed back on and every result is passed
@@ -148,7 +146,7 @@
 (require 'project)
 (require 'vc-git)
 
-;; Autoloaded; `frames.el' calls it the same way.
+;; Autoloaded; called as a plain function from `--open-tab'.
 (declare-function dired "dired" (dirname &optional switches))
 
 ;; Available via init.el's `load-module' order, not a `require' -- see
@@ -237,7 +235,8 @@ to nil."
 
 (defconst edmacs-workspaces-root-parameter 'edmacs-workspace-root
   "The tab parameter this module owns for a tab's worktree root.
-See this file's Commentary for why it is not `frames.el''s `edmacs-root'.")
+See this file's Commentary for why it is not the frames model's
+`edmacs-root'.")
 
 (defun edmacs-workspaces-tab-root (tab)
   "Return TAB's worktree root, or nil.
@@ -246,12 +245,10 @@ A pure read: no derivation, no side effect."
 
 (defun edmacs-workspaces-set-tab-root (root &optional frame)
   "Stamp ROOT onto FRAME's (default selected) current tab. Returns ROOT.
-Mirrors `frames.el''s own `edmacs-frames--stamp-current-tab-root': `setf'
-rather than `push', so re-stamping REPLACES the entry -- a push-shadowed
-stale cons would survive `tab-bar--tab''s copy-other-parameters
-forwarding on every later tab switch and outlive the session via
-desktop, exactly the hazard that function's own commentary warns about
-for `edmacs-root'."
+`setf' rather than `push', so re-stamping REPLACES the entry: a
+push-shadowed stale cons would survive `tab-bar--tab''s
+copy-other-parameters forwarding on every later tab switch and outlive
+the session via desktop."
   (when-let* ((tab (tab-bar--current-tab-find nil frame)))
     (setf (alist-get edmacs-workspaces-root-parameter (cdr tab)) root)
     root))
@@ -369,7 +366,7 @@ assignment (`tab-bar-new-tab-group' is t, so TAB already inherited the
 originating tab's group, and re-assigning here would re-enter
 `tab-bar-tab-post-change-group-functions').
 
-The guard is `frames.el''s, for the same reason: `tab-bar-tabs' also
+The guard is the frames model's, for the same reason: `tab-bar-tabs' also
 runs this hook for a default tab it auto-creates on a frame it never
 names, and stamping that one from the selected frame's buffer would
 reintroduce cross-frame derivation."
@@ -382,6 +379,103 @@ reintroduce cross-frame derivation."
       (setf (alist-get edmacs-workspaces-root-parameter (cdr tab)) root))))
 
 (add-hook 'tab-bar-tab-post-open-functions #'edmacs-workspaces--on-tab-post-open)
+
+;; ============================================================================
+;; Frames this config may drive
+;; ============================================================================
+;; One frame is the model, but the frame LIST is not one long: a daemon
+;; also holds its initial tty placeholder, and a completion popup is a
+;; child frame. Both must be declined rather than driven.
+
+(defun edmacs-workspaces--graphical-session-p ()
+  "Return non-nil when this session holds at least one graphical frame."
+  (seq-some (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
+            (frame-list)))
+
+(defun edmacs-workspaces-frame-usable-p (frame)
+  "Return non-nil when FRAME is a frame this config may drive.
+Excludes a child frame (a corfu-style popup, which must stay the size
+its owner gave it) and the daemon's initial tty placeholder -- the frame
+`desktop--check-dont-save' already refuses to save, which is never on
+screen and must never be given a sidebar or have its tabs stamped.
+
+A non-graphical frame counts as usable only while the session has no
+graphical frame at all. That disjunct is what keeps the tty-only batch
+test harnesses (and a genuinely terminal-only Emacs) working, while
+still excluding the placeholder on the real daemon, which always holds a
+GUI boot frame."
+  (and (frame-live-p frame)
+       (not (frame-parameter frame 'parent-frame))
+       (not (and (daemonp) (frame-initial-p frame)))
+       (or (display-graphic-p frame)
+           (not (edmacs-workspaces--graphical-session-p)))))
+
+;; ============================================================================
+;; Stamping a restored frame's tabs
+;; ============================================================================
+
+(defun edmacs-workspaces--frame-content-window (frame)
+  "Return the window FRAME shows its content in.
+Whichever window carries windows.el's `edmacs-main' parameter, else
+FRAME's first non-side window, else its selected window. Never
+`selected-window': the caller can be acting on a frame that is not the
+selected one, which is exactly the mix-up a stamped identity rules out."
+  (or (seq-find (lambda (w) (window-parameter w 'edmacs-main))
+                (window-list frame 'no-minibuf))
+      (seq-find (lambda (w) (not (window-parameter w 'window-side)))
+                (window-list frame 'no-minibuf))
+      (frame-selected-window frame)))
+
+(defun edmacs-workspaces--derive-frame-root (frame)
+  "Return the worktree root FRAME's content window shows, normalized, or nil.
+The frame-explicit counterpart of `edmacs-workspaces--derive-root',
+which cannot take a frame because its caller is a core hook that
+supplies none."
+  (when-let* ((window (edmacs-workspaces--frame-content-window frame))
+              (buffer (and (window-live-p window) (window-buffer window)))
+              (dir (buffer-local-value 'default-directory buffer)))
+    (file-name-as-directory (file-truename dir))))
+
+(defun edmacs-workspaces-stamp-frame-tabs (frame)
+  "Stamp every tab of FRAME that carries no worktree root yet.
+A background tab has no live window to derive from, so each unstamped
+tab is selected in turn, stamped, and the original selection restored.
+This is the restore path for a tab that reaches the session without a
+root -- one saved by a desktop written before the stamp existed, or one
+whose window state named a directory no derivation had seen. Without it
+such a tab reads nil forever and the sidebar can file it under no
+project at all."
+  (when (frame-live-p frame)
+    (with-selected-frame frame
+      (let ((original (tab-bar--current-tab-index))
+            (count (length (tab-bar-tabs frame))))
+        (unwind-protect
+            (dotimes (i count)
+              (unless (edmacs-workspaces-tab-root (nth i (tab-bar-tabs frame)))
+                (tab-bar-select-tab (1+ i))
+                (when-let* ((root (edmacs-workspaces--derive-frame-root frame)))
+                  (edmacs-workspaces-set-tab-root root frame))))
+          (when (and original (< original count))
+            (tab-bar-select-tab (1+ original))))))))
+
+;; ============================================================================
+;; The current tab's identity
+;; ============================================================================
+
+(defun edmacs-workspaces-current-tab-root (&optional frame)
+  "Return the worktree root stamped on FRAME's current tab, or nil.
+FRAME defaults to the selected frame."
+  (edmacs-workspaces-tab-root
+   (edmacs-workspaces--current-tab (or frame (selected-frame)))))
+
+(defun edmacs-workspaces-current-group (&optional frame)
+  "Return the project group name of FRAME's current tab, or nil.
+FRAME defaults to the selected frame. The group name is what
+`edmacs-workspaces-group-name' derives for the tab's worktree, so this
+is the active project's name -- nil on an ungrouped tab (the daemon's
+boot tab, or batch's own)."
+  (when-let* ((tab (edmacs-workspaces--current-tab (or frame (selected-frame)))))
+    (funcall tab-bar-tab-group-function tab)))
 
 ;; ============================================================================
 ;; Entry points -- open a project's group, open a worktree's tab
@@ -398,7 +492,7 @@ load-bearing:
   displayed buffer; without this binding the `dired' below is redirected
   into `display-buffer-in-tab', re-firing
   `tab-bar-tab-post-open-functions' before the original override has
-  cleared itself -- `frames.el''s documented `excessive-lisp-nesting'.
+  cleared itself -- the frames model's documented `excessive-lisp-nesting'.
 - `edmacs-workspaces-assign-group' runs LAST, because
   `tab-bar-change-tab-group' fires `tab-bar-move-tab-to-group', which
   reorders the tab list. Every earlier step therefore addresses the tab
@@ -597,11 +691,10 @@ or buffer work happens here directly -- only a zero-delay timer."
 ;; ============================================================================
 
 (defconst edmacs-workspaces--legacy-root-parameter 'edmacs-root
-  "`frames.el''s own per-tab worktree-root parameter.
-Read here as legacy DATA out of a saved frameset and never written --
-this module still neither reads nor writes it on a live tab. Keeping the
-name local to the migration is what keeps phase 5's deletion of
-`frames.el' a removal.")
+  "The retired frames model's own per-tab worktree-root parameter.
+Read here as legacy DATA out of a saved frameset and never written: no
+live tab in this session carries it. Keeping the name local to the
+migration is what kept the frames model's removal a removal.")
 
 (defun edmacs-workspaces--normalize-root (root)
   "Return ROOT normalized the way `edmacs-workspaces--open-tab' stamps one.
@@ -747,14 +840,14 @@ A pure data transform: FS is never mutated, no frame or tab object is
 touched, nothing is read from the live session, and the result is a
 fixed point -- migrating it again returns an `equal' frameset. That is
 what makes this safe to leave permanently in the daemon's boot path
-rather than gating it on a one-shot flag, which would re-fire for as
-long as `frames.el' keeps re-stamping `edmacs-root' onto live tabs.
+rather than gating it on a one-shot flag: it ensures rather than
+detects, so it cannot re-fire on its own output.
 
 Every frame state folds into the one `edmacs-workspaces--primary-state'
 picks: each other frame's tabs join it, its `current-tab' demoted to an
 ordinary tab carrying that frame's window state as its `ws'. Tabs gain
 the project `group' their frame's `edmacs-repo'/root implies and this
-module's `edmacs-workspace-root' in place of `frames.el''s `edmacs-root';
+module's `edmacs-workspace-root' in place of the old `edmacs-root';
 `edmacs-repo'/`edmacs-repo-missing' are dropped from the surviving
 frame, which now holds several projects and can no longer name one.
 
@@ -811,6 +904,95 @@ keep seeing exactly what it sees today."
           (setq params (append params (list (cons 'tabs tabs)))))
         (setf (frameset-states new-fs) (list (cons params (cdr primary))))
         new-fs))))
+
+;; ============================================================================
+;; Closing the last tab
+;; ============================================================================
+;; `tab-bar-close-last-tab-choice' is deliberately left at core's nil, so
+;; closing the sole tab signals instead of doing something. Under the
+;; macOS daemon deleting the last GUI frame drops Emacs out of the Dock;
+;; `edmacs-ns-close-frame' (sessions.el) is the sanctioned way out.
+
+;; ============================================================================
+;; Fullscreen -- every graphical frame opens fullscreen
+;; ============================================================================
+
+;; The load-bearing knob for "one Space per frame": with it nil the NS port
+;; fakes fullscreen by resizing the window inside the current Space instead.
+;; Already the default; pinned so the contract lives in source.
+(defvar ns-use-native-fullscreen)
+(when (eq system-type 'darwin)
+  (setq ns-use-native-fullscreen t))
+
+(defgroup edmacs-workspaces nil
+  "Projects as tab groups, worktrees as tabs."
+  :group 'convenience)
+
+(defcustom edmacs-workspaces-fullscreen 'fullboth
+  "The `fullscreen' frame parameter every new graphical frame is given.
+Nil disables the policy. `fullboth' is the portable value: the NS port
+maps it to native macOS fullscreen, the X11/PGTK ports to EWMH's
+`_NET_WM_STATE_FULLSCREEN'."
+  :type '(choice (const :tag "Disabled" nil)
+                 (const :tag "Fullscreen" fullboth)
+                 (const :tag "Maximized" maximized)
+                 (const :tag "Full width" fullwidth)
+                 (const :tag "Full height" fullheight))
+  :group 'edmacs-workspaces)
+
+(defun edmacs-workspaces--fullscreen-target (frame)
+  "Return the `fullscreen' value FRAME still needs, or nil.
+Nil when the policy is off, when FRAME already carries that value, or
+when FRAME is one this policy must not touch:
+
+  - a non-graphical frame -- the daemon's own tty placeholder and every
+    `emacsclient -t' frame, where `fullscreen' means nothing and is
+    mangled by frameset's tty shelving on the way into a desktop file.
+    This gate is also why the policy is a hook rather than an entry in
+    `default-frame-alist', which those frames read too.
+  - a child frame -- a completion popup (corfu's, which already binds
+    `after-make-frame-functions' to nil, but posframe-style packages
+    generally do not) is a frame by construction and must stay the size
+    its owner gave it."
+  (and edmacs-workspaces-fullscreen
+       (frame-live-p frame)
+       (display-graphic-p frame)
+       (not (frame-parameter frame 'parent-frame))
+       (not (eq (frame-parameter frame 'fullscreen) edmacs-workspaces-fullscreen))
+       edmacs-workspaces-fullscreen))
+
+(defun edmacs-workspaces-apply-fullscreen (frame)
+  "Put FRAME fullscreen per `edmacs-workspaces-fullscreen'.
+Deferred to a zero-delay timer that re-checks the target, for the same
+reason `edmacs-sessions--restore-pending-frameset' defers its own work
+\(sessions.el): a frame is not fully mapped while its own creation hook
+is still running, and the NS port drops a fullscreen toggle sent to an
+unmapped window. Never signals -- an error reaching a frameless
+daemon's top level exits it 255 (see core.el)."
+  (when (edmacs-workspaces--fullscreen-target frame)
+    (run-at-time
+     0 nil
+     (lambda ()
+       (condition-case err
+           (when-let* ((target (edmacs-workspaces--fullscreen-target frame)))
+             (set-frame-parameter frame 'fullscreen target))
+         (error
+          (display-warning 'edmacs-workspaces
+                           (format "could not fullscreen frame: %s" err)
+                           :warning)))))))
+
+(add-hook 'after-make-frame-functions #'edmacs-workspaces-apply-fullscreen)
+
+(defun edmacs-workspaces--apply-fullscreen-at-startup ()
+  "Apply the fullscreen policy to every already-live graphical frame.
+`after-make-frame-functions' never fires for a non-daemon Emacs's
+initial frame, which on a plain `emacs' start is the only frame there
+is; under the daemon this finds nothing and the hook above covers the
+boot frame instead."
+  (dolist (frame (frame-list))
+    (edmacs-workspaces-apply-fullscreen frame)))
+
+(add-hook 'emacs-startup-hook #'edmacs-workspaces--apply-fullscreen-at-startup)
 
 (provide 'workspaces)
 ;;; workspaces.el ends here

@@ -9,7 +9,7 @@
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
 ;;         -l modules/sidebar-buffers-test.el -f ert-run-tests-batch-and-exit
 ;;
-;; sidebar.el and frames.el are NOT loaded (mirroring sidebar-agents-test.el's
+;; sidebar.el and workspaces.el are NOT loaded (mirroring sidebar-agents-test.el's
 ;; own module-boundary convention); every function sidebar-buffers.el
 ;; calls into either is stubbed via `cl-letf' or a plain stand-in
 ;; `defun'. This suite covers the pure tree/rank/path machinery;
@@ -64,7 +64,7 @@ a real Emacs session) to enable this suite"))
     (edmacs-sidebar-buffers-test--add-magit-section-deps edmacs-sidebar-buffers-test--build-root)
 
     ;; sidebar-buffers.el's own forward `declare-function's for
-    ;; sidebar.el/frames.el/windows.el/bufferlo are byte-compile hygiene
+    ;; sidebar.el/workspaces.el/windows.el/bufferlo are byte-compile hygiene
     ;; only; real stand-ins are provided here so its top-level `add-hook'
     ;; calls have something real to touch, the same way
     ;; sidebar-agents-test.el pre-populates its own extension-point vars.

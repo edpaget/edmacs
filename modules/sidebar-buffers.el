@@ -51,9 +51,8 @@
 ;; ============================================================================
 ;; Forward declarations
 ;; ============================================================================
-;; Every one of these resolves at real init.el runtime (windows.el loads
-;; well before this module; frames.el loads right after it -- see
-;; init.el's own comment on this module's load line) -- declared for
+;; Every one of these resolves at real init.el runtime (windows.el and
+;; workspaces.el both load well before this module) -- declared for
 ;; byte-compile hygiene only, mirroring sidebar.el's and
 ;; sidebar-agents.el's own forward-ref blocks.
 
@@ -556,9 +555,9 @@ own TAB-NUMBER convention (like every other consumer of this hook) is
 TAB-NUMBER already names ROOT's own tab unambiguously (HAS-TAB is only
 ever non-nil when the caller resolved one), so TAB is read straight off
 `tab-bar-tabs' by that index -- no separate root/tab lookup, matching
-AC6's \"no module outside frames.el resolves a tab from a root except
-through workspaces.el\" (this reads the tab-bar's own tab LIST, not a
-root-keyed lookup at all)."
+the config's \"a tab is resolved from a root only through workspaces.el\"
+rule (this reads the tab-bar's own tab LIST, not a root-keyed lookup at
+all)."
   (when has-tab
     (edmacs-sidebar-buffers--ensure-cleared-this-pass)
     (let* ((tab (nth (1- tab-number) (tab-bar-tabs frame)))
@@ -618,8 +617,7 @@ this needs no root-keyed lookup at all."
 (default the selected frame), or nil when ROOT has no open tab.
 Routed entirely through workspaces.el -- `edmacs-workspaces-group-name'
 derives ROOT's own project group, `edmacs-workspaces-find-tab' the open
-tab in it -- the one tab/root lookup surface AC6 requires; frames.el's
-`edmacs-frames--tab-for-root' is gone. Needed here (unlike
+tab in it -- the config's one tab/root lookup surface. Needed here (unlike
 `--on-worktree-section'/`--select-tab-if-needed', which already have a
 TAB-NUMBER in hand) because RET/`[`/`]` resolve a row's tab long after
 render time, from nothing but the buffers-root section's own stable

@@ -11,7 +11,7 @@
 ;;
 ;; agents.el is loaded for real (plain elisp, no external deps) so tests
 ;; can construct real `edmacs-agent' structs and mutate the real table;
-;; frames.el and sidebar.el are NOT loaded (mirroring sidebar-test.el's
+;; sidebar.el is NOT loaded (mirroring sidebar-test.el's
 ;; own module-boundary convention) -- every function sidebar-agents.el
 ;; calls into either is stubbed via `cl-letf'.
 ;;
@@ -70,12 +70,12 @@ a real Emacs session) to enable this suite"))
 
     (edmacs-sidebar-agents-test--add-magit-section-deps edmacs-sidebar-agents-test--build-root)
 
-    ;; sidebar-agents.el's own forward `declare-function's for frames.el
-    ;; and sidebar.el are byte-compile hygiene only; real stand-ins are
-    ;; provided here so its top-level `(setq edmacs-sidebar-worktree-...)'
-    ;; and `add-hook'/`advice-add' calls have something real to touch,
-    ;; the same way sidebar-test.el pre-populates `tab-bar-tabs' rather
-    ;; than loading frames.el for real.
+    ;; sidebar-agents.el's own forward `declare-function's for sidebar.el
+    ;; are byte-compile hygiene only; real stand-ins are provided here so
+    ;; its top-level `(setq edmacs-sidebar-worktree-...)' and
+    ;; `add-hook'/`advice-add' calls have something real to touch, the
+    ;; same way sidebar-test.el pre-populates `tab-bar-tabs' rather than
+    ;; loading the real module.
     (defvar edmacs-sidebar-worktree-label-suffix-function #'ignore)
     (defvar edmacs-sidebar-worktree-section-functions nil)
     (defvar edmacs-sidebar-extra-section-functions nil)
@@ -788,9 +788,9 @@ whether or not `claude-term-registry.el' happens to be loaded first."
 
     (ert-deftest edmacs-sidebar-agents-test-header-line-counts-every-agent-regardless-of-frame ()
       "Since edmacs-tab-groups phase 3, the roll-up is global: an agent in
-a DIFFERENT project's worktree still counts, on a frame carrying no
-`edmacs-repo' parameter at all -- one frame now shows every project, so
-a roll-up scoped to one no longer matches what the sidebar displays."
+a DIFFERENT project's worktree still counts, on a frame naming no one
+project -- one frame now shows every project, so a roll-up scoped to one
+no longer matches what the sidebar displays."
       (edmacs-sidebar-agents-test--with-clean-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
@@ -800,8 +800,8 @@ a roll-up scoped to one no longer matches what the sidebar displays."
 
     (ert-deftest edmacs-sidebar-agents-test-agents-for-frame-ignores-frame-identity ()
       "`edmacs-sidebar-agents--agents-for-frame' returns every tracked
-agent for any FRAME argument, including nil -- it no longer reads the
-`edmacs-repo' frame parameter or calls `edmacs-worktrees-for-repo' at all."
+agent for any FRAME argument, including nil -- it reads neither the
+retired per-frame repo parameter nor any per-repo worktree list."
       (edmacs-sidebar-agents-test--with-clean-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))

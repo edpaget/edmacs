@@ -19,10 +19,10 @@
 ;; `edmacs-git-common-dir-repo-name' below factor out the string
 ;; derivation that sits on top of that lookup -- "the main worktree
 ;; root" and "the repo's bare directory name" -- for the same reason:
-;; `modules/sessions.el', `modules/claude-term-registry.el', and
-;; `modules/frames.el' all need it, and previously each carried its own
-;; copy of the same `file-name-nondirectory'/`directory-file-name'
-;; expression.
+;; `modules/workspaces.el', `modules/sidebar.el' and
+;; `modules/claude-term-registry.el' all need it, and previously each
+;; carried its own copy of the same
+;; `file-name-nondirectory'/`directory-file-name' expression.
 ;;
 ;; Loaded early by init.el's `load-module', before both consumers --
 ;; this codebase's modules share one obarray via plain sequential

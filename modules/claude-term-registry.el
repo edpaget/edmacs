@@ -288,8 +288,8 @@ touching `claude-term--read-session's body.")
 ;; The git-common-dir resolution itself (TRAMP-safe `process-file' call,
 ;; relative/remote path normalization, cached-miss memoization) AND the
 ;; repo-name-from-common-dir string derivation both live in
-;; `modules/git-common-dir.el', shared with `modules/sessions.el's and
-;; `modules/frames.el's own repo-name needs, rather than reimplemented
+;; `modules/git-common-dir.el', shared with `modules/workspaces.el's and
+;; `modules/sidebar.el's own repo-name needs, rather than reimplemented
 ;; here -- these consumers previously carried independent copies of the
 ;; same algorithm, which this factoring removes. That module loads
 ;; before this one (init.el's `load-module' order), so no `require' is

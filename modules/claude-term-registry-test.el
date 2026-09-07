@@ -30,7 +30,7 @@
 ;; `completing-read' and `read-string' are C subrs this file `cl-letf's;
 ;; without this guard each redirected subr makes Emacs build a native
 ;; trampoline via a synchronous compiler subprocess (~28s, almost entirely
-;; wall clock). See .claude/CLAUDE.md's Testing section and frames-test.el's
+;; wall clock). See .claude/CLAUDE.md's Testing section and windows-test.el's
 ;; precedent.
 (when (boundp 'native-comp-enable-subr-trampolines)
   (setq native-comp-enable-subr-trampolines nil))

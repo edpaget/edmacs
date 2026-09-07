@@ -14,15 +14,11 @@
 ;; `C-x' (which would depend on module load order). `SPC T' and `SPC p w'
 ;; are the no-delay path to the same commands.
 ;;
-;; A tab is scoped to one frame, and `modules/frames.el' now gives each
-;; repo exactly one frame -- checked upstream on 2026-09-01 against the two
-;; bugs an earlier design avoided frames over: manzaltu#197 is a bug in
-;; claude-code-ide.el's own terminal reflow filter, a package this config
-;; never loads, and ghostel#504 was closed as fixed. The constraint that
-;; remains is `window-adjust-process-window-size-smallest', which ghostel
-;; uses to size its PTY: never show one terminal buffer in two frames at
-;; once. Frame-per-repo never does that, so it satisfies the constraint by
-;; construction rather than by avoiding frames altogether.
+;; The session holds ONE graphical frame: a project is a tab-bar group
+;; and a worktree a tab inside it (`modules/workspaces.el'). That
+;; satisfies ghostel's `window-adjust-process-window-size-smallest'
+;; constraint -- never show one terminal buffer in two frames at once --
+;; by construction, there being only one frame to show it in.
 
 ;;; Code:
 
@@ -38,74 +34,38 @@
 (setq tab-bar-define-keys nil)
 
 ;; Available via init.el's `load-module' order, not a `require'.
-(declare-function edmacs-git-common-dir "git-common-dir")
 (declare-function edmacs-stack-sweep-stale-panes "windows")
-(declare-function edmacs-git-common-dir-repo-name "git-common-dir")
-(declare-function edmacs-frames-tab-in-own-repo-p "frames")
-(declare-function edmacs-frames--tab-root "frames")
-(declare-function edmacs-frames--repo-of "frames")
-(declare-function edmacs-frames--ensure-repo-tracking "frames")
-(declare-function edmacs-frames-frame-usable-p "frames")
-(declare-function edmacs-frames-stamp-frame-tabs "frames")
-(declare-function edmacs-frames-tab-root-live-p "frames")
 (declare-function edmacs-sidebar-show "sidebar")
-(declare-function edmacs-sidebar--window "sidebar")
-(declare-function edmacs-frames--frame-content-window "frames")
 (declare-function edmacs-workspaces-open-worktree "workspaces")
 (declare-function edmacs-workspaces-migrate-frameset "workspaces")
-
-(defun edmacs-sessions--tab-name-for-frame (frame)
-  "Name FRAME's current tab after its project/worktree, falling back sanely.
-Derives the project from FRAME's own content window's buffer -- via
-`edmacs-frames--frame-content-window' and `buffer-local-value', never
-plain `default-directory' or `current-buffer' -- so each tab's label
-reflects the worktree FRAME itself is showing, not whatever buffer
-happens to be ambiently current when tab-bar recomputes an unrenamed
-tab's name (it does this on every `tab-bar-tabs' read, not only at
-creation, and not necessarily with FRAME selected or its own window's
-buffer current). `with-selected-frame' alone would not fix this: it
-never makes FRAME's selected window's buffer current, only
-`default-directory' cares about current buffer, not window. When no
-project is found (e.g. a scratch tab), falls back to
-`tab-bar-tab-name-current' default behavior (buffer name of the
-selected window) -- itself still ambient, but that is core's own
-contract for the no-project case, not something this function chooses.
-
-Two worktrees of *different* repositories can share a directory
-basename (e.g. both named `feature-x', or two rdm worktrees named
-`roadmap-foundation' from two different rdm projects), which a bare
-basename would render as identical, ambiguous tab names. Disambiguate
-by prefixing the owning repository's own directory name, derived from
-`edmacs-git-common-dir' (shared by every worktree of one repo, so it
-names the repo rather than the worktree) -- except when that repo is
-already the one FRAME itself carries (`modules/frames.el's
-`edmacs-repo' parameter): the frame's own title already disambiguates
-it, so a tab inside it need only name its worktree. A tab whose repo is
-some *other* one -- a foreign-project scratch tab, which `frames.el's
-stray-visit relocator should make rare -- still gets the prefix."
-  (let* ((buffer (window-buffer (edmacs-frames--frame-content-window frame)))
-         (dir (buffer-local-value 'default-directory buffer)))
-    (if-let* ((proj (project-current nil dir))
-              (root (project-root proj)))
-        (let* ((base (file-name-nondirectory (directory-file-name root)))
-               (common (edmacs-git-common-dir root)))
-          (if (edmacs-frames-tab-in-own-repo-p common frame)
-              base
-            (let ((repo (and common (edmacs-git-common-dir-repo-name common))))
-              (if (and repo (not (string= repo base)))
-                  (format "%s/%s" repo base)
-                base))))
-      (tab-bar-tab-name-current))))
+(declare-function edmacs-workspaces-frame-usable-p "workspaces")
+(declare-function edmacs-workspaces-stamp-frame-tabs "workspaces")
+(declare-function edmacs-workspaces-current-tab-root "workspaces")
 
 (defun edmacs-sessions--tab-name ()
-  "`tab-bar-tab-name-function' entry point: name the selected frame's
-current tab. Emacs core calls this with zero arguments by its own fixed
-API -- `(selected-frame)' here is a forced read, not a default this
-function chose; see `edmacs-sessions--tab-name-for-frame' for the real,
-frame-explicit logic."
-  ;; ambient-reads: ok -- see the docstring above.
-  (edmacs-sessions--tab-name-for-frame (selected-frame)))
+  "`tab-bar-tab-name-function' entry point: name the current tab.
+Core calls this with zero arguments by its own fixed API, and re-runs it
+on every `tab-bar-tabs' read of an unrenamed tab rather than only at
+creation. The answer is the leaf directory name of the tab's OWN
+stamped worktree root (`edmacs-workspaces-current-tab-root'), a pure
+read of the tab -- so it is the same string no matter which buffer
+happens to be current when core asks, which the derived-from-the-window
+naming this replaced could not promise.
 
+Two worktrees of different repos can share a directory basename, and a
+bare leaf name renders both identically. They no longer need a repo
+prefix to be told apart: the tab-bar GROUP names the project, so the
+disambiguation lives one level up.
+
+An unstamped tab -- batch's own, the daemon's boot tab -- falls through
+to core's `tab-bar-tab-name-current'. A tab this config opens is
+renamed explicitly by `edmacs-workspaces--open-tab' immediately after
+creation, so the nameless moment before the post-open stamper runs is
+never the name that sticks."
+  ;; Core supplies no frame -- ambient-reads: ok
+  (if-let* ((root (edmacs-workspaces-current-tab-root)))
+      (file-name-nondirectory (directory-file-name root))
+    (tab-bar-tab-name-current)))
 (setq tab-bar-tab-name-function #'edmacs-sessions--tab-name)
 
 (tab-bar-mode 1)
@@ -162,19 +122,16 @@ frame-explicit logic."
 (dolist (param '(background-color foreground-color cursor-color mouse-color))
   (push (cons param :never) frameset-filter-alist))
 
-;; `edmacs-repo' (frames.el) already round-trips with the default
-;; pass-through action -- it is simply absent from this alist. Pinned
-;; explicitly, alongside the colour filters above, so the contract is
-;; visible in source rather than an accident of frameset.el's default.
-(push (cons 'edmacs-repo nil) frameset-filter-alist)
-
 ;; `edmacs-sidebar-collapsed' (sidebar.el) is a per-frame boolean, not a
-;; colour/geometry parameter -- it needs the same explicit pass-through
-;; pin as `edmacs-repo' above, not the colour filters' `:never'.
+;; colour/geometry parameter: it wants frameset.el's default pass-through,
+;; not the colour filters' `:never'. That default already applies to any
+;; parameter simply absent from this alist; pinned explicitly, alongside
+;; those filters, so the contract lives in source rather than being an
+;; accident of frameset.el's own default.
 (push (cons 'edmacs-sidebar-collapsed nil) frameset-filter-alist)
 
 ;; A restored frame lands on the current display instead of replaying the
-;; coordinates of whichever monitor it was saved on; frames.el's fullscreen
+;; coordinates of whichever monitor it was saved on; workspaces.el's fullscreen
 ;; policy then sizes it there. `width'/`height' need no filter of their own --
 ;; `frameset--restore-frame' already drops both (and `visibility') from the
 ;; config of any frame saved carrying a `fullscreen' parameter.
@@ -249,110 +206,10 @@ frameless."
 (add-hook 'desktop-after-read-hook #'edmacs-sessions--stash-frameset-for-daemon)
 
 ;; ----------------------------------------------------------------------------
-;; Multi-frame finish-up after `frameset-restore': `frameset-restore' (via
-;; `desktop-restore-frameset') only reuses/creates frames and replays their
-;; window/tab layout -- it knows nothing about `edmacs-repo', frame titles,
-;; or sidebars, all of which frames.el's own repo-frame opener would
-;; normally set up for a freshly opened repo frame. This walks every live frame afterward and
-;; back-fills each.
-
-(defun edmacs-sessions--frame-tab-roots (frame)
-  "Return the list of repos every tab in FRAME resolves to, or nil.
-Nil both when FRAME has no tabs and when any tab's root fails to
-resolve to a repo -- callers must not treat either case as \"every tab
-agrees\".
-
-`edmacs-frames--tab-root' is a pure read of the tab's own stamp and
-`tab-bar-tabs' is passed FRAME explicitly, so nothing here consults the
-global selection any more; the `with-selected-frame' wrapper is kept
-purely defensively, so a future callee that does still sees FRAME
-rather than whatever the caller happened to have selected."
-  (with-selected-frame frame
-    (let (roots)
-      (catch 'edmacs-sessions--unresolved
-        (dolist (tab (tab-bar-tabs frame))
-          (let* ((root (edmacs-frames--tab-root tab))
-                 (repo (and root (edmacs-frames--repo-of root))))
-            (unless repo (throw 'edmacs-sessions--unresolved nil))
-            (push repo roots)))
-        (nreverse roots)))))
-
-(defun edmacs-sessions--drop-dead-tab-roots (frame)
-  "Clear FRAME's tab stamps that point at a directory which is gone.
-A stamp is not self-validating: a tab restored from a desktop keeps
-pointing at whatever worktree it was saved on, and that worktree may
-since have been removed. `edmacs-git-common-dir' returns nil for a path
-that no longer exists, and `edmacs-sessions--frame-tab-roots' turns one
-unresolvable tab into nil for the whole frame -- so a single stale tab
-leaves `edmacs-repo' unset and drops the sidebar to its flat tab list
-with no worktrees in it at all. Clearing the dead stamp lets
-`edmacs-frames-stamp-frame-tabs', which runs straight after this,
-re-derive a live one from the tab's own window."
-  (when (frame-live-p frame)
-    (dolist (tab (tab-bar-tabs frame))
-      (let ((root (alist-get 'edmacs-root tab)))
-        (when (and root (not (edmacs-frames-tab-root-live-p root)))
-          (setf (alist-get 'edmacs-root tab nil t) nil))))))
-
-(defun edmacs-sessions--backfill-repo-param (frame)
-  "Set FRAME's `edmacs-repo' from its tabs when it has none yet.
-Only when every tab's own resolved repo agrees -- a frame with no tabs,
-or whose tabs point at different repos, is left alone rather than
-guessed at."
-  (unless (frame-parameter frame 'edmacs-repo)
-    (when-let* ((roots (edmacs-sessions--frame-tab-roots frame))
-                (first (car roots)))
-      (when (seq-every-p (lambda (r) (equal r first)) roots)
-        (set-frame-parameter frame 'edmacs-repo first)))))
-
-(defun edmacs-sessions--regenerate-frame-title (frame)
-  "Regenerate FRAME's title from its `edmacs-repo' parameter.
-`frameset-filter-alist' marks `name' `:never' (frameset.el's own
-`frame-internal-parameters' list), so a saved title is never restored
-and must be recomputed here, the same way frames.el's own repo-frame
-opener sets it on first creation. When COMMON's directory is gone, marks
-the frame `edmacs-repo-missing' and warns instead of erroring -- see AC3.
-
-Also re-derives the current tab's own label via
-`edmacs-sessions--tab-name-for-frame' -- never hardcoded to the bare
-repo label, which would be correct only for a tab on the repo's main
-worktree and would clobber any other worktree tab's disambiguating
-name -- so a tab named before this frame's `edmacs-repo' was backfilled
-(and thus still carrying a now-redundant prefix) gets relabeled
-consistently with every tab `frames.el' creates going forward.
-
-Passing FRAME straight into `--tab-name-for-frame' is what makes this
-safe under a multi-frame restore, where this runs once per restored
-frame from the same timer callback: that function derives the project
-from FRAME's own content window's buffer explicitly, never from
-plain `default-directory' or `current-buffer' (a buffer-local variable
-that tracks *current buffer*, not the selected window) -- so it no
-longer matters that `current-buffer' stays whatever the timer's own
-buffer happened to be while control moves between frames (reproduced
-live via a real multi-frame daemon restart before this fix: every
-frame after the first got its current tab renamed from some OTHER
-frame's, or the timer's ambient, project instead of its own). The
-earlier fix here made FRAME's own window buffer current with a nested
-`with-current-buffer' before calling the then-ambient
-`edmacs-sessions--tab-name'; threading FRAME straight through removes
-the need for that entirely -- `with-selected-frame' alone was never
-enough for it (see the trap this file's own Commentary and
-`edmacs-sessions--tab-name-for-frame' document): it does not make
-FRAME's selected window's buffer current."
-  (when-let* ((common (frame-parameter frame 'edmacs-repo)))
-    (if (file-directory-p common)
-        (progn
-          (set-frame-parameter frame 'edmacs-repo-missing nil)
-          (set-frame-parameter frame 'name (edmacs-git-common-dir-repo-name common))
-          (with-selected-frame frame
-            (ignore-errors (tab-bar-rename-tab (edmacs-sessions--tab-name-for-frame frame)))))
-      (set-frame-parameter frame 'edmacs-repo-missing t)
-      (set-frame-parameter
-       frame 'name (format "MISSING: %s" (edmacs-git-common-dir-repo-name common)))
-      (display-warning
-       'edmacs-sessions
-       (format "Restored frame's repo no longer exists: %s" common)
-       :warning))))
+;; Finish-up after `frameset-restore': it (via `desktop-restore-frameset')
+;; only reuses the frame and replays its window/tab layout. It stamps no
+;; worktree root on a tab that reaches the session without one, and shows
+;; no sidebar; both are back-filled below.
 
 (defun edmacs-sessions--ensure-sidebar (frame)
   "Show or refresh FRAME's sidebar.
@@ -366,66 +223,38 @@ guarantee, so this is defense-in-depth either way.
 Must not skip the call just because `edmacs-sidebar--window' already
 finds one: `edmacs-sidebar--on-desktop-read' (sidebar.el) shows every
 frame's sidebar synchronously at desktop-read time, before this
-function's caller has regenerated FRAME's real title from its
-`edmacs-repo' -- reproduced live, that race first-names the sidebar
-buffer after the daemon's generic default frame name, and only
-`edmacs-sidebar-show' (via `edmacs-sidebar--ensure-buffer''s rename-if-
-stale check) ever revisits it to fix that."
+function's caller has stamped the restored tabs -- reproduced live,
+that race first-names the sidebar buffer after the daemon's generic
+default frame name, and only `edmacs-sidebar-show' (via
+`edmacs-sidebar--ensure-buffer''s rename-if-stale check) ever revisits
+it to fix that."
   (edmacs-sidebar-show frame))
 
-(defun edmacs-sessions--ensure-worktree-tracking (frame)
-  "Warm FRAME's repo worktree cache and arm its file-notify watch.
-`edmacs-frames--worktrees-cache' and `-watches' (frames.el) both start
-empty on every daemon boot, so a restored repo frame's sidebar would
-otherwise render an empty worktree list and never see a live update
-until something else happens to touch that repo -- unlike a frame
-frames.el's own repo-frame opener creates itself, which always warms
-both as part of opening. Skipped for a missing repo
-(`edmacs-repo-missing'): nothing in `edmacs-frames--ensure-repo-tracking'
-needs to shell out for a directory that no longer exists."
-  (when-let* ((common (frame-parameter frame 'edmacs-repo)))
-    (when (file-directory-p common)
-      (edmacs-frames--ensure-repo-tracking common))))
-
-(defun edmacs-sessions--restorable-frame-p (frame)
-  "Return non-nil when the restore walk may claim FRAME as a repo frame.
-Delegates to `edmacs-frames-frame-usable-p', which mirrors
-`desktop--check-dont-save''s own exclusion of the daemon's initial tty
-placeholder: that frame is in `frame-list' but in no desktop save, is
-never on screen, and must never be stamped with an `edmacs-repo',
-renamed after a repo, given a sidebar side window, or made to hold a
-`file-notify' worktree watch for a repo it can never display."
-  (and (frame-live-p frame)
-       (edmacs-frames-frame-usable-p frame)))
-
 (defun edmacs-sessions--finish-frameset-restore (&optional frame)
-  "Back-fill tab roots, `edmacs-repo', title, tracking and sidebar on FRAME.
+  "Stamp FRAME's tab roots and show its sidebar after a frameset restore.
 FRAME defaults to `edmacs-sessions--gui-frame'; with neither, this does
 nothing at all rather than guessing at a frame. Runs synchronously right
 after `desktop-restore-frameset', by which point `frameset-restore''s
 own `:reuse-frames t' (the default) has already reused the saved frame --
-this never itself creates or deletes one. A FRAME
-`edmacs-sessions--restorable-frame-p' rejects (the daemon's initial tty
+this never itself creates or deletes one. A frame
+`edmacs-workspaces-frame-usable-p' rejects (the daemon's initial tty
 placeholder, most of all) is declined outright.
 
-Single-frame, not a walk over `frame-list': the desktop frameset the
-daemon replays is migrated to exactly one state before it is stashed
-(see `edmacs-sessions--stash-frameset-for-daemon'), so the session has
-one GUI frame holding every project as a tab group. Passing the frame in
-explicitly also means the frame the restore actually landed on is the
-one finished, rather than whichever one a scan happens to find first.
+Single-frame, not a walk over `frame-list': the frameset a daemon
+replays is migrated to exactly one state before it is stashed (see
+`edmacs-sessions--stash-frameset-for-daemon'), so the session has one
+GUI frame holding every project as a tab group.
 
-Tab roots are stamped FIRST: `edmacs-sessions--backfill-repo-param'
-resolves a frame's repo from its tabs' own roots, which for a tab
-restored from a desktop file written before the stamp was mandatory are
-only there once `edmacs-frames-stamp-frame-tabs' has written them."
+A tab whose stamped worktree directory is gone deliberately KEEPS its
+stamp. Under the frames model a dead stamp was cleared so a live root
+could be re-derived for the frame's one repo; under groups the stamp IS
+the tab's identity, and clearing it would drop the tab out of its
+project's tree instead of rendering it with
+`edmacs-sidebar-missing-worktree-face'."
   (when-let* ((frame (or frame (edmacs-sessions--gui-frame))))
-    (when (edmacs-sessions--restorable-frame-p frame)
-      (edmacs-sessions--drop-dead-tab-roots frame)
-      (edmacs-frames-stamp-frame-tabs frame)
-      (edmacs-sessions--backfill-repo-param frame)
-      (edmacs-sessions--regenerate-frame-title frame)
-      (edmacs-sessions--ensure-worktree-tracking frame)
+    (when (and (frame-live-p frame)
+               (edmacs-workspaces-frame-usable-p frame))
+      (edmacs-workspaces-stamp-frame-tabs frame)
       (edmacs-sessions--ensure-sidebar frame))))
 
 (defun edmacs-sessions--gui-frame-parameters ()
@@ -437,6 +266,8 @@ daemon this config actually runs under needs naming; elsewhere the
 ambient default already yields a graphical frame."
   (and (eq system-type 'darwin) '((window-system . ns))))
 
+;; The sole `make-frame' call site in this config: a project is a tab
+;; group, never a frame, so nothing else ever asks for one.
 (defun edmacs-sessions--make-gui-frame ()
   "Create a graphical frame, returning nil rather than signalling on failure.
 Never let an error out: under a frameless daemon one reaching top level
@@ -461,12 +292,20 @@ frame, so the first match is the answer rather than an arbitrary pick."
 
 (defun edmacs-sessions--ensure-gui-frame ()
   "Create a graphical frame when the session has none left.
-The net under every path that can end with a frameless daemon -- most
-of all `frameset-restore', which deletes the very frame it was handed
-when the frameset it replays has no state to reassign to it. A daemon
-with no GUI frame saves an empty frameset, which poisons its own next
-boot (see `edmacs-sessions--frameset-has-frames-p'), so restoring one
-here is what keeps a single bad restore from becoming permanent."
+This is the config's ONE frame-creation path, and it cannot be removed.
+Two mechanisms make a frameless daemon self-perpetuating rather than
+merely inconvenient:
+
+  - a daemon holding only its initial tty frame writes an EMPTY frameset,
+    because `desktop--check-dont-save' excludes that frame -- overwriting
+    a good desktop with one that restores nothing (the full account is on
+    `edmacs-sessions--frameset-has-frames-p'; it is not restated here).
+  - `frameset-restore' with `:reuse-frames t' deletes the very frame it
+    was handed whenever the frameset it replays has no state to reassign
+    to it.
+
+So a single bad restore would otherwise become permanent. Restoring a
+frame here is what breaks that loop."
   (unless (edmacs-sessions--gui-frame)
     (edmacs-sessions--make-gui-frame)))
 

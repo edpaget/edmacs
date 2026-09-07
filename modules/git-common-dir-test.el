@@ -4,8 +4,8 @@
 ;; Pure-function coverage: the memoization contract of
 ;; `edmacs-git-common-dir' and the string derivations built on top of a
 ;; resolved git-common-dir (`edmacs-git-common-dir-main-worktree',
-;; `edmacs-git-common-dir-repo-name') that `modules/sessions.el',
-;; `modules/claude-term-registry.el', and `modules/frames.el' all share.
+;; `edmacs-git-common-dir-repo-name') that `modules/sidebar.el',
+;; `modules/claude-term-registry.el' and `modules/workspaces.el' share.
 ;; No real git process is exercised here; `edmacs-git-common-dir-1' is
 ;; stubbed or the cache is pre-populated directly.
 ;;

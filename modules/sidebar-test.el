@@ -344,11 +344,10 @@ non-selected frame, making that frame's rows non-selectable via RET."
     ;; workspaces.el itself is not loaded by this suite's invocation (see
     ;; this file's own Commentary) -- `sidebar.el' only ever calls it
     ;; through its own `declare-function' forward references. Rather than
-    ;; `cl-letf'-stubbing each one per test (as the old `edmacs-frames--tab-
-    ;; root'/`--tab-for-root' pair was), the small, pure lookups sidebar.el's
+    ;; `cl-letf'-stubbing each one per test, the small, pure lookups sidebar.el's
     ;; grouped-tree render/activate path calls -- `edmacs-workspaces-groups',
     ;; `-tabs-in-group', `-tab-root', `-set-tab-root', `-find-tab',
-    ;; `-select-tab' -- are defined here for REAL, exact copies of
+    ;; `-select-tab', `-current-group' -- are defined here for REAL, exact copies of
     ;; workspaces.el's own logic against real `tab-bar.el' primitives
     ;; (already loaded transitively via sidebar.el's own `(require 'tab-
     ;; bar)'). This means an ordinary test that never assigns a tab-bar
@@ -381,6 +380,11 @@ non-selected frame, making that frame's rows non-selectable via RET."
 
     (defun edmacs-workspaces-tab-root (tab)
       (alist-get edmacs-sidebar-test--root-parameter tab))
+
+    (defun edmacs-workspaces-current-group (&optional frame)
+      (when-let* ((tab (assq 'current-tab
+                             (frame-parameter (or frame (selected-frame)) 'tabs))))
+        (funcall tab-bar-tab-group-function tab)))
 
     (defun edmacs-workspaces-set-tab-root (root &optional frame)
       (when-let* ((tab (tab-bar--current-tab-find nil frame)))
@@ -730,8 +734,8 @@ real EIEIO `magit-section' instance always has its `value' slot bound
     ;; worktree-aware render/activate/close surface
     ;; ==========================================================================
     ;; `edmacs-sidebar-test-redraw-and-hooks-never-shell-out' above (the
-    ;; phase-2 regression test) only ever drives a repo-LESS frame -- it
-    ;; never sets `edmacs-repo', so it exercises `edmacs-sidebar--redraw-tabs'
+    ;; phase-2 regression test) only ever drives an UNGROUPED frame -- it
+    ;; opens no project group, so it exercises `edmacs-sidebar--redraw-tabs'
     ;; but never `edmacs-sidebar--redraw-worktrees', `edmacs-sidebar-activate'
     ;; on an already-open row, or `edmacs-sidebar-close-worktree'. This is
     ;; the direct regression test for THIS phase's own no-shellout claim,
@@ -1118,11 +1122,9 @@ non-graphical batch frame."
       "Extended for phase 8: also drives every new command (J/K/gr/rename/
 help) through the same guard. This phase adds no new *expected*
 subprocess call -- the guard's expectation stays 'zero', not 'zero
-except N'. The two real, already-documented exceptions elsewhere in
-this codebase (`edmacs-frames--worktrees-refresh' [phase 3] and
-sidebar-agents.el's tmux-jump `start-process' calls [phase 6]) are
-never reached by this loop: it never creates a frame or fires an
-agent jump. This automated guard is the primary, CI-equivalent check;
+except N'. The one real, already-documented exception elsewhere in this
+codebase (sidebar-agents.el's tmux-jump `start-process' calls [phase 6])
+is never reached by this loop: it never fires an agent jump. This automated guard is the primary, CI-equivalent check;
 the phase body's own 'one minute of `profiler-start' over mixed tab
 switching/buffer opening/agent state changes' is a documented,
 non-automated interactive checklist pass for the implementer/reviewer
@@ -1186,31 +1188,8 @@ not only under its own dedicated AC4 tests."
             (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
 
     ;; ==========================================================================
-    ;; Frameset restore (edmacs-sidebar roadmap phase 4) -- AC2/AC3
+    ;; Frameset restore
     ;; ==========================================================================
-    ;; sessions.el is not loaded here (see this file's own module-boundary
-    ;; convention); the `edmacs-repo-missing' frame parameter it sets is
-    ;; poked directly.
-
-    (ert-deftest edmacs-sidebar-test-redraw-shows-missing-repo-warning-row ()
-      (unwind-protect
-          (progn
-            (set-frame-parameter (selected-frame) 'edmacs-repo-missing t)
-            (edmacs-sidebar-show (selected-frame))
-            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-              (should (string-match-p "repo missing" (buffer-string)))))
-        (set-frame-parameter (selected-frame) 'edmacs-repo-missing nil)
-        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
-
-    (ert-deftest edmacs-sidebar-test-redraw-omits-missing-repo-warning-row-when-unset ()
-      (unwind-protect
-          (progn
-            (set-frame-parameter (selected-frame) 'edmacs-repo-missing nil)
-            (edmacs-sidebar-show (selected-frame))
-            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-              (should-not (string-match-p "repo missing" (buffer-string)))))
-        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
-
     (ert-deftest edmacs-sidebar-test-show-replaces-scratch-in-existing-side-window ()
       "Regression: a restored tab whose window-state names a dead sidebar
 buffer leaves its side window showing some substitute buffer (a
@@ -2118,15 +2097,17 @@ nil rather than dedicating and keeping it."
           (when (window-live-p stub-window) (delete-window stub-window))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
-    (ert-deftest edmacs-sidebar-test-header-line-shows-repo-name ()
-      (unwind-protect
-          (progn
-            (set-frame-parameter (selected-frame) 'edmacs-repo "/repo/.git")
-            (edmacs-sidebar-show (selected-frame))
-            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-              (should (equal "repo" (substring-no-properties header-line-format)))))
-        (set-frame-parameter (selected-frame) 'edmacs-repo nil)
-        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
+    (ert-deftest edmacs-sidebar-test-header-line-shows-active-project-group ()
+      "The header line names the ACTIVE PROJECT -- the current tab's own
+tab-bar group, which is the repo name -- not a per-frame repo parameter."
+      (edmacs-sidebar-test--with-project
+          '(("repo" "/repo/main/" "/repo/main/.git" ("/repo/main/" "main")))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-show (selected-frame))
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                (should (equal "repo" (substring-no-properties header-line-format)))))
+          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
     (ert-deftest edmacs-sidebar-test-header-line-shows-frame-name-when-repo-less ()
       (let ((frame (selected-frame))
@@ -2747,8 +2728,8 @@ Step-1 data-shape fix."
     (ert-deftest edmacs-sidebar-test-window-start-survives-redraw-through-shifted-content ()
       "Window-start, scrolled onto one worktree child row while point sits
 on a later one, is restored to that same row (by section identity, not
-the stale raw integer) after a redraw that inserts a missing-repo
-warning above every row -- shifting each row's buffer position down.
+the stale raw integer) after a redraw that inserts an extra line into an
+EARLIER row -- shifting every later row's buffer position down.
 `edmacs-sidebar--restore-positions' first tries `magit-section-equal' on
 the old raw integer, which -- after the shift -- now lands on the wrong
 row entirely, so a correct restore has to fall through to its
@@ -2775,15 +2756,17 @@ silently keeping a wrong-looking-but-live window-start."
                 (should (equal (oref (magit-current-section) value)
                                 (cons "repoP" "/repoP__worktrees/roadmap-6/")))
                 (set-window-point window (point)))
-              ;; The warning row inserted ahead of the tree shifts every
-              ;; row's buffer position down, so the old raw `window-start'
-              ;; integer no longer names roadmap-2's row.
-              (set-frame-parameter (selected-frame) 'edmacs-repo-missing t)
-              (edmacs-sidebar--redraw (selected-frame))
+              ;; An extra line inside roadmap-0's own row shifts every row
+              ;; below it down, so the old raw `window-start' integer no
+              ;; longer names roadmap-2's row.
+              (let ((edmacs-sidebar-worktree-section-functions
+                     (list (lambda (root &rest _)
+                             (when (string-suffix-p "roadmap-0/" root)
+                               (insert "    shifted\n"))))))
+                (edmacs-sidebar--redraw (selected-frame)))
               (with-selected-window window
                 (should (equal (oref (magit-section-at (window-start)) value)
                                (cons "repoP" "/repoP__worktrees/roadmap-2/")))))
-          (set-frame-parameter (selected-frame) 'edmacs-repo-missing nil)
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
     ;; ==========================================================================

@@ -200,8 +200,11 @@ unless this function guards against it first."
     ;; hop off the redisplay path schedules nothing recurring, and is
     ;; not the polling/debounce machinery this assertion exists to keep
     ;; out.
-    (dolist (forbidden '("file-notify-add-watch" "file-notify-rm-watch"
-                         "run-with-timer" "run-with-idle-timer"))
+    ;; Spelled in pieces: `-no-worktree-cache-watch-or-timer-anywhere'
+    ;; below scans every file under `modules/', this one included.
+    (dolist (forbidden (list (concat "file-notify" "-add-watch")
+                             (concat "file-notify" "-rm-watch")
+                             "run-with-timer" "run-with-idle-timer"))
       (should-not (string-match-p (regexp-quote forbidden) source)))
     (should-not (string-match-p "(defvar [^\n]*cache" source))))
 
@@ -438,7 +441,7 @@ own payload -- and the hook's membership is asserted separately by
           (should (= (length runs) (length (delete-dups (copy-sequence runs))))))))))
 
 ;; ============================================================================
-;; AC4/AC5 -- the call sites and hook slots frames.el no longer owns
+;; The call sites and hook slots this module owns
 ;; ============================================================================
 
 (ert-deftest edmacs-workspaces-test-entry-points-are-bound ()
@@ -446,16 +449,15 @@ own payload -- and the hook's membership is asserted separately by
   (should (commandp 'edmacs-workspaces-open-worktree)))
 
 (ert-deftest edmacs-workspaces-test-no-frames-open-call-sites ()
-  "AC4's call-site grep, as an assertion.
-`frames.el' itself is excluded (its own definitions and Commentary are
-allowed to survive); every other non-test source must be clean."
+  "The call-site grep, as an assertion: nothing opens a repo FRAME."
   (dolist (file '("init.el" "modules/core.el" "modules/sessions.el"
                   "modules/sidebar.el" "modules/sidebar-agents.el"
                   "modules/workspaces.el"))
     (with-temp-buffer
       (insert-file-contents (edmacs-workspaces-test--repo-file file))
       (goto-char (point-min))
-      (should-not (search-forward "edmacs-frames-open" nil t))))
+      (should-not (search-forward
+                   (concat edmacs-workspaces-test--retired-prefix "open") nil t))))
   ;; ...and the two chords/entry points name the new commands.
   (with-temp-buffer
     (insert-file-contents (edmacs-workspaces-test--repo-file "modules/core.el"))
@@ -470,24 +472,24 @@ allowed to survive); every other non-test source must be clean."
       (should (string-match-p
                (regexp-quote "\"p\" '(edmacs-workspaces-open-worktree") source)))))
 
-(ert-deftest edmacs-workspaces-test-frames-hooks-are-detached ()
-  "AC5, at the source level: frames.el installs none of the three hooks.
-The running-config half of this AC is a `STARTUP_CHECK_EVAL' assertion
-through `scripts/startup-check.sh' -- under `-Q --batch' frames.el's
-`add-hook' forms would never run at all, so an ERT-only version would
-pass vacuously."
+(ert-deftest edmacs-workspaces-test-owns-the-tab-and-window-hooks ()
+  "This module owns the two hooks the frames model used to share with it:
+the post-open stamper and the stray-visit sweep. The frames model's own
+post-select root repair has no counterpart here -- a tab reaching the
+session unstamped is repaired once, by `stamp-frame-tabs' at restore
+time, not on every tab switch."
+  (should (memq #'edmacs-workspaces--on-tab-post-open tab-bar-tab-post-open-functions))
+  (should (memq #'edmacs-workspaces--on-window-buffer-change
+                window-buffer-change-functions))
   (let ((source (with-temp-buffer
-                  (insert-file-contents (edmacs-workspaces-test--repo-file "modules/frames.el"))
+                  (insert-file-contents
+                   (edmacs-workspaces-test--repo-file "modules/workspaces.el"))
                   (buffer-string))))
-    (dolist (form '("(add-hook 'tab-bar-tab-post-open-functions"
-                    "(add-hook 'tab-bar-tab-post-select-functions"
-                    "(add-hook 'window-buffer-change-functions"))
-      (should-not (string-match-p (regexp-quote form) source)))
-    ;; The teardown/fullscreen hooks are deliberately untouched.
-    (dolist (form '("(add-hook 'delete-frame-functions"
-                    "(add-hook 'after-make-frame-functions"
-                    "(add-hook 'emacs-startup-hook"))
-      (should (string-match-p (regexp-quote form) source)))))
+    (should-not (string-match-p
+                 (regexp-quote "(add-hook 'tab-bar-tab-post-select-functions")
+                 source))
+    (should-not (string-match-p
+                 (regexp-quote "(add-hook 'delete-frame-functions") source))))
 
 ;; ============================================================================
 ;; AC6 -- a tab opened through the new entry point stays open
@@ -764,7 +766,7 @@ worktree must be left alone, not dragged onto it."
 ;; `~/.config/emacs/.cache/desktop/.emacs.desktop' as it stood before this
 ;; roadmap: two frame states, each carrying an `edmacs-repo' frame
 ;; parameter and a `tabs' list whose single `current-tab' carries
-;; `frames.el''s legacy `edmacs-root', with a window state holding the
+;; the frames model's legacy `edmacs-root', with a window state holding the
 ;; sidebar side window and bufferlo's own `bufferlo-buffer-list' entry.
 ;; It is a sanitized literal, never the real file: the real one's
 ;; `environment' parameter dumps the whole shell environment, tokens
@@ -861,7 +863,7 @@ them in place for every later test in the process."
 (ert-deftest edmacs-workspaces-test-migrate-frames-model-fixture ()
   "AC2: the real desktop's shape converts with no project or worktree lost.
 Every tab keeps its worktree, gains its project group, and swaps
-`frames.el''s `edmacs-root' for this module's own parameter -- a
+the legacy `edmacs-root' for this module's own parameter -- a
 migration that reshaped the frames but left the old name in place would
 restore tabs the new model cannot read at all."
   (edmacs-workspaces-test--with-stub-git
@@ -996,9 +998,9 @@ ungrouped tab rather than losing that frame's whole layout."
 
 (ert-deftest edmacs-workspaces-test-migrate-frameset-is-idempotent ()
   "Running it twice is a no-op the second time. It ensures rather than
-detects: `edmacs-frames-stamp-frame-tabs' still re-adds `edmacs-root' to
-live tabs until phase 5, so a \"has edmacs-root\" detector would re-fire
-on every boot."
+detects: a \"has edmacs-root\" detector would have to be right about
+every legacy desktop file ever written, where ensuring is right by
+construction."
   (edmacs-workspaces-test--with-stub-git
     (let ((fixture (edmacs-workspaces-test--frames-model-fixture)))
       (should (equal (edmacs-workspaces-migrate-frameset fixture)
@@ -1064,6 +1066,487 @@ would duplicate it."
                   (edmacs-workspaces-migrate-frameset fs))))
       (should (equal (alist-get edmacs-workspaces-root-parameter (cdr (car tabs)))
                      (file-name-as-directory (file-truename "/w/edmacs")))))))
+
+;; ============================================================================
+;; Frame eligibility -- edmacs-workspaces-frame-usable-p
+;; ============================================================================
+;; Fake frames are plain symbols; `frame-list', `frame-live-p' and
+;; `frame-parameter' are stubbed to treat them as an alist of parameters,
+;; so no real frame is ever created here. `daemonp' reports non-nil
+;; throughout, so the daemon-placeholder exclusion is the shape actually
+;; exercised rather than short-circuited.
+
+(defvar edmacs-workspaces-test--frames nil
+  "Alist of (FRAME-SYMBOL . PARAMS) the faked frame primitives read.")
+
+(defun edmacs-workspaces-test--fake-param (frame key default)
+  "Return FRAME's fake KEY parameter, or DEFAULT when it carries none.
+A nil FRAME means the selected frame, matching every real frame
+primitive's own optional-FRAME convention."
+  (let ((params (cdr (assq (or frame (selected-frame))
+                           edmacs-workspaces-test--frames))))
+    (if (assq key params) (alist-get key params) default)))
+
+(defmacro edmacs-workspaces-test--with-fake-frames (alist &rest body)
+  "Run BODY with frame-scanning primitives faked from ALIST.
+ALIST is a list of (FRAME-SYMBOL . PARAMS-ALIST); beyond the parameters
+under test, `graphic' drives `display-graphic-p' (default t) and
+`initial' drives `frame-initial-p' (default nil)."
+  (declare (indent 1))
+  `(let ((edmacs-workspaces-test--frames ,alist))
+     (cl-letf (((symbol-function 'frame-list)
+                (lambda () (mapcar #'car edmacs-workspaces-test--frames)))
+               ((symbol-function 'frame-live-p)
+                (lambda (f) (assq f edmacs-workspaces-test--frames)))
+               ((symbol-function 'display-graphic-p)
+                (lambda (&optional f) (edmacs-workspaces-test--fake-param f 'graphic t)))
+               ((symbol-function 'frame-initial-p)
+                (lambda (f) (edmacs-workspaces-test--fake-param f 'initial nil)))
+               ((symbol-function 'daemonp) (lambda (&rest _) t))
+               ((symbol-function 'frame-parameter)
+                (lambda (f param) (edmacs-workspaces-test--fake-param f param nil))))
+       ,@body)))
+
+(ert-deftest edmacs-workspaces-test-frame-usable-p-excludes-daemon-placeholder ()
+  "The daemon's initial tty frame is never usable while a GUI frame exists.
+That is the frame `desktop--check-dont-save' already refuses to save and
+that nothing can ever be displayed on."
+  (edmacs-workspaces-test--with-fake-frames
+      '((gui . ((graphic . t)))
+        (f1 . ((graphic . nil) (initial . t))))
+    (should (edmacs-workspaces-frame-usable-p 'gui))
+    (should-not (edmacs-workspaces-frame-usable-p 'f1))))
+
+(ert-deftest edmacs-workspaces-test-frame-usable-p-excludes-child-frame ()
+  "A corfu-style popup is a frame by construction, never one to drive."
+  (edmacs-workspaces-test--with-fake-frames
+      '((gui . ((graphic . t)))
+        (popup . ((graphic . t) (parent-frame . gui))))
+    (should-not (edmacs-workspaces-frame-usable-p 'popup))))
+
+(ert-deftest edmacs-workspaces-test-frame-usable-p-allows-tty-in-a-tty-only-session ()
+  "With no graphical frame anywhere, a tty frame is still usable.
+The disjunct that keeps this repo's own tty-only batch harnesses (and a
+genuinely terminal-only Emacs) working."
+  (edmacs-workspaces-test--with-fake-frames
+      '((tty-a . ((graphic . nil)))
+        (tty-b . ((graphic . nil) (initial . t))))
+    (should (edmacs-workspaces-frame-usable-p 'tty-a))
+    ;; The daemon's own placeholder stays excluded even here.
+    (should-not (edmacs-workspaces-frame-usable-p 'tty-b))))
+
+;; ============================================================================
+;; edmacs-workspaces-stamp-frame-tabs -- the restore-side stamper
+;; ============================================================================
+
+(ert-deftest edmacs-workspaces-test-tab-root-stored-property-wins ()
+  (let ((tab '(tab (edmacs-workspace-root . "/stored/root/"))))
+    (should (equal (edmacs-workspaces-tab-root tab) "/stored/root/"))))
+
+(ert-deftest edmacs-workspaces-test-tab-root-is-a-pure-read ()
+  "An unstamped tab reads nil -- no derivation, and nothing cached onto it."
+  (let ((tab (list 'current-tab (cons 'ws '((min-height . 4) (leaf))))))
+    (cl-letf (((symbol-function 'window-buffer)
+               (lambda (&rest _) (error "a tab root is never derived here"))))
+      (should-not (edmacs-workspaces-tab-root tab)))
+    (should-not (assq 'edmacs-workspace-root (cdr tab)))))
+
+(ert-deftest edmacs-workspaces-test-stamp-frame-tabs-stamps-only-an-unstamped-tab ()
+  "The restore-walk entry point: stamp a tab with no root, leave a
+stamped one strictly alone (never re-derive over a stored answer)."
+  (let* ((frame (selected-frame))
+         (saved (frame-parameter frame 'tabs))
+         (bare (list 'current-tab))
+         (stamped (list 'current-tab (cons 'edmacs-workspace-root "/kept/"))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'edmacs-workspaces--derive-frame-root)
+                   (lambda (_frame) "/derived/")))
+          (set-frame-parameter frame 'tabs (list bare))
+          (edmacs-workspaces-stamp-frame-tabs frame)
+          (should (equal (alist-get 'edmacs-workspace-root (cdr bare)) "/derived/"))
+          (set-frame-parameter frame 'tabs (list stamped))
+          (edmacs-workspaces-stamp-frame-tabs frame)
+          (should (equal (alist-get 'edmacs-workspace-root (cdr stamped)) "/kept/")))
+      (set-frame-parameter frame 'tabs saved))))
+
+(ert-deftest edmacs-workspaces-test-stamp-frame-tabs-replaces-rather-than-shadows ()
+  "Stamping must REPLACE the root parameter, not `push' a second cons in
+front of it: `tab-bar--tab' copies every unrecognized tab parameter
+forward on each switch, so a shadowed stale entry would be duplicated
+into the desktop file forever."
+  (let* ((frame (selected-frame))
+         (saved (frame-parameter frame 'tabs))
+         (tab (list 'current-tab (cons 'edmacs-workspace-root "/old/"))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter frame 'tabs (list tab))
+          (edmacs-workspaces-set-tab-root "/new/" frame)
+          (should (equal (alist-get 'edmacs-workspace-root (cdr tab)) "/new/"))
+          (should (= 1 (seq-count (lambda (e) (eq (car-safe e) 'edmacs-workspace-root))
+                                  (cdr tab)))))
+      (set-frame-parameter frame 'tabs saved))))
+
+(ert-deftest edmacs-workspaces-test-current-tab-root-and-group ()
+  "The two public current-tab accessors read the tab, never a buffer."
+  (let* ((frame (selected-frame))
+         (saved (frame-parameter frame 'tabs))
+         (tab (list 'current-tab
+                    (cons 'edmacs-workspace-root "/repo/wt/")
+                    (cons 'group "repo"))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter frame 'tabs (list tab))
+          (should (equal (edmacs-workspaces-current-tab-root frame) "/repo/wt/"))
+          (should (equal (edmacs-workspaces-current-group frame) "repo"))
+          (set-frame-parameter frame 'tabs (list (list 'current-tab)))
+          (should-not (edmacs-workspaces-current-tab-root frame))
+          (should-not (edmacs-workspaces-current-group frame)))
+      (set-frame-parameter frame 'tabs saved))))
+
+(ert-deftest edmacs-workspaces-test-root-survives-frameset-tab-filter ()
+  "The desktop half of \"every tab is stamped\": `frameset-filter-tabs'
+strips only the `wc' family on save, so a background tab's own
+`edmacs-workspace-root' (and its `ws') round-trip through the desktop
+file and need no re-derivation on restore."
+  (let* ((tabs (list (list 'tab
+                           (cons 'name "wt")
+                           (cons 'group "repo")
+                           (cons 'edmacs-workspace-root "/wt/")
+                           (cons 'ws '((min-height . 4) (leaf)))
+                           (cons 'wc 'unprintable)
+                           (cons 'wc-point 1)
+                           (cons 'wc-bl nil))))
+         (saved (car (frameset-filter-tabs tabs nil nil t))))
+    (should (equal (alist-get 'edmacs-workspace-root saved) "/wt/"))
+    (should (equal (alist-get 'group saved) "repo"))
+    (should (alist-get 'ws saved))
+    (should-not (assq 'wc saved))
+    (should-not (assq 'wc-point saved))
+    (should-not (assq 'wc-bl saved))))
+
+;; ============================================================================
+;; edmacs-workspaces--read-worktree -- the interactive prompt's own plumbing
+;; ============================================================================
+;; `edmacs-workspaces-open-worktree's other tests call it as a plain
+;; function with an explicit DIR, bypassing its `(interactive (list
+;; (edmacs-workspaces--read-worktree current-prefix-arg)))' spec -- and
+;; `--read-worktree' itself -- entirely.
+
+(ert-deftest edmacs-workspaces-test-read-worktree-prefix-skips-candidate-lookup ()
+  "A PREFIX arg falls straight to `read-directory-name', never enumerating
+worktrees (which would shell out) at all."
+  (cl-letf (((symbol-function 'edmacs-workspaces-worktrees)
+             (lambda (&rest _) (error "should not enumerate under a prefix arg")))
+            ((symbol-function 'read-directory-name)
+             (lambda (&rest _) "/picked/")))
+    (should (equal (edmacs-workspaces--read-worktree t) "/picked/"))))
+
+(ert-deftest edmacs-workspaces-test-read-worktree-offers-the-tabs-own-worktrees ()
+  "No PREFIX: the candidate list is the CURRENT TAB's own root's worktrees,
+not a set derived from whatever buffer happens to be current."
+  (let* ((frame (selected-frame))
+         (saved (frame-parameter frame 'tabs))
+         (tab (list 'current-tab (cons 'edmacs-workspace-root "/repo/wt/"))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter frame 'tabs (list tab))
+          (cl-letf (((symbol-function 'edmacs-workspaces-worktrees)
+                     (lambda (base)
+                       (should (equal base "/repo/wt/"))
+                       '("/wt-a/" "/wt-b/")))
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _)
+                       (should (equal collection '("/wt-a/" "/wt-b/")))
+                       "/wt-a/")))
+            (should (equal (edmacs-workspaces--read-worktree nil) "/wt-a/"))))
+      (set-frame-parameter frame 'tabs saved))))
+
+;; ============================================================================
+;; Fullscreen policy
+;; ============================================================================
+;; Still no real frame: `display-graphic-p' joins the faked primitives, and
+;; the deferring `run-at-time' is stubbed so the timer body can be run
+;; synchronously and inspected.
+
+(defmacro edmacs-workspaces-test--with-fullscreen-frames (alist &rest body)
+  "Run BODY over fake frames ALIST with `display-graphic-p' faked too.
+A fake frame counts as graphical when its params carry a non-nil
+`graphic' entry, so the policy's own `display-graphic-p' gate is
+exercised without ever opening a GUI frame."
+  (declare (indent 1))
+  `(edmacs-workspaces-test--with-fake-frames ,alist
+     (cl-letf (((symbol-function 'display-graphic-p)
+                (lambda (&optional f) (frame-parameter f 'graphic))))
+       ,@body)))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-target-for-plain-graphical-frame ()
+  (let ((edmacs-workspaces-fullscreen 'fullboth))
+    (edmacs-workspaces-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (should (eq (edmacs-workspaces--fullscreen-target 'fa) 'fullboth)))))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-target-nil-when-policy-disabled ()
+  (let ((edmacs-workspaces-fullscreen nil))
+    (edmacs-workspaces-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (should-not (edmacs-workspaces--fullscreen-target 'fa)))))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-target-nil-for-tty-frame ()
+  "The daemon's own tty placeholder and every `emacsclient -t' frame:
+`fullscreen' means nothing there and is mangled by frameset's tty
+shelving on the way into a desktop file. This gate is the reason the
+policy is a hook rather than an entry in `default-frame-alist', which
+those frames read too."
+  (let ((edmacs-workspaces-fullscreen 'fullboth))
+    (edmacs-workspaces-test--with-fullscreen-frames '((f1 . ((graphic . nil))))
+      (should-not (edmacs-workspaces--fullscreen-target 'f1)))))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-policy-is-not-in-default-frame-alist ()
+  "Pins the decision the test above documents: no `fullscreen' entry may
+be added to `default-frame-alist', or the tty frames would inherit it."
+  (should-not (assq 'fullscreen default-frame-alist)))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-target-nil-for-child-frame ()
+  "A corfu/posframe-style completion popup is a graphical frame by
+construction and must keep the size its owner gave it."
+  (let ((edmacs-workspaces-fullscreen 'fullboth))
+    (edmacs-workspaces-test--with-fullscreen-frames
+        '((fa . ((graphic . t)))
+          (popup . ((graphic . t) (parent-frame . fa))))
+      (should-not (edmacs-workspaces--fullscreen-target 'popup)))))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-target-nil-when-already-there ()
+  (let ((edmacs-workspaces-fullscreen 'fullboth))
+    (edmacs-workspaces-test--with-fullscreen-frames
+        '((fa . ((graphic . t) (fullscreen . fullboth))))
+      (should-not (edmacs-workspaces--fullscreen-target 'fa)))
+    ;; A frame at some OTHER fullscreen value still needs correcting.
+    (edmacs-workspaces-test--with-fullscreen-frames
+        '((fa . ((graphic . t) (fullscreen . maximized))))
+      (should (eq (edmacs-workspaces--fullscreen-target 'fa) 'fullboth)))))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-target-nil-for-dead-frame ()
+  (let ((edmacs-workspaces-fullscreen 'fullboth))
+    (edmacs-workspaces-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (should-not (edmacs-workspaces--fullscreen-target 'gone)))))
+
+(ert-deftest edmacs-workspaces-test-apply-fullscreen-defers-then-sets ()
+  "Nothing is set inside the creation hook itself -- a frame is not fully
+mapped there, and the NS port drops a fullscreen toggle sent to an
+unmapped window -- only from the zero-delay timer."
+  (let ((edmacs-workspaces-fullscreen 'fullboth)
+        (deferred nil) (set-calls nil))
+    (edmacs-workspaces-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_secs _repeat fn &rest _) (setq deferred fn) nil))
+                ((symbol-function 'set-frame-parameter)
+                 (lambda (f param value) (push (list f param value) set-calls))))
+        (edmacs-workspaces-apply-fullscreen 'fa)
+        (should deferred)
+        (should-not set-calls)
+        (funcall deferred)
+        (should (equal set-calls '((fa fullscreen fullboth))))))))
+
+(ert-deftest edmacs-workspaces-test-apply-fullscreen-schedules-nothing-when-ineligible ()
+  (let ((edmacs-workspaces-fullscreen 'fullboth)
+        (scheduled 0))
+    (edmacs-workspaces-test--with-fullscreen-frames
+        '((f1 . ((graphic . nil)))
+          (fa . ((graphic . t) (fullscreen . fullboth))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (&rest _) (setq scheduled (1+ scheduled)) nil)))
+        (edmacs-workspaces-apply-fullscreen 'f1)
+        (edmacs-workspaces-apply-fullscreen 'fa)
+        (should (= scheduled 0))))))
+
+(ert-deftest edmacs-workspaces-test-apply-fullscreen-rechecks-target-in-timer ()
+  "The frame can be deleted -- or reach the target by another route --
+between the creation hook and the timer, so the timer body re-checks
+instead of setting a parameter on a frame that no longer qualifies."
+  (let ((calls 0) (deferred nil) (set-calls nil))
+    (cl-letf (((symbol-function 'edmacs-workspaces--fullscreen-target)
+               (lambda (_frame) (setq calls (1+ calls)) (and (= calls 1) 'fullboth)))
+              ((symbol-function 'run-at-time)
+               (lambda (_secs _repeat fn &rest _) (setq deferred fn) nil))
+              ((symbol-function 'set-frame-parameter)
+               (lambda (&rest args) (push args set-calls))))
+      (edmacs-workspaces-apply-fullscreen 'fa)
+      (funcall deferred)
+      (should (= calls 2))
+      (should-not set-calls))))
+
+(ert-deftest edmacs-workspaces-test-apply-fullscreen-warns-instead-of-signalling ()
+  "An error out of the timer body would reach a frameless daemon's top
+level, which exits Emacs 255 (see core.el); it is warned about instead."
+  (let ((edmacs-workspaces-fullscreen 'fullboth)
+        (deferred nil) (warnings nil))
+    (edmacs-workspaces-test--with-fullscreen-frames '((fa . ((graphic . t))))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_secs _repeat fn &rest _) (setq deferred fn) nil))
+                ((symbol-function 'set-frame-parameter)
+                 (lambda (&rest _) (error "NS refused the toggle")))
+                ((symbol-function 'display-warning)
+                 (lambda (&rest args) (push args warnings))))
+        (edmacs-workspaces-apply-fullscreen 'fa)
+        (funcall deferred)
+        (should (= 1 (length warnings)))
+        (should (eq (car (car warnings)) 'edmacs-workspaces))))))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-startup-covers-every-live-frame ()
+  "`after-make-frame-functions' never fires for a non-daemon Emacs's own
+initial frame -- the only frame a plain `emacs' start has -- so the
+policy is applied from `emacs-startup-hook' as well."
+  (let ((applied nil))
+    (edmacs-workspaces-test--with-fullscreen-frames
+        '((fa . ((graphic . t))) (fb . ((graphic . t))))
+      (cl-letf (((symbol-function 'edmacs-workspaces-apply-fullscreen)
+                 (lambda (frame) (push frame applied))))
+        (edmacs-workspaces--apply-fullscreen-at-startup)
+        (should (equal (nreverse applied) '(fa fb)))))))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-is-wired-to-both-hooks ()
+  "Membership only, never position: the policy moved from a module that
+loaded LAST to one that loads early, which flips its `add-hook' order
+relative to sessions.el's own entries. Both defer via `run-at-time 0',
+so order is not the contract -- presence is."
+  (should (memq #'edmacs-workspaces-apply-fullscreen after-make-frame-functions))
+  (should (memq #'edmacs-workspaces--apply-fullscreen-at-startup emacs-startup-hook)))
+
+(ert-deftest edmacs-workspaces-test-fullscreen-symbols-renamed ()
+  "The policy carries `edmacs-workspaces-' names now: the old ones would
+trip this phase's own no-references-to-the-retired-module gate."
+  (dolist (suffix '("fullscreen" "apply-fullscreen" "-fullscreen-target"))
+    (let ((sym (intern (concat edmacs-workspaces-test--retired-prefix suffix))))
+      (should-not (boundp sym))
+      (should-not (fboundp sym)))))
+
+;; ============================================================================
+;; The frames model is gone
+;; ============================================================================
+
+(defconst edmacs-workspaces-test--retired-prefix (concat "edmacs-" "frames-")
+  "The retired module's symbol prefix, spelled in two pieces.
+This file enforces \"that prefix appears nowhere under `modules/'\", tests
+included -- so it must not contain the literal itself.")
+
+(defconst edmacs-workspaces-test--retired-worktrees-fn
+  (concat "edmacs-" "worktrees-for-repo")
+  "The retired per-repo worktree enumerator's name, spelled in two pieces.")
+
+(defun edmacs-workspaces-test--module-files (&optional include-tests)
+  "Return every `.el' under `modules/', test files excluded unless asked."
+  (seq-filter
+   (lambda (f) (or include-tests (not (string-match-p "-test\\.el\\'" f))))
+   (directory-files (edmacs-workspaces-test--repo-file "modules") t "\\.el\\'")))
+
+(ert-deftest edmacs-workspaces-test-retired-modules-are-gone ()
+  "The frames model's module and its two suites are retired, not merely
+unused."
+  (dolist (f '("modules/frames.el" "modules/frames-test.el"
+               "modules/frames-live-test.el"))
+    (should-not (file-exists-p (edmacs-workspaces-test--repo-file f))))
+  (should-not (featurep 'frames))
+  (with-temp-buffer
+    (insert-file-contents (edmacs-workspaces-test--repo-file "init.el"))
+    (goto-char (point-min))
+    (should-not (search-forward "(load-module \"frames\")" nil t))))
+
+(ert-deftest edmacs-workspaces-test-no-frames-module-references ()
+  "This phase's gate, and it has to be a grep: every cross-module caller
+of the retired module was `declare-function'd, which is what suppresses
+the byte-compiler's \"not known to be defined\" warning. Test files are
+included -- the AC's own grep excludes nothing."
+  (let ((pattern (concat edmacs-workspaces-test--retired-prefix "\\|"
+                         edmacs-workspaces-test--retired-worktrees-fn)))
+    (dolist (file (edmacs-workspaces-test--module-files t))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let ((text (buffer-string)))
+          (should (equal (list file nil)
+                         (list file (string-match-p pattern text)))))))))
+
+(ert-deftest edmacs-workspaces-test-no-live-repo-frame-parameter ()
+  "`edmacs-repo' survives in exactly one place: the legacy-desktop
+migration in this module, which reads it as DATA off a saved frameset.
+Every other non-test module must be clean of it."
+  (dolist (file (edmacs-workspaces-test--module-files))
+    (unless (equal (file-name-nondirectory file) "workspaces.el")
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let ((text (buffer-string)))
+          (should (equal (list file nil)
+                         (list file (string-match-p "edmacs-repo" text))))))))
+  ;; In workspaces.el every occurrence outside a `;;' comment line sits at
+  ;; or after the migration's own `--legacy-root-parameter' defconst. The
+  ;; Commentary discusses the legacy parameter well above that point, and
+  ;; is meant to.
+  (with-temp-buffer
+    (insert-file-contents (edmacs-workspaces-test--repo-file "modules/workspaces.el"))
+    (goto-char (point-min))
+    (let ((migration (save-excursion
+                       (search-forward "edmacs-workspaces--legacy-root-parameter" nil t))))
+      (should migration)
+      (while (search-forward "edmacs-repo" nil t)
+        (unless (save-excursion
+                  (goto-char (line-beginning-position))
+                  (looking-at-p "[ \t]*;"))
+          (should (> (point) migration)))))))
+
+(ert-deftest edmacs-workspaces-test-single-make-frame-call-site ()
+  "No code path creates a frame because a project was opened: the config
+has exactly one `make-frame' call site left, sessions.el's GUI-frame
+maker, and the frames model's own two frame factories are gone."
+  (dolist (suffix '("-make-frame" "-spare-frame"))
+    (should-not (fboundp (intern (concat edmacs-workspaces-test--retired-prefix
+                                         suffix)))))
+  (let ((total 0))
+    (dolist (file (append (edmacs-workspaces-test--module-files)
+                          (list (edmacs-workspaces-test--repo-file "init.el")
+                                (edmacs-workspaces-test--repo-file "early-init.el"))))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (while (search-forward "(make-frame" nil t)
+          (setq total (1+ total)))))
+    (should (= total 1))))
+
+(ert-deftest edmacs-workspaces-test-no-worktree-cache-watch-or-timer-anywhere ()
+  "The discovery layer is gone from the whole config, not just this
+module. The two surviving timers are named explicitly, so this fails on
+a NEW one rather than on either of them: sidebar.el's mouse-resize width
+debounce and sidebar-agents.el's elapsed-time repeater -- neither a
+worktree cache or watch."
+  (dolist (file (edmacs-workspaces-test--module-files t))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((text (buffer-string)))
+        ;; The API calls that would install one, not the bare word: a
+        ;; module's Commentary legitimately discusses their deliberate
+        ;; absence, exactly as `-source-has-no-cache-watch-or-timer' notes.
+        ;; Spelled in pieces because this file is itself in the scan.
+        (dolist (forbidden (list (concat "file-notify" "-add-watch")
+                                 (concat "file-notify" "-rm-watch")
+                                 (concat "worktrees" "-cache")
+                                 (concat "worktree" "-watches")
+                                 (concat "worktree" "-refresh-timers")))
+          (should (equal (list file forbidden nil)
+                         (list file forbidden
+                               (string-match-p (regexp-quote forbidden) text))))))))
+  (should-not (fboundp (intern edmacs-workspaces-test--retired-worktrees-fn))))
+
+(ert-deftest edmacs-workspaces-test-open-paths-create-no-frame ()
+  "Neither entry point makes a frame: a project is a tab group inside the
+frame that is already there."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (let ((root (edmacs-workspaces-test--dir "repoA"))
+            (wt (edmacs-workspaces-test--dir "repoA__worktrees/wt-a"))
+            (frames (length (frame-list))))
+        ;; `make-frame' is a plain Lisp `defun' in frame.el, so this
+        ;; `cl-letf' builds no native-comp subr trampoline.
+        (cl-letf (((symbol-function 'make-frame)
+                   (lambda (&rest _) (ert-fail "make-frame called"))))
+          (edmacs-workspaces-open-project root)
+          (edmacs-workspaces-open-worktree wt))
+        (should (= frames (length (frame-list))))))))
 
 (provide 'workspaces-test)
 ;;; workspaces-test.el ends here
