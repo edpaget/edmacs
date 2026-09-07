@@ -840,10 +840,16 @@ spec; `edmacs-sidebar-activate' is the matching activation dispatch."
     (dolist (group (edmacs-workspaces-groups frame))
       (let* ((tabs (edmacs-workspaces-tabs-in-group group frame))
              (all-tabs (tab-bar-tabs frame))
-             (main-tab (seq-find (lambda (tab)
-                                    (let ((root (edmacs-workspaces-tab-root tab)))
-                                      (and root (eq (edmacs-workspaces-classify-root root) 'main))))
-                                  tabs))
+             ;; Classify each tab ONCE. `edmacs-workspaces-classify-root'
+             ;; truenames twice per call, and this runs for every frame on
+             ;; every tab select; the child loop below reads the kind back
+             ;; out rather than asking again.
+             (kinds (mapcar (lambda (tab)
+                              (cons tab
+                                    (when-let* ((root (edmacs-workspaces-tab-root tab)))
+                                      (edmacs-workspaces-classify-root root))))
+                            tabs))
+             (main-tab (car (seq-find (lambda (cell) (eq (cdr cell) 'main)) kinds)))
              (main-root (or (and main-tab (edmacs-workspaces-tab-root main-tab))
                             (edmacs-sidebar--derive-main-root tabs)))
              (child-tabs (if main-tab (remq main-tab tabs) tabs))
@@ -855,7 +861,7 @@ spec; `edmacs-sidebar-activate' is the matching activation dispatch."
                                 main-root (and main-tab t) frame main-tab-number)
            (dolist (tab child-tabs)
              (let* ((root (edmacs-workspaces-tab-root tab))
-                    (kind (edmacs-workspaces-classify-root root))
+                    (kind (alist-get tab kinds nil nil #'eq))
                     (tab-number (1+ (tab-bar--tab-index tab all-tabs frame))))
                (edmacs-sidebar--insert-worktree-child-row
                 group root kind tab frame

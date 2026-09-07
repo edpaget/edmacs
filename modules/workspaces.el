@@ -1,137 +1,38 @@
 ;;; workspaces.el --- Project/worktree identity on tab-bar groups -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; The new identity model for roadmap `edmacs-tab-groups': a project is a
-;; tab-bar GROUP, a worktree is a TAB inside that group. This module is
-;; the one place that answers "what project is this?" and "what worktree
-;; is this?", and -- since phase 2 -- the one that drives `SPC p p'
-;; (`edmacs-workspaces-open-project') and `SPC T p' / `C-x t p'
-;; (`edmacs-workspaces-open-worktree'). It replaced a frame-per-repo
-;; model (the retired `frames.el') outright rather than absorbing it,
-;; which is why nothing below carries that model's parameters.
+;; Project/worktree identity for this config: a project is a `tab-bar'
+;; GROUP, a worktree is a TAB in that group, and there is one frame. This
+;; module is the only place that answers "what project is this?" and
+;; "what worktree is this?" -- every other module asks it rather than
+;; deriving an answer of its own.
 ;;
-;; ============================================================================
-;; Load-time side effects: two hooks
-;; ============================================================================
-;; This module installs exactly two hook entries at load time:
+;; It installs two hooks: a stamp-only entry on
+;; `tab-bar-tab-post-open-functions', so a tab made by any route (`SPC T n',
+;; a package's `other-tab-prefix') still carries a root; and a
+;; `window-buffer-change-functions' entry that schedules the stray-visit
+;; sweep off the redisplay path.
 ;;
-;; - `edmacs-workspaces--on-tab-post-open' on
-;;   `tab-bar-tab-post-open-functions'. STAMP-ONLY. The frames model put
-;;   a combined stamper/reconciler there; only the reconciler was the
-;;   defect (its frame-wide, group-unaware `seq-find' closed the very
-;;   tab it had just stamped, because at post-open time the new tab's
-;;   window still shows the PREVIOUS buffer). Duplicate prevention moved
-;;   into the two entry points, which are group-scoped. What remains
-;;   here is the stamper, without which a tab from a plain
-;;   `M-x tab-bar-new-tab' / `SPC T n' would carry no root at all.
-;; - `edmacs-workspaces--on-window-buffer-change' on
-;;   `window-buffer-change-functions', which defers a TAB-scoped
-;;   stray-visit sweep onto a zero-delay timer.
-;;
-;; The tab-bar and desktop facts this module builds on (group needs no
-;; explicit stamping to survive a restart, `tab-bar-move-tab-to-group'
-;; keeps a group's tabs contiguous for free, ...) are recorded once in
-;; the roadmap body under "Verified against Emacs 31.1" -- restated here
-;; only where a specific function relies on one of them.
-;;
-;; ============================================================================
-;; Root parameter: `edmacs-workspace-root', not `edmacs-root'
-;; ============================================================================
-;; `edmacs-workspaces-root-parameter' is a NEW tab parameter, deliberately
-;; not the frames model's own `edmacs-root'. This module is the sole
-;; writer and reader of it. The two keys coexisted on the same tab
-;; objects, with no interaction, for as long as both models were live;
-;; reusing `edmacs-root' would have made them contend over one parameter
-;; instead, and would have turned the frames model's removal into an
-;; unpick. `edmacs-root' now survives only as legacy DATA in the desktop
-;; migration below.
-;;
-;; ============================================================================
-;; Desktop migration: the frames model's saved framesets
-;; ============================================================================
-;; `edmacs-workspaces-migrate-frameset' converts a frameset written by
-;; the frames model -- one frame state per repo, each carrying
-;; `edmacs-repo', with tabs carrying the model's `edmacs-root' -- into
-;; a single frame state whose tabs carry native `group' parameters and
-;; this module's `edmacs-workspace-root'. It is a pure data transform:
-;; it reads nothing from the live session, mutates neither its input nor
-;; any frame or tab, never signals, and is a fixed point on its own
-;; output, so `sessions.el' can leave it in the daemon's boot path
-;; permanently instead of gating it on a one-shot flag.
-;;
-;; It rests on two upstream facts (Emacs 31.1):
+;; Two upstream facts (Emacs 31.1) the desktop migration rests on, neither
+;; derivable from the code here:
 ;;
 ;; - `frameset-filter-tabs' strips only `wc wc-point wc-bl wc-bbl
-;;   wc-history-back wc-history-forward' when saving, so `group', `ws'
-;;   and a custom root parameter all survive a desktop round trip.
-;; - `tab-bar-select-tab' falls back to `window-state-put' on a tab's
-;;   `ws' whenever its `wc' is not a live window configuration -- which
-;;   is every restored tab. That is why a folded frame's whole window
-;;   state becomes its tab's `ws', and it is also what carries bufferlo's
-;;   per-tab buffer list across a restart, bufferlo reading
-;;   `bufferlo-buffer-list' out of `ws' once desktop has stripped
-;;   `wc-bl'/`wc-bbl'.
+;;   wc-history-back wc-history-forward' on save, so `group', `ws' and a
+;;   custom root parameter all survive a desktop round trip.
+;; - `tab-bar-select-tab' falls back to `window-state-put' on a tab's `ws'
+;;   whenever its `wc' is not a live window configuration -- which is every
+;;   restored tab. That is what makes a folded frame's window state its
+;;   tab's `ws', and what carries bufferlo's per-tab buffer list across a
+;;   restart once desktop has stripped `wc-bl'/`wc-bbl'.
 ;;
-;; It reads `edmacs-root'/`edmacs-repo' as legacy DATA only: they are the
-;; shape a desktop file written by the old model has on disk, not
-;; anything this session still writes.
-;;
-;; ============================================================================
-;; The symlink question (roadmap dependency)
-;; ============================================================================
-;; `edmacs-workspaces-group-name' derives a group name via
-;; `edmacs-git-common-dir-repo-name', which returns only the FINAL path
-;; component of the main worktree root `edmacs-git-common-dir' resolves.
-;; Two symlink shapes interact with that differently:
-;;
-;; - An ancestor symlink (e.g. macOS's /var -> /private/var, or a
-;;   symlinked home directory) never reaches the final path component:
-;;   `edmacs-git-common-dir-repo-name' -- and so `edmacs-workspaces-group-name'
-;;   -- returns the same string regardless of which alias resolved the
-;;   ancestor. Unaffected.
-;; - A symlink that IS the repo's own worktree directory (the documented
-;;   `~/.config/emacs' -> `~/Projects/edmacs' case) changes the final
-;;   component itself: from the MAIN worktree, `edmacs-git-common-dir-1'
-;;   expands git's relative ".git" answer against ROOT, keeping ROOT's own
-;;   symlinked basename ("emacs") rather than the target's ("edmacs") --
-;;   so the SAME repo yields two different group names depending on which
-;;   alias it was opened through. Affected.
-;;
-;; So group naming is NOT unconditionally safe: this roadmap has a written
-;; dependency on task `git-common-dir-symlink-mismatch', which documents
-;; the same underlying skew (there, for the `edmacs-repo' frame parameter
-;; rather than a tab-bar group name). See that task for the fix location
-;; (`edmacs-git-common-dir-1'/`edmacs-git-common-dir').
-;;
-;; ============================================================================
-;; Enumeration functions take an explicit FRAME
-;; ============================================================================
-;; Every function below that walks tabs takes an optional FRAME argument
-;; defaulting to `(selected-frame)' via the `(or frame (selected-frame))'
-;; idiom (ambient-reads discipline, `scripts/ambient-reads.el') rather
-;; than reading `selected-frame' unconditionally, so a caller acting on a
-;; background frame never accidentally reads the wrong one.
-;;
-;; ============================================================================
-;; The worktree-candidate source is deliberately cache-free
-;; ============================================================================
-;; `edmacs-workspaces-worktrees' shells out via
-;; `vc-git-known-other-working-trees' on every call: no cache, no
-;; `file-notify' watch, no polling or debounce timer. (The one
-;; `run-at-time' in this file is the stray sweep's zero-delay hop off
-;; the redisplay path, which schedules nothing recurring.) This replaced
-;; the ~310-line discovery layer -- a worktree cache plus a debounced
-;; `file-notify' watch -- the roadmap deleted outright, and it must not
-;; grow one of its own. `vc-git-known-other-working-trees'
-;; excludes ROOT's own worktree by design and returns paths through
-;; `abbreviate-file-name' (so a result can read "~/..."), which is why
-;; ROOT's own truename is consed back on and every result is passed
-;; through `expand-file-name'.
-;;
-;; TRAMP: `vc-git-known-other-working-trees' inherits whatever TRAMP
-;; safety `vc-git' itself has; this module does not re-verify it the way
-;; `edmacs-git-common-dir-1' explicitly handles a remote ROOT via
-;; `process-file'. Treat remote-root worktree enumeration as unverified.
+;; One hazard: group names come from `edmacs-git-common-dir-repo-name',
+;; which returns only the final component of the resolved main worktree.
+;; An ancestor symlink (/var -> /private/var) is harmless, but a symlink
+;; that IS the worktree directory -- the `~/.config/emacs' ->
+;; `~/Projects/edmacs' case -- yields a different final component per
+;; alias, so the same repo can produce two group names. Tracked by task
+;; `git-common-dir-symlink-mismatch', which owns the fix in
+;; `edmacs-git-common-dir-1'.
 
 ;;; Code:
 
