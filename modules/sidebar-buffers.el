@@ -59,6 +59,7 @@
 (declare-function bufferlo-buffer-list "bufferlo")
 (declare-function edmacs-workspaces-group-name "workspaces")
 (declare-function edmacs-workspaces-find-tab "workspaces")
+(declare-function edmacs-workspaces-tab-number "workspaces")
 (declare-function edmacs-main-window "windows")
 (declare-function edmacs-window-pop-buffer-to-main "windows")
 (declare-function edmacs-sidebar--buffer "sidebar")
@@ -625,7 +626,7 @@ ROOT value."
   (let ((target (or frame (selected-frame))))
     (when-let* ((group (edmacs-workspaces-group-name root))
                 (tab (edmacs-workspaces-find-tab group root target)))
-      (1+ (tab-bar--tab-index tab (tab-bar-tabs target) target)))))
+      (edmacs-workspaces-tab-number tab target))))
 
 ;;;###autoload
 (defun edmacs-sidebar-buffers-visit ()

@@ -118,6 +118,8 @@
 (declare-function edmacs-workspaces-open-project "workspaces")
 (declare-function edmacs-workspaces-open-worktree "workspaces")
 (declare-function edmacs-workspaces-current-group "workspaces")
+(declare-function edmacs-workspaces-tab-number "workspaces")
+(declare-function edmacs-workspaces-main-root "workspaces")
 
 ;; git-common-dir.el loads BEFORE sidebar.el (init.el's `load-module'
 ;; order), so these resolve at real load time too; declared anyway for
@@ -749,10 +751,6 @@ the sidebar's width like any other part of the label rather than
 overflowing it -- on a narrow sidebar the marker truncates away and
 `edmacs-sidebar-missing-worktree-face' carries the signal alone.")
 
-(defun edmacs-sidebar--active-group (frame)
-  "Return FRAME's active tab-bar group: the group of its current tab."
-  (funcall tab-bar-tab-group-function (tab-bar--current-tab-find nil frame)))
-
 (defun edmacs-sidebar--derive-main-root (tabs)
   "Return the main worktree root shared by TABS' repo, derived directly
 via `edmacs-git-common-dir'/`edmacs-git-common-dir-main-worktree' rather
@@ -763,8 +761,11 @@ matter. Returns nil when TABS is empty or no member's root resolves at
 all -- `edmacs-git-common-dir' never signals on that, per its own
 contract."
   (when-let* ((anchor (seq-some #'edmacs-workspaces-tab-root tabs))
-              (common (edmacs-git-common-dir anchor)))
-    (file-name-as-directory (file-truename (edmacs-git-common-dir-main-worktree common)))))
+              ;; Resolvability check only: `edmacs-workspaces-main-root'
+              ;; falls back to its argument, and a project row must render
+              ;; nothing rather than a worktree root here.
+              (_ (edmacs-git-common-dir anchor)))
+    (edmacs-workspaces-main-root anchor)))
 
 (defun edmacs-sidebar--insert-project-row (group main-root current-p count frame body-fn)
   "Insert GROUP's project row on FRAME. MAIN-ROOT is its main worktree
@@ -835,7 +836,7 @@ this row's own section body."
 with its non-main open tabs nested underneath as worktree child rows.
 See this file's Commentary and the roadmap's \"Sidebar presentation\"
 spec; `edmacs-sidebar-activate' is the matching activation dispatch."
-  (let ((active-group (edmacs-sidebar--active-group frame)))
+  (let ((active-group (edmacs-workspaces-current-group frame)))
     (dolist (group (edmacs-workspaces-groups frame))
       (let* ((tabs (edmacs-workspaces-tabs-in-group group frame))
              (all-tabs (tab-bar-tabs frame))
@@ -1223,7 +1224,7 @@ and `edmacs-sidebar-rename-at-point'."
           ((consp value)
            (when-let* ((tab (edmacs-workspaces-find-tab (car value) (cdr value))))
              ;; No FRAME argument on this call chain to prefer -- ambient-reads: ok
-             (1+ (tab-bar--tab-index tab (tab-bar-tabs) (selected-frame))))))))
+             (edmacs-workspaces-tab-number tab))))))
 
 ;;;###autoload
 (defun edmacs-sidebar-rename-at-point ()

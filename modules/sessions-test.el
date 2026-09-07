@@ -157,7 +157,7 @@ argument would stop meaning anything."
                   ((symbol-function 'edmacs-workspaces-frame-usable-p)
                    (lambda (f) (and (not (and (daemonp) (frame-initial-p f)))
                                     (display-graphic-p f))))
-                  ((symbol-function 'edmacs-sessions--gui-frame)
+                  ((symbol-function 'edmacs-workspaces-gui-frame)
                    (lambda () (ert-fail "an explicit FRAME must not be second-guessed"))))
           (edmacs-sessions-test--with-stubbed-steps calls
             (edmacs-sessions--finish-frameset-restore 'f1)))
@@ -193,30 +193,32 @@ dead frame to hand over."
       (let (calls)
         (cl-letf (((symbol-function 'frame-live-p) (lambda (_f) t))
                   ((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_f) t))
-                  ((symbol-function 'edmacs-sessions--gui-frame) (lambda () 'replacement)))
+                  ((symbol-function 'edmacs-workspaces-gui-frame) (lambda () 'replacement)))
           (edmacs-sessions-test--with-stubbed-steps calls
             (edmacs-sessions--finish-frameset-restore nil)))
         (should (seq-every-p (lambda (c) (eq (cdr c) 'replacement)) calls))
         (should (= 2 (length calls))))
       (let (calls)
-        (cl-letf (((symbol-function 'edmacs-sessions--gui-frame) (lambda () nil)))
+        (cl-letf (((symbol-function 'edmacs-workspaces-gui-frame) (lambda () nil)))
           (edmacs-sessions-test--with-stubbed-steps calls
             (edmacs-sessions--finish-frameset-restore nil)))
         (should-not calls)))
 
     (ert-deftest edmacs-sessions-test-gui-frame-finds-only-a-live-graphic-frame ()
-      "`edmacs-sessions--gui-frame' is the one place that answers \"which
+      "`edmacs-workspaces-gui-frame' is the one place that answers \"which
 frame is the session's\", shared by the finish-up's fallback and
 `edmacs-sessions--ensure-gui-frame' -- so the two cannot drift apart on
-what counts."
+what counts. It lives in workspaces.el, which also asks it whether the
+session is graphical at all; sessions.el is a consumer, not a second
+implementation."
       (cl-letf (((symbol-function 'frame-list) (lambda () '(dead tty gui)))
                 ((symbol-function 'frame-live-p) (lambda (f) (memq f '(tty gui))))
                 ((symbol-function 'display-graphic-p) (lambda (&optional f) (eq f 'gui))))
-        (should (eq (edmacs-sessions--gui-frame) 'gui)))
+        (should (eq (edmacs-workspaces-gui-frame) 'gui)))
       (cl-letf (((symbol-function 'frame-list) (lambda () '(tty)))
                 ((symbol-function 'frame-live-p) (lambda (_f) t))
                 ((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
-        (should-not (edmacs-sessions--gui-frame))))
+        (should-not (edmacs-workspaces-gui-frame))))
 
     ;; ==========================================================================
     ;; edmacs-sessions--tab-name

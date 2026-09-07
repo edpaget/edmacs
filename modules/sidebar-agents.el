@@ -9,7 +9,7 @@
 ;; section at the bottom of every frame's sidebar. Since
 ;; edmacs-tab-groups phase 3, the header-line roll-up and per-worktree
 ;; matching both operate on every tracked agent regardless of which
-;; project's rows are on screen -- see `edmacs-sidebar-agents--agents-for-frame'.
+;; project's rows are on screen.
 ;; Generalizes sidebar.el's RET into a
 ;; type-dispatching visit command (raise the repo's frame, open/select
 ;; the worktree's tab, then either drive tmux or select an in-Emacs side
@@ -370,31 +370,19 @@ swappable seam below."
 ;; Header line: repo-wide agent-status roll-up
 ;; ============================================================================
 
-(defun edmacs-sidebar-agents--agents-for-frame (frame)
-  "Return every tracked agent, regardless of FRAME.
-Under one frame the sidebar tree shows every project at once (see
-`edmacs-sidebar--redraw-projects'), so a roll-up scoped to one project's
-worktrees no longer matches what the sidebar displays -- this is now
-just `edmacs-sidebar-agents--all', its own pre-existing fallback path.
-FRAME is accepted (and ignored) only so the call site below need not
-change; reverse this only by scoping to the active group's tabs from
-`workspaces.el', never by resurrecting a worktree enumeration."
-  (ignore frame)
-  (edmacs-sidebar-agents--all))
-
 (defun edmacs-sidebar-agents--header-line (frame)
   "Return a \"  [N⟳ N💬 N✓]\" roll-up suffix, or nil when no agent is
 tracked at all. Assigned to sidebar.el's
 `edmacs-sidebar-header-line-function' swappable seam, mirroring
 `--label-suffix's own assignment above. The roll-up is global (every
-tracked agent, every project) -- see `edmacs-sidebar-agents--agents-for-frame'.
+tracked agent, every project).
 
 Glyphs, not words, and zero counts omitted: the prose form
 (\"  [1 working, 0 waiting, 0 done]\") is 31 columns and this suffix
 renders inside a sidebar whose default body width is 30, so it was
 always truncated away. Same glyph vocabulary as claude-term-agents.el's
 own per-buffer mode-line segment."
-  (let ((agents (edmacs-sidebar-agents--agents-for-frame frame)))
+  (let ((agents (edmacs-sidebar-agents--all)))
     (when agents
       (let ((working (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'working)) agents))
             (waiting (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'waiting)) agents))

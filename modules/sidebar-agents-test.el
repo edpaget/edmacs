@@ -798,17 +798,23 @@ no longer matches what the sidebar displays."
          (edmacs-sidebar-agents-test--make-agent :root "/other/wt/" :instance "%1" :status 'working))
         (should (equal "  [2⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))))
 
-    (ert-deftest edmacs-sidebar-agents-test-agents-for-frame-ignores-frame-identity ()
-      "`edmacs-sidebar-agents--agents-for-frame' returns every tracked
-agent for any FRAME argument, including nil -- it reads neither the
-retired per-frame repo parameter nor any per-repo worktree list."
+    (ert-deftest edmacs-sidebar-agents-test-header-line-rolls-up-every-project ()
+      "The header-line roll-up counts every tracked agent, whatever FRAME it
+is handed -- it reads neither the retired per-frame repo parameter nor
+any per-repo worktree list. Structural since the frame-scoping wrapper
+was removed, but worth pinning: this is the phase 3 decision that the
+roll-up matches a tree showing every project, not one of them."
       (edmacs-sidebar-agents-test--with-clean-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/other/wt/" :instance "%1" :status 'working))
-        (should (= 2 (length (edmacs-sidebar-agents--agents-for-frame (selected-frame)))))
-        (should (= 2 (length (edmacs-sidebar-agents--agents-for-frame nil))))))
+        (should (= 2 (length (edmacs-sidebar-agents--all))))
+        ;; Two agents in different roots, so a frame-scoped roll-up would
+        ;; count one; both frames must see both.
+        (should (equal (edmacs-sidebar-agents--header-line (selected-frame))
+                       (edmacs-sidebar-agents--header-line nil)))
+        (should (string-match-p "2" (edmacs-sidebar-agents--header-line nil)))))
 
     (ert-deftest edmacs-sidebar-agents-test-header-line-omits-zero-counts ()
       "Only non-zero statuses appear -- the suffix renders inside a 30-column

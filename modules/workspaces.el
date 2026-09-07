@@ -238,6 +238,15 @@ to nil."
 See this file's Commentary for why it is not the frames model's
 `edmacs-root'.")
 
+(defun edmacs-workspaces--normalize-root (root)
+  "Return ROOT as this module's canonical root string, or nil for a non-string.
+The single normalizer: every root this module stamps, compares or hands
+out goes through it. The truename-plus-trailing-slash form is not
+cosmetic: `edmacs-workspaces-find-tab' matches with `equal', so a
+migrated tab that is not normalized identically would never be found
+and every reopen would duplicate it."
+  (and (stringp root) (file-name-as-directory (file-truename root))))
+
 (defun edmacs-workspaces-tab-root (tab)
   "Return TAB's worktree root, or nil.
 A pure read: no derivation, no side effect."
@@ -261,22 +270,28 @@ worktree root is ROOT, or nil."
                    (equal (edmacs-workspaces-tab-root tab) root)))
             (tab-bar-tabs (or frame (selected-frame)))))
 
+(defun edmacs-workspaces-tab-number (tab &optional frame)
+  "Return TAB's 1-based `tab-bar' index in FRAME, or nil when it is not there.
+The one place this module's `(1+ (tab-bar--tab-index ...))' is written:
+every `tab-bar' command that takes a tab takes this number, and each
+consumer deriving it itself is a second answer to a question this module
+owns."
+  (let* ((target (or frame (selected-frame)))
+         (index (tab-bar--tab-index tab (tab-bar-tabs target) target)))
+    (and index (1+ index))))
+
 (defun edmacs-workspaces-select-tab (group root &optional frame)
   "Find and select the tab of FRAME matching GROUP and ROOT.
 Returns the tab, or nil when none matches -- selection is skipped
 entirely in that case. `tab-bar-select-tab' has no FRAME argument of its
-own (it always operates on the selected frame), so a non-nil FRAME is
-wrapped in `with-selected-frame' -- unconditionally, since wrapping the
-already-selected frame is harmless and this avoids re-reading
-`selected-frame' merely to compare it against FRAME."
+own (it always operates on the selected frame), so the call is wrapped
+in `with-selected-frame' -- unconditionally, since wrapping the
+already-selected frame is harmless."
   (let* ((target (or frame (selected-frame)))
          (tab (edmacs-workspaces-find-tab group root target)))
     (when tab
-      (let ((number (1+ (tab-bar--tab-index tab (tab-bar-tabs target) target))))
-        (if frame
-            (with-selected-frame frame
-              (tab-bar-select-tab number))
-          (tab-bar-select-tab number))))
+      (with-selected-frame target
+        (tab-bar-select-tab (edmacs-workspaces-tab-number tab target))))
     tab))
 
 ;; ============================================================================
@@ -290,13 +305,10 @@ through `tab-bar-change-tab-group' rather than a raw `alist-get' write,
 so `tab-bar-tab-post-change-group-functions' -- whose default,
 `tab-bar-move-tab-to-group', is what keeps a group's tabs contiguous --
 keeps running. `tab-bar-change-tab-group' has no FRAME argument of its
-own (it always operates on the selected frame), so a non-nil FRAME is
-wrapped in `with-selected-frame' -- unconditionally, since wrapping the
-already-selected frame is harmless and this avoids re-reading
-`selected-frame' merely to compare it against FRAME."
-  (if frame
-      (with-selected-frame frame
-        (tab-bar-change-tab-group group-name tab-number))
+own (it always operates on the selected frame), so the call is wrapped
+in `with-selected-frame' -- unconditionally, since wrapping the
+already-selected frame is harmless."
+  (with-selected-frame (or frame (selected-frame))
     (tab-bar-change-tab-group group-name tab-number)))
 
 ;; ============================================================================
@@ -319,7 +331,7 @@ that function, keeps this the caller's contract: matches
 `edmacs-workspaces-classify-root''s convention of falling through to
 an empty/nil result rather than an internal Lisp error."
   (let* ((default-directory root)
-         (mine (file-name-as-directory (file-truename root))))
+         (mine (edmacs-workspaces--normalize-root root)))
     ;; `default-directory' is ROOT, let-bound just above -- ambient-reads: ok
     (if (not (vc-git-root default-directory))
         (list mine)
@@ -360,7 +372,7 @@ outright: this runs from a core hook and must never touch the network."
   (and dir
        (not (file-remote-p dir))
        (when-let* ((root (ignore-errors (vc-git-root dir))))
-         (file-name-as-directory (file-truename root)))))
+         (edmacs-workspaces--normalize-root root))))
 
 (defun edmacs-workspaces--derive-root ()
   "Return the selected window's buffer directory as a normalized root, or nil.
@@ -403,10 +415,17 @@ reintroduce cross-frame derivation."
 ;; also holds its initial tty placeholder, and a completion popup is a
 ;; child frame. Both must be declined rather than driven.
 
+(defun edmacs-workspaces-gui-frame ()
+  "Return this session's graphical frame, or nil when it holds none.
+A daemon's frame list also holds its initial tty placeholder, which is
+never graphical; the session is meant to hold exactly one graphical
+frame, so the first match is the answer rather than an arbitrary pick."
+  (seq-find (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
+            (frame-list)))
+
 (defun edmacs-workspaces--graphical-session-p ()
   "Return non-nil when this session holds at least one graphical frame."
-  (seq-some (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
-            (frame-list)))
+  (and (edmacs-workspaces-gui-frame) t))
 
 (defun edmacs-workspaces-frame-usable-p (frame)
   "Return non-nil when FRAME is a frame this config may drive.
@@ -527,14 +546,14 @@ new tab inherited whatever group the previously selected tab had."
   ;; Every step above acts on the ambient frame by design -- ambient-reads: ok
   (edmacs-workspaces--current-tab (selected-frame)))
 
-(defun edmacs-workspaces--main-root (root)
+(defun edmacs-workspaces-main-root (root)
   "Return ROOT's repo's main worktree as a normalized root directory.
 Falls through to ROOT's own truename when the repo cannot be resolved,
 matching `edmacs-workspaces-classify-root''s fall-through-not-signal
 convention."
   (let* ((common (edmacs-git-common-dir root))
          (main (and common (edmacs-git-common-dir-main-worktree common))))
-    (file-name-as-directory (file-truename (or main root)))))
+    (edmacs-workspaces--normalize-root (or main root))))
 
 (defun edmacs-workspaces-open-project (&optional dir)
   "Select DIR's project tab group, creating it and its main worktree tab.
@@ -548,13 +567,13 @@ is created. This never makes or selects a frame: a project is a tab
 group inside the ambient frame."
   (interactive)
   (let* ((dir (or dir project-current-directory-override))
-         (root (and dir (file-name-as-directory (file-truename dir))))
+         (root (edmacs-workspaces--normalize-root dir))
          (group (and root (edmacs-workspaces-group-name root))))
     (unless root
       (user-error "No project directory to open"))
     (unless group
       (user-error "Not inside a git repository: %s" root))
-    (let ((main (edmacs-workspaces--main-root root)))
+    (let ((main (edmacs-workspaces-main-root root)))
       (or (edmacs-workspaces-select-tab group main)
           ;; Open the main-worktree tab even when the group already holds
           ;; linked-worktree tabs. Selecting a sibling instead leaves the
@@ -587,7 +606,7 @@ is normalized exactly as `edmacs-workspaces--open-tab' stamps it
 \(truename plus trailing slash) -- the two forms must agree or every
 invocation would duplicate a tab instead of finding it."
   (interactive (list (edmacs-workspaces--read-worktree current-prefix-arg)))
-  (let* ((root (file-name-as-directory (file-truename dir)))
+  (let* ((root (edmacs-workspaces--normalize-root dir))
          (group (edmacs-workspaces-group-name root)))
     (unless group
       (user-error "Not inside a git repository: %s" root))
@@ -625,7 +644,7 @@ no `buffer-file-name' at all -- visible to the sweep."
          ;; runs from `window-buffer-change-functions' for every buffer in
          ;; every window, and a TRAMP round trip there stalls the sweep.
          (not (file-remote-p dir))
-         (file-name-as-directory (file-truename dir)))))
+         (edmacs-workspaces--normalize-root dir))))
 
 (defun edmacs-workspaces--stray-tab-number (buf &optional frame)
   "Return the 1-based number of FRAME's tab BUF belongs in, or nil.
@@ -639,8 +658,13 @@ frame's original ungrouped tab -- the daemon's boot tab, or batch's own
 typically a home directory containing everything: without this, a visit
 to any file outside every open worktree would be dragged onto it.
 
-Pure with respect to git: compares against roots already stamped on
-tabs, never shelling out, so this is safe on the sweep's hot path."
+Cheap enough for the sweep's hot path: both operands are already
+normalized truenames with a trailing slash, so containment is a string
+test. `file-in-directory-p' would be the obvious call and is the wrong
+one: it stats DIR and truenames BOTH arguments again (~169us against
+~0.1us here), and it requires DIR to exist -- which would stop a deleted
+worktree matching its own tab, the state the sidebar renders rather than
+one it ignores."
   (let ((dir (edmacs-workspaces--buffer-dir buf)))
     (when dir
       (let ((number 0) (best nil) (best-length -1) (best-number nil))
@@ -649,7 +673,7 @@ tabs, never shelling out, so this is safe on the sweep's hot path."
           (let ((root (edmacs-workspaces-tab-root tab)))
             (when (and root
                        (funcall tab-bar-tab-group-function tab)
-                       (file-in-directory-p dir root)
+                       (string-prefix-p root dir)
                        (> (length root) best-length))
               (setq best tab best-length (length root) best-number number))))
         ;; `tab-bar-tabs' marks the selected tab's car `current-tab'.
@@ -715,14 +739,6 @@ or buffer work happens here directly -- only a zero-delay timer."
 Read here as legacy DATA out of a saved frameset and never written: no
 live tab in this session carries it. Keeping the name local to the
 migration is what kept the frames model's removal a removal.")
-
-(defun edmacs-workspaces--normalize-root (root)
-  "Return ROOT normalized the way `edmacs-workspaces--open-tab' stamps one.
-Nil for a non-string. The truename-plus-trailing-slash form is not
-cosmetic: `edmacs-workspaces-find-tab' matches with `equal', so a
-migrated tab that is not normalized identically would never be found
-and every reopen would duplicate it."
-  (and (stringp root) (file-name-as-directory (file-truename root))))
 
 (defun edmacs-workspaces--tab-root-of (params)
   "Return the worktree root recorded in tab alist PARAMS, or nil.

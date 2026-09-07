@@ -38,6 +38,7 @@
 (declare-function edmacs-sidebar-show "sidebar")
 (declare-function edmacs-workspaces-open-worktree "workspaces")
 (declare-function edmacs-workspaces-migrate-frameset "workspaces")
+(declare-function edmacs-workspaces-gui-frame "workspaces")
 (declare-function edmacs-workspaces-frame-usable-p "workspaces")
 (declare-function edmacs-workspaces-stamp-frame-tabs "workspaces")
 (declare-function edmacs-workspaces-current-tab-root "workspaces")
@@ -232,7 +233,7 @@ it to fix that."
 
 (defun edmacs-sessions--finish-frameset-restore (&optional frame)
   "Stamp FRAME's tab roots and show its sidebar after a frameset restore.
-FRAME defaults to `edmacs-sessions--gui-frame'; with neither, this does
+FRAME defaults to `edmacs-workspaces-gui-frame'; with neither, this does
 nothing at all rather than guessing at a frame. Runs synchronously right
 after `desktop-restore-frameset', by which point `frameset-restore''s
 own `:reuse-frames t' (the default) has already reused the saved frame --
@@ -251,7 +252,7 @@ could be re-derived for the frame's one repo; under groups the stamp IS
 the tab's identity, and clearing it would drop the tab out of its
 project's tree instead of rendering it with
 `edmacs-sidebar-missing-worktree-face'."
-  (when-let* ((frame (or frame (edmacs-sessions--gui-frame))))
+  (when-let* ((frame (or frame (edmacs-workspaces-gui-frame))))
     (when (and (frame-live-p frame)
                (edmacs-workspaces-frame-usable-p frame))
       (edmacs-workspaces-stamp-frame-tabs frame)
@@ -282,14 +283,6 @@ deleted out from under the daemon went unnoticed -- warn instead."
                       :warning)
      nil)))
 
-(defun edmacs-sessions--gui-frame ()
-  "Return the session's graphical frame, or nil when it has none.
-A daemon's frame list also holds its initial tty placeholder, which is
-never graphical; the session is meant to hold exactly one graphical
-frame, so the first match is the answer rather than an arbitrary pick."
-  (seq-find (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
-            (frame-list)))
-
 (defun edmacs-sessions--ensure-gui-frame ()
   "Create a graphical frame when the session has none left.
 This is the config's ONE frame-creation path, and it cannot be removed.
@@ -306,7 +299,7 @@ merely inconvenient:
 
 So a single bad restore would otherwise become permanent. Restoring a
 frame here is what breaks that loop."
-  (unless (edmacs-sessions--gui-frame)
+  (unless (edmacs-workspaces-gui-frame)
     (edmacs-sessions--make-gui-frame)))
 
 (defun edmacs-sessions--restore-pending-frameset (frame)

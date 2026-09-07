@@ -347,7 +347,7 @@ non-selected frame, making that frame's rows non-selectable via RET."
     ;; `cl-letf'-stubbing each one per test, the small, pure lookups sidebar.el's
     ;; grouped-tree render/activate path calls -- `edmacs-workspaces-groups',
     ;; `-tabs-in-group', `-tab-root', `-set-tab-root', `-find-tab',
-    ;; `-select-tab', `-current-group' -- are defined here for REAL, exact copies of
+    ;; `-select-tab', `-current-group', `-tab-number', `-main-root' -- are defined here for REAL, exact copies of
     ;; workspaces.el's own logic against real `tab-bar.el' primitives
     ;; (already loaded transitively via sidebar.el's own `(require 'tab-
     ;; bar)'). This means an ordinary test that never assigns a tab-bar
@@ -391,6 +391,11 @@ non-selected frame, making that frame's rows non-selectable via RET."
         (setf (alist-get edmacs-sidebar-test--root-parameter (cdr tab)) root)
         root))
 
+    (defun edmacs-workspaces-tab-number (tab &optional frame)
+      (let* ((target (or frame (selected-frame)))
+             (index (tab-bar--tab-index tab (tab-bar-tabs target) target)))
+        (and index (1+ index))))
+
     (defun edmacs-workspaces-find-tab (group root &optional frame)
       (seq-find (lambda (tab)
                   (and (equal (funcall tab-bar-tab-group-function tab) group)
@@ -405,6 +410,11 @@ non-selected frame, making that frame's rows non-selectable via RET."
             (if frame (with-selected-frame frame (tab-bar-select-tab number))
               (tab-bar-select-tab number))))
         tab))
+
+    (defun edmacs-workspaces-main-root (root)
+      (let ((main (when-let* ((common (edmacs-git-common-dir root)))
+                    (edmacs-git-common-dir-main-worktree common))))
+        (file-name-as-directory (file-truename (or main root)))))
 
     (defun edmacs-workspaces-classify-root (root)
       (when root
