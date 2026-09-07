@@ -24,20 +24,9 @@
 ;; before stashing it; without it two tests here would exercise a stub of
 ;; their own subject.
 ;;
-;; This reports 0 unexpected with 2 SKIPPED under a shell with no
-;; controlling tty (a headless CI runner, some IDE terminals): those two
-;; route through `edmacs-sessions-test--make-second-frame-or-skip', which
-;; opens `/dev/tty' to create a real second frame and `ert-skip's when
-;; there is none -- environment-dependent, not an invocation gap. (It was
-;; four before `edmacs-sessions--finish-frameset-restore' became
-;; single-frame: the two walk tests that needed a second frame only to
-;; prove the walk reached it no longer need one at all.) Run under a real
-;; or pseudo tty to get every test including those two:
-;;
-;;   python3 -c 'import pty,sys; pty.spawn(sys.argv[1:])' \
-;;     emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;           -l modules/workspaces.el -l modules/sessions-test.el \
-;;           -f ert-run-tests-batch-and-exit
+;; Every test runs under plain `-Q --batch' -- 52/52, zero skipped, no
+;; controlling terminal required. The second-frame skip path this suite
+;; used to carry went with the per-frame restore walk.
 ;;
 ;; Also covers the daemon lifecycle commands `SPC q' dispatches to. They
 ;; exist because homebrew.mxcl.emacs-plus@31.plist sets `KeepAlive'
@@ -124,20 +113,6 @@ a real Emacs session) to enable this suite"))
     ;; ==========================================================================
     ;; Test helpers
     ;; ==========================================================================
-
-    (defun edmacs-sessions-test--make-second-frame-or-skip ()
-      "Return a second real frame on this process's controlling terminal, or skip.
-Mirrors `edmacs-sidebar-test--make-second-frame-or-skip'."
-      (condition-case e
-          (let ((frame (make-frame '((window-system . nil)
-                                      (tty . "/dev/tty")
-                                      (tty-type . "xterm")))))
-            (unless (frame-live-p frame)
-              (ert-skip "could not create a second frame in this batch environment"))
-            frame)
-        (error (ert-skip (format "could not create a second frame in this \
-batch environment (no controlling terminal? run under `script -q /dev/null \
-emacs ...' to exercise this test): %s" e)))))
 
     (defmacro edmacs-sessions-test--with-clean-frame-params (frame params &rest body)
       "Run BODY, then reset each of FRAME's PARAMS to nil afterward."
