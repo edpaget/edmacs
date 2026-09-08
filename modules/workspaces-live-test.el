@@ -17,8 +17,17 @@
 ;; Run with (a pty allocated directly, which works whether or not stdin is
 ;; already a terminal -- `script -q /dev/null' does not):
 ;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;         -l modules/workspaces.el -l modules/workspaces-live-test.el \
+;;         -l modules/windows.el -l modules/workspaces.el \
+;;         -l modules/workspaces-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
+;;
+;; `modules/windows.el' is on that line because
+;; `edmacs-workspaces--frame-content-window' asks it for the frame's main
+;; window (`edmacs-windows-main-window-of') rather than reading the
+;; `edmacs-main' parameter itself. Both tests here reach that call through
+;; `edmacs-workspaces-stamp-frame-tabs', and both skip under plain batch --
+;; so leaving windows.el off produces a suite that exits 0 in batch and
+;; dies with a void-function the moment a pty is attached.
 ;;
 ;; No `straight/build' dependency: nothing here loads sidebar.el or
 ;; magit-section, so this suite runs identically from a worktree and from

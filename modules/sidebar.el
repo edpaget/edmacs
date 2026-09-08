@@ -104,11 +104,12 @@
 ;; reference.
 (declare-function general-define-key "general")
 
-;; workspaces.el loads AFTER sidebar.el (see init.el's `load-module'
-;; order), so these forward references are needed for the byte-compiler
-;; even though the shared-obarray runtime calls resolve fine once both
-;; modules have loaded. This is the one lookup surface: no module
-;; resolves a tab from a root except through these.
+;; workspaces.el loads BEFORE sidebar.el (see init.el's `load-module'
+;; order), so every one of these resolves at runtime. They are declared
+;; rather than `require'd because this file must stay loadable standalone
+;; under `-Q --batch' for sidebar-test.el, which never loads workspaces.el
+;; at all. This is the one lookup surface: no module resolves a tab from a
+;; root except through these.
 (declare-function edmacs-workspaces-groups "workspaces")
 (declare-function edmacs-workspaces-tabs-in-group "workspaces")
 (declare-function edmacs-workspaces-tab-root "workspaces")
@@ -221,6 +222,19 @@ when the rest of the buffer is shorter than the window, or kept in view
 by forcing `window-start' past the overflow when it is taller. Lets a
 registrant keep its own section visually anchored to the bottom of the
 sidebar without this file knowing anything about that section's content.")
+
+(defvar edmacs-sidebar-visibility-functions nil
+  "Abnormal hook run with (FRAME STATE) whenever FRAME's sidebar is
+shown or hidden -- STATE is the symbol `shown' or `hidden'. Runs at the
+tail of `edmacs-sidebar-show'/`edmacs-sidebar-hide', after the window
+work, on every return path including the ones that produced no window.
+Lets another module react to the sidebar appearing or disappearing
+without advising either function.
+
+A member must not itself show or hide the sidebar: both functions run
+this hook unconditionally, so a member that re-enters one of them
+recurses. The same constraint `edmacs-windows-frame-repaired-functions'
+carries.")
 
 (defvar edmacs-sidebar-collapsed-bottom-anchor-section-functions nil
   "Hook run with (FRAME WIDTH) at the end of the collapsed branch of
@@ -698,17 +712,16 @@ pathologically narrow strip -- mirrors `--truncate-label's own `(max 0
   (concat (edmacs-sidebar--glyph (if (eq (car tab) 'current-tab) 'current-tab 'open-tab))
           " " (alist-get 'name tab)))
 
-(defun edmacs-sidebar--insert-tab-row (tab tabs frame)
-  "Insert a row for TAB, an element of TABS in FRAME.
+(defun edmacs-sidebar--insert-tab-row (tab frame)
+  "Insert a row for TAB, one of FRAME's tabs.
 The section value is the bare 1-based TAB-NUMBER -- the group-less
 flat-list shape used only by `edmacs-sidebar--redraw-tabs' now; a
 grouped frame's project/worktree-child rows are inserted by
 `edmacs-sidebar--insert-project-row'/`--insert-worktree-child-row'
 instead, whose own section values are a `(GROUP . ROOT)' cons."
-  ;; `tabs'/`frame' passed explicitly: the 0-arg form of
-  ;; `tab-bar--tab-index' defaults to `(selected-frame)' and would
-  ;; silently return nil for a tab belonging to a non-selected frame.
-  (let* ((tab-number (1+ (tab-bar--tab-index tab tabs frame)))
+  ;; `frame' passed explicitly: without it the number is resolved against
+  ;; the selected frame and comes back nil for a tab belonging to another.
+  (let* ((tab-number (edmacs-workspaces-tab-number tab frame))
          (label (edmacs-sidebar--truncate-label (edmacs-sidebar--tab-label tab) frame)))
     (magit-insert-section (edmacs-sidebar-tab tab-number)
       (magit-insert-heading
@@ -721,9 +734,8 @@ instead, whose own section values are a `(GROUP . ROOT)' cons."
 Unchanged from before worktree-awareness: used only for a frame with no
 tab-bar group at all (the daemon's boot/spare frame) -- see
 `edmacs-sidebar--redraw''s own branch."
-  (let ((tabs (tab-bar-tabs frame)))
-    (dolist (tab tabs)
-      (edmacs-sidebar--insert-tab-row tab tabs frame))))
+  (dolist (tab (tab-bar-tabs frame))
+    (edmacs-sidebar--insert-tab-row tab frame)))
 
 ;; ============================================================================
 ;; Grouped tree: one project row per tab-bar GROUP, worktree child rows
@@ -850,7 +862,6 @@ spec; `edmacs-sidebar-activate' is the matching activation dispatch."
   (let ((active-group (edmacs-workspaces-current-group frame)))
     (dolist (group (edmacs-workspaces-groups frame))
       (let* ((tabs (edmacs-workspaces-tabs-in-group group frame))
-             (all-tabs (tab-bar-tabs frame))
              ;; Classify each tab ONCE. `edmacs-workspaces-classify-root'
              ;; truenames twice per call, and this runs for every frame on
              ;; every tab select; the child loop below reads the kind back
@@ -864,7 +875,7 @@ spec; `edmacs-sidebar-activate' is the matching activation dispatch."
              (main-root (or (and main-tab (edmacs-workspaces-tab-root main-tab))
                             (edmacs-sidebar--derive-main-root tabs)))
              (child-tabs (if main-tab (remq main-tab tabs) tabs))
-             (main-tab-number (and main-tab (1+ (tab-bar--tab-index main-tab all-tabs frame)))))
+             (main-tab-number (and main-tab (edmacs-workspaces-tab-number main-tab frame))))
         (edmacs-sidebar--insert-project-row
          group main-root (equal group active-group) (length child-tabs) frame
          (lambda ()
@@ -873,7 +884,7 @@ spec; `edmacs-sidebar-activate' is the matching activation dispatch."
            (dolist (tab child-tabs)
              (let* ((root (edmacs-workspaces-tab-root tab))
                     (kind (alist-get tab kinds nil nil #'eq))
-                    (tab-number (1+ (tab-bar--tab-index tab all-tabs frame))))
+                    (tab-number (edmacs-workspaces-tab-number tab frame)))
                (edmacs-sidebar--insert-worktree-child-row
                 group root kind tab frame
                 (lambda ()
@@ -1595,8 +1606,12 @@ simply reused and the frame stays without a main window.
 
 Sized by `edmacs-sidebar--target-width', so a manual resize survives a
 hide/show cycle and a poisoned remembered width self-heals on the very
-next show."
+next show.
+
+Runs `edmacs-sidebar-visibility-functions' with (FRAME `shown') on every
+return path, including the ones that produce no window."
   (interactive (list (selected-frame)))
+  (prog1
   ;; The daemon's initial tty placeholder must never get a sidebar. Under
   ;; the old per-frame `*sidebar: <repo>*' naming each frame drew into its
   ;; own buffer, so this cost nothing; with one shared `*sidebar*' buffer a
@@ -1658,7 +1673,8 @@ next show."
       ;; not a full `--redraw': that would rerun every section-contributing
       ;; hook a second time on every single show, not just the first.
       (edmacs-sidebar--reapply-bottom-anchor frame)
-      window)))))
+      window))))
+    (run-hook-with-args 'edmacs-sidebar-visibility-functions frame 'shown)))
 
 (defun edmacs-sidebar-reapply-width (frame)
   "Resize FRAME's sidebar window back to `edmacs-sidebar--target-width'.
@@ -1703,11 +1719,13 @@ shown. Returns WINDOW when it survived, nil when it was deleted."
 Deletes the window when the sidebar genuinely owns one; otherwise
 releases it in place rather than signalling -- see
 `edmacs-sidebar--release-window'. Returns the surviving window, or nil.
-Interactively, FRAME is always the selected frame."
+Runs `edmacs-sidebar-visibility-functions' with (FRAME `hidden') on every
+return path. Interactively, FRAME is always the selected frame."
   (interactive (list (selected-frame)))
-  (let ((window (edmacs-sidebar--window frame)))
-    (when window
-      (edmacs-sidebar--release-window window frame))))
+  (prog1 (let ((window (edmacs-sidebar--window frame)))
+           (when window
+             (edmacs-sidebar--release-window window frame)))
+    (run-hook-with-args 'edmacs-sidebar-visibility-functions frame 'hidden)))
 
 ;; The repaired frame has a main window again but no sidebar; this is the
 ;; hook `edmacs-windows-repair-frame' runs to put one back. Safe as a hook
@@ -1823,12 +1841,19 @@ firing and the timer executing."
 
 (add-hook 'tab-bar-tab-pre-close-functions #'edmacs-sidebar--on-tab-pre-close)
 
-;; `tab-bar-rename-tab' has no dedicated hook; it always targets the
-;; current tab of the current frame, so the advice has nothing to key off
-;; besides the selected frame. Advice on a fixed `(&rest _)' signature,
-;; same reasoning as the hooks above -- ambient-reads: ok
-(advice-add 'tab-bar-rename-tab :after
-            (lambda (&rest _) (edmacs-sidebar--redraw (selected-frame))))
+(defun edmacs-sidebar--after-tab-rename (&rest _)
+  "Redraw the selected frame's sidebar after `tab-bar-rename-tab'.
+`tab-bar-rename-tab' has no dedicated hook; it always targets the current
+tab of the current frame, so this has nothing to key off besides the
+selected frame. Advice on a fixed `(&rest _)' signature, same reasoning
+as the hooks above."
+  ;; ambient-reads: ok -- see the docstring above.
+  (edmacs-sidebar--redraw (selected-frame)))
+
+;; A named function, not a lambda: `advice-add' with a symbol is
+;; idempotent, so re-evaluating this file leaves one advice rather than
+;; stacking another.
+(advice-add 'tab-bar-rename-tab :after #'edmacs-sidebar--after-tab-rename)
 
 ;; ============================================================================
 ;; Hide the tab-bar strip; the sidebar is the model's only visible list

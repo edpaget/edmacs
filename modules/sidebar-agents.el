@@ -76,7 +76,6 @@
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar-redraw-frames "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
-(declare-function edmacs-sidebar-hide "sidebar")
 (declare-function claude-term--pop-to-window "claude-term")
 (declare-function claude-term-registry-get "claude-term-registry")
 (declare-function claude-term-session-buffer "claude-term-registry")
@@ -87,6 +86,7 @@
 (defvar edmacs-sidebar-extra-section-functions)
 (defvar edmacs-sidebar-header-line-function)
 (defvar edmacs-sidebar-force-text-glyphs)
+(defvar edmacs-sidebar-visibility-functions)
 
 ;; agents.el's struct accessors/table -- loaded by init.el before this
 ;; module ever actually runs any of the functions below that touch them.
@@ -782,12 +782,22 @@ timer already matches the desired state is a no-op."
       (cancel-timer edmacs-sidebar-agents--elapsed-timer)
       (setq edmacs-sidebar-agents--elapsed-timer nil))))
 
-;; Re-evaluate whenever the sidebar stops being shown -- sidebar.el's own
-;; `--redraw' (which the changed-hook handler below already triggers)
-;; only runs on a SHOW-relevant event, never on a plain hide, so without
-;; this a hidden sidebar's timer would linger until its own next tick.
-(advice-add 'edmacs-sidebar-hide :after
-            (lambda (&rest _) (edmacs-sidebar-agents--ensure-elapsed-timer)))
+(defun edmacs-sidebar-agents--on-visibility-change (_frame _state)
+  "Re-evaluate the elapsed timer when a sidebar is shown or hidden.
+A member of sidebar.el's `edmacs-sidebar-visibility-functions'.
+sidebar.el's own `--redraw' (which the changed-hook handler below already
+triggers) only runs on a SHOW-relevant event, never on a plain hide, so
+without this a hidden sidebar's timer would linger until its own next
+tick. Only arms or disarms a timer, so it can never re-enter the show or
+hide the hook forbids."
+  (edmacs-sidebar-agents--ensure-elapsed-timer))
+
+;; The seam, not an advice on `edmacs-sidebar-hide': `add-hook' dedupes by
+;; symbol, so re-evaluating this file leaves one member rather than
+;; stacking another, and sidebar.el keeps ownership of when the sidebar's
+;; visibility changed.
+(add-hook 'edmacs-sidebar-visibility-functions
+          #'edmacs-sidebar-agents--on-visibility-change)
 
 ;; ============================================================================
 ;; Wire transition-detection + redraw + timer re-evaluation onto every change

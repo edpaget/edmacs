@@ -64,12 +64,30 @@
   (setq native-comp-enable-subr-trampolines nil))
 
 ;; ============================================================================
+;; The suite's window fixture
+;; ============================================================================
+
+(defmacro edmacs-windows-test--with-clean-layout (&rest body)
+  "Run BODY on a one-window frame with a designated main, then restore.
+The suite's single window fixture, and the only place it writes
+`save-window-excursion'. Collapsing to one window and designating main is
+what every real frame arrives at -- `edmacs-windows--on-tab-open' stamps a
+new tab's sole window, and `edmacs-windows-repair-frame' re-stamps a
+restored one -- so a test that starts here is starting from the shape
+production maintains rather than from whatever the previous test left.
+A test about designation itself clears the parameter inside BODY."
+  (declare (indent 0))
+  `(save-window-excursion
+     (delete-other-windows)
+     (edmacs-windows-designate-main)
+     ,@body))
+
+;; ============================================================================
 ;; AC1 -- edmacs-window-promote swaps buffers for the three layouts
 ;; ============================================================================
 
 (ert-deftest edmacs-windows-test-promote-swaps-right-side-window ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((main-buf (generate-new-buffer "ewt-main-right"))
           (right-buf (generate-new-buffer "ewt-right")))
       (unwind-protect
@@ -80,8 +98,10 @@
               (set-window-buffer right right-buf)
               (set-window-parameter right 'window-side 'right)
               (set-window-parameter right 'no-other-window t)
-              (select-window main)
-              (should (eq (edmacs-main-window) main))
+              ;; `edmacs-window-promote' is handed WINDOW explicitly, so the
+              ;; selected window is not an input here -- read main by frame
+              ;; rather than selecting it first.
+              (should (eq (edmacs-main-window (selected-frame)) main))
               (edmacs-window-promote right)
               (should (eq (window-buffer main) right-buf))
               (should (eq (window-buffer right) main-buf))))
@@ -89,8 +109,7 @@
         (kill-buffer right-buf)))))
 
 (ert-deftest edmacs-windows-test-promote-swaps-center-split ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((main-buf (generate-new-buffer "ewt-main-center"))
           (other-buf (generate-new-buffer "ewt-other-center")))
       (unwind-protect
@@ -99,8 +118,7 @@
             (let* ((main (selected-window))
                    (other (split-window main nil 'below)))
               (set-window-buffer other other-buf)
-              (select-window main)
-              (should (eq (edmacs-main-window) main))
+              (should (eq (edmacs-main-window (selected-frame)) main))
               (edmacs-window-promote other)
               (should (eq (window-buffer main) other-buf))
               (should (eq (window-buffer other) main-buf))))
@@ -108,21 +126,19 @@
         (kill-buffer other-buf)))))
 
 (ert-deftest edmacs-windows-test-promote-single-window-is-noop ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let* ((main (selected-window))
            (before (window-buffer (edmacs-main-window))))
       (edmacs-window-promote (selected-window))
       (should (eq (window-buffer main) before)))))
 
 ;; ============================================================================
-;; AC2 -- edmacs-main-window is identity-based, survives resize/reorder,
-;; and falls back to top-left designation
+;; AC2 -- edmacs-main-window is an identity-based, side-effect-free lookup;
+;; edmacs-windows-designate-main is the writer
 ;; ============================================================================
 
 (ert-deftest edmacs-windows-test-main-window-survives-resize-and-reorder ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let* ((w1 (selected-window))
            (w2 (split-window w1 nil 'right))
            (w3 (split-window w1 nil 'below)))
@@ -144,17 +160,150 @@
           (should carrier)
           (should (eq (edmacs-main-window) carrier)))))))
 
-(ert-deftest edmacs-windows-test-main-window-falls-back-to-topleft ()
-  (save-window-excursion
-    (delete-other-windows)
+(defun edmacs-windows-test--unstamp-frame (&optional frame)
+  "Clear `edmacs-main' from every window of FRAME, and return nil."
+  (dolist (w (window-list frame 'no-minibuf))
+    (set-window-parameter w 'edmacs-main nil)))
+
+(defun edmacs-windows-test--main-carriers (&optional frame)
+  "Return every window of FRAME carrying the `edmacs-main' parameter."
+  (seq-filter (lambda (w) (window-parameter w 'edmacs-main))
+              (window-list frame 'no-minibuf)))
+
+(ert-deftest edmacs-windows-test-main-window-is-a-pure-lookup ()
+  "The getter reports; it never designates. A getter that wrote made three
+modules re-implement it frame-parameterised rather than call it, because
+calling it on someone else's frame had a side effect."
+  (edmacs-windows-test--with-clean-layout
     (split-window (selected-window) nil 'right)
-    (let ((topleft (edmacs--topleft-window)))
-      (should-not (seq-find (lambda (w) (window-parameter w 'edmacs-main))
-                             (window-list nil 'no-minibuf)))
-      (should (eq (edmacs-main-window) topleft))
-      ;; The first call's designation persisted the parameter, so a second
-      ;; call finds it directly rather than re-deriving it.
-      (should (eq (edmacs-main-window) topleft)))))
+    (edmacs-windows-test--unstamp-frame)
+    (should-not (edmacs-main-window))
+    (should-not (edmacs-main-window (selected-frame)))
+    ;; The side-effect proof: neither call above may have stamped anything.
+    (should-not (edmacs-windows-test--main-carriers))))
+
+(ert-deftest edmacs-windows-test-designate-main-stamps-the-topleft-window ()
+  (edmacs-windows-test--with-clean-layout
+    (let ((topleft (selected-window)))
+      (split-window topleft nil 'right)
+      (edmacs-windows-test--unstamp-frame)
+      (should (eq (edmacs-windows-designate-main) topleft))
+      (should (equal (edmacs-windows-test--main-carriers) (list topleft)))
+      ;; Idempotent: a second call finds the standing designation rather
+      ;; than re-deriving (and possibly relocating) it.
+      (should (eq (edmacs-windows-designate-main) topleft))
+      (should (equal (edmacs-windows-test--main-carriers) (list topleft))))))
+
+(ert-deftest edmacs-windows-test-designate-main-returns-nil-on-a-wedged-frame ()
+  "Designation goes through `edmacs--topleft-window', which filters side
+windows out -- so a wedged frame yields nil rather than a stamped sidebar.
+Stamping one would make `edmacs-windows-frame-wedged-p' lie and defeat
+the repair path outright."
+  (edmacs-windows-test--with-clean-layout
+    (edmacs-test-support-make-wedged-frame)
+    (should-not (edmacs-windows-designate-main))
+    (should-not (edmacs-windows-test--main-carriers))))
+
+(ert-deftest edmacs-windows-test-designate-main-takes-an-explicit-frame ()
+  (edmacs-windows-test--with-clean-layout
+    (edmacs-windows-test--unstamp-frame)
+    (should (eq (edmacs-windows-designate-main (selected-frame))
+                (selected-window)))))
+
+(ert-deftest edmacs-windows-test-main-window-reads-without-selecting ()
+  "The read needs no selection at all: that is what let the two
+frame-parameterised re-implementations in sidebar-buffers.el and
+workspaces.el go away."
+  (edmacs-windows-test--with-clean-layout
+    (let* ((main (selected-window))
+           (other (split-window main nil 'right)))
+      (edmacs-window-set-main main)
+      (select-window other)
+      (should (eq (edmacs-main-window (selected-frame)) main))
+      (should (eq (edmacs-windows-main-window-of (selected-frame)) main))
+      (should (eq (selected-window) other)))))
+
+(ert-deftest edmacs-windows-test-main-window-of-another-frame ()
+  "A frame's main window is found without that frame being selected, and a
+frame with no carrier reports nil even while another frame has one."
+  (let* ((here (selected-frame))
+         (other (edmacs-test-support-make-second-frame-or-skip)))
+    (unwind-protect
+        (progn
+          ;; `make-frame' selects the frame it creates; select HERE back so
+          ;; every lookup below is genuinely about a NON-selected frame.
+          (select-frame here)
+          (edmacs-windows-test--unstamp-frame here)
+          (edmacs-windows-test--unstamp-frame other)
+          (let ((their-main (frame-selected-window other)))
+            (edmacs-window-set-main their-main)
+            (should (eq (edmacs-windows-main-window-of other) their-main))
+            (should-not (edmacs-windows-main-window-of here))
+            ;; Designation is frame-explicit too, and does not disturb HERE.
+            (should (eq (edmacs-windows-designate-main other) their-main))
+            (should-not (edmacs-windows-test--main-carriers here))))
+      (delete-frame other))))
+
+;; ---------------------------------------------------------------------------
+;; edmacs-windows-ws-main-leaf -- the serialized counterpart of the lookup
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-ws-main-leaf-finds-the-marked-leaf ()
+  "Moved here from sidebar-buffers.el: `edmacs-main' is this module's own
+leaf key, so reading a serialized layout for it is the same question
+`edmacs-main-window' answers for a live one."
+  ;; A bare marked leaf.
+  (should (equal (edmacs-windows-ws-main-leaf
+                  '(leaf (parameters (edmacs-main . t))
+                         (prev-buffers ("a.el" 1 1) ("b.el" 1 1))))
+                 '(t ("a.el" 1 1) ("b.el" 1 1))))
+  ;; A vertical combination: the marked leaf wins over the earlier one.
+  (should (equal (edmacs-windows-ws-main-leaf
+                  '(vc (leaf (prev-buffers ("x.el" 1 1)))
+                       (leaf (parameters (edmacs-main . t))
+                             (prev-buffers ("y.el" 1 1)))))
+                 '(t ("y.el" 1 1))))
+  ;; Nested horizontal combinations recurse.
+  (should (equal (edmacs-windows-ws-main-leaf
+                  '(hc (leaf (prev-buffers ("x.el" 1 1)))
+                       (vc (leaf (parameters (edmacs-main . t))
+                                 (prev-buffers ("z.el" 1 1))))))
+                 '(t ("z.el" 1 1))))
+  ;; Nothing marked: the first leaf is the fallback, for a tab saved before
+  ;; the convention existed.
+  (should (equal (edmacs-windows-ws-main-leaf
+                  '(vc (leaf (prev-buffers ("first.el" 1 1)))
+                       (leaf (prev-buffers ("second.el" 1 1)))))
+                 '(t ("first.el" 1 1))))
+  ;; A leaf whose `parameters' is not an alist must not signal.
+  (should (equal (edmacs-windows-ws-main-leaf '(leaf (parameters . nil))) '(nil)))
+  (should (equal (edmacs-windows-ws-main-leaf nil) '(nil))))
+
+(ert-deftest edmacs-windows-test-repair-frame-designates-on-a-healthy-frame ()
+  "Repair's healthy branch is the surviving home of the old lazy stamp:
+`edmacs-stack-sweep-stale-panes' documents it as what re-designates main
+when the `edmacs-main' parameter did not survive a desktop restore. With
+the getter now pure, leaving this branch on the getter would break that
+path silently."
+  (edmacs-windows-test--with-clean-layout
+    (split-window (selected-window) nil 'right)
+    (edmacs-windows-test--unstamp-frame)
+    (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+    (let ((main (edmacs-windows-repair-frame (selected-frame))))
+      (should (window-live-p main))
+      (should (equal (edmacs-windows-test--main-carriers) (list main))))))
+
+(ert-deftest edmacs-windows-test-stack-windows-takes-a-frame ()
+  "`edmacs-stack-windows' answers for the frame it is handed, not for
+whichever one happens to be selected -- what let `--dedupe-frame' and the
+stale-pane sweep drop their `with-selected-frame' wrappers."
+  (edmacs-windows-test--with-clean-layout
+    (let ((buf (edmacs-windows-test--fresh-named-buffer "*ewt-stack-frame-arg*")))
+      (unwind-protect
+          (let ((pane (edmacs-windows-test--stack-popup buf -1)))
+            (should (equal (edmacs-stack-windows (selected-frame)) (list pane)))
+            (should (equal (edmacs-stack-windows) (list pane))))
+        (kill-buffer buf)))))
 
 ;; ============================================================================
 ;; AC3 -- edmacs-main in window-persistent-parameters; survives
@@ -165,8 +314,7 @@
   (should (assq 'edmacs-main window-persistent-parameters)))
 
 (ert-deftest edmacs-windows-test-main-survives-state-get-put ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((state (window-state-get (frame-root-window) t)))
       (delete-other-windows)
@@ -177,8 +325,7 @@
                          (window-list nil 'no-minibuf))))))
 
 (ert-deftest edmacs-windows-test-main-survives-tab-new-and-switch-back ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (edmacs-test-support-with-tabs-restored
       ;; `tab-bar-new-tab' runs `delete-other-windows' on a fresh
@@ -207,8 +354,7 @@ windmove-reachable). RIGHT carries `no-other-window' AND
 a single windmove direction key despite `no-other-window' blocking
 `other-window'/`C-x 1'). MAIN, LEFT, and RIGHT are bound for BODY."
   (declare (indent 0))
-  `(save-window-excursion
-     (delete-other-windows)
+  `(edmacs-windows-test--with-clean-layout
      (let* ((main (selected-window))
             (left (split-window main nil 'left))
             (right (split-window main nil 'right)))
@@ -266,8 +412,7 @@ one, but `C-w h'/`SPC w h'/`C-h' and their sibling directions must."
   (unless (edmacs-windows-test--ensure-spc-w-bindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
   (dolist (pair edmacs-windows-test--evil-window-direction-commands)
-    (save-window-excursion
-      (delete-other-windows)
+    (edmacs-windows-test--with-clean-layout
       (let* ((main (selected-window))
              (neighbor (split-window main nil
                                       (edmacs-windows-test--split-side (cdr pair)))))
@@ -282,8 +427,7 @@ treats a frame surrounded by `no-other-window' windows as having exactly
 one reachable window, unaffected by this phase."
   (unless (edmacs-windows-test--ensure-spc-w-bindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let* ((main (selected-window))
            (left (split-window main nil 'left))
            (right (split-window main nil 'right))
@@ -302,8 +446,7 @@ must re-signal windmove's original `user-error' rather than swallowing
 it into a silent no-op."
   (unless (edmacs-windows-test--ensure-spc-w-bindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (should-error (evil-window-left 1))))
 
 (ert-deftest edmacs-windows-test-evil-window-left-zero-count-stays-put ()
@@ -315,8 +458,7 @@ must gate on ORIG-FN actually signalling, not merely on the selected
 window matching its starting value."
   (unless (edmacs-windows-test--ensure-spc-w-bindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let* ((main (selected-window))
            (neighbor (split-window main nil 'left)))
       (set-window-parameter neighbor 'no-other-window t)
@@ -334,8 +476,7 @@ objects, so the restored left window is re-located by its parameters
 never by holding onto the pre-restore object."
   (unless (edmacs-windows-test--ensure-spc-w-bindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let* ((main (selected-window))
            (left (split-window main nil 'left)))
       (set-window-parameter left 'no-other-window t)
@@ -443,8 +584,7 @@ real `edmacs-stack-popup' parameter rather than a hand-rolled imitation."
 the stack; all of them now take MAIN, which is the whole point of the
 uniform rule."
   (dolist (name edmacs-windows-test--popup-names)
-    (save-window-excursion
-      (delete-other-windows)
+    (edmacs-windows-test--with-clean-layout
       (edmacs-window-set-main (selected-window))
       (let* ((real-messages (equal name "*Messages*"))
              (buf (if real-messages (get-buffer name)
@@ -464,8 +604,7 @@ uniform rule."
 (ert-deftest edmacs-windows-test-second-buffer-pushes-first-to-stack ()
   "Displaying B after A puts B in main and A on the stack -- they do not
 share one pane, which is what the old shared popup slot did."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((buf-a (generate-new-buffer "*ewt-push-a*"))
           (buf-b (generate-new-buffer "*ewt-push-b*")))
@@ -485,8 +624,7 @@ share one pane, which is what the old shared popup slot did."
 (ert-deftest edmacs-windows-test-stack-order-is-most-recent-first ()
   "Each displacement takes a slot above the one before it, so the stack
 reads newest-at-top. Slots run more-negative-upward."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((bufs (mapcar (lambda (n) (generate-new-buffer (format "*ewt-order-%d*" n)))
                         '(0 1 2))))
@@ -503,8 +641,7 @@ reads newest-at-top. Slots run more-negative-upward."
 
 (ert-deftest edmacs-windows-test-redisplaying-main-pushes-nothing ()
   "Displaying the buffer main already shows must not churn the stack."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((buf (generate-new-buffer "*ewt-noop*")))
       (unwind-protect
@@ -519,8 +656,7 @@ reads newest-at-top. Slots run more-negative-upward."
 (ert-deftest edmacs-windows-test-revisiting-a-stacked-buffer-swaps-not-duplicates ()
   "A buffer already in the stack is swapped into main rather than shown
 in two windows at once."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((buf-a (generate-new-buffer "*ewt-swap-a*"))
           (buf-b (generate-new-buffer "*ewt-swap-b*")))
@@ -538,8 +674,7 @@ in two windows at once."
 (ert-deftest edmacs-windows-test-stack-is-capped-and-evicts-the-bottom ()
   "`edmacs-stack-max-windows' bounds the column; the bottom (oldest) pane
 goes, and its buffer stays live."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((bufs (mapcar (lambda (n) (generate-new-buffer (format "*ewt-cap-%d*" n)))
                         '(0 1 2 3 4)))
@@ -554,8 +689,7 @@ goes, and its buffer stays live."
         (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
 
 (ert-deftest edmacs-windows-test-stack-cap-nil-means-unbounded ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((bufs (mapcar (lambda (n) (generate-new-buffer (format "*ewt-uncap-%d*" n)))
                         '(0 1 2 3)))
@@ -582,8 +716,7 @@ goes, and its buffer stays live."
      (window-parameters . ((no-other-window . t))))))
 
 (ert-deftest edmacs-windows-test-pin-then-fresh-popup-yields-five-windows ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     ;; Every displaced buffer now allocates from this counter, so it has
     ;; drifted far past -2 by the time this test runs; pin the start.
     (let ((edmacs-stack--next-pin-slot -2)
@@ -628,8 +761,7 @@ goes, and its buffer stays live."
 ;; ---------------------------------------------------------------------------
 
 (ert-deftest edmacs-windows-test-quit-window-deletes-popup-and-selects-main ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
@@ -647,8 +779,7 @@ goes, and its buffer stays live."
 `window-prev-buffers' entry for the first one; without the
 `quit-restore-window' advice, stock `quit-window' would restore the
 first popup instead of deleting the pane and returning to main."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (buf1 (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
@@ -673,8 +804,7 @@ first popup instead of deleting the pane and returning to main."
 kill the buffer, not just delete the window -- stock `quit-window'
 calls `(quit-restore-window window 'kill)' and documents that the
 buffer gets killed."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
@@ -692,8 +822,7 @@ buffer gets killed."
 itself, and `quit-restore-window' must not kill it first. Conflating
 the two breaks callers such as `quit-windows-on' that process
 multiple windows for the same buffer."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
@@ -715,8 +844,7 @@ rebinding the variable resizes the next popup without re-registering any
 `display-buffer-alist' entry.  Agent panes are deliberately NOT covered:
 they are ordinary windows now (see claude-term.el's \"Pane display\")
 and take whatever size the split gives them."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((popup-buf (edmacs-windows-test--fresh-named-buffer "*Warnings*")))
       (unwind-protect
           (let (popup-w1 popup-w2)
@@ -759,8 +887,7 @@ pinned popup can be moved into the column by hand."
 ;; ---------------------------------------------------------------------------
 
 (ert-deftest edmacs-windows-test-demote-then-promote-round-trips-main-buffer ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (buf-b (edmacs-windows-test--fresh-named-buffer "*ewt-demote-b*"))
@@ -788,8 +915,7 @@ pinned popup can be moved into the column by hand."
 ;; ---------------------------------------------------------------------------
 
 (ert-deftest edmacs-windows-test-stack-next-prev-slot-sequence ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((main (edmacs-main-window))
           bufs)
@@ -814,8 +940,7 @@ pinned popup can be moved into the column by hand."
         (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
 
 (ert-deftest edmacs-windows-test-stack-next-prev-empty-stack-stays-on-main ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((main (edmacs-main-window)))
       (edmacs-stack-next)
@@ -828,8 +953,7 @@ pinned popup can be moved into the column by hand."
 ;; ---------------------------------------------------------------------------
 
 (ert-deftest edmacs-windows-test-promote-numeric-prefix-selects-indexed-pane ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (main-buf (window-buffer main))
@@ -849,8 +973,7 @@ pinned popup can be moved into the column by hand."
         (dolist (b bufs) (when (buffer-live-p b) (kill-buffer b)))))))
 
 (ert-deftest edmacs-windows-test-promote-numeric-prefix-out-of-range-is-noop ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (main-buf (window-buffer main))
@@ -865,8 +988,7 @@ pinned popup can be moved into the column by hand."
 
 (ert-deftest edmacs-windows-test-promote-numeric-prefix-negative-is-noop ()
   "A negative prefix must not fall through to `nth's CAR-on-negative-index behavior."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (main-buf (window-buffer main))
@@ -884,8 +1006,7 @@ pinned popup can be moved into the column by hand."
 ;; ---------------------------------------------------------------------------
 
 (ert-deftest edmacs-windows-test-stack-close-agent-pane-preserves-buffer ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (buf (generate-new-buffer "*ewt-agent-close*"))
@@ -901,8 +1022,7 @@ pinned popup can be moved into the column by hand."
         (when (buffer-live-p buf) (kill-buffer buf))))))
 
 (ert-deftest edmacs-windows-test-stack-close-on-main-is-noop ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((main (edmacs-main-window)))
       (select-window main)
@@ -915,8 +1035,7 @@ pinned popup can be moved into the column by hand."
 ;; ---------------------------------------------------------------------------
 
 (ert-deftest edmacs-windows-test-delete-or-demote-on-main-with-center-split-demotes ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (main-buf (window-buffer main))
@@ -936,8 +1055,7 @@ pinned popup can be moved into the column by hand."
         (kill-buffer other-buf)))))
 
 (ert-deftest edmacs-windows-test-delete-or-demote-on-main-without-center-split-is-noop ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (main-buf (window-buffer main)))
@@ -947,8 +1065,7 @@ pinned popup can be moved into the column by hand."
       (should-not (edmacs-windows-test--right-windows)))))
 
 (ert-deftest edmacs-windows-test-delete-or-demote-off-main-deletes-window ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (other (split-window main nil 'below)))
@@ -962,8 +1079,7 @@ pinned popup can be moved into the column by hand."
 ;; ---------------------------------------------------------------------------
 
 (ert-deftest edmacs-windows-test-stack-widen-narrow-numeric-inverses ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((edmacs-stack-width 0.40)
           bufs)
@@ -987,8 +1103,7 @@ pinned popup can be moved into the column by hand."
 
 (ert-deftest edmacs-windows-test-balance-center-leaves-a-correct-stack-width-alone ()
   "A stack column already at `edmacs-stack-width' is not disturbed."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((main (edmacs-main-window))
            (buf (generate-new-buffer "*ewt-balance-agent*"))
@@ -1009,8 +1124,7 @@ The ultrawide case: a side window keeps the absolute width it was created
 at, so a column sized for a narrow frame stays narrow after the frame
 grows underneath it. Simulated here by resizing the pane directly, which
 leaves the same state."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((edmacs-stack-width 0.40)
           (buf (generate-new-buffer "*ewt-stale-width*")))
@@ -1028,8 +1142,7 @@ leaves the same state."
   "Members of `edmacs-windows-rebalance-functions' are called with the frame.
 The extension point sidebar.el joins to re-apply the left column's width;
 windows.el itself owns only the right one."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let* ((seen nil)
            (edmacs-windows-rebalance-functions
@@ -1261,8 +1374,7 @@ when this file's own AC4 load-order section below has loaded the real
 that module's own independent `tab-bar-tab-post-open-functions' hook
 correctly re-shows a LEFT sidebar window in the same new tab -- see this
 phase's own Context on the two hooks coordinating, not colliding."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-test-support-with-tabs-restored
       (tab-bar-new-tab)
       (should (= (edmacs-windows-test--nonside-count) 1))
@@ -1310,7 +1422,7 @@ because `tab-bar-new-tab-to' deletes other windows with
 point keeps the sidebar as its only window.
 
 This is the precondition the `tab-bar-select-tab' advice repairs."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-allside-ws")))
       (unwind-protect
           (progn
@@ -1357,7 +1469,7 @@ recursion is real on the wedged shape, and gone once repaired. The path
 from `tab-bar-select-tab' is not reproducible under `--batch' -- that call
 collapses the frame itself before restoring -- so the mechanism is pinned
 here directly rather than through a driver that cannot fail."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-wedge-split")))
       (unwind-protect
           (progn
@@ -1394,8 +1506,7 @@ therefore left the new tab with a dedicated side window as its only
 window, `edmacs-main-window' returning it, `display-buffer' able to add
 nothing but more side windows, and `walk-window-tree' eventually
 exceeding `max-lisp-eval-depth'."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-side-newtab")))
       (unwind-protect
           (edmacs-test-support-with-tabs-restored
@@ -1425,8 +1536,7 @@ exceeding `max-lisp-eval-depth'."
           (edmacs-stack-windows)))
 
 (ert-deftest edmacs-windows-test-stack-round-trips-next-prev-tab ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let* ((main1-buf (generate-new-buffer "ewt-persist-main-1"))
            (pane1a (generate-new-buffer "ewt-persist-pane-1a"))
            (pane1b (generate-new-buffer "ewt-persist-pane-1b"))
@@ -1465,8 +1575,7 @@ claude-term-test.el's own Commentary on the same point), so the 'dead
 buffer, window still live' state this test covers is fabricated via
 `cl-letf' on `buffer-live-p' rather than reproduced through a literal
 kill-buffer call."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let* ((buf (generate-new-buffer "ewt-sweep-dead"))
            (win (edmacs-windows-test--display-claude-term-shaped-pane buf 0))
            (orig-live-p (symbol-function 'buffer-live-p)))
@@ -1480,8 +1589,7 @@ kill-buffer call."
         (when (buffer-live-p buf) (kill-buffer buf))))))
 
 (ert-deftest edmacs-windows-test-sweep-deletes-stale-agent-pane ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let* ((buf (generate-new-buffer "ewt-sweep-agent"))
            (win (edmacs-windows-test--display-claude-term-shaped-pane buf 0)))
       (unwind-protect
@@ -1496,8 +1604,7 @@ kill-buffer call."
 windows now (see claude-term.el's \"Pane display\"), so a pane whose
 session died has to be swept from wherever a restored frameset put it,
 not only from a right side window."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let* ((buf (generate-new-buffer "ewt-sweep-agent-ordinary"))
            (win (split-window-right)))
       (set-window-buffer win buf)
@@ -1510,8 +1617,7 @@ not only from a right side window."
         (kill-buffer buf)))))
 
 (ert-deftest edmacs-windows-test-sweep-keeps-live-popup-pane ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((win (display-buffer-in-side-window
                 (get-buffer "*Messages*")
                 '((side . right) (slot . -1)))))
@@ -1524,8 +1630,7 @@ not only from a right side window."
         (when (window-live-p win) (delete-window win))))))
 
 (ert-deftest edmacs-windows-test-sweep-redesignates-main-when-missing ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (dolist (w (window-list nil 'no-minibuf))
       (set-window-parameter w 'edmacs-main nil))
     (should-not (seq-find (lambda (w) (window-parameter w 'edmacs-main))
@@ -1549,8 +1654,7 @@ not only from a right side window."
 
 (ert-deftest edmacs-windows-test-fallback-routes-any-buffer-to-main ()
   "A buffer nothing knows anything about lands in main, like every other."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((buf (generate-new-buffer "*ewt-anything*")))
       (unwind-protect
@@ -1565,8 +1669,7 @@ not only from a right side window."
   ;; in Emacs 31.1, which `display-buffer' turns into action nil plus
   ;; `(inhibit-same-window . t)'; there is no `display-buffer--other-window-
   ;; action' constant in this version.
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "*ewt-other-window*")))
       (unwind-protect
           (let ((win (display-buffer buf '(nil (inhibit-same-window . t)))))
@@ -1584,8 +1687,7 @@ out of view entirely."
   (should switch-to-buffer-obey-display-actions))
 
 (ert-deftest edmacs-windows-test-switch-to-buffer-in-main-does-not-move-window ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((main (selected-window))
           (other-buf (generate-new-buffer "*ewt-switch-target*")))
       (unwind-protect
@@ -1608,17 +1710,8 @@ the wedge comes straight back."
                        #'edmacs-windows--display-buffer-in-recovered-main
                        #'display-buffer-in-side-window))))
 
-(ert-deftest edmacs-windows-test-center-reuse-p-excludes-other-window-commands ()
-  (let ((this-command 'find-file-other-window))
-    (should-not (edmacs-windows--center-reuse-p nil nil))))
-
-(ert-deftest edmacs-windows-test-center-reuse-p-includes-plain-file-commands ()
-  (let ((this-command 'find-file))
-    (should (edmacs-windows--center-reuse-p nil nil))))
-
 (ert-deftest edmacs-windows-test-dired-mode-buffer-stays-center ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "*ewt-dired-stand-in*")))
       (unwind-protect
           (progn
@@ -1627,8 +1720,7 @@ the wedge comes straight back."
         (kill-buffer buf)))))
 
 (ert-deftest edmacs-windows-test-magit-status-mode-buffer-stays-center ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "*ewt-magit-status-stand-in*")))
       (unwind-protect
           (progn
@@ -1640,8 +1732,7 @@ the wedge comes straight back."
   ;; End-to-end coverage of the third allow-listed condition (AC5): binds
   ;; `this-command' and drives a real `display-buffer' call through
   ;; `display-buffer-alist', not just the bare predicate's return value.
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "*ewt-plain-file-open*"))
           (this-command 'find-file))
       (unwind-protect
@@ -1663,7 +1754,7 @@ reachable in real use via `SPC w j' -- is selected when the command runs."
       (kill-buffer stack-buf))))
 
 (ert-deftest edmacs-windows-test-this-command-gated-file-open-stays-center-from-stack-window ()
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (edmacs-windows-test--with-stack-window-selected
      (lambda ()
        (let ((buf (generate-new-buffer "*ewt-plain-file-open-from-stack*"))
@@ -1673,7 +1764,7 @@ reachable in real use via `SPC w j' -- is selected when the command runs."
            (kill-buffer buf)))))))
 
 (ert-deftest edmacs-windows-test-dired-mode-buffer-stays-center-from-stack-window ()
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (edmacs-windows-test--with-stack-window-selected
      (lambda ()
        (let ((buf (generate-new-buffer "*ewt-dired-stand-in-from-stack*")))
@@ -1684,7 +1775,7 @@ reachable in real use via `SPC w j' -- is selected when the command runs."
            (kill-buffer buf)))))))
 
 (ert-deftest edmacs-windows-test-magit-status-mode-buffer-stays-center-from-stack-window ()
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (edmacs-windows-test--with-stack-window-selected
      (lambda ()
        (let ((buf (generate-new-buffer "*ewt-magit-status-stand-in-from-stack*")))
@@ -1695,8 +1786,7 @@ reachable in real use via `SPC w j' -- is selected when the command runs."
            (kill-buffer buf)))))))
 
 (ert-deftest edmacs-windows-test-pin-skips-an-occupied-slot ()
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((fixed-buf (generate-new-buffer "*ewt-fixed-minus-2*"))
           (popup-buf (edmacs-windows-test--fresh-named-buffer "*Warnings*"))
           (edmacs-stack--next-pin-slot -2))
@@ -1719,8 +1809,7 @@ reachable in real use via `SPC w j' -- is selected when the command runs."
 (ert-deftest edmacs-windows-test-quit-deletes-window-when-split ()
   "With a center split `:q' behaves as vim does -- it closes the selected
 window and leaves the buffer alone."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-quit-split")))
       (unwind-protect
           (let ((other (split-window-right)))
@@ -1737,8 +1826,7 @@ window and leaves the buffer alone."
   "The case that sent `evil-quit' to `delete-frame': one ordinary window
 left, so there is no window to close. The buffer is killed and the
 window keeps its slot rather than the frame going away."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-quit-last"))
           (frames (length (frame-list))))
       (unwind-protect
@@ -1754,8 +1842,7 @@ window keeps its slot rather than the frame going away."
 (ert-deftest edmacs-windows-test-quit-never-deletes-a-frame ()
   "Whatever branch it takes, `:q' must not reach `delete-frame' -- that is
 what drops the daemon out of the Dock."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-quit-no-delete-frame"))
           (deleted 0))
       (unwind-protect
@@ -1769,8 +1856,7 @@ what drops the daemon out of the Dock."
 (ert-deftest edmacs-windows-test-quit-closes-a-side-window ()
   "A sidebar is not an ordinary window and does not count toward the split
 test, so `:q' in one closes that window outright."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-quit-side")))
       (unwind-protect
           (let ((side (display-buffer-in-side-window
@@ -1785,8 +1871,7 @@ test, so `:q' in one closes that window outright."
 (ert-deftest edmacs-windows-test-quit-force-discards-unsaved-changes ()
   "`:q!' drops modifications rather than prompting, and only on the branch
 that actually kills the buffer."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-quit-force")))
       (unwind-protect
           (progn
@@ -1801,8 +1886,7 @@ that actually kills the buffer."
 (ert-deftest edmacs-windows-test-quit-finishes-a-waiting-emacsclient ()
   "A buffer a blocking `emacsclient FILE' waits on is finished, not killed
 -- that is what releases the client."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-quit-server"))
           (edited 0))
       (unwind-protect
@@ -1816,117 +1900,23 @@ that actually kills the buffer."
             (should (buffer-live-p buf)))
         (when (buffer-live-p buf) (kill-buffer buf))))))
 
-;; ============================================================================
-;; Phase 2 AC1/AC2 -- the placement registry
-;; ============================================================================
-
-(defmacro edmacs-windows-test--with-scratch-registry (&rest body)
-  "Run BODY with the placement registry and its alist entries let-bound.
-Every declaration BODY makes is discarded on exit, so a throwaway
-placement can never leak into the live registry the AC2 sweep checks."
-  (declare (indent 0))
-  `(let ((display-buffer-alist display-buffer-alist)
-         (edmacs-windows--placements edmacs-windows--placements)
-         (edmacs-windows--owned-alist-entries edmacs-windows--owned-alist-entries))
-     ,@body))
-
-(defconst edmacs-windows-test--windows-el-placements
-  '()
-  "The placements windows.el itself declares, in declaration order.
-git.el adds `magit-diff-log' eagerly, for eleven after a real init;
-vterm.el's `vterm' and languages/clojure.el's `cider-repl' are declared
-from a deferred `use-package' `:config', so they join once their package
-actually loads, for thirteen.")
-
-(ert-deftest edmacs-windows-test-registry-declares-no-placements ()
-  "Nothing declares through `edmacs-windows-place'. A placement here would
-reintroduce the per-class unpredictability the uniform rule removed, so
-this asserts the registry stays empty rather than listing what is in it."
-  (should (equal (mapcar #'car (edmacs-windows-placements))
-                 edmacs-windows-test--windows-el-placements)))
-
-(ert-deftest edmacs-windows-test-place-registers-every-role ()
-  "Each role resolves to its own destination, with the real
-`display-buffer-base-action' in force -- so `ordinary' proves it beats
-the side-window fallback rather than merely never meeting it."
-  (edmacs-windows-test--with-scratch-registry
-    (let ((split-height-threshold 0)
-          (split-width-threshold nil))
-      (dolist (case '((main "ewt-role-main" nil nil)
-                      (stack-fixed "ewt-role-fixed" right -2)
-                      (ordinary "ewt-role-ordinary" nil nil)
-                      (bottom "ewt-role-bottom" nil nil)))
-        (pcase-let ((`(,role ,name ,side ,slot) case))
-          (save-window-excursion
-            (delete-other-windows)
-            (let ((buf (edmacs-windows-test--fresh-named-buffer name)))
-              (unwind-protect
-                  (progn
-                    (apply #'edmacs-windows-place 'ewt-role
-                           :match (concat "\\`" (regexp-quote name) "\\'")
-                           :as role
-                           (when (eq role 'stack-fixed) '(:slot -2)))
-                    (let ((win (display-buffer buf)))
-                      (should (window-live-p win))
-                      (should (eq (window-parameter win 'window-side) side))
-                      (should (equal (window-parameter win 'window-slot) slot))
-                      (when (eq role 'main)
-                        (should (eq win (edmacs-main-window))))
-                      (when (eq role 'ordinary)
-                        (should-not (window-dedicated-p win))
-                        (should-not (window-parameter win 'no-other-window)))
-                      (when (eq role 'bottom)
-                        (should (= (nth 3 (window-edges win))
-                                   (nth 3 (window-edges (frame-root-window))))))))
-                (kill-buffer buf)))))))))
-
-(ert-deftest edmacs-windows-test-place-stack-role-lands-on-slot-minus-1 ()
-  (edmacs-windows-test--with-scratch-registry
-    (save-window-excursion
-      (delete-other-windows)
-      (let ((buf (edmacs-windows-test--fresh-named-buffer "ewt-role-stack")))
-        (unwind-protect
-            (progn
-              (edmacs-windows-place 'ewt-role-stack
-                :match "\\`ewt-role-stack\\'" :as 'stack
-                :params '((mode-line-format . none)))
-              (let ((win (display-buffer buf)))
-                (should (eq (window-parameter win 'window-side) 'right))
-                (should (equal (window-parameter win 'window-slot) -1))
-                (should (eq (window-parameter win 'mode-line-format) 'none))))
-          (kill-buffer buf))))))
-
-(ert-deftest edmacs-windows-test-place-replaces-a-redeclared-name ()
-  "Re-loading a module must not double its entries."
-  (edmacs-windows-test--with-scratch-registry
-    (let ((before (length (edmacs-windows-placements))))
-      (edmacs-windows-place 'ewt-dup :match "\\`ewt-dup\\'" :as 'ordinary)
-      (should (= (1+ before) (length (edmacs-windows-placements))))
-      (edmacs-windows-place 'ewt-dup :match "\\`ewt-dup\\'" :as 'bottom)
-      (should (= (1+ before) (length (edmacs-windows-placements))))
-      (should (= (length (edmacs-windows-placements))
-                 (length edmacs-windows--owned-alist-entries)))
-      (should (eq 'bottom (plist-get (alist-get 'ewt-dup (edmacs-windows-placements)) :as))))))
-
-(ert-deftest edmacs-windows-test-place-validates-its-spec ()
-  (edmacs-windows-test--with-scratch-registry
-    (should-error (edmacs-windows-place 'ewt-bad :match "x" :as 'sideways))
-    (should-error (edmacs-windows-place 'ewt-bad :as 'ordinary))
-    (should-error (edmacs-windows-place 'ewt-bad :match "x" :as 'stack :slot -3))
-    (should-error (edmacs-windows-place 'ewt-bad :match "x" :as 'ordinary :height 0.3))))
-
-;; ---------------------------------------------------------------------------
-;; AC2 -- nothing registered merely restates the default
-;; ---------------------------------------------------------------------------
-
-(ert-deftest edmacs-windows-test-no-placement-duplicates-the-default ()
-  (should-not (seq-find #'edmacs-windows--redundant-p (edmacs-windows-placements))))
-
-(ert-deftest edmacs-windows-test-place-signals-on-a-redundant-declaration ()
-  (edmacs-windows-test--with-scratch-registry
-    (should-error (edmacs-windows-place 'ewt-redundant :match "\\`\\*ewt-x\\*\\'" :as 'stack))
-    (should (edmacs-windows-place 'ewt-redundant :match "\\`\\*ewt-x\\*\\'"
-                                  :as 'stack :override t))))
+(ert-deftest edmacs-windows-test-placement-mechanism-is-gone ()
+  "The declarative placement registry and the center-reuse action had no
+production caller -- only their own tests -- so both were deleted. This
+asserts they stay deleted: re-introducing either would give a buffer
+class a second answer to \"where does this go\"."
+  (should-not (fboundp 'edmacs-windows-place))
+  (should-not (fboundp 'edmacs-windows-placements))
+  (should-not (fboundp 'edmacs-windows--role-action))
+  (should-not (fboundp 'edmacs-windows--redundant-p))
+  (should-not (fboundp 'edmacs-windows--sync-display-buffer-alist))
+  (should-not (fboundp 'edmacs-windows--center-reuse-p))
+  (should-not (fboundp 'edmacs-windows--reuse-main-window))
+  (should-not (boundp 'edmacs-windows-center-reuse-commands))
+  (should-not (boundp 'edmacs-windows--center-reuse-action))
+  (should-not (boundp 'edmacs-windows-roles))
+  (should-not (boundp 'edmacs-windows--placements))
+  (should-not (boundp 'edmacs-windows-ordinary-buffer-p)))
 
 ;; ============================================================================
 ;; Phase 2 AC3 -- window-sides-slots is claimed by edge name, by one writer
@@ -2009,7 +1999,7 @@ restored, which is where the parameter loss actually bit."
             (window-list nil 'no-minibuf)))
 
 (ert-deftest edmacs-windows-test-layout-parameters-survive-a-state-round-trip ()
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (unwind-protect
         (progn
           (edmacs-windows-test--layout-round-trip)
@@ -2032,7 +2022,7 @@ restored, which is where the parameter loss actually bit."
 (ert-deftest edmacs-windows-test-state-get-output-stays-printable ()
   "Registering a parameter puts its value into the desktop file, which
 desktop.el writes with `prin1' -- so the whole owned set must read back."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (unwind-protect
         (let ((state (edmacs-windows-test--layout-round-trip)))
           (should (read (prin1-to-string state))))
@@ -2055,7 +2045,7 @@ desktop.el writes with `prin1' -- so the whole owned set must read back."
 (ert-deftest edmacs-windows-test-quit-restore-advice-still-fires-after-a-round-trip ()
   "Losing `edmacs-stack-popup' across a restore would drop `q' back to
 stock `quit-restore-window', which can resurrect a stale prior buffer."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (unwind-protect
         (progn
           (edmacs-windows-test--layout-round-trip)
@@ -2085,7 +2075,7 @@ returning nil, so `window--sides-check-failed's own \"no main window\"
 branch is unreachable and `window--sides-check' resets nothing --
 while `edmacs-main-window', which only counts leaf non-side windows,
 correctly reports nil."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (cl-destructuring-bind (left right) (edmacs-test-support-make-wedged-frame)
       (should-not (window--sides-check-failed (selected-frame)))
       (window--sides-check (selected-frame))
@@ -2103,7 +2093,7 @@ afterwards -- `edmacs-windows-frame-repaired-functions' re-shows the
 sidebar whenever `modules/sidebar.el' is loaded into the session -- so
 the assertions are about the repaired main window, not about the frame
 being side-window-free."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (cl-destructuring-bind (_left right) (edmacs-test-support-make-wedged-frame)
       (let ((main (edmacs-windows-repair-frame (selected-frame))))
         (should (window-live-p main))
@@ -2119,12 +2109,12 @@ being side-window-free."
 
 (ert-deftest edmacs-windows-test-repair-frame-strips-every-parameter ()
   "The survivor becomes main, so it must not keep a stack pane's styling.
-`edmacs-windows-place' declares `embark-collect' with
-`(mode-line-format . none)', and every popup carries `edmacs-stack-popup';
-both are registered in `window-persistent-parameters', so a leftover would
-re-persist through each `window-state' round trip and leave main
-mode-line-less for whatever buffer is reused into it next."
-  (save-window-excursion
+A popup can carry `(mode-line-format . none)' and every one carries
+`edmacs-stack-popup'; both are registered in
+`window-persistent-parameters', so a leftover would re-persist through
+each `window-state' round trip and leave main mode-line-less for whatever
+buffer is reused into it next."
+  (edmacs-windows-test--with-clean-layout
     (cl-destructuring-bind (left right) (edmacs-test-support-make-wedged-frame)
       ;; The popup is the undedicated window, so repair's survivor search
       ;; prefers it over the dedicated sidebar -- it becomes main.
@@ -2145,7 +2135,7 @@ mode-line-less for whatever buffer is reused into it next."
 (ert-deftest edmacs-windows-test-repair-frame-evicts-a-dedicated-only-buffer ()
   "When every window was dedicated, the survivor is holding a buffer that
 belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-wedged-dedicated")))
       (unwind-protect
           (cl-destructuring-bind (left right)
@@ -2159,7 +2149,7 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
         (kill-buffer buf)))))
 
 (ert-deftest edmacs-windows-test-repair-frame-runs-the-repaired-hook ()
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (let* ((seen nil)
            (edmacs-windows-frame-repaired-functions
             (list (lambda (frame) (push frame seen)))))
@@ -2173,7 +2163,7 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
 (ert-deftest edmacs-windows-test-repair-frame-is-a-no-op-when-reentrant ()
   "The hook may itself reach repair; the guard must make that a no-op
 rather than a recursion."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (edmacs-test-support-make-wedged-frame)
     (let ((edmacs-windows--repairing t))
       (should-not (edmacs-windows-repair-frame (selected-frame)))
@@ -2185,7 +2175,7 @@ neither is expected to hold a main window, and repairing one would
 collapse a popup. Batch cannot make either kind (`make-frame' has no
 terminal, and `parent-frame' cannot name the frame itself), so the two
 frame parameters are stubbed instead."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (edmacs-test-support-make-wedged-frame)
     (should (edmacs-windows-frame-wedged-p (selected-frame)))
     (let ((real (symbol-function 'frame-parameter)))
@@ -2205,7 +2195,7 @@ frame parameters are stubbed instead."
   "The wedge's real symptom: `display-buffer' used to hand an unrouted
 buffer a THIRD side window (or, on the sole-sidebar shape, a whole new
 frame) because `display-buffer-in-side-window' always succeeds."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-unrouted"))
           (frames (length (frame-list))))
       (unwind-protect
@@ -2227,8 +2217,7 @@ frame) because `display-buffer-in-side-window' always succeeds."
 
 (ert-deftest edmacs-windows-test-display-buffer-on-healthy-frame-uses-main ()
   "The recover action must be invisible on a frame that has a main window."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((buf (generate-new-buffer "ewt-routed")))
       (unwind-protect
@@ -2237,7 +2226,7 @@ frame) because `display-buffer-in-side-window' always succeeds."
         (kill-buffer buf)))))
 
 (ert-deftest edmacs-windows-test-sweep-stale-panes-repairs-a-wedged-frame ()
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (edmacs-test-support-make-wedged-frame)
     (let ((main (edmacs-stack-sweep-stale-panes (selected-frame))))
       (should (window-live-p main))
@@ -2250,7 +2239,7 @@ point in a `no-other-window' side window with no way back."
   (dolist (command '(edmacs-stack-close
                      edmacs-window-delete-or-demote
                      edmacs-stack-toggle))
-    (save-window-excursion
+    (edmacs-windows-test--with-clean-layout
       (edmacs-test-support-make-wedged-frame)
       (funcall command)
       (should (edmacs-main-window))
@@ -2266,7 +2255,7 @@ window itself."
   (dolist (command '(edmacs-stack-close
                      edmacs-window-delete-or-demote
                      edmacs-stack-toggle))
-    (save-window-excursion
+    (edmacs-windows-test--with-clean-layout
       (edmacs-test-support-make-wedged-frame 'dedicated)
       (funcall command)
       (should (edmacs-main-window))
@@ -2277,7 +2266,7 @@ window itself."
   "Repair on the parentless shape: there is no sibling to collapse onto,
 so the sole window itself is stripped, un-dedicated and evicted to
 *scratch* -- and no new frame is popped to escape it."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (let ((frames (length (frame-list)))
           (window (edmacs-test-support-make-wedged-frame 'sole)))
       (should-not (window-parent window))
@@ -2298,7 +2287,7 @@ so the sole window itself is stripped, un-dedicated and evicted to
 `display-buffer-fallback-action' would otherwise reach
 `display-buffer-pop-up-frame': an unchanged frame count is what proves
 it was never reached."
-  (save-window-excursion
+  (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-sole-unrouted"))
           (frames (length (frame-list))))
       (unwind-protect
@@ -2321,7 +2310,7 @@ regression this asserts against."
   (dolist (command '(edmacs-stack-close
                      edmacs-window-delete-or-demote
                      edmacs-stack-toggle))
-    (save-window-excursion
+    (edmacs-windows-test--with-clean-layout
       (edmacs-test-support-make-wedged-frame 'sole)
       (funcall command)
       (should (window-live-p (edmacs-main-window)))
@@ -2337,8 +2326,7 @@ so the stash branch always wins -- which is why this asserts the
 precondition with `should-error' before calling the command."
   (let ((saved (frame-parameter nil 'window-state)))
     (unwind-protect
-        (save-window-excursion
-          (delete-other-windows)
+        (edmacs-windows-test--with-clean-layout
           (set-frame-parameter nil 'window-state nil)
           (should-not (window-with-parameter 'window-side))
           (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
@@ -2377,8 +2365,7 @@ and knows nothing about the pushed copy. Without the dedupe sweep the
 frame is left showing one buffer in two windows -- \"the buffer I was
 looking at just appeared in a new window and nothing else changed\" --
 and every later popup adds another."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((work (generate-new-buffer "*ewt-dedupe-work*"))
           (popup (generate-new-buffer "*ewt-dedupe-popup*")))
@@ -2398,8 +2385,7 @@ and every later popup adds another."
 
 (ert-deftest edmacs-windows-test-dedupe-frame-keeps-distinct-stack-panes ()
   "The sweep only ever deletes a window showing main's own buffer."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((a (generate-new-buffer "*ewt-dedupe-a*"))
           (b (generate-new-buffer "*ewt-dedupe-b*")))
@@ -2422,8 +2408,7 @@ and every later popup adds another."
 The residue a duplicate leaves behind once the swap branch has moved it:
 main takes a stack pane's buffer and hands its own -- already duplicated
 -- back to that slot."
-  (save-window-excursion
-    (delete-other-windows)
+  (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (let ((a (generate-new-buffer "*ewt-dedupe-twice*"))
           (b (generate-new-buffer "*ewt-dedupe-other*")))
@@ -2439,5 +2424,112 @@ main takes a stack pane's buffer and hands its own -- already duplicated
             (should (= 2 (length (edmacs-stack-windows)))))
         (kill-buffer a)
         (kill-buffer b)))))
+
+;; ============================================================================
+;; Module hygiene: encapsulation, the shared fixture, and advice idempotence
+;; ============================================================================
+
+(defun edmacs-windows-test--modules-matching (pattern)
+  "Return the `modules/*.el' basenames whose text matches PATTERN.
+Shells out to grep via `process-file'. Returns the symbol `unavailable'
+when grep cannot be executed at all (a sandboxed runner with no grep on
+PATH) -- distinct from grep's own \"no matches\" exit status 1, which is a
+real, empty answer."
+  (let* ((dir (expand-file-name "modules" default-directory))
+         (files (and (file-directory-p dir)
+                     (directory-files dir t "\\.el\\'"))))
+    (if (null files)
+        'unavailable
+      (with-temp-buffer
+        (let ((status (condition-case nil
+                          (apply #'process-file "grep" nil t nil "-l" pattern files)
+                        (error 'unavailable))))
+          (cond
+           ((memq status '(unavailable)) 'unavailable)
+           ((not (memq status '(0 1))) 'unavailable)
+           (t (mapcar #'file-name-nondirectory
+                      (split-string (buffer-string) "\n" t)))))))))
+
+(ert-deftest edmacs-windows-test-no-module-reads-the-raw-main-parameter ()
+  "`edmacs-main' is windows.el's parameter; every other module goes through
+`edmacs-windows-main-window-of' or `edmacs-windows-ws-main-leaf'.
+Exempt, by exact name rather than a glob:
+  - `windows.el', which owns the parameter;
+  - `*-test.el', the ERT suites;
+  - `test-support.el', which is NOT named `*-test.el' and yet is a test
+    file by the only definition that matters here -- no `load-module' line
+    in init.el loads it. Its three hits are `set-window-parameter ...
+    edmacs-main nil' WRITES inside `edmacs-test-support-make-wedged-frame',
+    building the very shape windows.el must repair; they cannot regress the
+    encapsulation this test is about. Naming the one file (rather than
+    exempting `*-support.el') keeps a future production `foo-support.el'
+    from sneaking through."
+  (let ((hits (edmacs-windows-test--modules-matching "'edmacs-main")))
+    (when (eq hits 'unavailable)
+      (ert-skip "grep is not executable here"))
+    (should hits)
+    (dolist (name hits)
+      (should (or (equal name "windows.el")
+                  (equal name "test-support.el")
+                  (string-suffix-p "-test.el" name))))))
+
+(ert-deftest edmacs-windows-test-suite-uses-the-shared-layout-fixture ()
+  "`edmacs-windows-test--with-clean-layout' is this suite's only window
+fixture. The bar is a real regression check, not a tautology: this file
+carried 91 hand-rolled `save-window-excursion' openers before they were
+collapsed onto the macro."
+  (let ((path (or edmacs-windows-test--self-file
+                  (expand-file-name "modules/windows-test.el" default-directory))))
+    (unless (and path (file-readable-p path))
+      (ert-skip "cannot locate this suite's own source"))
+    (with-temp-buffer
+      (insert-file-contents path)
+      (goto-char (point-min))
+      (let ((n 0))
+        (while (search-forward "(save-window-excursion" nil t)
+          (setq n (1+ n)))
+        (should (<= n 3))))))
+
+(defun edmacs-windows-test--advice-count (fn advice)
+  "Return how many times ADVICE appears on FN's advice list."
+  (let ((n 0))
+    (advice-mapc (lambda (f _props) (when (eq f advice) (setq n (1+ n)))) fn)
+    n))
+
+(ert-deftest edmacs-windows-test-double-load-leaves-one-advice ()
+  "Every `advice-add' in windows.el names a symbol, so a second
+`eval-buffer' replaces rather than stacks. An anonymous lambda cannot be
+`advice-remove'd and grows a new layer on every reload."
+  (let ((path (expand-file-name "modules/windows.el" default-directory)))
+    (unless (file-readable-p path)
+      (ert-skip "cannot locate modules/windows.el"))
+    (let ((display-buffer-alist display-buffer-alist)
+          (display-buffer-base-action display-buffer-base-action)
+          (window-sides-slots window-sides-slots)
+          (window-persistent-parameters (copy-sequence window-persistent-parameters))
+          (edmacs-windows--side-claims (copy-tree edmacs-windows--side-claims)))
+      (load path nil t))
+    (dolist (fn '(rotate-main-vertical rotate-main-horizontal))
+      (should (= 1 (edmacs-windows-test--advice-count
+                    fn #'edmacs-windows--rotate-restamp-main)))
+      (should (= 1 (edmacs-windows-test--advice-count
+                    fn #'edmacs--rotate-preserve-window-parameters))))
+    (should (= 1 (edmacs-windows-test--advice-count
+                  'window-layout-transpose
+                  #'edmacs--rotate-preserve-window-parameters)))
+    (should (= 1 (edmacs-windows-test--advice-count
+                  'quit-restore-window #'edmacs-stack--quit-restore-window)))
+    (dolist (advice '(edmacs-windows--repair-before-tab-select
+                      edmacs-windows--repair-after-tab-select))
+      (should (= 1 (edmacs-windows-test--advice-count 'tab-bar-select-tab advice))))
+    ;; The evil advices live inside `with-eval-after-load', so this asserts
+    ;; nothing at all in a run where evil never loaded -- gate on it rather
+    ;; than pass vacuously.
+    (when (featurep 'evil)
+      (dolist (pair '((evil-window-left . edmacs-windows--reach-left)
+                      (evil-window-right . edmacs-windows--reach-right)
+                      (evil-window-up . edmacs-windows--reach-up)
+                      (evil-window-down . edmacs-windows--reach-down)))
+        (should (= 1 (edmacs-windows-test--advice-count (car pair) (cdr pair))))))))
 
 ;;; windows-test.el ends here

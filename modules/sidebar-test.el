@@ -2357,7 +2357,7 @@ leaving the frame with a real main window rather than a wedged one."
                   (should-not (window-parameter window parameter)))
                 (should-not (edmacs-sidebar--window frame))
                 (should-not (edmacs-windows-frame-wedged-p frame))
-                (should (eq (edmacs-main-window) window))))
+                (should (eq (edmacs-windows-designate-main frame) window))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-hide-in-ordinary-window-keeps-the-window ()
@@ -2376,7 +2376,7 @@ own and must not delete."
                 (should (window-live-p main))
                 (should-not (eq (window-buffer other)
                                 (edmacs-sidebar--buffer frame)))
-                (should (edmacs-main-window))))
+                (should-not (edmacs-windows-frame-wedged-p frame))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-hide-deletes-a-real-side-window ()
@@ -2391,7 +2391,7 @@ own and must not delete."
                 (should-not (edmacs-sidebar-hide frame))
                 (should-not (window-live-p window))
                 (should-not (edmacs-sidebar--window frame))
-                (should (edmacs-main-window))))
+                (should-not (edmacs-windows-frame-wedged-p frame))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-show-into-mainless-frame-yields-side-window-and-main ()
@@ -2446,7 +2446,7 @@ it returns nil without signalling or re-wedging."
               (should (edmacs-sidebar-hide frame))
               (should-not (edmacs-sidebar-hide frame))
               (should-not (edmacs-windows-frame-wedged-p frame))
-              (should (window-live-p (edmacs-main-window))))
+              (should (window-live-p (edmacs-windows-designate-main frame))))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     (ert-deftest edmacs-sidebar-test-release-window-deletes-a-parented-side-window ()
@@ -3241,6 +3241,46 @@ under an `F1' header a moment after drawing correctly."
       (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p)
                  (lambda (_f) t)))
         (should (equal (edmacs-sidebar-redraw-frames) (frame-list)))))
+
+    (ert-deftest edmacs-sidebar-test-double-load-leaves-one-advice ()
+      "Every `advice-add' in sidebar.el names a symbol, so re-evaluating the
+file replaces rather than stacks. An anonymous lambda cannot be
+`advice-remove'd and grows a new layer on every `eval-buffer' -- which is
+exactly what `tab-bar-rename-tab' carried before this."
+      (let ((path (expand-file-name "modules/sidebar.el" default-directory)))
+        (should (file-readable-p path))
+        (let ((window-sides-slots window-sides-slots)
+              (tab-bar-show tab-bar-show))
+          (load path nil t)))
+      (let ((n 0))
+        (advice-mapc (lambda (f _props)
+                       (when (eq f #'edmacs-sidebar--after-tab-rename)
+                         (setq n (1+ n))))
+                     'tab-bar-rename-tab)
+        (should (= n 1)))
+      (should (= 1 (seq-count (lambda (f) (eq f #'edmacs-sidebar-show))
+                               edmacs-windows-frame-repaired-functions))))
+
+    (ert-deftest edmacs-sidebar-test-visibility-hook-runs-on-show-and-hide ()
+      "The seam sidebar-agents.el reacts on, in place of its old advice on
+`edmacs-sidebar-hide'. Runs on every return path of both functions,
+including a show that produced no window."
+      (let* ((frame (selected-frame))
+             (seen nil)
+             (edmacs-sidebar-visibility-functions
+              (list (lambda (f state) (push (cons f state) seen)))))
+        (unwind-protect
+            (save-window-excursion
+              (delete-other-windows)
+              (edmacs-sidebar-show frame)
+              (should (equal (car seen) (cons frame 'shown)))
+              (edmacs-sidebar-hide frame)
+              (should (equal (car seen) (cons frame 'hidden)))
+              ;; A hide with nothing to hide still reports.
+              (edmacs-sidebar-hide frame)
+              (should (equal (car seen) (cons frame 'hidden)))
+              (should (= 3 (length seen))))
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
 
     )) ; end of build-root-found branch
 

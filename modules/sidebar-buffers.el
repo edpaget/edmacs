@@ -60,7 +60,8 @@
 (declare-function edmacs-workspaces-group-name "workspaces")
 (declare-function edmacs-workspaces-find-tab "workspaces")
 (declare-function edmacs-workspaces-tab-number "workspaces")
-(declare-function edmacs-main-window "windows")
+(declare-function edmacs-windows-main-window-of "windows")
+(declare-function edmacs-windows-ws-main-leaf "windows")
 (declare-function edmacs-window-pop-buffer-to-main "windows")
 (declare-function edmacs-sidebar--buffer "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
@@ -192,59 +193,26 @@ relative path rather than folded into the tree, see `--build-tree'."
 ;; Ordering: window-prev-buffers, live window or serialized ws-tree
 ;; ============================================================================
 
-(defun edmacs-sidebar-buffers--current-tab-main-window (frame)
-  "Return FRAME's main window (the one carrying the `edmacs-main'
-parameter), or nil. Frame-parameterized rather than reusing
-`windows.el's own `edmacs-main-window' (which always targets the
-selected frame) -- a redraw is not always on the selected frame."
-  (seq-find (lambda (w) (window-parameter w 'edmacs-main))
-            (window-list frame 'no-minibuf)))
-
-(defun edmacs-sidebar-buffers--ws-main-prev-buffers (ws)
-  "Return (MARKED . PREV-BUFFERS) for the leaf in WS marked `edmacs-main'.
-WS is the STATE TREE half of a tab's serialized `ws' field -- see the
-`cdr' unwrap in `edmacs-sidebar-buffers--main-window-prev-names' below.
-Recurses through `vc'/`hc' combination nodes, falling back to the first
-leaf found when nothing is marked `edmacs-main' (a tab created before
-windows.el's convention existed, or one with no main window for any
-other reason) -- PREV-BUFFERS is a list of (NAME START POINT), the
-writable form `window-state-get's WRITABLE argument produces."
-  (pcase ws
-    (`(leaf . ,params)
-     (let* ((leaf-params (alist-get 'parameters params))
-            (marked (and (consp leaf-params) (alist-get 'edmacs-main leaf-params))))
-       (cons (and marked t) (alist-get 'prev-buffers params))))
-    (`(,(or 'vc 'hc) . ,rest)
-     (let (found first)
-       (dolist (child rest)
-         (when (and (consp child) (memq (car child) '(leaf vc hc)))
-           (let* ((result (edmacs-sidebar-buffers--ws-main-prev-buffers child))
-                  (marked (car result)) (pbs (cdr result)))
-             (unless first (setq first (cons t pbs)))
-             (when marked (setq found (cons t pbs))))))
-       (or found first (cons nil nil))))
-    (_ (cons nil nil))))
-
 (defun edmacs-sidebar-buffers--main-window-prev-names (frame tab)
   "Return TAB's main window's `window-prev-buffers' names, most-recent-first.
-For the current tab (TAB's car is the symbol `current-tab'), reads the
-live window carrying `edmacs-main' in FRAME -- `window-prev-buffers' already
-conses new entries onto the front, so no reversal is needed. For any
-other tab, walks its own serialized `ws' tree instead, since it was
-never switched to and has no live windows at all."
+For the current tab (TAB's car is the symbol `current-tab'), reads
+FRAME's own main window -- `window-prev-buffers' already conses new
+entries onto the front, so no reversal is needed. For any other tab,
+walks its own serialized `ws' tree instead, since it was never switched
+to and has no live windows at all."
   (when tab
     (if (eq (car tab) 'current-tab)
-        (let ((win (edmacs-sidebar-buffers--current-tab-main-window frame)))
+        (let ((win (edmacs-windows-main-window-of frame)))
           (when win
             (delq nil (mapcar (lambda (e) (and (buffer-live-p (car e)) (buffer-name (car e))))
                                (window-prev-buffers win)))))
       ;; `tab's own `ws' field is `window-state-get's raw return, a cons
       ;; of (CONSTRAINTS-ALIST . STATE-TREE) regardless of the WRITABLE
       ;; argument tab-bar.el passes -- only the `cdr' is the `(leaf ...)'/
-      ;; `(vc|hc ...)' tree `--ws-main-prev-buffers' pattern-matches on.
+      ;; `(vc|hc ...)' tree `edmacs-windows-ws-main-leaf' pattern-matches on.
       (let ((ws (alist-get 'ws tab)))
         (when ws
-          (mapcar #'car (cdr (edmacs-sidebar-buffers--ws-main-prev-buffers (cdr ws)))))))))
+          (mapcar #'car (cdr (edmacs-windows-ws-main-leaf (cdr ws)))))))))
 
 (defun edmacs-sidebar-buffers--rank (buf prev-names)
   "Return BUF's position in PREV-NAMES, or `most-positive-fixnum' if absent.
@@ -682,7 +650,7 @@ to the resulting buffer's row."
     (if (null tab-number)
         (message "edmacs-sidebar-buffers: point is not in a buffers subsection")
       (edmacs-sidebar-buffers--select-tab-if-needed tab-number)
-      (let ((main (edmacs-main-window)))
+      (let ((main (edmacs-windows-main-window-of frame)))
         (when main
           (with-selected-window main
             (funcall (if forward-p #'next-buffer #'previous-buffer)))

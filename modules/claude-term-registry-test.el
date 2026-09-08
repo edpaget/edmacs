@@ -855,20 +855,4 @@ surviving binding form would install a void command."
     (goto-char (point-min))
     (should-not (re-search-forward "claude-repl" nil t))))
 
-;; ============================================================================
-;; windows.el's ordinary-placement seam
-;; ============================================================================
-
-(ert-deftest claude-term-registry-test-wires-windows-ordinary-buffer-p ()
-  "windows.el's `ordinary' role reaches claude-term only through this seam,
-so an unwired (or mis-wired) predicate silently puts every agent pane back
-into the stack column."
-  (should (functionp edmacs-windows-ordinary-buffer-p))
-  (with-temp-buffer
-    (rename-buffer "*claude-term:edmacs*" t)
-    (should (funcall edmacs-windows-ordinary-buffer-p (current-buffer))))
-  (with-temp-buffer
-    (rename-buffer "*Warnings*" t)
-    (should-not (funcall edmacs-windows-ordinary-buffer-p (current-buffer)))))
-
 ;;; claude-term-registry-test.el ends here

@@ -29,9 +29,8 @@
 (require 'cl-lib)
 
 ;; Disabled for the same reason sidebar-test.el disables it: `advice-add'
-;; on a primitive (this file's own `--osascript-notify'/tmux stub tests,
-;; and `edmacs-sidebar-hide' advice at sidebar-agents.el load time) can
-;; otherwise spawn a real native-comp trampoline-compiler subprocess.
+;; on a primitive (this file's own `--osascript-notify'/tmux stub tests)
+;; can otherwise spawn a real native-comp trampoline-compiler subprocess.
 (setq native-comp-enable-subr-trampolines nil)
 
 (defvar edmacs-sidebar-agents-test--build-root
@@ -64,9 +63,9 @@ a real Emacs session) to enable this suite"))
     (defvar edmacs-sidebar-header-line-function #'ignore)
     (defvar edmacs-sidebar-collapsed-section-functions nil)
     (defvar edmacs-sidebar-force-text-glyphs nil)
+    (defvar edmacs-sidebar-visibility-functions nil)
     (defun edmacs-sidebar--redraw (_frame) nil)
     (defun edmacs-sidebar--window (_frame) nil)
-    (defun edmacs-sidebar-hide (&optional _frame) nil)
     (defun edmacs-sidebar--fit (label width)
       "Stub: truncate LABEL with a trailing … to fit WIDTH columns.
 Mirrors sidebar.el's implementation for tests."
@@ -109,8 +108,7 @@ Mirrors sidebar.el's implementation for tests."
     (defconst edmacs-sidebar-agents-test--sidebar-stubs
       `((edmacs-sidebar--redraw . ,(lambda (_frame) nil))
         (edmacs-sidebar-redraw-frames . ,(lambda () (list 'fake-frame)))
-        (edmacs-sidebar--window . ,(lambda (_frame) nil))
-        (edmacs-sidebar-hide . ,(lambda (&optional _frame) nil)))
+        (edmacs-sidebar--window . ,(lambda (_frame) nil)))
       "Canonical stub for every `sidebar' target sidebar-agents.el
 `declare-function's -- the sentinel test below asserts this list stays
 exhaustive against the module's own source.")
@@ -944,6 +942,28 @@ with two-digit counts in every status."
             ;; Each line must fit within the real width
             (dolist (line (split-string buf-str "\n" t))
               (should (<= (string-width line) 4)))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-visibility-hook-replaces-the-hide-advice ()
+      "The elapsed timer is re-evaluated through sidebar.el's
+`edmacs-sidebar-visibility-functions' seam, not by advising a sibling
+module's `edmacs-sidebar-hide'. `add-hook' dedupes by symbol, so a second
+load of this module leaves one member; the old anonymous-lambda advice
+stacked another layer on every `eval-buffer'."
+      (should (memq #'edmacs-sidebar-agents--on-visibility-change
+                     edmacs-sidebar-visibility-functions))
+      (should-not (advice-member-p #'edmacs-sidebar-agents--on-visibility-change
+                                   'edmacs-sidebar-hide))
+      (let ((path (expand-file-name "modules/sidebar-agents.el" default-directory)))
+        (load path nil t))
+      (should (= 1 (seq-count (lambda (f)
+                                 (eq f #'edmacs-sidebar-agents--on-visibility-change))
+                               edmacs-sidebar-visibility-functions)))
+      ;; And nothing this module owns is left advising sidebar.el.
+      (let ((advices 0))
+        (when (fboundp 'edmacs-sidebar-hide)
+          (advice-mapc (lambda (_f _p) (setq advices (1+ advices)))
+                       'edmacs-sidebar-hide))
+        (should (zerop advices))))
 
     (ert-deftest edmacs-sidebar-agents-test-collapsed-section-registered-on-hook ()
       "`edmacs-sidebar-agents--collapsed-section' is registered on the

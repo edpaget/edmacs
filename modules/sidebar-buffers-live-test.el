@@ -513,8 +513,8 @@ tree's `prev-buffers', not alphabetical fallback: opening d/a.el, then
 d/z.el, then d/m.el (leaving m.el as the tab's own selected buffer)
 before switching away must render z.el ahead of a.el ahead of m.el --
 alphabetical order (a, m, z) would mean `--main-window-prev-names' fed
-`--ws-main-prev-buffers' the wrong (unwrapped) shape and silently lost
-every rank, exactly the regression this test guards against."
+`edmacs-windows-ws-main-leaf' the wrong (unwrapped) shape and silently
+lost every rank, exactly the regression this test guards against."
       (let ((r1 (edmacs-sidebar-buffers-live-test--make-root))
             (r2 (edmacs-sidebar-buffers-live-test--make-root)))
         (edmacs-sidebar-buffers-live-test--with-scenario (list r1 r2)

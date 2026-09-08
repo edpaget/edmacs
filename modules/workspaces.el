@@ -54,6 +54,7 @@
 ;; git-common-dir.el's own commentary on this codebase's shared-obarray
 ;; plain-`load' module system. Declared here so this file byte-compiles
 ;; standalone and so `workspaces-test.el' can run under `-Q --batch'.
+(declare-function edmacs-windows-main-window-of "windows")
 (declare-function edmacs-git-common-dir "git-common-dir")
 (declare-function edmacs-git-common-dir-main-worktree "git-common-dir")
 (declare-function edmacs-git-common-dir-repo-name "git-common-dir")
@@ -148,6 +149,25 @@ migrated tab that is not normalized identically would never be found
 and every reopen would duplicate it."
   (and (stringp root) (file-name-as-directory (file-truename root))))
 
+(defun edmacs-workspaces--tab-bar-current-tab (&optional frame)
+  "Return FRAME's current tab, or nil.
+Wraps tab-bar.el's internal `tab-bar--current-tab-find', a bare
+`(assq \='current-tab (tab-bar-tabs FRAME))'. Checked against Emacs 30;
+this is the one call site, so a core rename is a one-line fix here.
+Distinct from `edmacs-workspaces--current-tab', which reads the `tabs'
+frame parameter directly precisely so it cannot create a tab -- go
+through that one from anywhere a `tab-bar-tabs' call would re-enter the
+post-open hook."
+  (tab-bar--current-tab-find nil frame))
+
+(defun edmacs-workspaces--tab-bar-current-tab-index ()
+  "Return the selected frame's current tab's 0-based index, or nil.
+Wraps tab-bar.el's internal `tab-bar--current-tab-index', which takes no
+frame of its own and always reads the selected one. Checked against
+Emacs 30."
+  ;; The wrapped internal reads the selected frame itself -- ambient-reads: ok
+  (tab-bar--current-tab-index))
+
 (defun edmacs-workspaces-tab-root (tab)
   "Return TAB's worktree root, or nil.
 A pure read: no derivation, no side effect."
@@ -159,7 +179,7 @@ A pure read: no derivation, no side effect."
 push-shadowed stale cons would survive `tab-bar--tab''s
 copy-other-parameters forwarding on every later tab switch and outlive
 the session via desktop."
-  (when-let* ((tab (tab-bar--current-tab-find nil frame)))
+  (when-let* ((tab (edmacs-workspaces--tab-bar-current-tab frame)))
     (setf (alist-get edmacs-workspaces-root-parameter (cdr tab)) root)
     root))
 
@@ -173,10 +193,11 @@ worktree root is ROOT, or nil."
 
 (defun edmacs-workspaces-tab-number (tab &optional frame)
   "Return TAB's 1-based `tab-bar' index in FRAME, or nil when it is not there.
-The one place this module's `(1+ (tab-bar--tab-index ...))' is written:
-every `tab-bar' command that takes a tab takes this number, and each
-consumer deriving it itself is a second answer to a question this module
-owns."
+The one place this config wraps tab-bar.el's internal
+`tab-bar--tab-index' (checked against Emacs 30): every `tab-bar' command
+that takes a tab takes this number, and each consumer deriving it itself
+is both a second answer to a question this module owns and a second
+place a core change would have to be chased to."
   (let* ((target (or frame (selected-frame)))
          (index (tab-bar--tab-index tab (tab-bar-tabs target) target)))
     (and index (1+ index))))
@@ -352,12 +373,12 @@ GUI boot frame."
 
 (defun edmacs-workspaces--frame-content-window (frame)
   "Return the window FRAME shows its content in.
-Whichever window carries windows.el's `edmacs-main' parameter, else
-FRAME's first non-side window, else its selected window. Never
+Whichever window windows.el reports as FRAME's main, else FRAME's first
+non-side window, else its selected window -- the two fallbacks cover a
+tab stamped before the `edmacs-main' convention existed. Never
 `selected-window': the caller can be acting on a frame that is not the
 selected one, which is exactly the mix-up a stamped identity rules out."
-  (or (seq-find (lambda (w) (window-parameter w 'edmacs-main))
-                (window-list frame 'no-minibuf))
+  (or (edmacs-windows-main-window-of frame)
       (seq-find (lambda (w) (not (window-parameter w 'window-side)))
                 (window-list frame 'no-minibuf))
       (frame-selected-window frame)))
@@ -383,7 +404,7 @@ such a tab reads nil forever and the sidebar can file it under no
 project at all."
   (when (frame-live-p frame)
     (with-selected-frame frame
-      (let ((original (tab-bar--current-tab-index))
+      (let ((original (edmacs-workspaces--tab-bar-current-tab-index))
             (count (length (tab-bar-tabs frame))))
         (unwind-protect
             (dotimes (i count)
