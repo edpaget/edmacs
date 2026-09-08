@@ -984,19 +984,22 @@ buffer, which callers always arrange to be the one WINDOW displays."
                        (goto-char (point-max))
                        (vertical-motion (- body-height) window)
                        (point))))
-          (set-window-start window start t)
-          ;; Point may sit above the forced start (e.g. mid-navigation on a
-          ;; row that just scrolled off) -- pull it forward so the next
-          ;; redisplay cycle doesn't fight the scroll trying to keep it
-          ;; visible, which would silently undo the anchor. Applies to any
-          ;; window, not just the selected one: redisplay keeps a
-          ;; backgrounded window's own point visible too, regardless of
-          ;; which frame or window is currently selected, and
-          ;; `set-window-point' on the selected window already behaves
-          ;; exactly like `goto-char' per its own doc, so this is a pure
-          ;; widening of the existing behavior.
-          (when (< (window-point window) start)
-            (set-window-point window start))))))))
+          ;; Point wins in the window the user is actually in. Forcing the
+          ;; scroll there drags the cursor out of the project rows and into
+          ;; the usage block, and the next redraw drags it back -- which is
+          ;; what made `C-w h' land in the usage section and `k' fail to
+          ;; climb out of it.
+          (unless (and (eq window (selected-window))
+                       (< (window-point window) start))
+            (set-window-start window start t)
+            ;; Point may sit above the forced start (e.g. a backgrounded
+            ;; window whose row scrolled off) -- pull it forward so the next
+            ;; redisplay cycle doesn't fight the scroll trying to keep it
+            ;; visible, which would silently undo the anchor. Redisplay keeps
+            ;; a backgrounded window's own point visible too, regardless of
+            ;; which frame or window is currently selected.
+            (when (< (window-point window) start)
+              (set-window-point window start)))))))))
 
 (defun edmacs-sidebar--anchor-marker-at (position)
   "Return a marker at POSITION in the current buffer, with `insertion-type'

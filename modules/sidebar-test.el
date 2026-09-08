@@ -3051,6 +3051,37 @@ which depends on a redisplay cycle that never happens here."
           (when (window-live-p window) (delete-window window))
           (when (buffer-live-p buf) (kill-buffer buf)))))
 
+    (ert-deftest edmacs-sidebar-test-anchor-region-never-drags-point-in-the-selected-window ()
+      "The anchor must not move the cursor in the window the user is in.
+Forcing `window-start' to the last `window-body-height' lines and pulling
+point forward to meet it drags the cursor out of the project rows and down
+into the Claude usage block; every redraw (the agents tick, a buffer-list
+change, a usage refresh) then drags it back, so `C-w h' lands in the usage
+section and `k' cannot climb out. A backgrounded window still gets the
+anchor -- only the selected one yields."
+      (let* ((original-window (selected-window))
+             (buf (generate-new-buffer " *anchor-selected-point-test*"))
+             (window (split-window original-window)))
+        (unwind-protect
+            (progn
+              (set-window-buffer window buf)
+              (with-current-buffer buf
+                (dotimes (i 20) (insert (format "row %d\n" i)))
+                (let ((region-start (point))
+                      (top (save-excursion (goto-char (point-min))
+                                           (forward-line 2)
+                                           (point))))
+                  (insert "anchored one\nanchored two\n")
+                  (set-window-point window top)
+                  (with-selected-window window
+                    (cl-letf (((symbol-function 'window-body-height)
+                               (lambda (&optional _w) 5)))
+                      (edmacs-sidebar--anchor-region-to-bottom window region-start)))
+                  ;; Point stayed exactly where the user left it.
+                  (should (= top (window-point window))))))
+          (when (window-live-p window) (delete-window window))
+          (when (buffer-live-p buf) (kill-buffer buf)))))
+
     (ert-deftest edmacs-sidebar-test-anchor-region-noops-on-dead-window ()
       "`--anchor-region-to-bottom' is a no-op against a window that is not
 `window-live-p' -- the shape `edmacs-sidebar--redraw' hits on the very
