@@ -83,7 +83,10 @@
   :straight nil
   :after vertico
   :hook (minibuffer-setup . vertico-repeat-save)
-  :config
+  :init
+  ;; Registering here (not :config) keeps this unconditional on the
+  ;; :after vertico wrapper firing -- it must not wait on vertico-repeat.el
+  ;; itself being loaded, which :hook only triggers on first minibuffer use.
   (add-to-list 'savehist-additional-variables 'vertico-repeat-history))
 
 ;; `vertico-map''s own bindings (C-j/C-k/C-n/C-p/C-d/C-u/C-w) and

@@ -15,6 +15,7 @@
 ;; treesit-auto maps .go to go-ts-mode.
 
 (defvar eglot-workspace-configuration)
+(defvar eglot-server-programs)
 
 ;; gopls' own settings keys, not lsp-mode's `lsp-go-*' wrapper names.
 ;; Global rather than buffer-local, and merged rather than assigned: eglot
