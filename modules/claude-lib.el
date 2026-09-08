@@ -136,7 +136,10 @@
 ;; `completing-read-function' where the caller is the point, pre-fed
 ;; `unread-command-events' where the picker is, and `select-window' to
 ;; pin the target window first -- simulated keys follow the selected
-;; window, not the current buffer. (This is phase 6's territory; until
+;; window, not the current buffer. Undo the layout afterwards from a
+;; configuration captured for the TARGET window's frame:
+;; `save-window-excursion' only ever covers the selected frame, and this
+;; config is multi-frame by design. (This is phase 6's territory; until
 ;; its reusable input-feeding helpers land, drive these raw primitives
 ;; directly rather than inventing a helper symbol that does not exist
 ;; yet.)
@@ -724,22 +727,33 @@ raises answers with; KEYS, when non-nil, is a `kbd' key-sequence string
 pre-fed to `unread-command-events' for a COMMAND that reads its own
 keys instead of prompting. Both are `let'-bound, so input COMMAND never
 consumed is discarded here instead of leaking into the daemon's command
-loop, and the window configuration is restored afterwards.
+loop.
+
+The configuration saved and restored is WINDOW's own frame's, not the
+caller's: `save-window-excursion' covers only the selected frame, so
+with WINDOW on another frame it would restore an untouched frame and
+leave COMMAND's real layout changes standing.
 
 Signals a `user-error' if WINDOW is dead on entry, or if COMMAND deleted
 it -- there is then no buffer to report."
   (unless (window-live-p window)
     (user-error "claude-lib-window-buffer-after-command: WINDOW is not live"))
-  (let ((completing-read-function
+  (let ((wconfig (current-window-configuration (window-frame window)))
+        (completing-read-function
          (if choice (lambda (&rest _) choice) completing-read-function))
         (unread-command-events
          (if keys (listify-key-sequence (kbd keys)) unread-command-events)))
-    (save-window-excursion
-      (select-window window)
-      (call-interactively command)
-      (unless (window-live-p window)
-        (user-error "claude-lib-window-buffer-after-command: COMMAND deleted WINDOW"))
-      (buffer-name (window-buffer window)))))
+    (save-selected-window
+      (unwind-protect
+          (progn
+            (select-window window)
+            (call-interactively command)
+            (unless (window-live-p window)
+              (user-error "claude-lib-window-buffer-after-command: COMMAND deleted WINDOW"))
+            (buffer-name (window-buffer window)))
+        ;; Leaves the selected frame alone; `save-selected-window' is
+        ;; what puts the caller's own frame and window back.
+        (set-window-configuration wconfig t)))))
 
 (provide 'claude-lib)
 ;;; claude-lib.el ends here

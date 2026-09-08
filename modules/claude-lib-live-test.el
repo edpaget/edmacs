@@ -22,9 +22,10 @@
 ;;         -l modules/claude-lib-live-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; Needs a real `emacs' and `emacsclient' on PATH and the ability to fork
-;; a subprocess; skips are not expected in a normal dev environment, so
-;; none are built in here (contrast the pty-only suites in CLAUDE.md's
-;; Testing section, which this is not one of).
+;; a subprocess; the one cross-frame test below also needs `python3' to
+;; allocate a pty, and is the only test here that can skip. No pty is
+;; needed on the RUNNING suite (contrast the pty-only suites in
+;; CLAUDE.md's Testing section, which this is not one of).
 ;;
 ;; Also covers phase 3's AC1 for the promotion library built on top of
 ;; this same file: a function `claude-lib-promote'd in one plain batch
@@ -34,6 +35,11 @@
 ;; image. That check needs a real forked `emacs' but no daemon or
 ;; `emacsclient' at all, so it drives `call-process' directly rather
 ;; than going through the daemon helpers above.
+;;
+;; Phase 3's AC6 cross-frame regression lives here for a related reason:
+;; a SECOND real frame needs a controlling terminal, which a plain batch
+;; run has none of, so that one test forks its Emacs through `pty.spawn'
+;; (CLAUDE.md's Testing section) and skips only if `python3' is absent.
 ;;
 ;; Phase 3's AC5 boot-safety regressions live here for the same reason:
 ;; "the file still loads at the next daemon start" is only provable by
@@ -347,6 +353,67 @@ byte-identical to how the promotion found it."
               (should (string-match-p "no longer loads in a fresh Emacs" output)))
             (should (equal before (claude-lib-live-test--read-file tmp-lib)))))
       (ignore-errors (delete-file tmp-lib)))))
+
+;; ============================================================================
+;; Phase 3 AC6 -- the driver contains a command on a NON-selected frame
+;; ============================================================================
+
+(defun claude-lib-live-test--pty-batch (form)
+  "Run FORM in a fresh \"emacs -Q --batch\" attached to a real pty.
+Returns (EXIT-CODE OUTPUT). A second real frame needs a controlling
+terminal, which this suite's own process does not have; `pty.spawn'
+allocates one for the child, per CLAUDE.md's Testing section (`script -q
+/dev/null' is the documented alternative, but it fails wherever stdin is
+not itself a terminal). `pty.spawn' does not propagate the child's exit
+status, so callers assert on tokens the child prints, not on EXIT-CODE."
+  (with-temp-buffer
+    (let ((exit (call-process "python3" nil t nil "-c"
+                              "import pty,sys; pty.spawn(sys.argv[1:])"
+                              "emacs" "-Q" "--batch"
+                              "--eval" (prin1-to-string form))))
+      (list exit (buffer-string)))))
+
+(ert-deftest claude-lib-live-test-window-buffer-after-command-restores-other-frame ()
+  "`claude-lib-window-buffer-after-command' must put back the layout of
+WINDOW's OWN frame, which is the only frame COMMAND ever touched. With
+`save-window-excursion' it restored the caller's frame instead -- a
+no-op there and a permanent buffer switch on the frame under test, in a
+config whose windows/workspaces/sidebar model is multi-frame throughout."
+  (unless (executable-find "python3")
+    (ert-skip "needs python3 to attach a pty for a second real frame"))
+  (let* ((process-environment (cons "TERM=dumb" process-environment))
+         (lib (expand-file-name "modules/claude-lib.el" claude-lib-live-test--repo-root)))
+    (cl-destructuring-bind (_exit output)
+        (claude-lib-live-test--pty-batch
+         `(progn
+            (load ,lib nil t)
+            (defun claude-lib-live-test--switch ()
+              (interactive)
+              (switch-to-buffer (get-buffer-create "*claude-lib-live-test-target*")))
+            (condition-case err
+                (let* ((home-frame (selected-frame))
+                       (other (make-frame '((window-system . nil)
+                                            (tty . "/dev/tty")
+                                            (tty-type . "xterm"))))
+                       (window (frame-selected-window other))
+                       (resident (get-buffer-create "*claude-lib-live-test-resident*")))
+                  ;; `make-frame' selects the new tty frame, and the bug
+                  ;; only shows with WINDOW on a frame the caller is not on.
+                  (select-frame home-frame)
+                  (set-window-buffer window resident)
+                  (princ (format "SEEN=%s RESTORED=%s HOME=%s\n"
+                                 (claude-lib-window-buffer-after-command
+                                  window #'claude-lib-live-test--switch nil nil)
+                                 (buffer-name (window-buffer window))
+                                 (eq (selected-frame) home-frame))))
+              (error (princ (format "PROBE-ERROR=%S\n" err))))
+            (kill-emacs 0)))
+      ;; The command really ran on that window ...
+      (should (string-match-p "SEEN=\\*claude-lib-live-test-target\\*" output))
+      ;; ... and its layout change was rolled back there, not on the caller's
+      ;; frame, which is left selected.
+      (should (string-match-p "RESTORED=\\*claude-lib-live-test-resident\\*" output))
+      (should (string-match-p "HOME=t" output)))))
 
 (provide 'claude-lib-live-test)
 ;;; claude-lib-live-test.el ends here
