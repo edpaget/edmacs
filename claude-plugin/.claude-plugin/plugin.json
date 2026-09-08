@@ -1,0 +1,8 @@
+{
+  "name": "edmacs-driver",
+  "version": "0.1.0",
+  "description": "Drive this Emacs instance non-interactively without wedging the daemon.",
+  "author": {
+    "name": "Edward Paget"
+  }
+}

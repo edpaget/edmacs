@@ -444,13 +444,49 @@ ESC for programs that distinguish the two."
 ;; Spawn argument resolution
 ;; ============================================================================
 
+(defconst claude-term--source-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory containing this file, resolved once at THIS FILE's own load time.
+Captured into a constant rather than read inside a function: `load-file-name'
+reflects whichever file is currently being loaded at the moment it is
+evaluated, so a function that read it directly would resolve to the
+caller's file (e.g. a test file requiring this module) instead of this
+one, and would see nil -- an error, not a fallback -- once loading has
+finished and it is called from a live daemon instead.")
+
+(defun claude-term--plugin-dir ()
+  "Return this checkout's `claude-plugin/' directory, an absolute path.
+Resolved relative to `claude-term--source-directory', never any notion
+of \"the main checkout\" -- a worktree has its own git-tracked
+`claude-plugin/' sibling, distinct from the single shared package tree
+under `straight/', and must inject its own copy, not the main
+checkout's."
+  (expand-file-name "../claude-plugin" claude-term--source-directory))
+
+(defun claude-term--plugin-args ()
+  "Return the `--plugin-dir' pair injecting this checkout's edmacs plugin.
+`--plugin-dir' is purely additive (verified against CLI 2.1.263 -- no
+`--strict-plugin-dir' exists), so this can never displace an installed
+plugin; it only adds one, session-only, alongside whatever `claude
+plugin list' already reports."
+  (list "--plugin-dir" (claude-term--plugin-dir)))
+
 (defun claude-term--spawn-args (call-args)
-  "Return the final argv: `claude-term-extra-args' followed by CALL-ARGS.
+  "Return the final argv for CALL-ARGS.
+Element order is fixed: the `--plugin-dir' pair from
+`claude-term--plugin-args' first, then `claude-term-extra-args', then
+CALL-ARGS -- so neither an operator's `claude-term-extra-args' nor a
+call site's own args can ever be shadowed by the plugin injection, and
+the plugin pair's position in the resolved argv is deterministic.  The
+plugin injection is unconditional and NOT part of `claude-term-extra-args'
+itself: that variable's shipped default stays nil, so nothing rides on
+a spawn without a call site or this function naming it.
+
 Called exactly once per session, at the `claude-term' entry point --
 never by `claude-term--exec' and never on restart -- so mutating
 `claude-term-extra-args' later affects only future fresh spawns, not an
 already-running session's restart."
-  (append claude-term-extra-args call-args))
+  (append (claude-term--plugin-args) claude-term-extra-args call-args))
 
 ;; ============================================================================
 ;; Spawn / exit lifecycle

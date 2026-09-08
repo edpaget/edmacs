@@ -1,18 +1,45 @@
 ---
 name: emacs-usage
-description: Conventions for driving a live Emacs from the eval channel — how to exercise interactive surfaces (pickers, transients, compose buffers, keymaps) without wedging the daemon, which daemon to target, how to reload, and the bare `-Q` gate that catches a hard `require` the daemon hides.
+description: Drive a live Emacs from the eval channel without wedging the daemon.
 ---
-
-<!-- Content only. Phase 7 owns the plugin manifest (`.claude-plugin/plugin.json`)
-     and the `--plugin-dir` injection; this file is not half-wired, it is the
-     conventions phase 6 settled, parked where phase 7 will assemble them. -->
 
 # Driving Emacs interaction
 
-The eval channel itself is `modules/claude-lib.el` (write forms to a file, run
-`emacsclient -s <daemon> -e '(edmacs-claude-lib-eval-file "<form>" "<out>" "<root>")'`,
-read the output file). Everything below is about the half of Emacs that channel
-cannot touch naively.
+## Reach Emacs through the eval channel
+
+The channel is `modules/claude-lib.el`, file-in/file-out, no MCP server and no
+allowlist beyond Bash's own `permissions.defaultMode`:
+
+1. Write the elisp form(s) to evaluate, verbatim, to a form file.
+2. Run:
+   ```
+   emacsclient -s <daemon-name> -e \
+     '(edmacs-claude-lib-eval-file "<form-file>" "<output-file>" "<root>")'
+   ```
+   Three plain string literals — no shell-quoting hazard even for a form
+   containing a quote, backslash, or newline; that hazard lives inside the
+   form file's own contents, written by an ordinary file write, never
+   assembled on a command line.
+3. Read the output file. A non-zero `emacsclient` exit plus `*ERROR*: ...` on
+   stderr means a form signaled — there is no separate success/failure
+   protocol beyond `emacsclient`'s own.
+
+`ROOT` is required and never inferred from ambient `default-directory` or
+`(project-current)` — the daemon's last-touched buffer says nothing reliable
+about which project a given call means.
+
+## One sexp per call, not one call per sexp
+
+Every form in the form file is read and evaluated **in order**, not just the
+first — write several related forms into one file rather than round-tripping
+through `emacsclient` once per sexp. The **last** form's return value is what
+the output file's value section reports. Output from `print`/`princ` and from
+`message` is captured too, in call order, into the output file's printed
+section — so a multi-line result, incidental `message` chatter, and the final
+value all come back from one call. For an image, `claude-lib-render-rasterize`
+returns a file **path** (never image data — `emacsclient -e` only returns a
+value's printed representation), and that path is what to read with an
+ordinary file-reading tool.
 
 ## Never call an interactive surface directly
 
@@ -79,6 +106,40 @@ It runs `emacs -Q` and never `--init-directory` (that bootstraps a second
 straight package tree and can poison the main checkout's `straight/build`),
 takes module sources from the current checkout and packages from the main one,
 and refuses the name `server` outright.
+
+## Discover the library, don't restate it
+
+Emacs already indexes itself; do not build or consult a second index:
+
+```elisp
+(apropos-internal "^claude-lib-" #'fboundp)      ; list the library
+(documentation 'claude-lib-demo)                 ; full docstring
+(help-function-arglist 'claude-lib-demo)         ; signature
+```
+
+The cheap combined index — name plus first docstring line, for the whole
+library — is one form:
+
+```elisp
+(mapcar (lambda (s) (cons s (car (split-string (or (documentation s) "") "\n"))))
+        (apropos-internal "^claude-lib-" #'fboundp))
+```
+
+**Never `describe-function`.** `(with-output-to-string (describe-function 'foo))`
+returns the empty string — `describe-function` renders into a `*Help*` buffer,
+not `standard-output`, so it captures nothing back through the channel.
+`documentation` plus `help-function-arglist` are the read path; this skill
+carries no per-function documentation of its own precisely because the library
+answers that question live, and a copy here would go stale the moment a
+function changes without the staleness being visible.
+
+## Prefer a subprocess for anything long-running
+
+Elisp evaluates on the same thread the operator is using — a form that runs
+long blocks the daemon for every other client, the operator's own keystrokes
+included, the same way an unanswered minibuffer prompt does. Shell a
+long-running step out via `call-process`/`make-process` and poll or read its
+result, rather than doing the work in the evaluated form itself.
 
 ## Reload, and what reload does not do
 

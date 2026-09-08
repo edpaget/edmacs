@@ -348,7 +348,7 @@ command, not just `claude-term--exec' directly."
                  (should (equal (file-truename default-directory) (file-truename root))))
                (should (equal (length claude-term-live-test--spawn-log) 1))
                (should (equal (nth 2 (car claude-term-live-test--spawn-log))
-                               '("--foo" "--bar"))))))
+                               (append (claude-term--plugin-args) '("--foo" "--bar")))))))
        (ignore-errors (delete-directory root t))))))
 
 (ert-deftest claude-term-live-test-entry-point-switches-to-existing-live-session ()

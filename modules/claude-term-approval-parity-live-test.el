@@ -66,6 +66,25 @@
 ;;   because it re-resolves the environment from rc files and so reports
 ;;   unrelated inherited variables as differences.
 ;;
+;; THE CLAIM IS NOW NARROWER, DELIBERATELY: the argv `claude-term'
+;; resolves is no longer empty on a bare call.  `claude-term--spawn-args'
+;; unconditionally prepends a `--plugin-dir' pair injecting this
+;; checkout's `claude-plugin/' (the edmacs Emacs-driving skill) ahead of
+;; `claude-term-extra-args' and any call-supplied args.  `--plugin-dir'
+;; is purely additive -- there is no `--strict-plugin-dir', so it can
+;; only ever add a plugin, never displace one, and it is confirmed
+;; absent from `claude-term-approval-parity-live-test--permission-flags'
+;; below.  So the parity claim this file proves is: the argv a terminal
+;; and an Emacs-hosted session would run differs by EXACTLY that one
+;; pair, and by nothing that could move the prompt set.
+;; `...-spawn-argv-carries-no-permission-flag' asserts the delta is
+;; exactly that pair (not a substring or membership check, which a
+;; future stray flag could slip past), and
+;; `...-plugin-contributes-zero-hooks-and-mcp-servers' pins a fourth
+;; thing beyond the original three: the injected plugin itself
+;; registers no hook and no MCP server, so its mere presence cannot be
+;; how a permission decision changes either.
+;;
 ;; Recorded result of the run made when this file was added (2026-09-02,
 ;; on the author's machine, `defaultMode: auto' in
 ;; ~/Projects/dotfiles/claude/settings.json): all three pass -- "Ran 3
@@ -73,7 +92,11 @@
 ;; `auto-mode config' JSON hashed to
 ;; 9173c9df4032a3ccbdb466ea47eb1ce8c67a3677db6ca81092c9cb959ce7428c
 ;; identically from a login shell, from a bare `call-process', and under
-;; the ghostel spawn environment.
+;; the ghostel spawn environment.  That recorded run predates the
+;; `--plugin-dir' injection above; the effective-policy comparison
+;; itself is untouched by this file's own changes and still calls
+;; `(claude-term--spawn-args nil)' to build its spawn capture, so it
+;; picks up the longer argv automatically.
 ;;
 ;; ONE NOTE FOR ANYONE GREPPING: this file is the only place in the
 ;; repository that still contains the literals `--settings', `-p' and
@@ -81,12 +104,16 @@
 ;; every spawn.  They are here as the DENYLIST the argv test asserts
 ;; against, not as anything this configuration passes.  An audit that
 ;; greps for them should expect exactly these hits and no others; a hit
-;; anywhere else is the regression.
+;; anywhere else is the regression.  `--plugin-dir' is NOT one of those
+;; literals-only-here: it is now real production code in
+;; `modules/claude-term.el' (`claude-term--plugin-args'), so a grep for
+;; it turning up outside this file is expected, not a signal of drift.
 ;;
 ;; Every test `ert-skip's rather than fails when its prerequisites are
 ;; absent (no `claude' on `exec-path', no fetched ghostel source in this
-;; checkout), so a bare clone or CI box does not report a red run for a
-;; machine-local dependency.
+;; checkout, no plugin manifest found at the resolved `--plugin-dir'), so
+;; a bare clone or CI box does not report a red run for a machine-local
+;; dependency.
 ;;
 ;; Run:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
@@ -273,6 +300,13 @@ passed the CLI is passed here too."
 ;; Tests
 ;; ---------------------------------------------------------------------------
 
+(defconst claude-term-approval-parity-live-test--permitted-additions
+  (claude-term--plugin-args)
+  "The only non-permission argv addition a bare spawn may carry.
+Computed by calling `claude-term--plugin-args' directly, rather than
+hardcoding the `--plugin-dir' path as a literal, so this constant tracks
+the real injected value instead of drifting from it across a refactor.")
+
 (ert-deftest claude-term-approval-parity-live-test-spawn-argv-carries-no-permission-flag ()
   "`claude-term' resolves an argv with no permission-affecting flag.
 
@@ -281,21 +315,76 @@ The retired claude-repl spawned `claude -p --output-format stream-json
 this configuration ever registered.  Nothing may reintroduce a flag of
 that class through `claude-term-extra-args' defaults or through
 `claude-term--spawn-args' itself, or an Emacs-hosted session stops
-raising the same prompts as a terminal one."
+raising the same prompts as a terminal one.
+
+The argv now legitimately differs from a bare terminal invocation by
+exactly one addition: the `--plugin-dir' pair injecting this checkout's
+`claude-plugin/' (verified purely additive against CLI 2.1.263 -- there
+is no `--strict-plugin-dir', so it can only ever ADD a plugin, never
+displace one).  That is not a permission-affecting flag -- it is absent
+from `claude-term-approval-parity-live-test--permission-flags' -- so the
+checks below assert the delta is EXACTLY that pair and nothing else,
+rather than loosening to a substring or membership check that a future
+stray flag could slip past."
   ;; The shipped default must be empty: a non-nil default would ride on
-  ;; every spawn without any call site naming it.
+  ;; every spawn without any call site naming it.  This still holds
+  ;; unchanged under the plugin-dir injection: the pair is added by
+  ;; `claude-term--spawn-args' itself, never through
+  ;; `claude-term-extra-args', so that variable's own contract is
+  ;; untouched.
   (should (null (default-value 'claude-term-extra-args)))
-  (should (null (claude-term--spawn-args nil)))
-  ;; A caller's own EXTRA-ARGS pass through verbatim -- assert the
-  ;; resolved argv, not the source, so the check survives a refactor.
+  ;; A bare call now carries exactly the plugin-dir pair and nothing else.
+  (should (equal (claude-term--spawn-args nil)
+                 claude-term-approval-parity-live-test--permitted-additions))
+  ;; A caller's own EXTRA-ARGS pass through verbatim, appended after the
+  ;; plugin-dir pair -- assert the resolved argv, not the source, so the
+  ;; check survives a refactor.
   (let ((argv (claude-term--spawn-args '("--resume"))))
-    (should (equal argv '("--resume")))
+    (should (equal argv (append claude-term-approval-parity-live-test--permitted-additions
+                                '("--resume"))))
     (dolist (flag claude-term-approval-parity-live-test--permission-flags)
       (should-not (member flag argv))
       ;; Also catch the `--flag=value' spelling, which `member' misses.
       (should-not (seq-find (lambda (arg)
                               (string-prefix-p (concat flag "=") arg))
                             argv)))))
+
+(ert-deftest claude-term-approval-parity-live-test-plugin-contributes-zero-hooks-and-mcp-servers ()
+  "The injected `--plugin-dir' plugin registers no hook and no MCP server.
+
+This repo forbids an Emacs-side `PreToolUse' gate outright (CLAUDE.md,
+Tool Approval): such a hook can only tighten a decision, so it either
+double-prompts or silently loosens policy.  Phase 1 registers no tool
+and no MCP server either, so any count above zero here means something
+rode in unnoticed.  `claude plugin details' prints the component
+inventory directly, so this is one command rather than plugin
+introspection.
+
+Passes `--plugin-dir' explicitly on the `claude plugin details'
+invocation rather than assuming the plugin is pre-registered in the
+operator's own marketplace list -- otherwise this would either error on
+an unknown plugin name or silently check an unrelated, previously
+installed plugin of the same name."
+  (unless (executable-find "claude")
+    (ert-skip "needs a `claude' on exec-path"))
+  (let* ((plugin-dir (cadr (claude-term--plugin-args)))
+         (manifest (expand-file-name ".claude-plugin/plugin.json" plugin-dir)))
+    (unless (file-exists-p manifest)
+      (ert-skip (format "no plugin manifest at %s" manifest)))
+    (let* ((name (alist-get 'name (json-parse-string
+                                    (with-temp-buffer
+                                      (insert-file-contents manifest)
+                                      (buffer-string))
+                                    :object-type 'alist)))
+           (output (with-temp-buffer
+                     (let ((status (call-process "claude" nil t nil
+                                                 "--plugin-dir" plugin-dir
+                                                 "plugin" "details" name)))
+                       (unless (eq status 0)
+                         (ert-skip (format "`claude plugin details %s' exited %S" name status)))
+                       (buffer-string)))))
+      (should (string-match-p "Hooks (0)" output))
+      (should (string-match-p "MCP servers (0)" output)))))
 
 (ert-deftest claude-term-approval-parity-live-test-effective-auto-mode-policy-is-identical ()
   "The effective auto-mode policy is byte-identical in a terminal and in Emacs.

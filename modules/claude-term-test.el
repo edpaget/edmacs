@@ -111,16 +111,27 @@ keymap machinery at all."
 
 (ert-deftest claude-term-test-spawn-args-appends-call-args ()
   (let ((claude-term-extra-args '("--foo")))
-    (should (equal (claude-term--spawn-args '("--bar")) '("--foo" "--bar")))))
+    (should (equal (claude-term--spawn-args '("--bar"))
+                   (append (claude-term--plugin-args) '("--foo" "--bar"))))))
 
 (ert-deftest claude-term-test-spawn-args-nil-extra-args ()
   (let ((claude-term-extra-args nil))
-    (should (equal (claude-term--spawn-args nil) nil))
-    (should (equal (claude-term--spawn-args '("--bar")) '("--bar")))))
+    (should (equal (claude-term--spawn-args nil) (claude-term--plugin-args)))
+    (should (equal (claude-term--spawn-args '("--bar"))
+                   (append (claude-term--plugin-args) '("--bar"))))))
 
 (ert-deftest claude-term-test-spawn-args-nil-call-args ()
   (let ((claude-term-extra-args '("--foo")))
-    (should (equal (claude-term--spawn-args nil) '("--foo")))))
+    (should (equal (claude-term--spawn-args nil)
+                   (append (claude-term--plugin-args) '("--foo"))))))
+
+(ert-deftest claude-term-test-plugin-args-is-plugin-dir-pair ()
+  "The injected pair names the flag and a `claude-plugin/' directory that exists."
+  (let ((args (claude-term--plugin-args)))
+    (should (equal (car args) "--plugin-dir"))
+    (should (= (length args) 2))
+    (should (file-directory-p (cadr args)))
+    (should (string-suffix-p "claude-plugin" (directory-file-name (cadr args))))))
 
 ;; ============================================================================
 ;; Pane display
