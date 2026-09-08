@@ -1537,20 +1537,65 @@ sidebar redraw and a stray-sweep timer per tab, on the boot path."
         (when (buffer-live-p buf-c) (kill-buffer buf-c))
         (set-frame-parameter frame 'tabs saved)))))
 
+(defun edmacs-workspaces-test--desktop-pending-args (file)
+  "Return the `desktop-buffer-args-list' entry desktop.el writes for FILE.
+Round-tripped through the real `desktop-save' writer rather than
+hand-written, because the entry's field order is the only thing
+`edmacs-workspaces--buffer-name-directory' has to agree with, and a
+hand-written stub can only ever re-encode whatever the reader already
+assumes. `desktop-restore-eager' 0 forces every buffer onto the lazy
+list, which is the list this covers.
+
+The entry is picked by FILE appearing anywhere in it rather than at a
+known index -- the index is the thing under test -- because the suite's
+other tests leave buffers alive and the writer emits one entry per
+buffer, in buffer-list order."
+  (let* ((dir (file-name-as-directory (make-temp-file "edmacs-ws-desktop-" t)))
+         (desktop-dirname dir)
+         (desktop-restore-eager 0)
+         (desktop-buffer-args-list nil)
+         (buf (find-file-noselect file)))
+    (unwind-protect
+        (progn
+          (desktop-save dir)
+          ;; `desktop-read' is a no-op in batch, so eval just the pending
+          ;; buffer forms the writer emitted.
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name desktop-base-file-name dir))
+            (goto-char (point-min))
+            (while (re-search-forward "^(desktop-append-buffer-args\\b" nil t)
+              (goto-char (match-beginning 0))
+              (eval (read (current-buffer)) t)))
+          (seq-find (lambda (args) (member file args)) desktop-buffer-args-list))
+      (when (buffer-live-p buf) (kill-buffer buf))
+      (delete-directory dir t))))
+
 (ert-deftest edmacs-workspaces-test-root-from-ws-uses-the-desktop-args-list ()
   "`desktop-restore-eager' is 10, so at `desktop-after-read-hook' time most
 restored buffers do not exist yet: a `get-buffer'-only derivation would
 answer nil for nearly every background tab. The pending-restore list is
-the fallback that makes the migration actually stamp them."
+the fallback that makes the migration actually stamp them.
+
+The entry fed in is the one desktop.el's own writer produces, so a field
+order this reader gets wrong fails here instead of silently answering nil
+for every lazily restored buffer in a real session."
   (edmacs-workspaces-test--with-repos
     (let* ((root (edmacs-workspaces-test--dir "repoA"))
            (file (expand-file-name "notes.org" root))
            (ws (edmacs-workspaces-test--tab-ws "notes.org")))
+      (with-temp-file file (insert "notes\n"))
       (should-not (get-buffer "notes.org"))
       ;; No live buffer and no pending entry: nothing to derive from.
       (let ((desktop-buffer-args-list nil))
         (should-not (edmacs-workspaces--root-from-ws ws)))
-      (let ((desktop-buffer-args-list (list (list file "notes.org" 'org-mode))))
+      (let* ((entry (edmacs-workspaces-test--desktop-pending-args file))
+             (desktop-buffer-args-list (list entry)))
+        ;; The shape this reader is written against, asserted directly:
+        ;; (FILE-VERSION BUFFER-FILE-NAME BUFFER-NAME MAJOR-MODE ...).
+        (should (integerp (nth 0 entry)))
+        (should (equal (nth 1 entry) file))
+        (should (equal (nth 2 entry) "notes.org"))
+        (should-not (get-buffer "notes.org"))
         (should (equal (edmacs-workspaces--root-from-ws ws) root))))))
 
 (ert-deftest edmacs-workspaces-test-root-from-ws-fails-soft ()

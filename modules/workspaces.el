@@ -566,12 +566,15 @@ with desktop.el never loaded, which `bound-and-true-p' gives."
           (if-let* ((file (buffer-file-name buf)))
               (file-name-directory file)
             (buffer-local-value 'default-directory buf)))
-        ;; Each entry is (DESKTOP-FILE-NAME BUFFER-NAME MAJOR-MODE ...).
-        (when-let* ((entry (seq-find (lambda (args) (equal (nth 1 args) name))
+        ;; Each entry is `desktop-append-buffer-args's own argument list:
+        ;; (FILE-VERSION BUFFER-FILE-NAME BUFFER-NAME MAJOR-MODE ...), the
+        ;; leading integer included -- so the name is at 2, the file at 1.
+        (when-let* ((entry (seq-find (lambda (args) (equal (nth 2 args) name))
                                      (bound-and-true-p desktop-buffer-args-list)))
-                    (file (nth 0 entry))
+                    (file (nth 1 entry))
                     ((stringp file)))
-          (file-name-directory file)))))
+          (file-name-directory
+           (expand-file-name file (bound-and-true-p desktop-dirname)))))))
 
 (defun edmacs-workspaces--root-from-ws (ws)
   "Return the worktree root a tab's serialized WS shows, normalized, or nil.
