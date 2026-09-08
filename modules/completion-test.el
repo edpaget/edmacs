@@ -15,15 +15,29 @@
 ;; non-fatal "Error (use-package): ..." per missing package to stderr
 ;; and lets the file finish loading -- the same pattern documented for
 ;; `claude-term.el'/`windows.el' in .claude/CLAUDE.md. Expect (and do
-;; not treat as failure) benign stderr noise for vertico, orderless,
-;; consult, embark, corfu, cape and kind-icon: only `marginalia''s
-;; straight build directory is added to `load-path' below, since it is
-;; the only package these tests need actually loaded (confirmed live:
-;; `marginalia' loads standalone with no further straight dependencies,
-;; and `use-package''s default eager `:demand'-like behavior for a
-;; block with no deferring keyword -- no `:bind'/`:commands'/`:mode' --
-;; means `(require 'marginalia)' really runs during the `completion.el'
-;; load here, not merely on first use).
+;; not treat as failure) benign stderr noise for embark, corfu, cape
+;; and kind-icon, whose build dirs this file does not add.
+;;
+;; vertico, vertico's `:straight nil' extensions (vertico-directory,
+;; vertico-multiform, vertico-repeat, vertico-quick), orderless and
+;; consult all get their build dirs added AND get an explicit `require'
+;; before `completion.el' loads (below), for two independent reasons
+;; confirmed live against this checkout's real `straight/build/':
+;;
+;; 1. A `use-package' block carrying `:bind' (vertico's own block does)
+;;    defers its `require' until the bound key is actually pressed --
+;;    never, in a batch run -- so `:config' silently never executes and
+;;    `vertico-map'/`vertico-cycle' stay unbound unless `vertico' is
+;;    `require'd first. The same applies to every `:after vertico'
+;;    extension block.
+;; 2. `:straight nil' is an unrecognized `use-package' keyword with no
+;;    `straight.el' loaded (`-Q' loads none): each such block's macro
+;;    expansion aborts before its `:init'/`:config'/`:hook' ever runs.
+;;    A no-op `:straight' keyword handler, registered before the load,
+;;    fixes this for `vertico-directory'/`vertico-multiform'/
+;;    `vertico-repeat'/`vertico-quick' the same way it would for
+;;    `corfu-popupinfo' (left unstubbed here since nothing in this file
+;;    asserts on it).
 ;;
 ;; By contrast `modules/core.el' cannot be `load'ed standalone under
 ;; `-Q' without a stub: its three top-level `(straight-use-package ...)'
@@ -36,6 +50,16 @@
 ;; `straight/build/cond-let' to `load-path' so the real, unstubbed
 ;; `(require 'compat)' / `(require 'cond-let)' calls that follow
 ;; succeed for real.
+;;
+;; `core.el' must load BEFORE `completion.el': `core.el''s `savehist'
+;; block does a real (eager, no deferring keyword) `require' of
+;; `savehist' and `setq's `savehist-additional-variables' -- a plain
+;; `setq', not `add-to-list'. `completion.el''s `vertico-repeat' block
+;; `add-to-list's `vertico-repeat-history' onto that same variable, so
+;; loading `core.el' second would silently clobber it back out
+;; (confirmed live: loading in the old completion-then-core order left
+;; `vertico-repeat-history' entirely absent from
+;; `savehist-additional-variables').
 ;;
 ;; No test in this file `cl-letf's a C subr -- every setting under test
 ;; (`enable-recursive-minibuffers', `marginalia-align', `history-length',
@@ -102,10 +126,8 @@ real Emacs session) to enable this suite"))
 
   (progn
 
-    (add-to-list 'load-path
-                 (expand-file-name "marginalia" completion-test--build-root))
-
-    (load (expand-file-name "modules/completion.el" completion-test--repo-root) nil t)
+    (dolist (pkg '("marginalia" "vertico" "orderless" "consult"))
+      (add-to-list 'load-path (expand-file-name pkg completion-test--build-root)))
 
     (defun completion-test--load-core ()
       "Load modules/core.el standalone, stubbing `straight-use-package'.
@@ -121,7 +143,31 @@ hard-abort a standalone load with `void-function' otherwise. The
                    (expand-file-name "cond-let" completion-test--build-root))
       (load (expand-file-name "modules/core.el" completion-test--repo-root) nil t))
 
+    ;; Must run before `completion.el' loads -- see the load-order note
+    ;; in the Commentary above.
     (completion-test--load-core)
+
+    (require 'use-package)
+    ;; No-op `:straight' keyword: lets the `:straight nil' blocks below
+    ;; macro-parse under bare `-Q' (no `straight.el' loaded) so their
+    ;; `:init'/`:config'/`:hook' forms actually run and are assertable.
+    (add-to-list 'use-package-keywords :straight t)
+    (defun use-package-normalize/:straight (_name _keyword args) args)
+    (defun use-package-handler/:straight (name _keyword _arg rest state)
+      (use-package-process-keywords name rest state))
+
+    ;; Forces real loading ahead of `completion.el': every one of these
+    ;; is `:after vertico' or otherwise deferred via `:bind', so without
+    ;; a `require' here its `:config'/`:hook' would silently never run.
+    (require 'vertico)
+    (require 'vertico-directory)
+    (require 'vertico-multiform)
+    (require 'vertico-repeat)
+    (require 'vertico-quick)
+    (require 'orderless)
+    (require 'consult)
+
+    (load (expand-file-name "modules/completion.el" completion-test--repo-root) nil t)
 
     ;; ==========================================================================
     ;; AC1 -- marginalia--annotator resolves the built-in registry
@@ -178,7 +224,107 @@ hard-abort a standalone load with `void-function' otherwise. The
     ;; ==========================================================================
 
     (ert-deftest completion-test-m-g-f-still-flymake ()
-      (should (eq (lookup-key global-map (kbd "M-g f")) 'consult-flymake)))))
+      (should (eq (lookup-key global-map (kbd "M-g f")) 'consult-flymake)))
+
+    ;; ==========================================================================
+    ;; Phase 2 -- vertico core display variables
+    ;; ==========================================================================
+
+    (ert-deftest completion-test-vertico-count ()
+      (should (= vertico-count 13)))
+
+    (ert-deftest completion-test-vertico-resize ()
+      (should (eq vertico-resize t)))
+
+    (ert-deftest completion-test-vertico-scroll-margin ()
+      (should (= vertico-scroll-margin 2)))
+
+    ;; ==========================================================================
+    ;; AC1 -- vertico-multiform-mode active, command/category alists
+    ;; ==========================================================================
+
+    (ert-deftest completion-test-vertico-multiform-mode-active ()
+      (should (bound-and-true-p vertico-multiform-mode)))
+
+    (ert-deftest completion-test-vertico-multiform-commands ()
+      (should (equal (assq 'consult-imenu vertico-multiform-commands)
+                      '(consult-imenu buffer)))
+      (should (equal (assq 'consult-ripgrep vertico-multiform-commands)
+                      '(consult-ripgrep buffer)))
+      (should (equal (assq 'consult-line vertico-multiform-commands)
+                      '(consult-line buffer))))
+
+    (ert-deftest completion-test-vertico-multiform-categories-file-grid ()
+      (should (equal (assq 'file vertico-multiform-categories) '(file grid))))
+
+    ;; ==========================================================================
+    ;; AC2 -- vertico-repeat-save on minibuffer-setup-hook,
+    ;; vertico-repeat-history in savehist-additional-variables
+    ;; ==========================================================================
+
+    (ert-deftest completion-test-vertico-repeat-save-hook ()
+      (should (memq 'vertico-repeat-save minibuffer-setup-hook)))
+
+    (ert-deftest completion-test-vertico-repeat-history-in-savehist ()
+      (should (memq 'vertico-repeat-history savehist-additional-variables))
+      ;; Regression guard: core.el's plain `setq' additions must survive
+      ;; alongside completion.el's `add-to-list' addition.
+      (should (memq 'search-ring savehist-additional-variables))
+      (should (memq 'regexp-search-ring savehist-additional-variables)))
+
+    ;; ==========================================================================
+    ;; AC3 -- vertico-quick bindings do not collide
+    ;; ==========================================================================
+
+    (ert-deftest completion-test-vertico-quick-bindings ()
+      (should (eq (lookup-key vertico-map (kbd "C-q")) 'vertico-quick-exit))
+      (should (eq (lookup-key vertico-map (kbd "M-q")) 'vertico-quick-insert)))
+
+    (ert-deftest completion-test-vertico-quick-no-collision-regression ()
+      (should (eq (lookup-key vertico-map (kbd "C-h")) 'vertico-directory-up))
+      (should (eq (lookup-key vertico-map (kbd "C-j")) 'vertico-next))
+      (should (eq (lookup-key vertico-map (kbd "C-d")) 'vertico-scroll-down))
+      (should (eq (lookup-key vertico-map (kbd "C-w")) 'backward-kill-word)))
+
+    ;; ==========================================================================
+    ;; AC4 -- orderless applies to the file category, out of order
+    ;; ==========================================================================
+
+    (ert-deftest completion-test-completion-category-overrides-file-orderless ()
+      (should (equal (assq 'file completion-category-overrides)
+                      '(file (styles orderless partial-completion)))))
+
+    (ert-deftest completion-test-orderless-matching-styles-initialism ()
+      (should (memq 'orderless-initialism orderless-matching-styles)))
+
+    (defun completion-test--strip-completion-base-size (all)
+      "Drop the trailing base-size cdr `completion-all-completions' returns.
+Its return value is an improper list whose final cdr is an integer, not
+nil -- walk conses only, so callers get a plain list of candidates."
+      (let (acc (rest all))
+        (while (consp rest)
+          (push (car rest) acc)
+          (setq rest (cdr rest)))
+        (nreverse acc)))
+
+    (ert-deftest completion-test-orderless-file-category-out-of-order ()
+      (let* ((cands '("foo-bar.txt" "bar-foo.txt" "baz.txt"))
+             (table (lambda (str pred action)
+                      (if (eq action 'metadata)
+                          '(metadata (category . file))
+                        (complete-with-action action cands str pred))))
+             (names (mapcar #'substring-no-properties
+                             (completion-test--strip-completion-base-size
+                              (completion-all-completions "bar foo" table nil 7)))))
+        (should (equal (sort (copy-sequence names) #'string<)
+                        '("bar-foo.txt" "foo-bar.txt")))))
+
+    ;; ==========================================================================
+    ;; AC5 -- consult-narrow-key
+    ;; ==========================================================================
+
+    (ert-deftest completion-test-consult-narrow-key ()
+      (should (equal consult-narrow-key "<")))))
 
 (provide 'completion-test)
 ;;; completion-test.el ends here

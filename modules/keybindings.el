@@ -99,6 +99,8 @@
   "sp" '(consult-ripgrep :which-key "search project")
   "sf" '(consult-find :which-key "find file")
   "si" '(consult-imenu :which-key "imenu")
+  "sr" '(vertico-repeat :which-key "repeat last search")
+  "sR" '(vertico-repeat-select :which-key "pick from search history")
 
   ;; Projects
   "p" '(:ignore t :which-key "projects")

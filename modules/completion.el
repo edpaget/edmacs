@@ -41,7 +41,12 @@
               ;; Vim-style word deletion
               ("C-w" . backward-kill-word))
   :config
-  (setq vertico-cycle t))
+  ;; `vertico-preselect' stays at its shipped default ('directory);
+  ;; nothing here needs it changed.
+  (setq vertico-cycle t
+        vertico-count 13
+        vertico-resize t
+        vertico-scroll-margin 2))
 
 ;; Vertico extensions
 (use-package vertico-directory
@@ -55,15 +60,62 @@
               ("C-l" . vertico-directory-enter))
   :hook (rfn-eshadow-update-overlay . vertico-directory-tidy))
 
+;; buffer/file candidates render in a dedicated buffer instead of the
+;; minibuffer for the listed commands; file candidates render as a grid.
+(use-package vertico-multiform
+  :straight nil
+  :after vertico
+  :init
+  (vertico-multiform-mode)
+  :config
+  (setq vertico-multiform-commands
+        '((consult-imenu buffer)
+          (consult-ripgrep buffer)
+          (consult-line buffer))
+        vertico-multiform-categories
+        '((file grid))))
+
+;; `vertico-repeat-save' snapshots the session on every minibuffer entry so
+;; `vertico-repeat'/`vertico-repeat-select' can restore it later; the
+;; snapshot rides `savehist' across Emacs restarts via
+;; `vertico-repeat-history'.
+(use-package vertico-repeat
+  :straight nil
+  :after vertico
+  :hook (minibuffer-setup . vertico-repeat-save)
+  :config
+  (add-to-list 'savehist-additional-variables 'vertico-repeat-history))
+
+;; `vertico-map''s own bindings (C-j/C-k/C-n/C-p/C-d/C-u/C-w) and
+;; `vertico-directory''s (RET/DEL/M-DEL/C-h/C-l) leave C-q and M-q free;
+;; `evil-collection' and the rest of this repo bind neither key anywhere
+;; (checked: `grep -rn "\"C-q\"\|\"M-q\""' over both straight/build/evil-collection
+;; and modules/*.el turned up zero hits).
+(use-package vertico-quick
+  :straight nil
+  :after vertico
+  :bind (:map vertico-map
+              ("M-q" . vertico-quick-insert)
+              ("C-q" . vertico-quick-exit)))
+
 ;; ============================================================================
 ;; Orderless - Flexible completion style
 ;; ============================================================================
 
+;; `orderless-style-dispatchers' defaults to `orderless-affix-dispatch',
+;; so `=' `^' `~' `,' `!' `&' `%' component affixes already work with no
+;; setup here. `&' (match against the annotation) only pays off once
+;; marginalia is producing annotations, which the block below does.
 (use-package orderless
   :config
   (setq completion-styles '(orderless basic)
         completion-category-defaults nil
-        completion-category-overrides '((file (styles partial-completion)))))
+        completion-category-overrides '((file (styles orderless partial-completion)))
+        ;; Plain-quoted, not sharp-quoted: orderless's own functions aren't
+        ;; visible to the byte-compiler when this file compiles in isolation,
+        ;; and sharp-quoting them adds spurious "might not be defined"
+        ;; warnings for a value that is otherwise identical at runtime.
+        orderless-matching-styles '(orderless-literal orderless-regexp orderless-initialism)))
 
 ;; ============================================================================
 ;; Marginalia - Annotations for completions
@@ -131,6 +183,10 @@
   ;; Debounced: with `any', arrowing through results previewed and
   ;; fontified every candidate.
   (setq consult-preview-key '(:debounce 0.3 any))
+
+  ;; Narrow `consult-buffer' (and friends) to one source: `< b' buffers,
+  ;; `< f' files, `< p' project, `< ?' lists the available sources.
+  (setq consult-narrow-key "<")
 
   (setq xref-show-xrefs-function #'consult-xref
         xref-show-definitions-function #'consult-xref)
