@@ -1681,14 +1681,17 @@ fires."
   "FRAME -> pending timer that will run `edmacs-sidebar--restore-width'.")
 
 (defun edmacs-sidebar--restore-width (frame)
-  "Put FRAME's sidebar window back at its target width after a frame resize.
-Emacs resizes every window in proportion when a frame changes size --
-a maximized frame moved between a laptop screen and a wide external
-display, or a fullscreen toggle -- and a sidebar that grows with the
-frame is not a sidebar. The target is what `edmacs-sidebar-show' would
-ask for: the remembered width, else `edmacs-sidebar-width', clamped to
-the frame's NEW size. Then invalidates, so labels are re-fitted to that
-width. Runs from a timer, never inside the size-change hook itself."
+  "Put FRAME's sidebar window back at its target width.
+Undoes a width change the user did not ask for. Emacs resizes every
+window in proportion when a frame changes size -- a maximized frame
+moved between a laptop screen and a wide external display -- and
+`window-state-put' scales a restored layout the same way, so a tab
+switch brings the sidebar back at whatever fraction of the frame it was
+saved at. The target is what `edmacs-sidebar-show' would ask for: the
+remembered width, else `edmacs-sidebar-width', clamped to the frame's
+current size, or the strip width when collapsed. Then invalidates, so
+labels are re-fitted to that width. Runs from a timer, never inside the
+size-change hook itself."
   (remhash frame edmacs-sidebar--restore-width-timers)
   (when (frame-live-p frame)
     (when-let* ((window (edmacs-sidebar--window frame)))
@@ -1700,35 +1703,39 @@ width. Runs from a timer, never inside the size-change hook itself."
 
 (defun edmacs-sidebar--on-window-size-change-anchor (frame)
   "Registered on `window-size-change-functions': react to a size change
-of FRAME itself or of its OWN sidebar window, ignoring every other
-window's. `window-size-change-functions' fires for ANY window's resize
-or buffer change anywhere on FRAME; comparing current pixel sizes
-against `window-old-pixel-width'/`window-old-pixel-height' (and their
-body variants) -- redisplay's own before/after record for this hook --
-narrows this to the firings that matter.
+of FRAME's OWN sidebar window, ignoring every other window's.
+`window-size-change-functions' fires for ANY window's resize or buffer
+change anywhere on FRAME; comparing the sidebar window's current pixel
+size against `window-old-pixel-width'/`window-old-pixel-height' (and
+their body variants) -- redisplay's own before/after record for this
+hook -- narrows this to firings that changed the sidebar window itself.
+\(The root window's old sizes are not maintained, so a frame resize is
+not detected there; it shows up here as the sidebar's own width
+changing, which is all that matters.)
 
-FRAME itself resized (its root window's width changed): schedule
-`edmacs-sidebar--restore-width', which puts the sidebar back at its
-target width instead of the proportionally scaled one and then
-invalidates. Only the sidebar window's width changed (a divider drag,
-`C-w >'): invalidate (`edmacs-sidebar-invalidate'), since every label is
-fitted to the width at render time and only a redraw re-fits them. Only
-its height changed: reapply the bottom anchor
-(`edmacs-sidebar--reapply-bottom-anchor'), far cheaper than a rebuild.
+A width change the user asked for -- `this-command' is one of
+`edmacs-sidebar--interactive-resize-commands' -- invalidates
+\(`edmacs-sidebar-invalidate'): every label is fitted to the width at
+render time and only a redraw re-fits them. Any other width change --
+the frame resized and every window scaled with it, a tab switch whose
+`window-state-put' restored the sidebar at a saved fraction of the
+frame -- schedules `edmacs-sidebar--restore-width', which puts the
+window back at its target width and then invalidates. A height-only
+change reapplies the bottom anchor
+\(`edmacs-sidebar--reapply-bottom-anchor'), far cheaper than a rebuild.
 A no-op for a frame with no live sidebar window, or whose sidebar
 window's geometry did not change."
   (when (frame-live-p frame)
-    (when-let* ((window (edmacs-sidebar--window frame))
-                (root (frame-root-window frame)))
+    (when-let* ((window (edmacs-sidebar--window frame)))
       (cond
-       ((/= (window-pixel-width root) (window-old-pixel-width root))
-        (unless (gethash frame edmacs-sidebar--restore-width-timers)
-          (puthash frame
-                   (run-at-time 0 nil #'edmacs-sidebar--restore-width frame)
-                   edmacs-sidebar--restore-width-timers)))
        ((or (/= (window-pixel-width window) (window-old-pixel-width window))
             (/= (window-body-width window t) (window-old-body-pixel-width window)))
-        (edmacs-sidebar-invalidate frame))
+        (if (memq this-command edmacs-sidebar--interactive-resize-commands)
+            (edmacs-sidebar-invalidate frame)
+          (unless (gethash frame edmacs-sidebar--restore-width-timers)
+            (puthash frame
+                     (run-at-time 0 nil #'edmacs-sidebar--restore-width frame)
+                     edmacs-sidebar--restore-width-timers))))
        ((or (/= (window-pixel-height window) (window-old-pixel-height window))
             (/= (window-body-height window t) (window-old-body-pixel-height window)))
         (edmacs-sidebar--reapply-bottom-anchor frame))))))

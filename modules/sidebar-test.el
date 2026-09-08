@@ -3170,93 +3170,101 @@ neither `--reapply-bottom-anchor' nor `--redraw'."
     (ert-deftest edmacs-sidebar-test-on-window-size-change-anchor-gates-on-own-geometry ()
       "This hook fires for ANY window's resize or buffer change anywhere on
 the frame -- e.g. every window pushed onto windows.el's master-and-stack
-column. Comparing against the `window-old-*' record narrows it to what
-matters: the frame itself resizing schedules a width restore, the
-sidebar window's own width changing invalidates the frame (labels are
-fitted to the width at render time), its height changing reapplies the
-bottom anchor, and none of them calls `--redraw' directly."
+column. Comparing against the `window-old-*' record narrows it to the
+sidebar window's own geometry: a width change from one of the user's
+resize commands invalidates the frame (labels are fitted to the width at
+render time); any other width change -- a frame resize, a tab switch's
+`window-state-put' -- schedules a width restore; a height-only change
+reapplies the bottom anchor; and none of them calls `--redraw' directly."
       (edmacs-sidebar-test--with-frame ((reapplied nil) (redrawn nil) (invalidated nil))
         (edmacs-sidebar-show frame)
         (let* ((window (edmacs-sidebar--window frame))
-               (root (frame-root-window frame))
                (same (lambda (fn) (lambda (&optional w) (funcall fn (or w window)))))
-               (sidebar-changed
-                (lambda (fn) (lambda (&optional w) (if (eq w window) 1 (funcall fn w)))))
-               (root-changed
-                (lambda (fn) (lambda (&optional w) (if (eq w root) 1 (funcall fn w)))))
+               (changed (lambda (fn) (lambda (&optional w) (if (eq w window) 1 (funcall fn w)))))
                (pixel-width (lambda (w) (window-pixel-width w)))
                (body-width (lambda (w) (window-body-width w t)))
                (pixel-height (lambda (w) (window-pixel-height w)))
                (body-height (lambda (w) (window-body-height w t)))
-               (run (lambda (old-width old-body-width old-height old-body-height)
+               (run (lambda (command old-width old-height)
                       (setq reapplied nil redrawn nil invalidated nil)
-                      (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
-                                 (lambda (_frame) (setq reapplied t)))
-                                ((symbol-function 'edmacs-sidebar--redraw)
-                                 (lambda (_frame) (setq redrawn t)))
-                                ((symbol-function 'edmacs-sidebar-invalidate)
-                                 (lambda (&optional _frame) (setq invalidated t)))
-                                ((symbol-function 'window-old-pixel-width) old-width)
-                                ((symbol-function 'window-old-body-pixel-width) old-body-width)
-                                ((symbol-function 'window-old-pixel-height) old-height)
-                                ((symbol-function 'window-old-body-pixel-height) old-body-height))
-                        (edmacs-sidebar--on-window-size-change-anchor frame)))))
+                      (let ((this-command command))
+                        (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
+                                   (lambda (_frame) (setq reapplied t)))
+                                  ((symbol-function 'edmacs-sidebar--redraw)
+                                   (lambda (_frame) (setq redrawn t)))
+                                  ((symbol-function 'edmacs-sidebar-invalidate)
+                                   (lambda (&optional _frame) (setq invalidated t)))
+                                  ((symbol-function 'window-old-pixel-width) old-width)
+                                  ((symbol-function 'window-old-body-pixel-width)
+                                   (funcall same body-width))
+                                  ((symbol-function 'window-old-pixel-height) old-height)
+                                  ((symbol-function 'window-old-body-pixel-height)
+                                   (funcall same body-height)))
+                          (edmacs-sidebar--on-window-size-change-anchor frame)))))
+               (pending (lambda () (gethash frame edmacs-sidebar--restore-width-timers)))
+               (drop-pending (lambda ()
+                               (when-let* ((timer (funcall pending)))
+                                 (cancel-timer timer)
+                                 (remhash frame edmacs-sidebar--restore-width-timers)))))
           ;; Unchanged geometry: nothing runs.
-          (funcall run (funcall same pixel-width) (funcall same body-width)
-                   (funcall same pixel-height) (funcall same body-height))
+          (funcall run nil (funcall same pixel-width) (funcall same pixel-height))
           (should-not reapplied)
           (should-not redrawn)
           (should-not invalidated)
-          (should-not (gethash frame edmacs-sidebar--restore-width-timers))
-          ;; The sidebar's height only: reapplies the anchor.
-          (funcall run (funcall same pixel-width) (funcall same body-width)
-                   (funcall sidebar-changed pixel-height) (funcall same body-height))
+          (should-not (funcall pending))
+          ;; Height only: reapplies the anchor.
+          (funcall run nil (funcall same pixel-width) (funcall changed pixel-height))
           (should reapplied)
           (should-not redrawn)
           (should-not invalidated)
-          ;; The sidebar's width only: invalidates for a re-fit.
-          (funcall run (funcall sidebar-changed pixel-width) (funcall same body-width)
-                   (funcall same pixel-height) (funcall same body-height))
+          (should-not (funcall pending))
+          ;; Width, from the user's own resize command: invalidates for a re-fit.
+          (funcall run 'evil-window-increase-width
+                   (funcall changed pixel-width) (funcall same pixel-height))
           (should invalidated)
           (should-not reapplied)
           (should-not redrawn)
-          (should-not (gethash frame edmacs-sidebar--restore-width-timers))
-          ;; The frame itself: schedules a width restore, nothing immediate.
-          (funcall run (funcall root-changed pixel-width) (funcall same body-width)
-                   (funcall same pixel-height) (funcall same body-height))
+          (should-not (funcall pending))
+          ;; Width, from anything else: schedules a restore, nothing immediate.
+          (funcall run nil (funcall changed pixel-width) (funcall same pixel-height))
           (should-not invalidated)
           (should-not reapplied)
           (should-not redrawn)
-          (let ((timer (gethash frame edmacs-sidebar--restore-width-timers)))
+          (let ((timer (funcall pending)))
             (should (timerp timer))
             ;; A second firing before the timer runs does not stack another.
-            (funcall run (funcall root-changed pixel-width) (funcall same body-width)
-                     (funcall same pixel-height) (funcall same body-height))
-            (should (eq timer (gethash frame edmacs-sidebar--restore-width-timers)))
-            (cancel-timer timer)
-            (remhash frame edmacs-sidebar--restore-width-timers)))
+            (funcall run 'tab-bar-select-tab
+                     (funcall changed pixel-width) (funcall same pixel-height))
+            (should (eq timer (funcall pending))))
+          (funcall drop-pending))
         :cleanup
+        (when-let* ((timer (gethash frame edmacs-sidebar--restore-width-timers)))
+          (cancel-timer timer)
+          (remhash frame edmacs-sidebar--restore-width-timers))
         (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
-    (ert-deftest edmacs-sidebar-test-frame-resize-restores-the-sidebar-width ()
-      "A frame resize scales every window in proportion; the sidebar must
-come back at its target width, not the scaled one. The scaled state is
-produced by widening the sidebar window directly, the frame resize is
-signalled to the hook through a root window whose old width differs,
-and the scheduled `edmacs-sidebar--restore-width' is run by hand."
+    (ert-deftest edmacs-sidebar-test-unrequested-width-change-restores-the-sidebar-width ()
+      "A frame resize scales every window in proportion, and a tab switch's
+`window-state-put' restores the sidebar at the fraction of the frame it
+was saved at; either way the sidebar must come back at its target width.
+The scaled state is produced by widening the sidebar window directly,
+the hook sees it with no resize command in `this-command', and the
+scheduled `edmacs-sidebar--restore-width' is run by hand."
       (edmacs-sidebar-test--with-clean-redraw-queue
         (edmacs-sidebar-test--with-frame ()
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
           (edmacs-sidebar-show frame)
           (let* ((window (edmacs-sidebar--window frame))
-                 (root (frame-root-window frame))
-                 (target (edmacs-sidebar--target-width frame)))
+                 (target (edmacs-sidebar--target-width frame))
+                 (old-pixel-width (window-pixel-width window)))
             (should (= (window-total-width window) target))
             (window-resize window 10 t)
             (should (> (window-total-width window) target))
-            (cl-letf (((symbol-function 'window-old-pixel-width)
-                       (lambda (&optional w) (if (eq w root) 1 (window-pixel-width w)))))
-              (edmacs-sidebar--on-window-size-change-anchor frame))
+            (let ((this-command nil))
+              (cl-letf (((symbol-function 'window-old-pixel-width)
+                         (lambda (&optional w) (if (eq w window) old-pixel-width
+                                                 (window-pixel-width w)))))
+                (edmacs-sidebar--on-window-size-change-anchor frame)))
             (let ((timer (gethash frame edmacs-sidebar--restore-width-timers)))
               (should (timerp timer))
               (cancel-timer timer)
@@ -3267,12 +3275,30 @@ and the scheduled `edmacs-sidebar--restore-width' is run by hand."
           :cleanup
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil))))
 
+    (ert-deftest edmacs-sidebar-test-restore-width-keeps-a-collapsed-strip-at-strip-width ()
+      "The restore respects the collapsed state: the target of a collapsed
+frame is the strip width, so the timer never re-expands a strip a tab
+switch happened to squeeze."
+      (edmacs-sidebar-test--with-clean-redraw-queue
+        (edmacs-sidebar-test--with-frame ()
+          (edmacs-sidebar-collapse frame)
+          (let* ((window (edmacs-sidebar--window frame))
+                 (before (window-body-width window)))
+            (should (frame-parameter frame 'edmacs-sidebar-collapsed))
+            (edmacs-sidebar--restore-width frame)
+            (should (= (window-body-width window) before))
+            (should (frame-parameter frame 'edmacs-sidebar-collapsed)))
+          :cleanup
+          (edmacs-sidebar-expand frame)
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil))))
+
     (ert-deftest edmacs-sidebar-test-width-change-rerenders-at-the-new-width ()
-      "Widening the sidebar window through the size-change hook ends in a
-real redraw fitted to the new width once the coalesced flush runs -- the
-path a divider drag or `C-w >' takes. `window-old-pixel-width' is stubbed
-to the pre-resize value, standing in for redisplay's own before/after
-record, which batch never writes; the heights read as unchanged."
+      "Widening the sidebar window through the size-change hook, from one of
+the user's own resize commands, ends in a real redraw fitted to the new
+width once the coalesced flush runs -- the path `C-w >' takes.
+`window-old-pixel-width' is stubbed to the pre-resize value, standing in
+for redisplay's own before/after record, which batch never writes; the
+heights read as unchanged."
       (edmacs-sidebar-test--with-clean-redraw-queue
         (edmacs-sidebar-test--with-frame ((rendered-at nil))
           (edmacs-sidebar-show frame)
@@ -3282,7 +3308,8 @@ record, which batch never writes; the heights read as unchanged."
             (should (window-live-p window))
             (window-resize window 6 t)
             (should (> (window-pixel-width window) old-pixel-width))
-            (cl-letf* ((render (symbol-function 'edmacs-sidebar--render))
+            (cl-letf* ((this-command 'evil-window-increase-width)
+                       (render (symbol-function 'edmacs-sidebar--render))
                        ((symbol-function 'edmacs-sidebar--render)
                         (lambda (rows width &rest rest)
                           (setq rendered-at width)
