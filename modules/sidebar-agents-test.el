@@ -136,6 +136,50 @@ Mirrors sidebar.el's implementation for tests."
       agent)
 
     ;; ==========================================================================
+    ;; declare-function sentinel -- keeps the sidebar.el stub set in this
+    ;; file honest against sidebar-agents.el's own forward declarations, so
+    ;; a new call site fails here in well under a second with a clear
+    ;; message instead of surfacing as a mysterious void-function deep in
+    ;; an unrelated behavioral test.
+    ;; ==========================================================================
+
+    (defconst edmacs-sidebar-agents-test--sidebar-stubs
+      `((edmacs-sidebar--redraw . ,(lambda (_frame) nil))
+        (edmacs-sidebar-redraw-frames . ,(lambda () (list 'fake-frame)))
+        (edmacs-sidebar--window . ,(lambda (_frame) nil))
+        (edmacs-sidebar-hide . ,(lambda (&optional _frame) nil)))
+      "Canonical stub for every `sidebar' target sidebar-agents.el
+`declare-function's -- the sentinel test below asserts this list stays
+exhaustive against the module's own source.")
+
+    (ert-deftest edmacs-sidebar-agents-test-declare-function-sidebar-targets-stubbed ()
+      "Every `(declare-function X \"sidebar\")' in sidebar-agents.el has a
+matching entry in `edmacs-sidebar-agents-test--sidebar-stubs' -- this is
+what turns a new uncovered call into an immediate, clearly-labeled
+failure here rather than a void-function deep in a behavioral test."
+      (let ((path (expand-file-name "modules/sidebar-agents.el" default-directory))
+            (found nil))
+        (with-temp-buffer
+          (insert-file-contents path)
+          (goto-char (point-min))
+          (while (re-search-forward
+                  "^(declare-function \\([^ ]+\\) \"sidebar\")" nil t)
+            (push (intern (match-string 1)) found)))
+        (should found)
+        (dolist (sym found)
+          (should (assq sym edmacs-sidebar-agents-test--sidebar-stubs)))
+        ;; Installing each stub via a real `fset' (not just trusting the
+        ;; alist shape) catches a malformed binding -- a non-function
+        ;; cdr, or a symbol that fails to `fset' -- not just a missing key.
+        (dolist (pair edmacs-sidebar-agents-test--sidebar-stubs)
+          (let ((sym (car pair)) (orig (symbol-function (car pair))))
+            (unwind-protect
+                (progn
+                  (fset sym (cdr pair))
+                  (should (fboundp sym)))
+              (fset sym orig))))))
+
+    ;; ==========================================================================
     ;; Glyphs
     ;; ==========================================================================
 
@@ -350,7 +394,9 @@ assertions passing untouched."
       (edmacs-sidebar-agents-test--with-clean-state
         (let ((redraw-calls 0))
           (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
-                     (lambda (_frame) (setq redraw-calls (1+ redraw-calls)))))
+                     (lambda (_frame) (setq redraw-calls (1+ redraw-calls))))
+                    ((symbol-function 'edmacs-sidebar-redraw-frames)
+                     (lambda () (list 'fake-frame))))
             (should-not edmacs-sidebar-agents-show-all)
             (edmacs-sidebar-agents-toggle-all)
             (should edmacs-sidebar-agents-show-all)
@@ -375,7 +421,9 @@ assertions passing untouched."
           (cl-letf (((symbol-function 'edmacs-workspaces-open-worktree)
                      (lambda (dir) (push dir opened)))
                     ((symbol-function 'edmacs-sidebar--redraw)
-                     (lambda (_frame) (setq redraws (1+ redraws)))))
+                     (lambda (_frame) (setq redraws (1+ redraws))))
+                    ((symbol-function 'edmacs-sidebar-redraw-frames)
+                     (lambda () (list 'fake-frame))))
             (edmacs-sidebar-agents--visit-common agent)
             (should (equal '("/repo/wt/") opened))
             (should (eq 'idle (edmacs-agent-status agent)))

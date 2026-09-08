@@ -146,7 +146,7 @@ the suite still exits 0 while silently testing less:
 
 | suite | skips a pty clears |
 |---|---|
-| `sidebar-test.el` | 4 |
+| `sidebar-test.el` | 2 |
 | `sidebar-buffers-live-test.el` | 2 |
 | `sidebar-agents-live-test.el` | 1 |
 | `workspaces-live-test.el` | 2 |
@@ -159,21 +159,24 @@ single-frame, and the suite now runs 52/52 with zero skips under plain
 not a terminal, so `/dev/tty` is still absent inside it -- it is the right
 tool for fringe and width assertions, the wrong one for these.
 
-Attach a pty instead. `script -q /dev/null <cmd>` is what the file headers
-document, and it works from an interactive shell -- but it fails wherever
-stdin is not itself a terminal (`tcgetattr/ioctl: Operation not supported on
-socket`), which includes most non-interactive contexts. This allocates one
-directly and works in both:
+Attach a pty instead. `script -q /dev/null <cmd>` works from an interactive
+shell -- but it fails wherever stdin is not itself a terminal
+(`tcgetattr/ioctl: Operation not supported on socket`), which includes most
+non-interactive contexts. `scripts/pty-ert.sh` allocates one directly (via
+Python's `pty` module, translating its wait status into a real exit code)
+and works in both; the four suites in the table above document it as their
+pty invocation:
 
 ```bash
-python3 -c 'import pty,sys; pty.spawn(sys.argv[1:])' \
-  emacs -Q --batch -l ert -l modules/git-common-dir.el \
-        -l modules/sidebar-test.el -f ert-run-tests-batch-and-exit
+scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/git-common-dir.el \
+      -l modules/sidebar-test.el -f ert-run-tests-batch-and-exit
 ```
 
-Expect it to be slower -- `sidebar-test.el` goes from 1.5s to ~19s -- because
+Expect it to be slower -- `sidebar-test.el` goes from ~1.4s to ~9s -- because
 a real terminal is being emulated. Worth it before landing: it is the only
-way to drive that skip count to zero.
+way to drive that skip count to zero. `scripts/pty-ert.sh false; echo $?`
+prints non-zero, confirming the wrapper propagates a wrapped failure rather
+than the raw `pty.spawn` wait status.
 
 #### GUI-only geometry assertions
 
@@ -234,9 +237,14 @@ code; `WARN` (no such parameter exists -- the read is ambient by
 construction, e.g. the `(or PARAM (selected-frame))` idiom) is
 informational only. Suppress a legitimate residual finding with a
 `;; ambient-reads: ok` comment on the finding's line or the line above --
-there is no separate whitelist file. The lint's original true positive in
-`modules/sidebar.el` (`--anchor-region-to-bottom` gating `set-window-point`
-on the selected window) is fixed; that file now reports zero findings.
+there is no separate whitelist file. The lint's exit code is the source of
+truth for whether every known ERROR is currently fixed, not any specific
+function or file named here -- a fix that stands today can regress
+silently if the lint is not re-run after a later change touches the same
+code. Re-run it (`emacs -Q --batch -l scripts/ambient-reads.el -f
+edmacs-ambient-reads-batch modules/*.el`) after any change to a function
+that takes a frame/window/buffer/directory parameter, and confirm the
+summary line reads `0 error` before trusting that count in isolation.
 
 ### Startup check
 

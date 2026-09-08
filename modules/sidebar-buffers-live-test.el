@@ -9,10 +9,20 @@
 ;; window, `bufferlo-buffer-list' per-tab/per-frame isolation, RET/[/]/d/s
 ;; driving real `tab-bar'/`windows.el' state, and the debounce timer.
 ;;
-;; sidebar.el and windows.el ARE loaded for real (unlike the pure
-;; suite); workspaces.el is NOT -- this file reimplements the handful of
-;; its pure lookups sidebar.el's own worktree redraw path calls, the same
-;; convention sidebar-agents-live-test.el already uses for the same seam.
+;; sidebar.el, windows.el, and workspaces.el are ALL loaded for real
+;; (unlike the pure suite): every enumeration/lookup function sidebar.el's
+;; worktree redraw path calls (`edmacs-workspaces-groups'/`-tabs-in-group'/
+;; `-tab-root'/`-current-group'/`-find-tab'/`-select-tab') runs unstubbed
+;; against real tab-bar state. Only `edmacs-git-common-dir',
+;; `edmacs-workspaces-group-name', `edmacs-workspaces-classify-root' and
+;; `edmacs-workspaces-open-worktree' are overridden -- via `cl-letf'
+;; scoped to `edmacs-sidebar-buffers-live-test--with-scenario's body,
+;; applied AFTER the real `load' below rather than as top-level `defun's
+;; the load would otherwise clobber (the exact silent-clobber bug this
+;; file once had). See the block comment just above that `load' for what
+;; each override does and why the real, git-common-dir-based
+;; implementation cannot resolve any of this file's fixture roots (fresh
+;; temp directories, never real git worktrees) at all.
 ;;
 ;; agents.el and sidebar-agents.el are ALSO loaded for real here, purely
 ;; so one test (`edmacs-sidebar-live-test-composed-worktree-render-
@@ -25,12 +35,12 @@
 ;; this composed shape was otherwise never exercised under any guard.
 ;;
 ;; A second real frame needs a controlling terminal -- absent under
-;; plain `-Q --batch', present under `script -q /dev/null emacs -Q
+;; plain `-Q --batch', present under `scripts/pty-ert.sh emacs -Q
 ;; --batch ...' -- so the two tests needing one (`per-frame-isolation',
 ;; `toggle-is-frame-local') skip cleanly under the plain invocation,
 ;; following sidebar-test.el's own documented convention; that plain
-;; invocation is this file's primary, CI-equivalent check. `script -q
-;; /dev/null' is what actually exercises them.
+;; invocation is this file's primary, CI-equivalent check.
+;; `scripts/pty-ert.sh' is what actually exercises them.
 ;;
 ;; Root-caused (edmacs-sidebar-polish phase 14, after this Commentary's
 ;; earlier "bufferlo pty sharing" / "`#<dead frame>' lifecycle" guesses
@@ -66,7 +76,7 @@
 ;; `--make-second-frame-or-skip' and thread that explicit variable
 ;; through every subsequent read/write instead of relying on
 ;; `(selected-frame)', so they genuinely exercise two distinct frames
-;; and pass under `script -q /dev/null' -- no assertion is excused here
+;; and pass under a real pty -- no assertion is excused here
 ;; any more. sidebar-buffers-test.el's
 ;; `toggle-flat-scopes-every-call-to-selected-frame' and
 ;; `on-worktree-section-scopes-frame-parameter-to-explicit-frame' remain
@@ -84,8 +94,8 @@
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
 ;;         -l modules/sidebar-buffers-live-test.el -f ert-run-tests-batch-and-exit
 ;;
-;; To also exercise the second-frame test:
-;;   script -q /dev/null emacs -Q --batch -l ert \
+;; To also exercise the second-frame tests:
+;;   scripts/pty-ert.sh emacs -Q --batch -l ert \
 ;;         -l modules/git-common-dir.el -l modules/sidebar-buffers-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 
@@ -141,13 +151,42 @@ worktree in a real Emacs session) to enable this suite"))
     (bufferlo-mode 1)
     (require 'magit-section)
 
-    ;; workspaces.el is not loaded (see this file's own Commentary); the
-    ;; small pure lookups sidebar.el's redraw/activate path calls are real,
-    ;; unstubbed reimplementations of its own logic against real tab-bar
-    ;; primitives, the same convention sidebar-test.el/sidebar-agents-live-
-    ;; test.el use for their own suites. The registered-worktrees table is
-    ;; inert -- kept only so this file's many existing `--register-worktrees'
-    ;; call sites keep working; no production code reads it any more.
+    ;; workspaces.el IS loaded for real below, alongside windows.el and
+    ;; sidebar.el -- its pure enumeration/lookup functions
+    ;; (`edmacs-workspaces-groups'/`-tabs-in-group'/`-tab-root'/
+    ;; `-current-group'/`-find-tab'/`-select-tab') run unstubbed against
+    ;; real tab-bar state. Three of its functions are overridden, via
+    ;; `cl-letf' scoped to `edmacs-sidebar-buffers-live-test--with-scenario's
+    ;; body (the sessions.el override-after-real-load convention -- a
+    ;; top-level `defun' here would just be clobbered by the real `load'
+    ;; below, which is the exact bug this rewrite fixes):
+    ;;
+    ;; - `edmacs-git-common-dir' -- none of this file's fixture roots (fresh
+    ;;   temp directories) name a real git worktree, so returning nil
+    ;;   unconditionally keeps `edmacs-sidebar--derive-main-root' from ever
+    ;;   attempting a real (and here, pointlessly failing) `git' subprocess
+    ;;   -- critical for this file's own composed no-shellout guard test.
+    ;; - `edmacs-workspaces-group-name' -- resolved by scanning tabs for
+    ;;   one whose stamped root equals ROOT, returning its real
+    ;;   `tab-bar-tab-group-function' group, since the real implementation
+    ;;   (git-common-dir-based) can never resolve a fixture root at all.
+    ;;   `edmacs-sidebar-buffers--tab-number-for-root' (sidebar-buffers.el)
+    ;;   needs this to resolve RET/`[`/`]` against a real open tab.
+    ;; - `edmacs-workspaces-classify-root' -- ROOT classifies `main' when it
+    ;;   is the first root ever stamped for its group, else nil; the real
+    ;;   implementation is also git-common-dir-based and could never
+    ;;   classify a fixture root `main' at all, which would leave a
+    ;;   single-tab project's own project row unable to resolve its own
+    ;;   open tab (`edmacs-sidebar--section-tab-number' needs a `main'-
+    ;;   classified tab's root on that row, not nil) -- exactly what
+    ;;   `edmacs-sidebar-rename-at-point' exercises on the composed-render
+    ;;   guard test below.
+    ;; - `edmacs-workspaces-open-worktree' -- a no-op; this file never
+    ;;   exercises cross-project worktree opening.
+    ;;
+    ;; The registered-worktrees table is inert -- kept only so this file's
+    ;; many existing `--register-worktrees' call sites keep working; no
+    ;; production code reads it any more.
     (defvar edmacs-sidebar-buffers-live-test--registered-worktrees
       (make-hash-table :test #'equal))
     ;; The project group a scenario's tabs are filed under. Was the frames
@@ -155,65 +194,46 @@ worktree in a real Emacs session) to enable this suite"))
     ;; there being no per-frame repo to read.
     (defvar edmacs-sidebar-buffers-live-test--group nil)
     (defconst edmacs-sidebar-buffers-live-test--root-parameter 'edmacs-workspace-root)
-    (defun edmacs-workspaces-groups (&optional frame)
-      (delete-dups (delq nil (mapcar (lambda (tab) (funcall tab-bar-tab-group-function tab))
-                                       (tab-bar-tabs (or frame (selected-frame)))))))
-    (defun edmacs-workspaces-tabs-in-group (group &optional frame)
-      (when group (seq-filter (lambda (tab) (equal (funcall tab-bar-tab-group-function tab) group))
-                               (tab-bar-tabs (or frame (selected-frame))))))
-    (defun edmacs-workspaces-tab-root (tab) (alist-get edmacs-sidebar-buffers-live-test--root-parameter tab))
-    (defun edmacs-workspaces-current-group (&optional frame)
-      (when-let* ((tab (assq 'current-tab
-                             (frame-parameter (or frame (selected-frame)) 'tabs))))
-        (funcall tab-bar-tab-group-function tab)))
-    (defun edmacs-workspaces-find-tab (group root &optional frame)
-      (seq-find (lambda (tab) (and (equal (funcall tab-bar-tab-group-function tab) group)
-                                    (equal (edmacs-workspaces-tab-root tab) root)))
-                (tab-bar-tabs (or frame (selected-frame)))))
-    (defun edmacs-workspaces-select-tab (group root &optional frame)
-      (let* ((target (or frame (selected-frame))) (tab (edmacs-workspaces-find-tab group root target)))
-        (when tab
-          (let ((number (1+ (tab-bar--tab-index tab (tab-bar-tabs target) target))))
-            (if frame (with-selected-frame frame (tab-bar-select-tab number)) (tab-bar-select-tab number))))
-        tab))
     ;; GROUP -> the first ROOT `--stamp-current-tab-root' ever stamped for
-    ;; it, treated as that group's `main' worktree -- exactly one test
-    ;; fixture's stand-in for `edmacs-workspaces-classify-root's real
-    ;; git-common-dir-based main-worktree comparison, which this file's
-    ;; roots (fresh temp directories, never real git worktrees) cannot
-    ;; satisfy at all.
+    ;; it, treated as that group's `main' worktree by the classify-root
+    ;; override below -- the real, git-common-dir-based classification can
+    ;; never resolve a fixture root (a fresh temp directory, never a real
+    ;; git worktree) at all.
     (defvar edmacs-sidebar-buffers-live-test--group-main-roots (make-hash-table :test #'equal))
-    (defun edmacs-workspaces-classify-root (root)
+
+    (defun edmacs-sidebar-buffers-live-test--group-name-override (root)
+      "Return ROOT's already-assigned tab-bar group, found by scanning
+every live frame's tabs for one whose stamped root equals ROOT -- see
+this file's Commentary above on why the real, git-common-dir-based
+`edmacs-workspaces-group-name' cannot resolve a fixture root at all."
+      (catch 'edmacs-sidebar-buffers-live-test--group-found
+        (dolist (frame (frame-list))
+          (dolist (tab (tab-bar-tabs frame))
+            (when (equal (alist-get edmacs-sidebar-buffers-live-test--root-parameter tab) root)
+              (throw 'edmacs-sidebar-buffers-live-test--group-found
+                     (funcall tab-bar-tab-group-function tab)))))
+        nil))
+
+    (defun edmacs-sidebar-buffers-live-test--classify-root-override (root)
+      "See `edmacs-sidebar-buffers-live-test--group-main-roots'."
       (catch 'edmacs-sidebar-buffers-live-test--classify-found
         (maphash (lambda (_group main)
                    (when (equal main root)
                      (throw 'edmacs-sidebar-buffers-live-test--classify-found 'main)))
                  edmacs-sidebar-buffers-live-test--group-main-roots)
         nil))
-    (defun edmacs-workspaces-group-name (root)
-      "Return ROOT's already-assigned tab-bar group, found by scanning
-every live frame's tabs for one whose stamped root equals ROOT. This
-fixture's roots never resolve via git-common-dir at all (stubbed to nil
-below), so group identity here is exactly whatever
-`--stamp-current-tab-root' already assigned, discovered by lookup
-instead of re-derived -- what `edmacs-sidebar-buffers--tab-number-for-
-root' (sidebar-buffers.el) needs to resolve RET/`[`/`]` against a real
-open tab."
-      (catch 'edmacs-sidebar-buffers-live-test--group-found
-        (dolist (frame (frame-list))
-          (dolist (tab (tab-bar-tabs frame))
-            (when (equal (edmacs-workspaces-tab-root tab) root)
-              (throw 'edmacs-sidebar-buffers-live-test--group-found
-                     (funcall tab-bar-tab-group-function tab)))))
-        nil))
-    ;; Overrides git-common-dir.el's real (loaded) function: none of this
-    ;; file's fixture roots name a real git worktree, so returning nil
-    ;; unconditionally keeps `edmacs-sidebar--derive-main-root' (and
-    ;; sidebar-buffers.el's own `--tab-number-for-root') from ever
-    ;; attempting a real (and here, pointlessly failing) `git' subprocess
-    ;; -- critical for this file's own composed no-shellout guard test.
-    (defun edmacs-git-common-dir (_root) nil)
-    (defun edmacs-workspaces-open-worktree (_dir) nil)
+
+    (defmacro edmacs-sidebar-buffers-live-test--with-workspaces-overrides (&rest body)
+      "Run BODY with the three workspaces.el overrides described in this
+file's Commentary in effect."
+      (declare (indent 0))
+      `(cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_root) nil))
+                 ((symbol-function 'edmacs-workspaces-group-name)
+                  #'edmacs-sidebar-buffers-live-test--group-name-override)
+                 ((symbol-function 'edmacs-workspaces-classify-root)
+                  #'edmacs-sidebar-buffers-live-test--classify-root-override)
+                 ((symbol-function 'edmacs-workspaces-open-worktree) (lambda (_dir) nil)))
+         ,@body))
 
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
     ;; init.el loads workspaces.el before sidebar.el; sidebar.el's
@@ -303,11 +323,12 @@ renders lower down and confuse a test's own text-matching assertions."
     (defmacro edmacs-sidebar-buffers-live-test--with-scenario (roots &rest body)
       "Run BODY with a clean single-tab frame, then unwind: close any
 extra tabs, kill every buffer under any of ROOTS (a list of root
-directories), delete those directories, and reset frame-level state."
+directories), delete those directories, and reset frame-level state.
+BODY runs with this file's `--with-workspaces-overrides' in effect."
       (declare (indent 1))
       `(let ((edmacs-sidebar-buffers-live-test--roots ,roots))
          (unwind-protect
-             (progn ,@body)
+             (edmacs-sidebar-buffers-live-test--with-workspaces-overrides ,@body)
            (edmacs-sidebar-buffers-live-test--close-extra-tabs 1)
            (dolist (root edmacs-sidebar-buffers-live-test--roots)
              (edmacs-sidebar-buffers-live-test--kill-buffers-under root)
@@ -423,7 +444,7 @@ are undone here before skipping."
                     frame
                   (cleanup-and-skip "could not create a second frame in this batch environment")))
             (error (cleanup-and-skip (format "could not create a second frame in this \
-batch environment (no controlling terminal? run under `script -q /dev/null \
+batch environment (no controlling terminal? run under `scripts/pty-ert.sh \
 emacs ...' to exercise this test): %s" e)))))))
 
     ;; ==========================================================================

@@ -989,7 +989,7 @@ buffer, which callers always arrange to be the one WINDOW displays."
           ;; the usage block, and the next redraw drags it back -- which is
           ;; what made `C-w h' land in the usage section and `k' fail to
           ;; climb out of it.
-          (unless (and (eq window (selected-window))
+          (unless (and (eq window (frame-selected-window (window-frame window)))
                        (< (window-point window) start))
             (set-window-start window start t)
             ;; Point may sit above the forced start (e.g. a backgrounded

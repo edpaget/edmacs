@@ -974,7 +974,7 @@ process left this frame in an unknown state\"; callers that only need the
 shape repaired -- and must not delete a dead agent pane -- call
 `edmacs-windows-repair-frame' directly instead."
   (with-selected-frame frame
-    (dolist (w (window-list nil 'no-minibuf))
+    (dolist (w (window-list frame 'no-minibuf))
       (when (and (window-live-p w)
                  (or (and (eq (window-parameter w 'window-side) 'right)
                           (not (buffer-live-p (window-buffer w))))

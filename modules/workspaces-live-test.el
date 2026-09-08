@@ -16,10 +16,9 @@
 ;;
 ;; Run with (a pty allocated directly, which works whether or not stdin is
 ;; already a terminal -- `script -q /dev/null' does not):
-;;   python3 -c 'import pty,sys; pty.spawn(sys.argv[1:])' \
-;;     emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;           -l modules/workspaces.el -l modules/workspaces-live-test.el \
-;;           -f ert-run-tests-batch-and-exit
+;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/workspaces.el -l modules/workspaces-live-test.el \
+;;         -f ert-run-tests-batch-and-exit
 ;;
 ;; No `straight/build' dependency: nothing here loads sidebar.el or
 ;; magit-section, so this suite runs identically from a worktree and from

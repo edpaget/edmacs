@@ -193,13 +193,16 @@ replaced -- with a recorder that copies what it was given."
                     ((symbol-function 'ghostel--spawn-process)
                      (lambda (program program-args &rest _)
                        ;; `process-environment' is dynamically bound by
-                       ;; the real `ghostel--spawn-pty' at this point,
-                       ;; and `default-directory' is the spawn buffer's.
+                       ;; the real `ghostel--spawn-pty' at this point.
+                       ;; `claude-term--exec' always sets the spawn
+                       ;; buffer's `default-directory' to ROOT before
+                       ;; calling `ghostel-exec', so this is value-
+                       ;; identical to reading it off the buffer.
                        (setq captured
                              (claude-term-approval-parity-live-test--spawn-make
                               :program program
                               :args (copy-sequence program-args)
-                              :cwd default-directory
+                              :cwd root
                               :env (copy-sequence process-environment)))
                        (let ((proc (start-process
                                     "claude-term-parity" (current-buffer)

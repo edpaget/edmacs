@@ -22,20 +22,18 @@
 ;; bootstrapped straight, the whole suite reports a single skip rather than
 ;; erroring out on file load.
 ;;
-;; Four tests need a second real frame, which needs a controlling terminal
-;; to attach to -- plain `-Q --batch' with no pty has none, so all four
-;; skip cleanly under the invocation above:
-;; `-per-frame-buffers-distinct-and-delete-frame-scoped' (AC2),
-;; `-buffer-name-collision-prevention',
-;; `-permanent-name-collision-does-not-poison-quit-restore',
+;; Two tests need a second real frame, which needs a controlling terminal
+;; to attach to -- plain `-Q --batch' with no pty has none, so both skip
+;; cleanly under the invocation above:
+;; `-singleton-buffer-shared-across-frames' and
 ;; `-anchor-region-pulls-point-forward-on-unselected-frame'.
 ;; To actually exercise them, attach a pty.  `script' works from an
 ;; interactive shell but fails where stdin is not itself a terminal;
-;; allocating one directly works in both (131/131, no skips):
+;; `scripts/pty-ert.sh' allocates one directly and works in both
+;; (140/140, no skips):
 ;;
-;;   python3 -c 'import pty,sys; pty.spawn(sys.argv[1:])' \
-;;     emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;           -l modules/sidebar-test.el -f ert-run-tests-batch-and-exit
+;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;         -l modules/sidebar-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; This draws real terminal escape sequences to that pty as a side
 ;; effect (the second frame is a live tty frame) -- harmless, but expect
@@ -835,7 +833,7 @@ own Commentary on the workspaces fixtures above)."
 Passes `tty'/`tty-type' explicitly rather than relying on `window-system'
 alone: with no controlling terminal at all (the common `-Q --batch' case,
 run with no pty attached) opening \"/dev/tty\" fails and this skips, same
-as before. But run under a pty (e.g. `script -q /dev/null emacs -Q
+as before. But run under a pty (e.g. `scripts/pty-ert.sh emacs -Q
 --batch ...') \"/dev/tty\" does exist, and `tty-type' is hardcoded to
 \"xterm\" rather than inherited from `$TERM' because the invoking shell's
 own terminal type (e.g. \"xterm-ghostty\") may have no terminfo entry on
@@ -850,7 +848,7 @@ to universally present in terminfo databases."
               (ert-skip "could not create a second frame in this batch environment"))
             frame)
         (error (ert-skip (format "could not create a second frame in this \
-batch environment (no controlling terminal? run under `script -q /dev/null \
+batch environment (no controlling terminal? run under `scripts/pty-ert.sh \
 emacs ...' to exercise this test): %s" e)))))
 
     (ert-deftest edmacs-sidebar-test-singleton-buffer-shared-across-frames ()

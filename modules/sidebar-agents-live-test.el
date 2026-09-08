@@ -8,15 +8,27 @@
 ;; the literal async `start-process' calls this module issues actually
 ;; reaching a real subprocess rather than a stubbed Lisp function.
 ;;
-;; sidebar.el and windows.el ARE loaded for real here (unlike the pure
-;; suite) -- this file needs `edmacs-sidebar-mode'/`edmacs-sidebar-show'
-;; for real sidebar buffers/windows, and stubs only
-;; `edmacs-workspaces-open-worktree' (workspaces.el's own real
-;; implementation shells out to git and manages real tab-bar state well
-;; beyond what these tests are about).
+;; sidebar.el, windows.el, and workspaces.el are ALL loaded for real here
+;; (unlike the pure suite) -- this file needs `edmacs-sidebar-mode'/
+;; `edmacs-sidebar-show' for real sidebar buffers/windows, and every
+;; enumeration/lookup function sidebar.el's worktree redraw path calls
+;; (`edmacs-workspaces-groups'/`-tabs-in-group'/`-tab-root'/
+;; `-current-group'/`-find-tab'/`-select-tab'/`-classify-root') runs
+;; unstubbed against real tab-bar state. Two of workspaces.el's functions
+;; are overridden, via `cl-letf' scoped to
+;; `edmacs-sidebar-agents-live-test--with-clean-state's body, applied
+;; AFTER the real `load' below rather than as top-level `defun's the load
+;; would otherwise clobber (the exact silent-clobber bug this file once
+;; had): `edmacs-git-common-dir' (nil-returning -- none of this file's
+;; fixture roots name a real git worktree) and
+;; `edmacs-workspaces-open-worktree' (a bespoke override that actually
+;; drives `tab-bar-new-tab'/`tab-bar-change-tab-group', since the real
+;; implementation's `edmacs-workspaces-group-name' call can never resolve
+;; a fixture root and would `user-error' instead). See the block comment
+;; just above that `load' for the full rationale.
 ;;
 ;; A second real frame needs a controlling terminal -- absent under
-;; plain `-Q --batch', present under `script -q /dev/null emacs -Q
+;; plain `-Q --batch', present under `scripts/pty-ert.sh emacs -Q
 ;; --batch ...' -- so those tests skip cleanly under the plain
 ;; invocation, following sidebar-test.el's own documented convention.
 ;;
@@ -38,7 +50,7 @@
 ;;         -l modules/sidebar-agents-live-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; To actually exercise the second-frame tests:
-;;   script -q /dev/null emacs -Q --batch -l ert \
+;;   scripts/pty-ert.sh emacs -Q --batch -l ert \
 ;;         -l modules/git-common-dir.el -l modules/sidebar-agents-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 
@@ -89,42 +101,40 @@ a real Emacs session) to enable this suite"))
     (edmacs-sidebar-agents-live-test--add-magit-section-deps
      edmacs-sidebar-agents-live-test--build-root)
 
-    ;; workspaces.el is not loaded (see this file's own Commentary); the
-    ;; small pure lookups sidebar.el's redraw/activate path calls are real,
-    ;; unstubbed reimplementations of its own logic against real tab-bar
-    ;; primitives -- the same convention sidebar-test.el uses for its own
-    ;; worktree-render tests (see that file's own Commentary).
+    ;; workspaces.el IS loaded for real below, alongside windows.el and
+    ;; sidebar.el -- its pure enumeration/lookup functions
+    ;; (`edmacs-workspaces-groups'/`-tabs-in-group'/`-tab-root'/
+    ;; `-current-group'/`-find-tab'/`-select-tab'/`-classify-root') run
+    ;; unstubbed against real tab-bar state. Two of its functions are
+    ;; overridden, via `cl-letf' scoped to
+    ;; `edmacs-sidebar-agents-live-test--with-clean-state's body (the
+    ;; sessions.el override-after-real-load convention -- a top-level
+    ;; `defun' here would just be clobbered by the real `load' below, which
+    ;; is the exact bug this rewrite fixes):
+    ;;
+    ;; - `edmacs-git-common-dir' -- none of this file's fixture roots name a
+    ;;   real git worktree, and none of these tests care about
+    ;;   main/roadmap/task classification -- returning nil unconditionally
+    ;;   keeps `edmacs-workspaces-group-name'/`-classify-root'/
+    ;;   `edmacs-sidebar--derive-main-root' from ever attempting a real
+    ;;   (and here, pointlessly failing) `git' subprocess. With this
+    ;;   stubbed, the real `edmacs-workspaces-classify-root' already falls
+    ;;   through to nil for every fixture root -- identical to what this
+    ;;   file's own stand-in used to hard-code -- so it needs no override
+    ;;   of its own.
+    ;; - `edmacs-workspaces-open-worktree' -- a bespoke override that
+    ;;   actually drives `tab-bar-new-tab'/`tab-bar-change-tab-group', not
+    ;;   a no-op: the real implementation calls
+    ;;   `edmacs-workspaces-group-name', which (git-common-dir stubbed nil)
+    ;;   can never resolve a fixture root and would `user-error' on the
+    ;;   temp-directory root `real-claude-term-row-visit-and-kill' visits.
+    ;;   Tracks each call in
+    ;;   `edmacs-sidebar-agents-live-test--open-worktree-tab-calls', which
+    ;;   `edmacs-sidebar-agents-live-test-toggle-all-affects-both-frames'
+    ;;   depends on creating/selecting real tabs across two frames.
     (defconst edmacs-sidebar-agents-live-test--root-parameter 'edmacs-workspace-root)
-    (defun edmacs-workspaces-groups (&optional frame)
-      (delete-dups (delq nil (mapcar (lambda (tab) (funcall tab-bar-tab-group-function tab))
-                                       (tab-bar-tabs (or frame (selected-frame)))))))
-    (defun edmacs-workspaces-tabs-in-group (group &optional frame)
-      (when group (seq-filter (lambda (tab) (equal (funcall tab-bar-tab-group-function tab) group))
-                               (tab-bar-tabs (or frame (selected-frame))))))
-    (defun edmacs-workspaces-tab-root (tab) (alist-get edmacs-sidebar-agents-live-test--root-parameter tab))
-    (defun edmacs-workspaces-current-group (&optional frame)
-      (when-let* ((tab (assq 'current-tab
-                             (frame-parameter (or frame (selected-frame)) 'tabs))))
-        (funcall tab-bar-tab-group-function tab)))
-    (defun edmacs-workspaces-find-tab (group root &optional frame)
-      (seq-find (lambda (tab) (and (equal (funcall tab-bar-tab-group-function tab) group)
-                                    (equal (edmacs-workspaces-tab-root tab) root)))
-                (tab-bar-tabs (or frame (selected-frame)))))
-    (defun edmacs-workspaces-select-tab (group root &optional frame)
-      (let* ((target (or frame (selected-frame))) (tab (edmacs-workspaces-find-tab group root target)))
-        (when tab
-          (let ((number (1+ (tab-bar--tab-index tab (tab-bar-tabs target) target))))
-            (if frame (with-selected-frame frame (tab-bar-select-tab number)) (tab-bar-select-tab number))))
-        tab))
-    (defun edmacs-workspaces-classify-root (root) (ignore root) nil)
-    ;; Overrides git-common-dir.el's real (loaded) function: none of this
-    ;; file's fixture roots name a real git worktree, and none of these
-    ;; tests care about main/roadmap/task classification -- returning nil
-    ;; unconditionally keeps `edmacs-sidebar--derive-main-root' from ever
-    ;; attempting a real (and here, pointlessly failing) `git' subprocess.
-    (defun edmacs-git-common-dir (_root) nil)
     (defvar edmacs-sidebar-agents-live-test--open-worktree-tab-calls nil)
-    (defun edmacs-workspaces-open-worktree (dir)
+    (defun edmacs-sidebar-agents-live-test--open-worktree-override (dir)
       (push dir edmacs-sidebar-agents-live-test--open-worktree-tab-calls)
       (select-frame-set-input-focus (selected-frame))
       (let* ((root (file-truename dir))
@@ -136,6 +146,15 @@ a real Emacs session) to enable this suite"))
                 root)
           (tab-bar-change-tab-group group))
         (edmacs-workspaces-select-tab group root (selected-frame))))
+
+    (defmacro edmacs-sidebar-agents-live-test--with-workspaces-overrides (&rest body)
+      "Run BODY with the two workspaces.el overrides described in this
+file's Commentary in effect."
+      (declare (indent 0))
+      `(cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_root) nil))
+                 ((symbol-function 'edmacs-workspaces-open-worktree)
+                  #'edmacs-sidebar-agents-live-test--open-worktree-override))
+         ,@body))
 
     ;; windows.el first: sidebar.el `require's it for `edmacs-windows-claim-side'.
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
@@ -219,6 +238,8 @@ a real Emacs session) to enable this suite"))
                           :title title :source source :locator locator :unread unread))
 
     (defmacro edmacs-sidebar-agents-live-test--with-clean-state (&rest body)
+      "Run BODY with fresh agent/module state, restored after, and this
+file's `--with-workspaces-overrides' in effect."
       (declare (indent 0))
       `(let ((edmacs-agents--table (make-hash-table :test #'equal))
              (edmacs-agents-changed-hook nil)
@@ -231,7 +252,7 @@ a real Emacs session) to enable this suite"))
              (edmacs-sidebar-agents-show-all nil)
              (edmacs-sidebar-agents-live-test--open-worktree-tab-calls nil))
          (unwind-protect
-             (progn ,@body)
+             (edmacs-sidebar-agents-live-test--with-workspaces-overrides ,@body)
            (when (timerp edmacs-sidebar-agents--coalesce-timer)
              (cancel-timer edmacs-sidebar-agents--coalesce-timer))
            (when (timerp edmacs-sidebar-agents--elapsed-timer)
@@ -275,7 +296,7 @@ a real Emacs session) to enable this suite"))
               (ert-skip "could not create a second frame in this batch environment"))
             frame)
         (error (ert-skip (format "could not create a second frame in this \
-batch environment (no controlling terminal? run under `script -q /dev/null \
+batch environment (no controlling terminal? run under `scripts/pty-ert.sh \
 emacs ...' to exercise this test): %s" e)))))
 
     ;; ==========================================================================
