@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 #
 # java-eglot-check.sh -- batch evidence that a Java buffer comes up under
-# eglot and jdtls, with no lsp-mode in sight.
+# eglot and jdtls, with no third-party LSP client in sight.
 #
 # The sibling of `go-eglot-check.sh' (read its header first for the shared
 # traps). It builds a throwaway Maven project OUTSIDE this repo, loads the
 # real config over it through `startup-check.sh', and asserts:
 #
 #   - the buffer is eglot-managed and the server process is jdtls
-#   - `lsp-mode' never attached and `lsp-workspaces' is empty
+#   - the retired third-party client never attached (the standing
+#     `no-lsp-mode' regression guard, the one place this script still has
+#     to name that symbol)
 #   - the `:java' workspace configuration (gradle/maven import, download
 #     sources, autobuild) reached the server
 #   - `textDocument/definition', `textDocument/references',
@@ -24,8 +26,8 @@
 #     Broken.java, returns a real non-empty list of server-proposed actions
 #     -- not just that jdtls advertises `codeActionProvider'. The fixture is
 #     scratch (mktemp -d, deleted on exit), so mutating it here is free.
-#   - diagnostics appear via flymake, not flycheck, and
-#     `edmacs-modeline-diagnostics' renders their count
+#   - diagnostics appear via flymake and `edmacs-modeline-diagnostics'
+#     renders their count
 #
 # TWO TRAPS, same family as go-eglot-check.sh's
 #
@@ -199,9 +201,8 @@ perfectly fine interactively."
 (find-file (expand-file-name "src/main/java/com/example/Main.java" edmacs-java-check-root))
 
 (edmacs-java-check--report (eq major-mode 'java-ts-mode) "major-mode" "%S" major-mode)
-(edmacs-java-check--report (and (memq 'eglot-ensure java-ts-mode-hook)
-                                (not (memq 'lsp-deferred java-ts-mode-hook)))
-                           "java-ts-mode-hook" "eglot-ensure only, no lsp-deferred")
+(edmacs-java-check--report (memq 'eglot-ensure java-ts-mode-hook)
+                           "java-ts-mode-hook" "eglot-ensure")
 
 ;; The trap, shown rather than described: managed is nil until the deferred
 ;; `post-command-hook' entry gets a chance to run.
@@ -341,12 +342,10 @@ perfectly fine interactively."
             (seq-every-p (lambda (a) (plist-get a :title)) actions))
        "code-action-invoked" "%S" (mapcar (lambda (a) (plist-get a :title)) actions)))))
 (edmacs-java-check--report (and (bound-and-true-p flymake-mode)
-                                (not (bound-and-true-p flycheck-mode))
                                 (string-match-p "\\`E[0-9]" (edmacs-modeline-diagnostics)))
-                           "modeline-from-flymake" "%S flymake=%S flycheck=%S"
+                           "modeline-from-flymake" "%S flymake=%S"
                            (substring-no-properties (edmacs-modeline-diagnostics))
-                           (bound-and-true-p flymake-mode)
-                           (bound-and-true-p flycheck-mode))
+                           (bound-and-true-p flymake-mode))
 
 (princ (format "assert: java-eglot-check: %d checks, %d failed\n"
                edmacs-java-check-total edmacs-java-check-failures))
@@ -376,4 +375,4 @@ if grep -q '^assert: \[FAIL\]' <<<"$OUT"; then
   exit 1
 fi
 
-echo "PASS: Java opens under eglot and jdtls, with lsp-mode uninvolved"
+echo "PASS: Java opens under eglot and jdtls"

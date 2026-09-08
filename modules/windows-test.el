@@ -668,9 +668,9 @@ real `edmacs-stack-popup' parameter rather than a hand-rolled imitation."
 
 (defconst edmacs-windows-test--popup-names
   '("*Warnings*" "*Messages*" "*Help*" "*helpful variable: foo*"
-    "*compilation*" "*quickrun*" "*Flycheck errors*" "*Backtrace*"
+    "*compilation*" "*quickrun*" "*Flymake diagnostics*" "*Backtrace*"
     "*Occur*" "*grep*" "*xref*" "*magit-diff: edmacs*" "*magit-log: edmacs*"
-    "*lsp-help*" "*Embark Collect Live*")
+    "*eldoc*" "*Embark Collect Live*")
   "One representative buffer name per routed `display-buffer-alist' pattern.")
 
 ;; ---------------------------------------------------------------------------

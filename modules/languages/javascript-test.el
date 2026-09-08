@@ -62,7 +62,7 @@ Return DIR, so it can be consed onto `exec-path'."
 (defmacro javascript-test--with-clean-cache (&rest body)
   "Run BODY against an empty tsc probe cache."
   (declare (indent 0))
-  `(let ((edmacs-js--typescript-lsp-cache (make-hash-table :test #'equal)))
+  `(let ((edmacs-js--typescript-server-cache (make-hash-table :test #'equal)))
      ,@body))
 
 

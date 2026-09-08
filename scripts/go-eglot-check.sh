@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # go-eglot-check.sh -- batch evidence that a Go buffer comes up under eglot
-# and gopls, with no lsp-mode in sight.
+# and gopls, with no third-party LSP client in sight.
 #
 # Everything here is reproducible in batch; nothing needs a frame or a
 # screenshot. It builds a throwaway Go module OUTSIDE this repo, loads the
@@ -9,14 +9,15 @@
 #
 #   - the buffer is eglot-managed and the server process is gopls
 #   - `textDocument/definition' answers with the defining file
-#   - `lsp-mode' never attached and `lsp-workspaces' is empty
+#   - the retired third-party client never attached (the standing
+#     `no-lsp-mode' regression guard, the one place this script still has
+#     to name that symbol)
 #   - the `:gopls' workspace configuration reached the server
 #   - gopls' `unusedparams' analyzer fires, so the `analyses' setting is
 #     in effect rather than merely echoed back
 #   - `edmacs-modeline-diagnostics' renders flymake's counts
-#   - lsp-mode is not wired to any `java-ts-mode-hook' entry (Java moved to
-#     eglot in the phase-5 roadmap-edmacs-builtins commit; nothing in this
-#     repo hooks lsp-deferred to any language any more)
+#   - `java-ts-mode-hook' is on `eglot-ensure' (the cross-language sweep)
+#   - flycheck is gone from the config entirely
 #
 # TWO TRAPS THIS SCRIPT EXISTS TO NAVIGATE
 #
@@ -92,7 +93,7 @@ import "fmt"
 
 // shout carries an unused parameter: gopls' unusedparams analyzer reports it
 // only when the `analyses' workspace configuration actually reached the
-// server, which makes it a live check of the translated lsp-go settings.
+// server, which makes it a live check of the translated gopls settings.
 func shout(msg string, unused int) string {
 	return msg + "!"
 }
@@ -161,9 +162,8 @@ perfectly fine interactively."
 (find-file (expand-file-name "main.go" edmacs-go-check-root))
 
 (edmacs-go-check--report (eq major-mode 'go-ts-mode) "major-mode" "%S" major-mode)
-(edmacs-go-check--report (and (memq 'eglot-ensure go-ts-mode-hook)
-                              (not (memq 'lsp-deferred go-ts-mode-hook)))
-                         "go-ts-mode-hook" "eglot-ensure only, no lsp-deferred")
+(edmacs-go-check--report (memq 'eglot-ensure go-ts-mode-hook)
+                         "go-ts-mode-hook" "eglot-ensure")
 
 ;; The trap, shown rather than described: managed is nil until the deferred
 ;; `post-command-hook' entry gets a chance to run.
@@ -204,8 +204,8 @@ perfectly fine interactively."
           (string-match-p "\"unusedparams\": true" configuration)
           (string-match-p "\"usePlaceholders\": true" configuration))
      "workspace-config" "%s" configuration)
-    ;; Phase decision: hints stay off for Go, exact parity with the lsp-mode
-    ;; setup. Asserted against the `:gopls' section, not the rendered whole:
+    ;; Phase decision: hints stay off for Go, exact parity with the client
+    ;; this replaced. Asserted against the `:gopls' section, not the rendered whole:
     ;; other languages share the one plist and Rust's section does send hints.
     (edmacs-go-check--report
      (not (plist-member (plist-get (default-value 'eglot-workspace-configuration)
@@ -237,24 +237,20 @@ perfectly fine interactively."
   (edmacs-go-check--report diagnostics "error-diagnostic" "%S"
                            (and diagnostics (flymake-diagnostic-text diagnostics))))
 (edmacs-go-check--report (and (bound-and-true-p flymake-mode)
-                              (not (bound-and-true-p flycheck-mode))
                               (string-match-p "\\`E[0-9]" (edmacs-modeline-diagnostics)))
-                         "modeline-from-flymake" "%S flymake=%S flycheck=%S"
+                         "modeline-from-flymake" "%S flymake=%S"
                          (substring-no-properties (edmacs-modeline-diagnostics))
-                         (bound-and-true-p flymake-mode)
-                         (bound-and-true-p flycheck-mode))
+                         (bound-and-true-p flymake-mode))
 
-;; Java moved to eglot in the phase-5 roadmap-edmacs-builtins commit -- no
-;; language hooks `lsp-deferred' any more. Its hook is registered from a
-;; `use-package' `:config' form, so the mode library has to be loaded before
-;; the hook list says anything at all. `scripts/java-eglot-check.sh' is the
-;; dedicated check for Java's own eglot/jdtls behavior; this is just the
-;; cross-language sweep confirming lsp-mode was not left wired anywhere.
+;; Java's hook is registered from a `use-package' `:config' form, so the mode
+;; library has to be loaded before the hook list says anything at all.
+;; `scripts/java-eglot-check.sh' is the dedicated check for Java's own
+;; eglot/jdtls behavior; this is just the cross-language sweep.
 (require 'java-ts-mode nil t)
-(edmacs-go-check--report (and (memq 'eglot-ensure java-ts-mode-hook)
-                              (not (memq 'lsp-deferred java-ts-mode-hook)))
-                         "java-ts-mode" "on eglot-ensure, no lsp-deferred")
-(edmacs-go-check--report (bound-and-true-p global-flycheck-mode) "global-flycheck-mode" "on")
+(edmacs-go-check--report (memq 'eglot-ensure java-ts-mode-hook)
+                         "java-ts-mode" "on eglot-ensure")
+(edmacs-go-check--report (not (featurep 'flycheck)) "flycheck-absent" "%S"
+                         (featurep 'flycheck))
 
 (princ (format "assert: go-eglot-check: %d checks, %d failed\n"
                edmacs-go-check-total edmacs-go-check-failures))
@@ -282,4 +278,4 @@ if grep -q '^assert: \[FAIL\]' <<<"$OUT"; then
   exit 1
 fi
 
-echo "PASS: Go opens under eglot and gopls, with lsp-mode uninvolved"
+echo "PASS: Go opens under eglot and gopls"

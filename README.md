@@ -8,7 +8,7 @@ A modern, modular Emacs configuration with evil-mode, version-locked packages, a
 - **Version Locking**: Reproducible package management with straight.el
 - **Modular Design**: Clean separation of concerns across modules
 - **Modern Completion**: Vertico + Corfu + Consult ecosystem
-- **LSP Support**: Full IDE features with LSP-mode
+- **LSP Support**: Full IDE features with the built-in eglot client
 - **AI Integration**: the Claude CLI hosted in Emacs via claude-term (ghostel)
 - **Beautiful UI**: Catppuccin theme with Nano Modeline
 - **Org Mode**: Enhanced with org-roam, org-modern, and org-appear
@@ -129,7 +129,7 @@ edmacs/
 │   ├── keybindings.el     # General.el keybindings
 │   ├── ui.el              # Theme and appearance
 │   ├── completion.el      # Vertico, Corfu, Consult
-│   ├── programming.el     # LSP, Flycheck, Apheleia
+│   ├── programming.el     # eglot, flymake, Apheleia
 │   ├── ai.el              # AI assistant
 │   ├── org-config.el      # Org mode
 │   ├── git.el             # Magit and git tools
@@ -215,7 +215,8 @@ resize, `C-w x` (was exchange) closes the pane, and insert-state `C-w`
 
 `nano-modeline` renders one `:eval` form and never consults
 `global-mode-string`, so anything reporting through that channel is invisible
-(this is why `lsp-modeline-diagnostics-enable` shows nothing). `modules/ui.el`'s
+(this is why an LSP client's own modeline diagnostics segment shows
+nothing). `modules/ui.el`'s
 "Modeline content" section adds what is missing and filters what is noise:
 
 - **Name filtering.** `edmacs-modeline-name-filters` is an alist of
@@ -231,9 +232,9 @@ resize, `C-w x` (was exchange) closes the pane, and insert-state `C-w`
   | `*helpful variable: tab-width*` | `tab-width` |
   | `*cider-repl edmacs*` | `edmacs repl` |
 
-- **Diagnostics.** `edmacs-modeline-diagnostics` reads flycheck directly and
+- **Diagnostics.** `edmacs-modeline-diagnostics` reads flymake directly and
   shows `E3 W2` in the stock `error`/`warning` faces. Silent — not zero — when
-  flycheck is off, still checking, or clean, so it costs no width normally.
+  flymake is off, still checking, or clean, so it costs no width normally.
 
 - **Terminal panes.** `ghostel-mode` has no line of its own upstream, so a
   Claude pane fell through to the default text line and showed a file buffer's
@@ -267,9 +268,10 @@ Outside a daemon each falls back to the stock behavior
 | `SPC gP` | Pull |
 | `SPC gl` | Log |
 
-### Code (LSP)
+### Code
 
-When in an LSP-enabled buffer:
+The eglot verbs need a language server attached; the flymake ones work in
+any buffer flymake checks, server or no server.
 
 | Key | Action |
 |-----|--------|
@@ -279,6 +281,12 @@ When in an LSP-enabled buffer:
 | `SPC cf` | Format |
 | `SPC cd` | Go to definition |
 | `SPC cR` | Find references |
+| `SPC ch` | Hover doc |
+| `SPC cw` | Diagnostics (consult) |
+| `SPC cW` | Project diagnostics |
+| `SPC cxl` | List buffer diagnostics |
+| `SPC cxn` | Next error |
+| `SPC cxp` | Previous error |
 
 ### AI Assistant
 
@@ -361,7 +369,7 @@ Language-specific configurations are in `modules/languages/`.
 ### Adding a New Language
 
 1. Create `modules/languages/LANGUAGE.el`
-2. Configure packages, LSP, formatters, etc.
+2. Configure packages, the language server, formatters, etc.
 3. The file will be loaded automatically when opening files of that type
 
 Example structure:
@@ -371,7 +379,7 @@ Example structure:
 
 (use-package python-mode
   :mode "\\.py\\'"
-  :hook (python-mode . lsp-deferred))
+  :hook (python-mode . eglot-ensure))
 
 (use-package poetry
   :hook (python-mode . poetry-tracking-mode))
@@ -444,11 +452,11 @@ and indentation monospaced without any extra per-face patching.
 
 Run `M-x nerd-icons-install-fonts` and restart Emacs.
 
-### LSP Not Working
+### Language Server Not Working
 
 1. Install the language server for your language
-2. Check LSP status: `M-x lsp-describe-session`
-3. Restart LSP: `M-x lsp-workspace-restart`
+2. Check the exchange: `M-x eglot-events-buffer`
+3. Restart the server: `M-x eglot-reconnect`
 
 ## Contributing
 
@@ -469,7 +477,7 @@ This configuration is licensed under the GNU General Public License v3.0 or late
 - [Emacs Manual](https://www.gnu.org/software/emacs/manual/)
 - [Evil Mode](https://github.com/emacs-evil/evil)
 - [straight.el](https://github.com/radian-software/straight.el)
-- [LSP Mode](https://emacs-lsp.github.io/lsp-mode/)
+- [Eglot](https://www.gnu.org/software/emacs/manual/html_mono/eglot.html)
 - [Magit](https://magit.vc/)
 
 ## Acknowledgments

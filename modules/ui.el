@@ -197,12 +197,11 @@ so an unfocused window keeps the same badge."
 ;; Two things follow, and this section exists for both:
 ;;
 ;;   - Anything that reports through `global-mode-string' is invisible.
-;;     `lsp-modeline-diagnostics-enable' (modules/programming.el) pushes
-;;     onto exactly that, so its counts were being computed and rendered
-;;     nowhere; `edmacs-modeline-diagnostics' below puts them back in view,
-;;     reading whichever checker is live in the buffer -- flymake for
-;;     eglot-managed buffers, flycheck for the rest -- rather than through
-;;     that dead channel.
+;;     `lsp-modeline-diagnostics-enable', which this config used before
+;;     eglot, pushed onto exactly that, so its counts were being computed
+;;     and rendered nowhere; `edmacs-modeline-diagnostics' below puts them
+;;     back in view, reading flymake directly rather than through that
+;;     dead channel.
 ;;   - Every line is a plain list of (FUNCTION ARGS...) forms, so replacing
 ;;     one element means replacing the line. The `edmacs-modeline-*-mode'
 ;;     constructors below are nano's own with two elements swapped, not a
@@ -275,21 +274,9 @@ and losing the narrowing indicator is not part of the trade."
   :type 'string
   :group 'edmacs-modeline)
 
-(defvar flycheck-mode)
-(defvar flycheck-current-errors)
 (defvar flymake-mode)
-(declare-function flycheck-count-errors "flycheck")
 (declare-function flymake-diagnostics "flymake")
 (declare-function flymake-diagnostic-type "flymake")
-
-(defun edmacs-modeline--flycheck-counts ()
-  "Flycheck's (ERRORS . WARNINGS) for this buffer, or nil when it is not live.
-`info'-level results are noise in a modeline and are dropped."
-  (when (and (bound-and-true-p flycheck-mode)
-             (fboundp 'flycheck-count-errors))
-    (let ((counts (flycheck-count-errors flycheck-current-errors)))
-      (cons (or (alist-get 'error counts) 0)
-            (or (alist-get 'warning counts) 0)))))
 
 (defun edmacs-modeline--flymake-severity (type)
   "Numeric flymake severity for diagnostic TYPE.
@@ -305,7 +292,7 @@ flymake's own fallback."
 
 (defun edmacs-modeline--flymake-counts ()
   "Flymake's (ERRORS . WARNINGS) for this buffer, or nil when it is not live.
-Notes are dropped, mirroring the flycheck side's treatment of `info'."
+`:note'-level results are noise in a modeline and are dropped."
   (when (and (bound-and-true-p flymake-mode)
              (fboundp 'flymake-diagnostics))
     (let ((errors 0) (warnings 0))
@@ -317,16 +304,11 @@ Notes are dropped, mirroring the flycheck side's treatment of `info'."
 
 (defun edmacs-modeline-diagnostics ()
   "Error and warning counts, or \"\" when there is nothing to say.
-Reports from flymake when it is on and from flycheck otherwise -- an
-eglot-managed buffer carries the LSP diagnostics on flymake, and summing
-both backends would report the same problem twice.
-
-Silent -- not zero -- when no checker is on, still checking, or clean, so
+Silent -- not zero -- when flymake is off, still checking, or clean, so
 the segment costs no width in the overwhelmingly common case. Uses the
 stock `error'/`warning' faces rather than a `nano-modeline-face', which
 carries no severity distinction; those two are defined by every theme."
-  (let ((counts (or (edmacs-modeline--flymake-counts)
-                    (edmacs-modeline--flycheck-counts))))
+  (let ((counts (edmacs-modeline--flymake-counts)))
     (if (null counts)
         ""
       (let ((parts (delq nil
@@ -471,7 +453,7 @@ the right side. Can be made DEFAULT mode."
   "Nano line for text mode. See `edmacs-modeline-prog-mode'.
 Kept identical to the prog line rather than trimmed: this one is also
 installed as the DEFAULT, so it is what every buffer with no line of its
-own falls back to -- flycheck runs in plenty of those."
+own falls back to -- flymake runs in plenty of those."
   (funcall nano-modeline-position
            '((edmacs-modeline-buffer-status) " "
              (edmacs-modeline-buffer-name) " "

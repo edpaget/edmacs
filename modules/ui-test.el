@@ -8,8 +8,8 @@
 ;; edmacs-windows-test-windmove-* in modules/windows-test.el).
 ;;
 ;; What this file covers is the "Modeline content" section: the buffer-name
-;; filtering and the diagnostics segment -- the latter on both of its
-;; backends, flycheck and flymake. Those are pure string functions,
+;; filtering and the flymake diagnostics segment. Those are pure string
+;; functions,
 ;; so they run under plain `-Q --batch' with no display, no theme and no
 ;; nano-modeline. The `edmacs-modeline-*-mode' line CONSTRUCTORS are not
 ;; unit-tested -- they are nano's own lists with elements swapped, and
@@ -118,81 +118,11 @@ narrowed-buffer branch, so the suffix has to be re-applied here."
 ;; ============================================================================
 ;; edmacs-modeline-diagnostics
 ;; ============================================================================
-;; The segment reads flycheck directly rather than through
+;; The segment reads flymake directly rather than through
 ;; `global-mode-string', which nano-modeline's single `:eval' form never
-;; consults -- the reason `lsp-modeline-diagnostics-enable' rendered nothing.
-
-;; Declared WITH values, unlike ui.el's own bare `(defvar flycheck-mode)':
-;; a valueless `defvar' marks a symbol special only inside the file that
-;; carries it, so a plain `let' here would create a LEXICAL binding that
-;; `edmacs-modeline-diagnostics' -- reading the dynamic value -- never sees,
-;; and every count assertion below would silently test the flycheck-is-off
-;; path instead. Real flycheck is not loadable under `-Q', so nothing else
-;; owns these names here.
-(defvar flycheck-mode nil)
-(defvar flycheck-current-errors nil)
-
-(defmacro edmacs-ui-test--with-flycheck (counts &rest body)
-  "Run BODY with flycheck on and `flycheck-count-errors' returning COUNTS."
-  (declare (indent 1))
-  `(cl-letf (((symbol-function 'flycheck-count-errors) (lambda (&rest _) ,counts)))
-     (let ((flycheck-mode t)
-           (flycheck-current-errors nil))
-       ,@body)))
-
-(ert-deftest edmacs-ui-test-diagnostics-is-silent-when-flycheck-is-off ()
-  "Silent, not zero: the segment must cost no width in the common case."
-  (let ((flycheck-mode nil))
-    (should (equal (edmacs-modeline-diagnostics) ""))))
-
-(ert-deftest edmacs-ui-test-diagnostics-is-silent-when-clean ()
-  (edmacs-ui-test--with-flycheck nil
-    (should (equal (edmacs-modeline-diagnostics) ""))))
-
-(ert-deftest edmacs-ui-test-diagnostics-is-silent-at-zero-counts ()
-  "An explicit zero count reads as clean, not as `E0'."
-  (edmacs-ui-test--with-flycheck '((error . 0) (warning . 0))
-    (should (equal (edmacs-modeline-diagnostics) ""))))
-
-(ert-deftest edmacs-ui-test-diagnostics-shows-errors-only ()
-  (edmacs-ui-test--with-flycheck '((error . 3))
-    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "E3 "))))
-
-(ert-deftest edmacs-ui-test-diagnostics-shows-warnings-only ()
-  (edmacs-ui-test--with-flycheck '((warning . 2))
-    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "W2 "))))
-
-(ert-deftest edmacs-ui-test-diagnostics-shows-both-errors-first ()
-  (edmacs-ui-test--with-flycheck '((warning . 2) (error . 3))
-    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "E3 W2 "))))
-
-(ert-deftest edmacs-ui-test-diagnostics-ignores-other-levels ()
-  "`info'-level results are noise in a modeline; only errors and warnings
-earn the width."
-  (edmacs-ui-test--with-flycheck '((info . 9))
-    (should (equal (edmacs-modeline-diagnostics) ""))))
-
-(ert-deftest edmacs-ui-test-diagnostics-carries-severity-faces ()
-  "The counts are distinguishable by color, not only by letter -- the
-stock `error'/`warning' faces, which every theme defines."
-  (edmacs-ui-test--with-flycheck '((error . 1) (warning . 1))
-    (let ((s (edmacs-modeline-diagnostics)))
-      (should (eq (get-text-property (string-search "E" s) 'face s) 'error))
-      (should (eq (get-text-property (string-search "W" s) 'face s) 'warning)))))
-
-(ert-deftest edmacs-ui-test-diagnostics-honors-the-format-variables ()
-  (let ((edmacs-modeline-diagnostics-format "%d err")
-        (edmacs-modeline-diagnostics-warning-format "%d warn"))
-    (edmacs-ui-test--with-flycheck '((error . 1) (warning . 2))
-      (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
-                     "1 err 2 warn ")))))
-
-;; ============================================================================
-;; edmacs-modeline-diagnostics -- flymake side
-;; ============================================================================
-;; flymake and eglot are both built in, so these load under `-Q' with no
-;; skip. `flymake-diagnostics' is a defun, so `cl-letf' on it builds no
-;; subr trampoline.
+;; consults. flymake and eglot are both built in, so these load under `-Q'
+;; with no skip. `flymake-diagnostics' is a defun, so `cl-letf' on it
+;; builds no subr trampoline.
 
 (require 'flymake)
 (require 'eglot)
@@ -216,11 +146,14 @@ DIAGNOSTICS is a list of type symbols; each becomes a real
          ,@body))))
 
 (ert-deftest edmacs-ui-test-diagnostics-is-silent-when-flymake-is-off ()
-  "With both backends off the segment costs no width."
+  "Silent, not zero: the segment must cost no width in the common case."
   (with-temp-buffer
-    (let ((flycheck-mode nil))
-      (setq-local flymake-mode nil)
-      (should (equal (edmacs-modeline-diagnostics) "")))))
+    (setq-local flymake-mode nil)
+    (should (equal (edmacs-modeline-diagnostics) ""))))
+
+(ert-deftest edmacs-ui-test-diagnostics-has-no-flycheck-backend ()
+  "The segment is flymake-only; nothing may resurrect the flycheck half."
+  (should-not (fboundp 'edmacs-modeline--flycheck-counts)))
 
 (ert-deftest edmacs-ui-test-diagnostics-is-silent-when-flymake-is-clean ()
   (edmacs-ui-test--with-flymake nil
@@ -239,7 +172,8 @@ DIAGNOSTICS is a list of type symbols; each becomes a real
     (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "E3 W2 "))))
 
 (ert-deftest edmacs-ui-test-diagnostics-ignores-flymake-notes ()
-  "`:note' is the flymake analogue of flycheck's `info': modeline noise."
+  "`:note'-level results are modeline noise; only errors and warnings
+earn the width."
   (edmacs-ui-test--with-flymake '(:note :note :note)
     (should (equal (edmacs-modeline-diagnostics) ""))))
 
@@ -273,23 +207,6 @@ fallback treats it as an error rather than dropping it."
     (edmacs-ui-test--with-flymake '(:error :warning :warning)
       (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
                      "1 err 2 warn ")))))
-
-(ert-deftest edmacs-ui-test-diagnostics-prefers-flymake-when-both-are-on ()
-  "Summing two backends would report the same LSP problem twice, so the
-precedence is stated rather than additive: flymake first."
-  (cl-letf (((symbol-function 'flycheck-count-errors)
-             (lambda (&rest _) '((error . 9) (warning . 9)))))
-    (let ((flycheck-mode t) (flycheck-current-errors nil))
-      (edmacs-ui-test--with-flymake '(:error)
-        (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
-                       "E1 "))))))
-
-(ert-deftest edmacs-ui-test-diagnostics-falls-back-to-flycheck-when-flymake-is-off ()
-  (with-temp-buffer
-    (setq-local flymake-mode nil)
-    (edmacs-ui-test--with-flycheck '((error . 3) (warning . 2))
-      (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
-                     "E3 W2 ")))))
 
 ;; nano-modeline is not loadable under `-Q', and a bare `defvar' in ui.el
 ;; marks the symbol special only within ui.el itself -- so without this the

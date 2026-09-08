@@ -1,10 +1,10 @@
 # Language Modules
 
-Language-specific configurations for edmacs. Each module provides optimized settings, LSP integration, and language-specific tools.
+Language-specific configurations for edmacs. Each module provides optimized settings, eglot integration, and language-specific tools.
 
 ## Overview
 
-| Language | File | Indentation | LSP Support | REPL |
+| Language | File | Indentation | Language Server | REPL |
 |----------|------|-------------|-------------|------|
 | JavaScript/TypeScript | `javascript.el` | 2 spaces | ✅ typescript-language-server | ❌ |
 | Clojure/ClojureScript | `clojure.el` | Lisp-style | ✅ clojure-lsp | ✅ CIDER |
@@ -23,7 +23,7 @@ Language-specific configurations for edmacs. Each module provides optimized sett
 - **JSX/TSX Support**: `.jsx` and `.tsx` files
 - **JSON Support**: `.json` files with formatting
 - **2-Space Indentation**: Default for all JS/TS files
-- **LSP Integration**: Automatic TypeScript language server
+- **Language Server**: Automatic TypeScript language server via eglot
 - **Prettier Formatting**: Automatic formatting on save via Apheleia
 - **ESLint Support**: Auto-fix on save
 
@@ -45,7 +45,7 @@ All JavaScript and TypeScript files default to 2-space indentation:
 | `.tsx` | `typescript-tsx-mode` |
 | `.json` | `json-mode` |
 
-### LSP Configuration
+### Language Server Configuration
 
 The module configures the TypeScript language server with:
 
@@ -95,7 +95,7 @@ npm install -g prettier
 - **Cross-platform Clojure**: `.cljc` files
 - **EDN Support**: `.edn` files
 - **CIDER REPL**: Interactive development with nREPL
-- **LSP Integration**: clojure-lsp for navigation and refactoring
+- **Language Server**: clojure-lsp, via eglot, for navigation and refactoring
 - **Automatic Indentation**: Lisp-style with align-arguments
 - **Parenthesis Management**: smartparens and rainbow-delimiters
 - **Refactoring Tools**: clj-refactor integration
@@ -156,7 +156,6 @@ CIDER provides extensive keybindings under `,` (local leader) in Clojure files:
 - **clojure-mode**: Major mode for Clojure
 - **cider**: Interactive development environment
 - **clj-refactor**: Automated refactoring
-- **flycheck-clj-kondo**: Linting with clj-kondo
 - **eglot**: Language server integration
 
 ---
@@ -175,7 +174,7 @@ type hierarchy) and the whole debugger integration that used to live here
 are gone, not ported -- see that phase's landing commit for the full list.
 
 - **Java Support**: `.java` files
-- **LSP Integration**: eglot talking to jdtls (Eclipse JDT Language Server)
+- **Language Server**: eglot talking to jdtls (Eclipse JDT Language Server)
 - **4-Space Indentation**: Standard Java formatting
 - **Build Tool Integration**: Maven and Gradle support (`mvn.el` / `gradle-mode`, unrelated to jdtls)
 - **Semantic Tokens**: jdtls' semantic highlighting via `eglot-semantic-tokens-mode`
@@ -190,7 +189,7 @@ tab-width: 4
 indent-tabs-mode: nil
 ```
 
-### LSP Configuration
+### Language Server Configuration
 
 jdtls, via eglot, provides:
 
@@ -262,7 +261,7 @@ Maven and Gradle keep their own local-leader prefixes, `, m` and `, g`.
 To add a new language module:
 
 1. Create `modules/languages/LANGUAGE.el`
-2. Configure the language mode and LSP settings
+2. Configure the language mode and its eglot settings
 3. Add `(require 'LANGUAGE)` to `modules/programming.el`
 
 Example structure:

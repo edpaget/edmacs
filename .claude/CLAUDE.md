@@ -265,7 +265,7 @@ diagnostics" rather than failing:
 - flymake's first check on a buffer whose `flymake-mode` came up from
   `after-change-major-mode-hook` -- which is every buffer after the first in
   an already-managed project. Force it with `(flymake-start t t)`.
-- a language's `lsp-deferred`/`eglot-ensure` hook entry, registered from a
+- a language's `eglot-ensure` hook entry, registered from a
   `with-eval-after-load` or `use-package` `:config` form. `<mode>-hook` is
   empty until the mode's own library is loaded, so `require` it before
   asserting anything about the hook list.
@@ -276,8 +276,9 @@ throwaway Go module outside the repo (project.el would otherwise root a
 module created inside a worktree at the edmacs repo, and gopls would report
 "no packages"), runs it through `startup-check.sh`, and asserts the buffer
 is eglot-managed, the server is gopls, `textDocument/definition` answers,
-`lsp-mode` never attached, the `:gopls` workspace configuration reached the
-server, and `edmacs-modeline-diagnostics` renders flymake's counts:
+no third-party LSP client attached, the `:gopls` workspace configuration
+reached the server, and `edmacs-modeline-diagnostics` renders flymake's
+counts:
 
 ```bash
 scripts/go-eglot-check.sh
@@ -316,8 +317,8 @@ builds a throwaway Maven project (jdtls resolves Maven natively -- no
 system `mvn` on PATH is needed for a project with no external dependencies)
 and asserts definition, references, type-definition, implementation and
 workspace/symbol all answer for real, `rename`/`codeAction` are advertised
-in the server's capabilities, `lsp-workspaces` stays empty, and diagnostics
-render through flymake. jdtls is a cold JVM plus a project import on every
+in the server's capabilities, no third-party LSP client attaches, and
+diagnostics render through flymake. jdtls is a cold JVM plus a project import on every
 run, so its deadlines run longer than the sibling scripts' (150s to first
 attach).
 

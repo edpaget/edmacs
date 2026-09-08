@@ -1,112 +1,14 @@
 ;;; programming.el --- General programming configuration -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; Language-agnostic programming tools: LSP, syntax checking, formatting, etc.
+;; Language-agnostic programming tools: eglot, flymake, formatting, etc.
 ;; Language-specific configurations belong in modules/languages/*.el
 
 ;;; Code:
 
 ;; ============================================================================
-;; LSP Mode - Language Server Protocol
-;; ============================================================================
-(use-package lsp-mode
-  :commands (lsp lsp-deferred)
-  :init
-  (setq lsp-keymap-prefix "C-c l")
-
-  :config
-  ;; Performance tuning
-  (setq lsp-idle-delay 0.5
-        lsp-log-io nil
-        lsp-enable-file-watchers nil
-        lsp-enable-folding nil
-        lsp-enable-snippet t
-        ;; Kept: cheap and useful; the real idle-request savings are hover and
-        ;; modeline code actions below.
-        lsp-enable-symbol-highlighting t
-        lsp-enable-links t
-        lsp-signature-auto-activate t
-        lsp-signature-render-documentation t
-        ;; Polls codeAction on every idle tick just for the modeline lightbulb;
-        ;; `SPC c a' still runs actions on demand.
-        lsp-modeline-code-actions-enable nil
-        lsp-modeline-diagnostics-enable t
-        lsp-completion-provider :none  ; Use corfu instead
-        lsp-headerline-breadcrumb-enable t)
-
-  ;; Configure which-key for LSP commands
-  (with-eval-after-load 'which-key
-    (add-hook 'lsp-mode-hook #'lsp-enable-which-key-integration))
-
-  ;; LSP keybindings with general.el
-  (general-define-key
-   :states 'normal
-   :keymaps 'lsp-mode-map
-   :prefix "SPC c"
-   "a" '(lsp-execute-code-action :which-key "code action")
-   "r" '(lsp-rename :which-key "rename")
-   "f" '(lsp-format-buffer :which-key "format")
-   "d" '(lsp-find-definition :which-key "definition")
-   "D" '(lsp-find-declaration :which-key "declaration")
-   "i" '(lsp-find-implementation :which-key "implementation")
-   "t" '(lsp-find-type-definition :which-key "type definition")
-   "R" '(lsp-find-references :which-key "references")
-   "s" '(consult-lsp-symbols :which-key "symbols")
-   "S" '(consult-lsp-file-symbols :which-key "file symbols")
-   "w" '(consult-lsp-diagnostics :which-key "workspace diagnostics")
-   "W" '(lsp-treemacs-errors-list :which-key "workspace diagnostics tree")))
-
-;; LSP UI - Enhanced UI for LSP
-(use-package lsp-ui
-  :after lsp-mode
-  :commands lsp-ui-mode
-  :config
-  (setq lsp-ui-doc-enable t
-        ;; Otherwise a hover request fires whenever the cursor rests; `SPC c h'
-        ;; below is the on-demand path.
-        lsp-ui-doc-show-with-cursor nil
-        lsp-ui-doc-position 'at-point
-        lsp-ui-doc-delay 0.5
-        lsp-ui-peek-enable t
-        lsp-ui-sideline-enable nil
-        lsp-ui-sideline-show-hover nil
-        lsp-ui-sideline-show-diagnostics nil
-        lsp-ui-sideline-show-code-actions nil)
-
-  ;; Explicit on-demand hover, replacing the automatic cursor-triggered popup.
-  (general-define-key
-   :states 'normal
-   :keymaps 'lsp-mode-map
-   :prefix "SPC c"
-   "h" '(lsp-ui-doc-show :which-key "hover doc")))
-
-;; Consult-LSP - Consult integration for LSP
-(use-package consult-lsp
-  :after (consult lsp-mode))
-
-;; LSP Treemacs - workspace-wide diagnostics tree (and symbols/call hierarchy)
-(use-package lsp-treemacs
-  :after lsp-mode
-  :commands lsp-treemacs-errors-list)
-
-;; ============================================================================
 ;; Eglot - built-in Language Server Protocol client
 ;; ============================================================================
-;; Coexists with lsp-mode: both are just major-mode hooks, so they conflict
-;; only where both attach. Go is on eglot; every other language is still on
-;; lsp-mode.
-
-(declare-function eglot-managed-p "eglot")
-(declare-function flycheck-mode "flycheck")
-
-(defun edmacs--eglot-disable-flycheck ()
-  "Turn flycheck off in an eglot-managed buffer; flymake owns diagnostics there.
-Either mode can come up second, so this runs from both their hooks: the
-first buffer of a project gets eglot last (it waits on the connection),
-while a later buffer of the same project gets it from
-`after-change-major-mode-hook' ahead of `global-flycheck-mode'."
-  (when (and (bound-and-true-p flycheck-mode) (eglot-managed-p))
-    (flycheck-mode -1)))
 
 (use-package eglot
   :straight nil
@@ -121,15 +23,8 @@ while a later buffer of the same project gets it from
         eglot-events-buffer-config '(:size 0 :format full)
         eglot-extend-to-xref t)
 
-  ;; flycheck registers real go-build/go-vet/go-staticcheck checkers for
-  ;; `go-ts-mode'; with the lsp checker gone they would fire on save and
-  ;; annotate over flymake's own diagnostics.
-  (add-hook 'eglot-managed-mode-hook #'edmacs--eglot-disable-flycheck)
-  (add-hook 'flycheck-mode-hook #'edmacs--eglot-disable-flycheck)
-
-  ;; A parallel binding set rather than client-agnostic commands: both
-  ;; clients stay live while the languages migrate, and a per-client
-  ;; keymap resolves each verb to the client actually managing the buffer.
+  ;; Only the verbs eglot itself owns; the client-agnostic diagnostics keys
+  ;; live on the global `SPC c' map in the flymake block below.
   (general-define-key
    :states 'normal
    :keymaps 'eglot-mode-map
@@ -143,13 +38,7 @@ while a later buffer of the same project gets it from
    "t" '(eglot-find-typeDefinition :which-key "type definition")
    "R" '(xref-find-references :which-key "references")
    "S" '(consult-imenu :which-key "file symbols")
-   "h" '(eldoc-doc-buffer :which-key "hover doc")
-   "w" '(consult-flymake :which-key "workspace diagnostics")
-   "W" '(flymake-show-project-diagnostics :which-key "workspace diagnostics tree")
-   ;; The global `SPC c x' set below is flycheck's and is dead here.
-   "xl" '(flymake-show-buffer-diagnostics :which-key "list errors")
-   "xn" '(flymake-goto-next-error :which-key "next error")
-   "xp" '(flymake-goto-prev-error :which-key "previous error")))
+   "h" '(eldoc-doc-buffer :which-key "hover doc")))
 
 ;; Consult-Eglot - Consult integration for eglot
 (use-package consult-eglot
@@ -162,35 +51,34 @@ while a later buffer of the same project gets it from
    "s" '(consult-eglot-symbols :which-key "symbols")))
 
 ;; ============================================================================
-;; Flycheck - Syntax checking
+;; Flymake - built-in syntax checking
 ;; ============================================================================
 
-(use-package flycheck
-  :init (global-flycheck-mode)
-  :config
-  (setq flycheck-check-syntax-automatically '(save mode-enabled)
-        flycheck-display-errors-delay 0.3)
+(use-package flymake
+  :straight nil
+  :hook (prog-mode . flymake-mode)
+  ;; `:init', not `:config': the block is deferred until something turns
+  ;; flymake on, and both the settings and the keys have to be in place
+  ;; before that happens.
+  :init
+  ;; `flymake-no-changes-timeout' stays at its default: eglot reports a
+  ;; pushed diagnostic into the current check only when flymake is on an
+  ;; idle timer, so nil there costs every server-sent diagnostic until the
+  ;; next explicit check.
+  (setq flymake-show-diagnostics-at-end-of-line 'short)
 
-  ;; Inline diagnostics (eol/below), replacing the lsp-ui-sideline path
-  ;; (lsp-ui-sideline-enable stays nil; see the lsp-ui block above)
-  (global-flycheck-annotate-mode 1)
-
-  ;; evil-collection rebinds S and x here but not P, so evil's global
-  ;; `evil-paste-before' shadows flycheck's toggle-scope binding.
-  (with-eval-after-load 'evil-collection
-    (evil-collection-define-key 'normal 'flycheck-error-list-mode-map
-      "P" 'flycheck-error-list-toggle-scope))
-
-  ;; Flycheck keybindings
+  ;; Global rather than `eglot-mode-map': flymake also runs in elisp and
+  ;; shell buffers no language server manages.
   (general-define-key
    :states 'normal
    :prefix "SPC c"
-   "x" '(:ignore t :which-key "flycheck")
-   "xl" '(flycheck-list-errors :which-key "list errors")
-   "xn" '(flycheck-next-error :which-key "next error")
-   "xp" '(flycheck-previous-error :which-key "previous error")
-   "xv" '(flycheck-verify-setup :which-key "verify setup")
-   "xa" '(flycheck-annotate-mode :which-key "toggle inline annotations")))
+   "w" '(consult-flymake :which-key "workspace diagnostics")
+   "W" '(flymake-show-project-diagnostics :which-key "workspace diagnostics tree")
+   "x" '(:ignore t :which-key "diagnostics")
+   "xl" '(flymake-show-buffer-diagnostics :which-key "list errors")
+   "xn" '(flymake-goto-next-error :which-key "next error")
+   "xp" '(flymake-goto-prev-error :which-key "previous error")
+   "xv" '(flymake-switch-to-log-buffer :which-key "flymake log")))
 
 ;; ============================================================================
 ;; Apheleia - Async code formatting
@@ -415,9 +303,16 @@ while a later buffer of the same project gets it from
   :config
   (setq yaml-indent-offset 2)
 
-  (add-hook 'yaml-mode-hook #'flycheck-mode)
-
-  ;; Needs yaml-language-server: npm install -g yaml-language-server
-  (add-hook 'yaml-mode-hook #'lsp-deferred))
+  ;; Needs yaml-language-server: npm install -g yaml-language-server.
+  ;; Guarded, unlike the unconditional hook this replaced: a bare
+  ;; `eglot-ensure' errors visibly on every yaml file when the server is
+  ;; not installed.
+  (with-eval-after-load 'eglot
+    (add-to-list 'eglot-server-programs
+                 '((yaml-mode yaml-ts-mode) . ("yaml-language-server" "--stdio"))))
+  (add-hook 'yaml-mode-hook
+            (lambda ()
+              (when (executable-find "yaml-language-server")
+                (eglot-ensure)))))
 
 ;;; programming.el ends here

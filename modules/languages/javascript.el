@@ -134,14 +134,14 @@
 (defvar eglot-server-programs)
 (defvar eglot-workspace-configuration)
 
-(defvar edmacs-js--typescript-lsp-cache (make-hash-table :test #'equal)
+(defvar edmacs-js--typescript-server-cache (make-hash-table :test #'equal)
   "Cache of resolved tsc path -> non-nil when that tsc supports `--lsp'.")
 
-(defun edmacs-js--tsc-supports-lsp-p (tsc)
+(defun edmacs-js--tsc-serves-language-server-p (tsc)
   "Return non-nil when TSC is a TypeScript 7+ compiler, which serves `--lsp'.
 TypeScript 7's Go compiler is itself the language server; 5 and 6 ship a
 separate tsserver and answer `--lsp' with error TS5023."
-  (let ((cached (gethash tsc edmacs-js--typescript-lsp-cache 'missing)))
+  (let ((cached (gethash tsc edmacs-js--typescript-server-cache 'missing)))
     (if (not (eq cached 'missing))
         cached
       (puthash tsc
@@ -151,7 +151,7 @@ separate tsserver and answer `--lsp' with error TS5023."
                       (progn (goto-char (point-min))
                              (re-search-forward "\\([0-9]+\\)\\." nil t))
                       (>= (string-to-number (match-string 1)) 7)))
-               edmacs-js--typescript-lsp-cache))))
+               edmacs-js--typescript-server-cache))))
 
 (defun edmacs-js--typescript-server (&optional _interactive _project)
   "Return the language server command for a JavaScript or TypeScript buffer.
@@ -163,7 +163,7 @@ from the project's own config chain, so a project pinning TypeScript 5 or 6
 gets `typescript-language-server' while everything else gets TS 7's native
 server."
   (let ((tsc (executable-find "tsc")))
-    (if (and tsc (edmacs-js--tsc-supports-lsp-p tsc))
+    (if (and tsc (edmacs-js--tsc-serves-language-server-p tsc))
         (list tsc "--lsp" "--stdio")
       (list "typescript-language-server" "--stdio"))))
 
@@ -179,9 +179,9 @@ server."
                   (typescript-ts-mode :language-id "typescript"))
                  . edmacs-js--typescript-server))
 
-  ;; The servers' own settings keys, not the `lsp-typescript-*' /
-  ;; `lsp-javascript-*' wrappers this replaced. Merged into the one shared
-  ;; plist; see go.el for why it is a global default rather than buffer-local.
+  ;; The servers' own settings keys, not the wrapper names of the client
+  ;; this replaced. Merged into the one shared plist; see go.el for why it
+  ;; is a global default rather than buffer-local.
   (setq-default eglot-workspace-configuration
                 (plist-put
                  (plist-put (default-value 'eglot-workspace-configuration)

@@ -23,12 +23,6 @@ custom.el
 .org-id-locations
 org-roam.db
 
-# LSP
-.lsp-session-v1
-
-# Flycheck
-flycheck_*.el
-
 # CIDER
 cider-history
 .cider-repl-history

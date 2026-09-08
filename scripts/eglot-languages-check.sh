@@ -1,33 +1,32 @@
 #!/usr/bin/env bash
 #
 # eglot-languages-check.sh -- batch evidence that Rust, TypeScript, JSX,
-# JavaScript, JSON and Clojure buffers come up under eglot, with no lsp-mode
-# in sight.
+# JavaScript, JSON and Clojure buffers come up under eglot, with no
+# third-party LSP client in sight.
 #
 # The sibling of `go-eglot-check.sh', same shape and the same traps (read its
 # header first). It builds throwaway projects OUTSIDE this repo, loads the
 # real config over them through `startup-check.sh', and asserts per language:
 #
 #   - the buffer is eglot-managed and the server process is the intended one
-#   - `lsp-mode' never attached and `lsp-workspaces' is empty
+#   - the retired third-party client never attached (the standing
+#     `no-lsp-mode' regression guard, the one place this script still has
+#     to name that symbol)
 #   - the translated workspace configuration reached the server
-#   - flymake, not flycheck, owns diagnostics, and
-#     `edmacs-modeline-diagnostics' renders their counts
+#   - flymake owns diagnostics and `edmacs-modeline-diagnostics' renders
+#     their counts
 #
 # Plus the ordering this config depends on but cannot assume: `mise-mode' has
 # already set a buffer-local `exec-path' before eglot computes the TypeScript
 # contact, so the per-project `tsc' is the one probed.
 #
-# THREE TRAPS, on top of go-eglot-check.sh's two
+# TWO TRAPS, on top of go-eglot-check.sh's two
 #
 # 1. TypeScript 7 answers PULL diagnostics only -- its initialize result
 #    advertises `diagnosticProvider' and it never sends publishDiagnostics.
 #    Nothing pulls in batch, so an omitted `(flymake-start t t)' looks
 #    exactly like "TypeScript reports no problems".
-# 2. rustic-flycheck.el adds `flymake-mode-off' to `rustic-mode-hook'.
-#    `rust.el' removes it; without that removal every Rust assertion below
-#    about diagnostics is testing flycheck's absence, not flymake's presence.
-# 3. clojure-lsp builds a whole-project analysis cache on first run in a
+# 2. clojure-lsp builds a whole-project analysis cache on first run in a
 #    fresh project, which is slow -- the deadlines here are 90s for Clojure.
 #
 # USAGE
@@ -226,10 +225,9 @@ dispatches on `rustic-lsp-client'. Return the server, or nil."
   (edmacs-langs--report (eq major-mode mode) (format "%s/major-mode" label)
                         "%S" major-mode)
   (let ((hook (symbol-value (intern (format "%s-hook" mode)))))
-    (edmacs-langs--report (and (memq (or entry 'eglot-ensure) hook)
-                               (not (memq 'lsp-deferred hook)))
+    (edmacs-langs--report (memq (or entry 'eglot-ensure) hook)
                           (format "%s/hook" label)
-                          "%S, no lsp-deferred" (or entry 'eglot-ensure)))
+                          "%S" (or entry 'eglot-ensure)))
   (edmacs-langs--connect (or seconds 60))
   (let* ((server (eglot-current-server))
          (command (and server (process-command (jsonrpc--process server)))))
@@ -272,7 +270,7 @@ server with a plain Location (`:uri\=')."
   "Force a flymake check and assert eglot supplied a diagnostic.
 SEVERITY defaults to `eglot-error'; TEXT-RX, when given, must match the
 diagnostic's text. Also asserts the modeline segment renders flymake's
-counts and that flycheck is not the one reporting.
+counts.
 
 `flymake-start' is not optional: TypeScript 7 advertises
 `diagnosticProvider' and answers pull requests only, so nothing arrives
@@ -292,13 +290,11 @@ until something pulls -- and batch runs no command loop to do it."
       (edmacs-langs--report diagnostic (format "%s/%s-diagnostic" label severity)
                             "%S" (mapcar #'flymake-diagnostic-text (flymake-diagnostics))))
     (edmacs-langs--report (and (bound-and-true-p flymake-mode)
-                               (not (bound-and-true-p flycheck-mode))
                                (string-match-p (format "\\`%s[0-9]" prefix)
                                                (or (edmacs-modeline-diagnostics) "")))
-                          (format "%s/modeline" label) "%S flymake=%S flycheck=%S"
+                          (format "%s/modeline" label) "%S flymake=%S"
                           (substring-no-properties (or (edmacs-modeline-diagnostics) ""))
-                          (bound-and-true-p flymake-mode)
-                          (bound-and-true-p flycheck-mode))))
+                          (bound-and-true-p flymake-mode))))
 
 
 ;;; --------------------------------------------------------------- Preflight
@@ -347,8 +343,8 @@ until something pulls -- and batch runs no command loop to do it."
   ;; setting took effect rather than being echoed back.
   (edmacs-langs--diagnostics "rust" 180 'eglot-warning "needless_return"))
 
-;; The second buffer of an already-managed project: phase 3's flycheck/eglot
-;; ordering bug only showed up here.
+;; The second buffer of an already-managed project: it gets flymake from
+;; `after-change-major-mode-hook', whose first check batch never runs.
 (find-file (expand-file-name "broken/src/lib.rs" edmacs-langs-rust))
 (edmacs-langs--connect 90)
 (edmacs-langs--diagnostics "rust-2nd" 180)
@@ -397,9 +393,9 @@ until something pulls -- and batch runs no command loop to do it."
                'clojure-ts-mode "clojure-lsp" 120)))
   (when server
     (let ((configuration (edmacs-langs--workspace-configuration server)))
-      ;; Deliberately empty: clojure-lsp reads .lsp/config.edn, and lsp-mode
-      ;; carried no clojure settings to translate. Asserted so the emptiness
-      ;; is evidence rather than an omission.
+      ;; Deliberately empty: clojure-lsp reads .lsp/config.edn, and the
+      ;; client this replaced carried no clojure settings to translate.
+      ;; Asserted so the emptiness is evidence rather than an omission.
       (edmacs-langs--report (not (string-match-p "\"clojure\"" (or configuration "")))
                             "clojure/no-config-section" "%s" configuration)))
   (edmacs-langs--diagnostics "clojure" 180))
@@ -407,11 +403,10 @@ until something pulls -- and batch runs no command loop to do it."
 
 ;;; ----------------------------------------------------------------- Sweep
 
-;; global-flycheck-mode itself stays on regardless of any one language --
-;; `edmacs--eglot-disable-flycheck' (programming.el) turns flycheck-mode off
-;; per-buffer once eglot attaches, for every language including Java now.
-(edmacs-langs--report (bound-and-true-p global-flycheck-mode)
-                      "global-flycheck-mode" "still globally on (per-buffer disabled under eglot)")
+;; flycheck is gone from the config; flymake is the only checker left, and
+;; `prog-mode-hook' turns it on in the buffers no server manages.
+(edmacs-langs--report (not (featurep 'flycheck)) "flycheck-absent" "%S"
+                      (featurep 'flycheck))
 
 (princ (format "assert: eglot-languages-check: %d checks, %d failed\n"
                edmacs-langs-total edmacs-langs-failures))

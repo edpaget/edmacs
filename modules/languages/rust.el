@@ -37,8 +37,6 @@
   ;; step with the check.command below or the two disagree.
   (setq rustic-lsp-check-command "clippy")
 
-  (setq rustic-flycheck-setup-mode-line-p nil)
-
   (setq rustic-format-on-save t
         rustic-format-trigger 'on-save)
 
@@ -84,8 +82,8 @@
 
 (defvar eglot-workspace-configuration)
 
-;; rust-analyzer's own settings keys, not the `lsp-rust-analyzer-*' wrapper
-;; names this replaced. Global rather than buffer-local, and merged rather than
+;; rust-analyzer's own settings keys, not the wrapper names of the client
+;; this replaced. Global rather than buffer-local, and merged rather than
 ;; assigned: eglot resolves this in a temp buffer of its own, and every
 ;; language shares the one plist.
 ;;
@@ -101,13 +99,6 @@
                              (:lifetimeElisionHints (:enable "skip_trivial")
                               :closureReturnTypeHints (:enable "always")
                               :parameterHints (:enable :json-false))))))
-
-;; rustic-flycheck.el adds both of these to `rustic-mode-hook' when flycheck
-;; loads. eglot switches flymake back on at connect, but until then flycheck
-;; runs cargo check and annotates over what flymake is about to report.
-(with-eval-after-load 'rustic-flycheck
-  (remove-hook 'rustic-mode-hook 'flymake-mode-off)
-  (remove-hook 'rustic-mode-hook 'flycheck-mode))
 
 ;; ============================================================================
 ;; Cargo Mode - Additional cargo integration

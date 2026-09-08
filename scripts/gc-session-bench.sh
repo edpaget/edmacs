@@ -9,7 +9,7 @@
 #
 # The workload reproduces the allocation shape of an LSP session rather than
 # any real server: JSON parsing (JSON-RPC), large-buffer rewrites with undo
-# (format-on-save, lsp-rename), and buffer switching. Post-change values are
+# (format-on-save, a project-wide rename), and buffer switching. Post-change values are
 # read from the tracked config so they cannot drift.
 #
 # USAGE
@@ -110,7 +110,7 @@ cat > "$SESSION_EL" <<'ELISP'
         (json-payload (edmacs-gc-bench--json-payload 400))
         (big-text (edmacs-gc-bench--large-text 4000)))
     ;; JSON-RPC-shaped parsing churn: 5 synthetic "buffers" each getting
-    ;; ~40 diagnostics batches parsed, like a multi-file lsp-mode session.
+    ;; ~40 diagnostics batches parsed, like a multi-file editing session.
     (dotimes (_buf 5)
       (dotimes (_msg 40)
         (json-parse-string json-payload :object-type 'alist)))

@@ -17,7 +17,7 @@
 (defvar eglot-workspace-configuration)
 (defvar eglot-server-programs)
 
-;; gopls' own settings keys, not the `lsp-go-*' wrapper names this replaced.
+;; gopls' own settings keys, not the wrapper names of the client this replaced.
 ;; Global rather than buffer-local, and merged rather than assigned: eglot
 ;; resolves this in a temp buffer of its own, where no buffer-local value is
 ;; visible, and every language shares the one plist -- a section each.

@@ -44,7 +44,7 @@
 ;; would end early-init.el's startup GC budget before the modules below load.
 (use-package gcmh
   :config
-  (setq gcmh-high-cons-threshold (* 100 1024 1024) ; sized for five lsp-mode backends
+  (setq gcmh-high-cons-threshold (* 100 1024 1024) ; sized for five language servers
         gcmh-idle-delay 10)
   (add-hook 'emacs-startup-hook #'gcmh-mode))
 
