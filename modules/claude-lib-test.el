@@ -395,6 +395,52 @@ cannot distinguish a half-finished promotion from a human mid-edit."
         (dolist (sym '(claude-lib-test-bad-arglist claude-lib-test-after-bad))
           (when (fboundp sym) (fmakunbound sym)))))))
 
+(ert-deftest claude-lib-test-promote-rejects-lone-string-body ()
+  "A defun whose entire body is one string has no docstring and must be rejected.
+Elisp treats a leading string as documentation only when another form
+follows it; with nothing after it the string is the RETURN VALUE and
+`documentation' gives nil. The static `(nth 3 form)' check cannot tell
+the shapes apart, so this promotion once succeeded and produced exactly
+the undocumented, discovery-invisible entry the gate exists to prevent."
+  (claude-lib-test--with-temp-library lib
+    (let ((before (with-temp-buffer (insert-file-contents lib) (buffer-string))))
+      (unwind-protect
+          (progn
+            (should-error
+             (claude-lib-promote
+              "(defun claude-lib-test-onlystring (x)\n  \"Return X unchanged.\")"
+              "edmacs" "docstring written, body forgotten")
+             :type 'user-error)
+            (should-not (fboundp 'claude-lib-test-onlystring))
+            (should (equal before
+                           (with-temp-buffer (insert-file-contents lib) (buffer-string)))))
+        (when (fboundp 'claude-lib-test-onlystring)
+          (fmakunbound 'claude-lib-test-onlystring))))))
+
+(ert-deftest claude-lib-test-promote-cl-defun-is-actually-usable ()
+  "A promoted `cl-defun' must survive the post-save fresh-Emacs load check.
+The gate advertises `cl-defun', but the module wrote it into a file that
+did not `require' cl-lib, so every such promotion was rejected by the
+load check with `void-function cl-defun'. The gate and the requires have
+to agree."
+  (claude-lib-test--with-temp-library lib
+    ;; Opt back into the real subprocess check, which the helper binds off
+    ;; for speed: without it this test passes even when the module drops
+    ;; `(require 'cl-lib)', because the promoting image already has cl-lib.
+    (let ((claude-lib-verify-load-in-subprocess t))
+      (unwind-protect
+          (progn
+            (should (eq 'claude-lib-test-clprobe
+                        (claude-lib-promote
+                         "(cl-defun claude-lib-test-clprobe (a &optional b)\n  \"Return A and B as a list.\"\n  (list a b))"
+                         "edmacs" "prove cl-defun round-trips")))
+            (should (equal '(1 2) (claude-lib-test-clprobe 1 2)))
+            (should (string-match-p "cl-defun claude-lib-test-clprobe"
+                                    (with-temp-buffer (insert-file-contents lib)
+                                      (buffer-string)))))
+        (when (fboundp 'claude-lib-test-clprobe)
+          (fmakunbound 'claude-lib-test-clprobe))))))
+
 (ert-deftest claude-lib-test-promote-rejects-missing-docstring ()
   (claude-lib-test--with-temp-library lib
     (should-error

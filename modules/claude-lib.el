@@ -163,6 +163,10 @@
 
 (require 'subr-x)
 (require 'seq)
+;; `claude-lib-promote' accepts `cl-defun', and a promoted one is written
+;; into this file -- so the gate and the requires have to agree, or the
+;; post-save fresh-Emacs check rejects every such promotion.
+(require 'cl-lib)
 
 (defvar edmacs-claude-lib-max-output-bytes (* 1024 1024)
   "Hard ceiling, in bytes, on a single OUTPUT-FILE body.
@@ -615,6 +619,17 @@ called this -- see `claude-lib-file'."
           (let ((docstring (nth 3 form)))
             (unless (and (stringp docstring) (not (string-empty-p docstring)))
               (user-error "claude-lib-promote: %s has no docstring" name))
+            ;; Elisp treats a leading string as documentation only when at
+            ;; least one more form follows it. A function whose entire body
+            ;; IS that string returns it and has no docstring at all --
+            ;; `documentation' gives nil -- so `(nth 3 form)' alone cannot
+            ;; tell the two shapes apart. Writing the docstring and
+            ;; forgetting the body is the most natural way to produce
+            ;; exactly the undocumented promotion this gate exists to stop.
+            (unless (nthcdr 4 form)
+              (user-error
+               "claude-lib-promote: %s has no body -- its only form is the string, which Elisp returns rather than treating as a docstring"
+               name))
             (let ((first-line (car (split-string docstring "\n"))))
               (unless (string-match-p "[.!?]\\'" first-line)
                 (user-error
