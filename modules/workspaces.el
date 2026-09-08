@@ -340,10 +340,12 @@ whichever group already sat there.
 A tab whose group is new to FRAME goes to the end; one whose group is
 already present moves to that group's near edge; one already inside its
 group's bounds is left where it is."
-  (with-selected-frame (or frame (selected-frame))
+  (let ((frame (or frame (selected-frame))))
+   (with-selected-frame frame
     (let* ((tabs (funcall tab-bar-tabs-function))
-           (tab (or tab (tab-bar--current-tab-find tabs)))
-           (tab-index (tab-bar--tab-index tab tabs))
+           (tab (or tab (edmacs-workspaces--tab-bar-current-tab frame)))
+           (number (edmacs-workspaces-tab-number tab frame))
+           (tab-index (and number (1- number)))
            (group (funcall tab-bar-tab-group-function tab))
            (beg (and group
                      (seq-position tabs group
@@ -363,7 +365,7 @@ group's bounds is left where it is."
                  ((and len (> tab-index (+ beg len))) (+ beg len 1))
                  ((< tab-index beg) beg))))
       (when pos
-        (tab-bar-move-tab-to pos (1+ tab-index))))))
+        (tab-bar-move-tab-to pos (1+ tab-index)))))))
 
 ;; ============================================================================
 ;; Worktree enumeration -- on demand, no cache
@@ -445,12 +447,8 @@ worktree tab should stamp that same worktree."
   "Abnormal hook run with (TAB FRAME) once a new tab is fully identified.
 The seam that makes this module the SOLE entry on core's
 `tab-bar-tab-post-open-functions'. Before any member runs, TAB carries
-its worktree root and FRAME carries a designated main window -- that
-ordering guarantee is the whole reason three independent `add-hook's on
-the core variable collapsed into one owner. Their relative order there
-was an accident of `add-hook' prepending, and the sidebar's redraw won
-it: the first thing drawn for a new tab saw an unstamped tab and filed
-it under no project.
+its worktree root and FRAME carries a designated main window, so a
+member drawing the tab sees it fully identified.
 
 Same swappable-seam convention as
 `edmacs-workspaces-tab-root-set-functions': workspaces.el loads before
@@ -615,10 +613,8 @@ live window it is showing; every background tab derives its own from the
 serialized layout it already carries (`edmacs-workspaces--root-from-ws'),
 which is the same information selecting it would have put on screen.
 
-The select loop this replaced ran two tab-select repair advices, a
-sidebar redraw and a stray-sweep timer per tab, on a path that runs on
-every daemon boot. `edmacs-workspaces-tab-root-set-functions' fires once
-per frame after the walk, not once per tab, for the same reason.
+`edmacs-workspaces-tab-root-set-functions' fires once per frame after
+the walk, not once per tab.
 
 This is the restore path for a tab that reaches the session without a
 root -- one saved by a desktop written before the stamp existed, or one
@@ -1139,7 +1135,10 @@ keep seeing exactly what it sees today."
              (new-fs (copy-sequence fs)))
         (when (and tabs (not had-tabs))
           (setq params (append params (list (cons 'tabs tabs)))))
-        (setf (frameset-states new-fs) (list (cons params (cdr primary))))
+        ;; The primary state's own window state gets the same sanitizing
+        ;; every folded state and tab `ws' does.
+        (setf (frameset-states new-fs)
+              (list (cons params (edmacs-windows-ws-ensure-main (cdr primary)))))
         new-fs))))
 
 ;; ============================================================================

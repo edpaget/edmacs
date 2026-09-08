@@ -1338,6 +1338,30 @@ construction."
                      (edmacs-workspaces-migrate-frameset
                       (edmacs-workspaces-migrate-frameset poisoned)))))))
 
+(ert-deftest edmacs-workspaces-test-migrate-frameset-sanitizes-a-side-only-primary-state ()
+  "The primary state's own window state -- the frame's live layout, not a
+tab's `ws' -- gets the same `edmacs-windows-ws-ensure-main' pass every
+folded state and tab `ws' does, so a frame saved wedged does not restore
+wedged. Migrating twice is still a fixed point."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((poisoned (edmacs-workspaces-test--side-only-ws))
+           (fs (frameset--make
+                :version 1 :timestamp '(27294 4191 109240 0)
+                :app '(desktop . "208") :name "test"
+                :states (list (cons `((last-focus-update . t)
+                                      (tabs (current-tab (name . "edmacs")
+                                                         (edmacs-workspace-root
+                                                          . "/w/edmacs/")))
+                                      (height . 72))
+                                    poisoned))))
+           (once (edmacs-workspaces-migrate-frameset fs))
+           (state (car (frameset-states once))))
+      (should (edmacs-windows-ws-side-only-p poisoned))
+      (should (cdr state))
+      (should-not (edmacs-windows-ws-side-only-p (cdr state)))
+      (should (equal (frameset-states (edmacs-workspaces-migrate-frameset once))
+                     (frameset-states once))))))
+
 (ert-deftest edmacs-workspaces-test-migrate-frameset-sanitizes-a-side-only-tab-ws ()
   "A tab whose saved `ws' is all side windows restores into a frame with
 no main window, from which every later `split-window' recurses through
