@@ -218,6 +218,7 @@ any) nests around a call to this rather than duplicating these bindings."
          (edmacs-sidebar-agents--pending-notification nil)
          (edmacs-sidebar-agents--coalesce-timer nil)
          (edmacs-sidebar-agents--elapsed-timer nil)
+         (edmacs-sidebar-agents--truename-cache nil)
          (edmacs-sidebar-agents-show-all nil))
      (unwind-protect
          (progn ,@body)

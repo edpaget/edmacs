@@ -580,6 +580,20 @@ the one further down the column."
 ;; so it never fires under `--batch' -- the `quit-restore-window' advice below
 ;; covers the path that actually strands a copy, and this catches the rest a
 ;; frame later.
+;;
+;; Deliberately kept synchronous here, unlike workspaces.el's own
+;; `window-buffer-change-functions' member (`--on-window-buffer-change'),
+;; which defers its stray-visit sweep to a timer: that sweep can select a
+;; different tab and display a buffer in a different window, real work
+;; redisplay-time code must never do, so it has no choice but to defer.
+;; This sweep only ever *deletes* a window -- `delete-window' is itself
+;; redisplay-safe (`quit-restore-window's own advice above already calls
+;; `edmacs-windows-dedupe-frame' straight from its own hook-adjacent path)
+;; -- so there is nothing here that needs the same deferral, and adding one
+;; would only let another stack push land between this hook's firing and
+;; its own eventual timer, growing the very duplicate this sweep exists to
+;; remove. The `--deduping' guard above is what actually matters for
+;; reentrancy (`delete-window' re-fires this same hook), and stays either way.
 (add-hook 'window-buffer-change-functions #'edmacs-windows-dedupe-frame)
 
 ;; ============================================================================

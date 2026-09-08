@@ -211,16 +211,59 @@ of taking down the whole redraw."
 ;; Worktree matching
 ;; ============================================================================
 
+(defvar edmacs-sidebar-agents--truename-cache nil
+  "Hash table RAW-ROOT -> its `file-truename', memoized for the current
+sidebar redraw pass. `--for-root' -- and therefore `--agent-root-
+truename' -- runs once per worktree row via `--on-worktree-section', and
+again via `--label-suffix', both hooked into sidebar.el's redraw; every
+one of those calls re-truenames EVERY tracked agent (its filter
+predicate runs unconditionally over `--all', not just agents near the
+row's own root). Without this cache that is `file-truename' called
+O(rows x agents) times per redraw, all off pure in-memory data.
+`--clear-truename-cache' (registered on
+`edmacs-sidebar-extra-section-functions', which fires once at the end of
+every non-collapsed `edmacs-sidebar--redraw' pass, after every row has
+been rendered) discards it, so a root renamed on disk between redraws is
+never served a stale truename.")
+
+(defconst edmacs-sidebar-agents--truename-cache-miss
+  (make-symbol "edmacs-sidebar-agents--truename-cache-miss")
+  "Sentinel distinguishing a cached nil truename from no entry at all.")
+
+(defun edmacs-sidebar-agents--cached-truename (path)
+  "Return PATH's `file-truename', memoized in
+`edmacs-sidebar-agents--truename-cache' for the current redraw pass.
+Falls back to PATH itself on error, matching `--agent-root-truename's
+own prior fallback. Lazily creates the cache on first use each pass --
+it starts, and ends, nil."
+  (unless (hash-table-p edmacs-sidebar-agents--truename-cache)
+    (setq edmacs-sidebar-agents--truename-cache (make-hash-table :test #'equal)))
+  (let ((cached (gethash path edmacs-sidebar-agents--truename-cache
+                         edmacs-sidebar-agents--truename-cache-miss)))
+    (if (not (eq cached edmacs-sidebar-agents--truename-cache-miss))
+        cached
+      (let ((value (condition-case nil (file-truename path) (error path))))
+        (puthash path value edmacs-sidebar-agents--truename-cache)
+        value))))
+
+(defun edmacs-sidebar-agents--clear-truename-cache (_frame)
+  "Discard the per-redraw-pass truename cache -- see
+`edmacs-sidebar-agents--truename-cache's docstring for why this must run
+once per pass, not persist indefinitely."
+  (setq edmacs-sidebar-agents--truename-cache nil))
+
+(add-hook 'edmacs-sidebar-extra-section-functions #'edmacs-sidebar-agents--clear-truename-cache)
+
 (defun edmacs-sidebar-agents--agent-root-truename (agent)
-  "Return AGENT's root, truename-normalized.
+  "Return AGENT's root, truename-normalized (memoized -- see
+`--cached-truename').
 Both `edmacs-agent-root' (agents.el) and `edmacs-workspaces-tab-root'
 (workspaces.el) already return truenames from their own producers, so
 this re-normalize is defensive, not the primary comparison -- it only
 matters if either producer's own contract ever drifts. This is the
 single implementation of \"does this agent belong to this worktree
 root\"; `--for-root' below is its only caller."
-  (condition-case nil (file-truename (edmacs-agent-root agent))
-    (error (edmacs-agent-root agent))))
+  (edmacs-sidebar-agents--cached-truename (edmacs-agent-root agent)))
 
 ;; ============================================================================
 ;; Reading the (frame-independent) global agent table

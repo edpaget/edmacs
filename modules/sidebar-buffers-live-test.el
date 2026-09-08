@@ -787,7 +787,12 @@ Profiler, not wall-clock `benchmark-run') directly around
 from `tab-bar-select-tab's unrelated bookkeeping -- against the AC's
 literal 50ms bound; `benchmark-run' still wraps the whole
 `tab-bar-select-tab' call as a coarser, generously-bounded sanity
-check on top."
+check on top. `--on-tab-select' now routes through `edmacs-sidebar-
+invalidate' (a deferred idle-0 redraw, coalescing bursts of triggers)
+rather than calling `--redraw' directly, so the manual
+`edmacs-sidebar--flush-dirty-frames' call below -- inside the
+benchmarked form, so its own cost still counts toward the wall-clock
+bound -- stands in for that timer's own eventual real firing."
       (require 'elp)
       (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
         (edmacs-sidebar-buffers-live-test--with-scenario (list root)
@@ -805,7 +810,9 @@ check on top."
               (progn
                 (elp-instrument-function 'edmacs-sidebar--redraw)
                 (elp-reset-function 'edmacs-sidebar--redraw)
-                (let ((elapsed (car (benchmark-run 1 (tab-bar-select-tab 1)))))
+                (let ((elapsed (car (benchmark-run 1
+                                      (tab-bar-select-tab 1)
+                                      (edmacs-sidebar--flush-dirty-frames)))))
                   (should (< elapsed 0.2))) ; generous, machine-independent sanity bound
                 (let* ((info (get 'edmacs-sidebar--redraw elp-timer-info-property))
                        (calls (aref info 0))

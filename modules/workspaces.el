@@ -173,6 +173,18 @@ Emacs 30."
 A pure read: no derivation, no side effect."
   (alist-get edmacs-workspaces-root-parameter tab))
 
+(defvar edmacs-workspaces-tab-root-set-functions nil
+  "Abnormal hook run with (ROOT FRAME) at the end of
+`edmacs-workspaces-set-tab-root', after the stamp lands. workspaces.el
+loads before sidebar.el (see init.el's `load-module' order) and has no
+sidebar.el function to call directly without an upward, layering-
+breaking reference -- this is the same swappable-seam convention
+sidebar.el's own `edmacs-sidebar-worktree-section-functions' et al. use,
+just owned by this file instead. sidebar.el adds a member that
+invalidates FRAME's sidebar, since a project row's label reflects its
+main root and a worktree row its own -- a root stamp with no open
+buffer-list activity otherwise had no trigger to redraw either.")
+
 (defun edmacs-workspaces-set-tab-root (root &optional frame)
   "Stamp ROOT onto FRAME's (default selected) current tab. Returns ROOT.
 `setf' rather than `push', so re-stamping REPLACES the entry: a
@@ -181,6 +193,7 @@ copy-other-parameters forwarding on every later tab switch and outlive
 the session via desktop."
   (when-let* ((tab (edmacs-workspaces--tab-bar-current-tab frame)))
     (setf (alist-get edmacs-workspaces-root-parameter (cdr tab)) root)
+    (run-hook-with-args 'edmacs-workspaces-tab-root-set-functions root frame)
     root))
 
 (defun edmacs-workspaces-find-tab (group root &optional frame)
@@ -670,13 +683,45 @@ by selecting the target tab and displaying the buffer there."
                             (buffer-name buf)
                             (error-message-string err))))))))))))
 
+(defvar edmacs-workspaces--stray-sweep-timers (make-hash-table :test #'eq)
+  "FRAME -> its pending stray-visit-sweep timer, or absent when none is
+pending. A rolling debounce per frame -- canceled and rescheduled on
+every new `window-buffer-change-functions' firing for that frame, never
+stacked -- so a burst of N firings for the same frame within one command
+loop (every window on a frame re-fires this hook on a tab switch, a
+buffer kill, ...) collapses onto exactly one queued sweep instead of N
+redundant ones. Keyed per frame, like sidebar.el's own
+`edmacs-sidebar--resize-debounce-timers', rather than one shared timer:
+unlike sidebar-buffers.el's `--redraw-timer' (:757, whose debounced
+redraw is frame-independent -- it revisits every frame regardless of
+which one changed), `--relocate-stray-visits' only ever acts on the one
+FRAME it is passed, so a single shared timer would silently drop a
+second frame's sweep if both fired within the same debounce window.")
+
+(defun edmacs-workspaces--run-stray-sweep (frame)
+  "Clear FRAME's entry from `edmacs-workspaces--stray-sweep-timers', then
+sweep it. The function `edmacs-workspaces--on-window-buffer-change'
+actually schedules -- doing the bookkeeping here, not there, keeps a
+freshly fired timer from being mistaken for still-pending by a firing
+that arrives while this sweep itself is running."
+  (remhash frame edmacs-workspaces--stray-sweep-timers)
+  (edmacs-workspaces--relocate-stray-visits frame))
+
 (defun edmacs-workspaces--on-window-buffer-change (frame)
-  "Schedule a stray-visit sweep of FRAME off the redisplay path.
-`window-buffer-change-functions' runs mid-redisplay, so no window, tab
-or buffer work happens here directly -- only a zero-delay timer."
+  "Schedule (or reschedule) a stray-visit sweep of FRAME off the
+redisplay path. `window-buffer-change-functions' runs mid-redisplay, so
+no window, tab or buffer work happens here directly -- only a timer.
+Canceling any of FRAME's own already-pending timer before scheduling a
+fresh one -- see `edmacs-workspaces--stray-sweep-timers' -- means a
+burst of firings for FRAME queues exactly one sweep, not one per
+firing."
   (when (and edmacs-workspaces-stray-visit-relocate
              (not edmacs-workspaces--relocating))
-    (run-at-time 0 nil #'edmacs-workspaces--relocate-stray-visits frame)))
+    (when-let* ((timer (gethash frame edmacs-workspaces--stray-sweep-timers)))
+      (cancel-timer timer))
+    (puthash frame
+             (run-at-time 0 nil #'edmacs-workspaces--run-stray-sweep frame)
+             edmacs-workspaces--stray-sweep-timers)))
 
 (add-hook 'window-buffer-change-functions #'edmacs-workspaces--on-window-buffer-change)
 

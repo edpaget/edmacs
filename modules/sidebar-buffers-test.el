@@ -280,6 +280,44 @@ since `nerd-icons' is not loaded by this standalone suite."
                         (edmacs-sidebar-buffers--visible-glyph)))))
 
     ;; ==========================================================================
+    ;; Row overlay clearing scopes to this module's own tag (AC4)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-test-register-row-tags-overlay ()
+      (edmacs-sidebar-buffers-test--with-buffers
+          ((buf (edmacs-sidebar-buffers-test--file-buffer "/repo/a.el")))
+        (with-temp-buffer
+          (insert "row\n")
+          (cl-letf (((symbol-function 'get-buffer-window) (lambda (_buf _frame) nil))
+                    ((symbol-function 'frame-selected-window) (lambda (_frame) nil)))
+            (edmacs-sidebar-buffers--register-row buf (point-min) (point-max) 'fake-frame))
+          (should (overlay-get (gethash buf edmacs-sidebar-buffers--row-overlays)
+                                'edmacs-sidebar-buffers-row)))))
+
+    (ert-deftest edmacs-sidebar-buffers-test-ensure-cleared-spares-foreign-overlays ()
+      "`--ensure-cleared-this-pass' removes only this module's own tagged
+row overlays (`--register-row's `edmacs-sidebar-buffers-row' property)
+-- a foreign overlay standing in for magit-section's own (untagged)
+highlight overlay must survive."
+      (edmacs-sidebar-buffers-test--with-buffers
+          ((buf (edmacs-sidebar-buffers-test--file-buffer "/repo/a.el")))
+        (with-temp-buffer
+          (insert "row\n")
+          (cl-letf (((symbol-function 'get-buffer-window) (lambda (_buf _frame) nil))
+                    ((symbol-function 'frame-selected-window) (lambda (_frame) nil)))
+            (edmacs-sidebar-buffers--register-row buf (point-min) (point-max) 'fake-frame))
+          (let ((tagged (gethash buf edmacs-sidebar-buffers--row-overlays))
+                (foreign (make-overlay (point-min) (point-max))))
+            (should (overlay-buffer tagged))
+            (should (overlay-buffer foreign))
+            ;; Force a fresh pass, as `--reset-cleared-flag' does at the
+            ;; end of every real redraw.
+            (setq edmacs-sidebar-buffers--cleared-this-pass nil)
+            (edmacs-sidebar-buffers--ensure-cleared-this-pass)
+            (should-not (overlay-buffer tagged))
+            (should (overlay-buffer foreign))))))
+
+    ;; ==========================================================================
     ;; RET -- visiting a buffer row (no-silent-no-op coverage)
     ;; ==========================================================================
 

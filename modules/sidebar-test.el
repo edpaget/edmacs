@@ -146,6 +146,11 @@ behind for a later test."
               (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
                 (goto-char (point-min))
                 (edmacs-sidebar-activate))
+              ;; `--on-tab-select' now routes through `edmacs-sidebar-
+              ;; invalidate' (a deferred idle-0 redraw), not a synchronous
+              ;; `--redraw' -- flush it manually, since idle timers never
+              ;; fire under `sit-for' in `--batch'.
+              (edmacs-sidebar--flush-dirty-frames)
               ;; RET on the first (non-current) row actually selected it --
               ;; not a no-op under `tab-bar-select-tab's 0-as-sentinel
               ;; semantics, and not off-by-one to the tab before it.
@@ -834,11 +839,15 @@ frame; deleting the LAST frame showing it kills the buffer."
               (should (= 2 (length (tab-bar-tabs))))
               ;; Closes the current (newly-added) tab.
               (tab-bar-close-tab)
-              ;; `sit-for' alone does not run pending timers under `-Q
-              ;; --batch'; a real sleep is needed to let the deferred
-              ;; `run-at-time 0' redraw actually fire.
+              ;; `sit-for' alone does not run pending (`run-at-time')
+              ;; timers under `-Q --batch'; a real sleep is needed to let
+              ;; the deferred `run-at-time 0' callback actually fire. That
+              ;; callback now calls `edmacs-sidebar-invalidate', not
+              ;; `--redraw' directly -- its own idle-0 timer never fires
+              ;; under `sit-for' in `--batch' either, so flush it manually.
               (sleep-for 0.2)
               (sit-for 0)
+              (edmacs-sidebar--flush-dirty-frames)
               (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
                 (should (= 1 (length (tab-bar-tabs))))
                 (should (= 1 (length (split-string (buffer-string) "\n" t))))))
@@ -854,6 +863,10 @@ has its own dedicated coverage below."
           (progn
             (edmacs-sidebar-show (selected-frame))
             (tab-bar-rename-tab "renamed-tab")
+            ;; The rename advice now routes through `edmacs-sidebar-
+            ;; invalidate' (deferred idle-0 redraw) rather than calling
+            ;; `--redraw' directly -- flush it manually.
+            (edmacs-sidebar--flush-dirty-frames)
             (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
               (should (string-match-p "renamed-tab" (buffer-string)))))
         (ignore-errors (tab-bar-rename-tab ""))
@@ -3144,25 +3157,61 @@ overflow, via the same forced `window-start'."
     (ert-deftest edmacs-sidebar-test-on-window-size-change-anchor-registered ()
       "`--on-window-size-change-anchor' is registered on
 `window-size-change-functions' alongside the pre-existing
-`--on-window-size-change', and redraws only a frame with a live sidebar
-window -- a no-op for any other frame, including one whose sidebar was
-never shown."
+`--on-window-size-change', and is a no-op for any frame with no live
+sidebar window, including one whose sidebar was never shown -- calling
+neither `--reapply-bottom-anchor' nor `--redraw'."
       (should (memq #'edmacs-sidebar--on-window-size-change-anchor
                      window-size-change-functions))
-      (let ((frame (selected-frame)) (redrawn nil))
+      (let ((frame (selected-frame)) (reapplied nil) (redrawn nil))
+        (unwind-protect
+            (progn
+              (edmacs-sidebar-test--cleanup-sidebar frame)
+              (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
+                         (lambda (_frame) (setq reapplied t)))
+                        ((symbol-function 'edmacs-sidebar--redraw)
+                         (lambda (_frame) (setq redrawn t))))
+                (edmacs-sidebar--on-window-size-change-anchor frame))
+              (should-not reapplied)
+              (should-not redrawn))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+          (edmacs-sidebar-test--cleanup-sidebar frame))))
+
+    (ert-deftest edmacs-sidebar-test-on-window-size-change-anchor-gates-on-own-geometry ()
+      "Regression for the bug the phase context names: this hook fires for
+ANY window's resize or buffer change anywhere on the frame -- e.g. every
+window pushed onto windows.el's master-and-stack column used to redraw
+the whole sidebar tree even though the sidebar window's own height never
+moved. Comparing against `window-old-pixel-height'/
+`window-old-body-pixel-height' narrows this to a real change in the
+sidebar window's own geometry, and reapplies the bottom anchor
+(`--reapply-bottom-anchor'), never a full `--redraw', when it does."
+      (let ((frame (selected-frame)) (reapplied nil) (redrawn nil))
         (unwind-protect
             (progn
               (edmacs-sidebar-show frame)
-              (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
-                         (lambda (_frame) (setq redrawn t))))
-                (edmacs-sidebar--on-window-size-change-anchor frame))
-              (should redrawn)
-              (setq redrawn nil)
-              (edmacs-sidebar-test--cleanup-sidebar frame)
-              (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
-                         (lambda (_frame) (setq redrawn t))))
-                (edmacs-sidebar--on-window-size-change-anchor frame))
-              (should-not redrawn))
+              (let ((window (edmacs-sidebar--window frame)))
+                ;; Unchanged geometry: neither function runs.
+                (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
+                           (lambda (_frame) (setq reapplied t)))
+                          ((symbol-function 'edmacs-sidebar--redraw)
+                           (lambda (_frame) (setq redrawn t)))
+                          ((symbol-function 'window-old-pixel-height)
+                           (lambda (&optional w) (window-pixel-height (or w window))))
+                          ((symbol-function 'window-old-body-pixel-height)
+                           (lambda (&optional w) (window-body-height (or w window) t))))
+                  (edmacs-sidebar--on-window-size-change-anchor frame))
+                (should-not reapplied)
+                (should-not redrawn)
+                ;; A changed total height: reapplies the anchor, never redraws.
+                (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
+                           (lambda (_frame) (setq reapplied t)))
+                          ((symbol-function 'edmacs-sidebar--redraw)
+                           (lambda (_frame) (setq redrawn t)))
+                          ((symbol-function 'window-old-pixel-height)
+                           (lambda (&optional _w) 1)))
+                  (edmacs-sidebar--on-window-size-change-anchor frame))
+                (should reapplied)
+                (should-not redrawn)))
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
@@ -3241,6 +3290,153 @@ under an `F1' header a moment after drawing correctly."
       (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p)
                  (lambda (_f) t)))
         (should (equal (edmacs-sidebar-redraw-frames) (frame-list)))))
+
+    ;; ==========================================================================
+    ;; edmacs-sidebar-invalidate -- coalesced redraw
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-test-invalidate-coalesces-a-burst-into-one-redraw ()
+      "N invalidations of the same frame within one command loop -- standing
+in for N stack pushes, each of which used to call `--redraw' directly --
+schedule exactly one pending idle timer and redraw exactly once when it
+runs, not once per invalidation."
+      (let ((frame (selected-frame)) (redraw-count 0))
+        (unwind-protect
+            (progn
+              (setq edmacs-sidebar--dirty-frames nil)
+              (when (timerp edmacs-sidebar--redraw-timer)
+                (cancel-timer edmacs-sidebar--redraw-timer))
+              (setq edmacs-sidebar--redraw-timer nil)
+              (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
+                         (lambda (_frame) (setq redraw-count (1+ redraw-count)))))
+                (dotimes (_ 20) (edmacs-sidebar-invalidate frame))
+                (should (= 0 redraw-count))
+                (should (timerp edmacs-sidebar--redraw-timer))
+                (should (equal (list frame) edmacs-sidebar--dirty-frames))
+                ;; Manually invoking the flush function stands in for its
+                ;; own idle timer's eventual real firing: idle timers
+                ;; never fire under `sit-for' in `--batch' (there is no
+                ;; real idle detection there -- confirmed against a
+                ;; `run-with-idle-timer' that a `sit-for' loop never
+                ;; reaches), unlike the plain `run-at-time' debounces
+                ;; elsewhere in this file, which `sleep-for'+`sit-for' do
+                ;; flush for real.
+                (edmacs-sidebar--flush-dirty-frames)
+                (should (= 1 redraw-count))
+                (should-not edmacs-sidebar--dirty-frames)
+                (should-not edmacs-sidebar--redraw-timer)))
+          (setq edmacs-sidebar--dirty-frames nil)
+          (when (timerp edmacs-sidebar--redraw-timer)
+            (cancel-timer edmacs-sidebar--redraw-timer))
+          (setq edmacs-sidebar--redraw-timer nil))))
+
+    (ert-deftest edmacs-sidebar-test-invalidate-noop-for-unusable-frame ()
+      "`edmacs-sidebar-invalidate' marks nothing dirty and schedules no timer
+at all for a frame `edmacs-sidebar-redraw-frames' excludes -- checked at
+invalidation time, not merely skipped later at flush time, so an
+unusable frame (the daemon's tty placeholder above all) never causes
+timer churn either."
+      (unwind-protect
+          (progn
+            (setq edmacs-sidebar--dirty-frames nil)
+            (when (timerp edmacs-sidebar--redraw-timer)
+              (cancel-timer edmacs-sidebar--redraw-timer))
+            (setq edmacs-sidebar--redraw-timer nil)
+            (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_f) nil)))
+              (edmacs-sidebar-invalidate (selected-frame)))
+            (should-not edmacs-sidebar--dirty-frames)
+            (should-not edmacs-sidebar--redraw-timer))
+        (setq edmacs-sidebar--dirty-frames nil)
+        (when (timerp edmacs-sidebar--redraw-timer)
+          (cancel-timer edmacs-sidebar--redraw-timer))
+        (setq edmacs-sidebar--redraw-timer nil)))
+
+    (ert-deftest edmacs-sidebar-test-flush-dirty-frames-skips-dead-frames ()
+      "A frame deleted between invalidation and the flush is skipped, not
+redrawn -- every other still-live dirty frame is still redrawn."
+      (let* ((frame (selected-frame))
+             (real-frame-live-p (symbol-function 'frame-live-p))
+             (redrawn nil))
+        (unwind-protect
+            (progn
+              (setq edmacs-sidebar--dirty-frames
+                    (list 'edmacs-sidebar-test--dead-frame frame))
+              (cl-letf (((symbol-function 'frame-live-p)
+                         (lambda (f) (if (eq f 'edmacs-sidebar-test--dead-frame) nil
+                                        (funcall real-frame-live-p f))))
+                        ((symbol-function 'edmacs-sidebar--redraw)
+                         (lambda (f) (push f redrawn))))
+                (edmacs-sidebar--flush-dirty-frames))
+              (should (equal redrawn (list frame))))
+          (setq edmacs-sidebar--dirty-frames nil))))
+
+    (ert-deftest edmacs-sidebar-test-tab-group-change-invalidates-without-buffer-list-event ()
+      "A tab-bar group change alone -- via
+`tab-bar-tab-post-change-group-functions', which
+`edmacs-workspaces-assign-group' drives through the real
+`tab-bar-change-tab-group' -- invalidates the selected frame's sidebar
+with no buffer-list activity involved at all, matching the phase
+context's own \"no trigger exists for `tab-bar-change-tab-group'\" bug."
+      (let ((frame (selected-frame)) (redraw-count 0))
+        (unwind-protect
+            (progn
+              (setq edmacs-sidebar--dirty-frames nil)
+              (when (timerp edmacs-sidebar--redraw-timer)
+                (cancel-timer edmacs-sidebar--redraw-timer))
+              (setq edmacs-sidebar--redraw-timer nil)
+              (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
+                         (lambda (_frame) (setq redraw-count (1+ redraw-count)))))
+                (run-hook-with-args 'tab-bar-tab-post-change-group-functions
+                                     (tab-bar--current-tab-find nil frame))
+                (should (equal (list frame) edmacs-sidebar--dirty-frames))
+                (edmacs-sidebar--flush-dirty-frames)
+                (should (= 1 redraw-count))))
+          (setq edmacs-sidebar--dirty-frames nil)
+          (when (timerp edmacs-sidebar--redraw-timer)
+            (cancel-timer edmacs-sidebar--redraw-timer))
+          (setq edmacs-sidebar--redraw-timer nil))))
+
+    (ert-deftest edmacs-sidebar-test-tab-root-set-invalidates ()
+      "`edmacs-workspaces-set-tab-root' has no sidebar.el of its own to call
+directly (workspaces.el loads first) -- it runs
+`edmacs-workspaces-tab-root-set-functions' instead, and sidebar.el's own
+`--on-tab-root-set' member is what actually invalidates."
+      (should (memq #'edmacs-sidebar--on-tab-root-set
+                     edmacs-workspaces-tab-root-set-functions))
+      (let ((frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (setq edmacs-sidebar--dirty-frames nil)
+              (when (timerp edmacs-sidebar--redraw-timer)
+                (cancel-timer edmacs-sidebar--redraw-timer))
+              (setq edmacs-sidebar--redraw-timer nil)
+              (edmacs-sidebar--on-tab-root-set "/some/root/" frame)
+              (should (equal (list frame) edmacs-sidebar--dirty-frames)))
+          (setq edmacs-sidebar--dirty-frames nil)
+          (when (timerp edmacs-sidebar--redraw-timer)
+            (cancel-timer edmacs-sidebar--redraw-timer))
+          (setq edmacs-sidebar--redraw-timer nil))))
+
+    (ert-deftest edmacs-sidebar-test-tab-select-pre-close-rename-honour-redraw-frames ()
+      "Regression for the bug the phase context names: `edmacs-sidebar-
+redraw-frames' is honoured by the two `--redraw-all's but was not by
+tab-select, pre-close or rename before they routed through
+`edmacs-sidebar-invalidate', which checks it uniformly."
+      (unwind-protect
+          (progn
+            (setq edmacs-sidebar--dirty-frames nil)
+            (when (timerp edmacs-sidebar--redraw-timer)
+              (cancel-timer edmacs-sidebar--redraw-timer))
+            (setq edmacs-sidebar--redraw-timer nil)
+            (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_f) nil)))
+              (edmacs-sidebar--on-tab-select nil nil)
+              (should-not edmacs-sidebar--dirty-frames)
+              (edmacs-sidebar--after-tab-rename)
+              (should-not edmacs-sidebar--dirty-frames)))
+        (setq edmacs-sidebar--dirty-frames nil)
+        (when (timerp edmacs-sidebar--redraw-timer)
+          (cancel-timer edmacs-sidebar--redraw-timer))
+        (setq edmacs-sidebar--redraw-timer nil)))
 
     (ert-deftest edmacs-sidebar-test-double-load-leaves-one-advice ()
       "Every `advice-add' in sidebar.el names a symbol, so re-evaluating the

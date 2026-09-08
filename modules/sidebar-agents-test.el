@@ -211,6 +211,55 @@ even when its own root string differs from the worktree list's."
           (should-not (edmacs-sidebar-agents--for-root "/repo")))))
 
     ;; ==========================================================================
+    ;; file-truename memoized once per distinct root per redraw pass
+    ;; ==========================================================================
+    ;; `--for-root' runs once per worktree row via `--on-worktree-section'
+    ;; AND again via `--label-suffix', both hooked into sidebar.el's
+    ;; redraw -- and each call re-truenames EVERY tracked agent, not just
+    ;; ones near the row's own root. Five simulated calls below (standing
+    ;; in for that many rows/hook firings within one redraw pass) must
+    ;; still cost exactly one `file-truename' per DISTINCT agent root.
+
+    (ert-deftest edmacs-sidebar-agents-test-for-root-memoizes-truename-per-pass ()
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (let ((calls 0))
+          (edmacs-sidebar-agents-test--put
+           (edmacs-sidebar-agents-test--make-agent :root "/repo/wt-a/" :instance "%1"))
+          (edmacs-sidebar-agents-test--put
+           (edmacs-sidebar-agents-test--make-agent :root "/repo/wt-a/" :instance "%2"))
+          (edmacs-sidebar-agents-test--put
+           (edmacs-sidebar-agents-test--make-agent :root "/repo/wt-b/" :instance "%1"))
+          (cl-letf (((symbol-function 'file-truename)
+                     (lambda (path) (setq calls (1+ calls)) path)))
+            (dotimes (_ 5)
+              (edmacs-sidebar-agents--for-root "/repo/wt-a/")
+              (edmacs-sidebar-agents--for-root "/repo/wt-b/")))
+          ;; Two distinct agent roots (three agents, two of them sharing
+          ;; "/repo/wt-a/") -- not 5 rows x 3 agents x 2 call-sites.
+          (should (= 2 calls)))))
+
+    (ert-deftest edmacs-sidebar-agents-test-truename-cache-clears-between-passes ()
+      "`--clear-truename-cache' (hooked onto
+`edmacs-sidebar-extra-section-functions', which fires once at the end of
+every redraw pass) discards the cache, so a later pass re-resolves a
+root that may have changed on disk between redraws rather than serving
+a stale truename forever."
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (let ((calls 0))
+          (cl-letf (((symbol-function 'file-truename)
+                     (lambda (path) (setq calls (1+ calls)) path)))
+            (edmacs-sidebar-agents--cached-truename "/repo/wt-a/")
+            (edmacs-sidebar-agents--cached-truename "/repo/wt-a/")
+            (should (= 1 calls))
+            (edmacs-sidebar-agents--clear-truename-cache 'fake-frame)
+            (edmacs-sidebar-agents--cached-truename "/repo/wt-a/")
+            (should (= 2 calls))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-clear-truename-cache-registered ()
+      (should (memq #'edmacs-sidebar-agents--clear-truename-cache
+                     edmacs-sidebar-extra-section-functions)))
+
+    ;; ==========================================================================
     ;; Attention comparator / attention-list
     ;; ==========================================================================
 

@@ -361,12 +361,16 @@ anything), so the NEXT pass clears exactly once too.")
 
 (defun edmacs-sidebar-buffers--ensure-cleared-this-pass ()
   "Clear every stale row overlay exactly once per redraw pass.
-Safe to call from every worktree's `--on-worktree-section' invocation:
-the first call within a pass finds nothing of this module's own in the
+Scoped to this module's own tagged overlays (`--register-row's
+`edmacs-sidebar-buffers-row' property) via `remove-overlays' NAME/VAL --
+never the bare buffer-wide form, which used to delete every overlay in
+the buffer including magit-section's own highlight overlay. Safe to
+call from every worktree's `--on-worktree-section' invocation: the
+first call within a pass finds nothing of this module's own in the
 buffer yet (whatever was there is left over from the LAST pass), and
 every later call in the same pass is a no-op."
   (unless edmacs-sidebar-buffers--cleared-this-pass
-    (remove-overlays (point-min) (point-max))
+    (remove-overlays (point-min) (point-max) 'edmacs-sidebar-buffers-row t)
     (setq edmacs-sidebar-buffers--row-overlays (make-hash-table :test 'eq)
           edmacs-sidebar-buffers--cleared-this-pass t)))
 
@@ -400,8 +404,12 @@ visible/selected without any extra current-tab check needed here."
     (overlay-put ov 'face (and selected 'edmacs-sidebar-buffers-selected-face))))
 
 (defun edmacs-sidebar-buffers--register-row (buf beg end frame)
-  "Create and decorate BUF's row overlay spanning [BEG END)."
+  "Create and decorate BUF's row overlay spanning [BEG END).
+Tagged with the `edmacs-sidebar-buffers-row' property so
+`--ensure-cleared-this-pass' can scope its `remove-overlays' call to
+this module's own rows -- see that function's docstring."
   (let ((ov (make-overlay beg end)))
+    (overlay-put ov 'edmacs-sidebar-buffers-row t)
     (unless (hash-table-p edmacs-sidebar-buffers--row-overlays)
       (setq edmacs-sidebar-buffers--row-overlays (make-hash-table :test 'eq)))
     (puthash buf ov edmacs-sidebar-buffers--row-overlays)

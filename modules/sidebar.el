@@ -498,6 +498,64 @@ from being that last writer."
   (seq-filter #'edmacs-workspaces-frame-usable-p (frame-list)))
 
 ;; ============================================================================
+;; Coalesced invalidation: one dirty flag per frame, one shared idle-0 flush
+;; ============================================================================
+;; Every trigger that used to call `edmacs-sidebar--redraw' directly --
+;; tab select/pre-close/rename, `g r', a tab-bar group change, a tab-root
+;; stamp -- now marks its frame dirty here instead. A burst of N such
+;; triggers within one command loop (N stack pushes, a rename racing a
+;; tab select, ...) collapses onto the single pending timer below, so the
+;; frame is redrawn once when Emacs next goes idle rather than N times.
+;; The debounced buffer-list hook (sidebar-buffers.el), the agents-changed
+;; hook and 30s tick (sidebar-agents.el), and the tab-open/desktop-read/
+;; frame-creation triggers (which call `edmacs-sidebar-show', not
+;; `--redraw', to create a window synchronously) keep their own existing,
+;; separately-debounced paths rather than routing through this one --
+;; see their own call sites for why.
+
+(defvar edmacs-sidebar--dirty-frames nil
+  "Frames marked dirty by `edmacs-sidebar-invalidate', awaiting one
+coalesced redraw from `edmacs-sidebar--flush-dirty-frames'.")
+
+(defvar edmacs-sidebar--redraw-timer nil
+  "The single pending idle-0 timer that will run
+`edmacs-sidebar--flush-dirty-frames', or nil when none is pending. One
+shared timer, not one per frame: every frame invalidated within the same
+command loop collapses onto this one pending flush.")
+
+(defun edmacs-sidebar--flush-dirty-frames ()
+  "Redraw every still-live frame in `edmacs-sidebar--dirty-frames' once,
+then clear both.
+Clears `edmacs-sidebar--redraw-timer' and swaps `--dirty-frames' out to a
+local FIRST, before redrawing anything: a redraw that itself triggers
+`edmacs-sidebar-invalidate' (e.g. via a hook fired by its own buffer
+changes) must schedule a fresh timer, not silently add to a set this
+function is about to clear anyway. A frame deleted between invalidation
+and this flush is skipped, never redrawn."
+  (setq edmacs-sidebar--redraw-timer nil)
+  (let ((frames edmacs-sidebar--dirty-frames))
+    (setq edmacs-sidebar--dirty-frames nil)
+    (dolist (frame frames)
+      (when (frame-live-p frame)
+        (edmacs-sidebar--redraw frame)))))
+
+(defun edmacs-sidebar-invalidate (&optional frame)
+  "Mark FRAME's (default the selected frame) sidebar dirty for one
+coalesced redraw, scheduling `edmacs-sidebar--flush-dirty-frames' via a
+zero-second idle timer if none is already pending.
+No-ops entirely -- marks nothing dirty, schedules no timer -- when FRAME
+is not among `edmacs-sidebar-redraw-frames'; checked here, at
+invalidation time, so a frame this config will never redraw (the
+daemon's tty placeholder above all) never causes timer churn either."
+  (let ((frame (or frame (selected-frame))))
+    (when (memq frame (edmacs-sidebar-redraw-frames))
+      (unless (memq frame edmacs-sidebar--dirty-frames)
+        (push frame edmacs-sidebar--dirty-frames))
+      (unless edmacs-sidebar--redraw-timer
+        (setq edmacs-sidebar--redraw-timer
+              (run-with-idle-timer 0 nil #'edmacs-sidebar--flush-dirty-frames))))))
+
+;; ============================================================================
 ;; Rendering
 ;; ============================================================================
 ;; Tab names are read verbatim from each tab alist's own precomputed `name'
@@ -1329,12 +1387,18 @@ the selected frame -- there is no other frame a keypress could mean."
 
 ;;;###autoload
 (defun edmacs-sidebar-redraw (frame)
-  "Force a redraw of FRAME's sidebar from cached data.
+  "Force an immediate redraw of FRAME's sidebar from cached data.
+Bypasses `edmacs-sidebar-invalidate's coalescing deliberately -- this is
+the user asking for a redraw right now, not one more trigger to fold
+into the next idle flush -- but still drops FRAME from any pending
+`edmacs-sidebar--dirty-frames' set first, so an already-scheduled idle
+flush does not immediately redraw it again right after.
 Never shells out to enumerate worktrees -- this only rebuilds the
 section tree from data already on the frame's own tabs, so it is
 always safe to bind to a bare key. Interactively, FRAME is always the
 selected frame."
   (interactive (list (selected-frame)))
+  (setq edmacs-sidebar--dirty-frames (delq frame edmacs-sidebar--dirty-frames))
   (edmacs-sidebar--redraw frame)
   (message "sidebar redrawn"))
 
@@ -1510,15 +1574,26 @@ fires."
 (add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change)
 
 (defun edmacs-sidebar--on-window-size-change-anchor (frame)
-  "Registered on `window-size-change-functions': redraw FRAME's sidebar
-so a bottom-anchored section stays pinned as the window's size changes.
-Deliberately undebounced, unlike `edmacs-sidebar--on-window-size-change'
-above -- that one decides whether to persist a remembered width, an
-unrelated concern; a redraw here is cheap (no subprocess or
-directory-stat work), so there is nothing to coalesce. A no-op for a
-frame with no live sidebar window."
-  (when (and (frame-live-p frame) (edmacs-sidebar--window frame))
-    (edmacs-sidebar--redraw frame)))
+  "Registered on `window-size-change-functions': reapply FRAME's sidebar
+bottom anchor when its OWN window changed size.
+`window-size-change-functions' fires for ANY window's resize or buffer
+change anywhere on FRAME, not just the sidebar's own -- e.g. every
+window pushed onto windows.el's master-and-stack column used to redraw
+the whole sidebar tree on every firing, even though the sidebar window's
+own geometry never moved. Comparing the live window's current pixel
+height against `window-old-pixel-height'/`window-old-body-pixel-height'
+-- redisplay's own before/after record for this hook -- narrows this to
+firings that actually changed the sidebar window's own height. Calls
+`edmacs-sidebar--reapply-bottom-anchor', not a full `--redraw': only the
+anchor's position depends on this window's height, not the section tree
+it decorates, and reapplying is far cheaper than a full rebuild. A
+no-op for a frame with no live sidebar window, or whose sidebar window's
+geometry did not change."
+  (when (frame-live-p frame)
+    (when-let* ((window (edmacs-sidebar--window frame)))
+      (when (or (/= (window-pixel-height window) (window-old-pixel-height window))
+                (/= (window-body-height window t) (window-old-body-pixel-height window)))
+        (edmacs-sidebar--reapply-bottom-anchor frame)))))
 
 (add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change-anchor)
 
@@ -1809,12 +1884,38 @@ Interactively, FRAME is always the selected frame."
 ;; ============================================================================
 
 (defun edmacs-sidebar--on-tab-select (_from-tab _to-tab)
-  "Redraw the selected frame's sidebar; moves the current-tab marker."
+  "Invalidate the selected frame's sidebar; moves the current-tab marker."
   ;; `tab-bar-tab-post-select-functions' calls with (FROM-TAB TO-TAB), no
   ;; frame slot -- ambient-reads: ok
-  (edmacs-sidebar--redraw (selected-frame)))
+  (edmacs-sidebar-invalidate (selected-frame)))
 
 (add-hook 'tab-bar-tab-post-select-functions #'edmacs-sidebar--on-tab-select)
+
+(defun edmacs-sidebar--on-tab-group-change (_tab)
+  "Invalidate the selected frame's sidebar after `tab-bar-change-tab-group'.
+A project row's label and a worktree row's nesting both depend on tab-bar
+group membership (`edmacs-sidebar--redraw-projects'), so a group change
+alone -- with no buffer-list activity at all -- must still redraw the
+tree; before this there was no trigger for it whatsoever.
+`tab-bar-tab-post-change-group-functions' calls with (TAB), no frame
+slot, and -- like `tab-bar-change-tab-group' itself -- always operates
+on the selected frame."
+  ;; ambient-reads: ok -- see the docstring above.
+  (edmacs-sidebar-invalidate (selected-frame)))
+
+(add-hook 'tab-bar-tab-post-change-group-functions #'edmacs-sidebar--on-tab-group-change)
+
+(defun edmacs-sidebar--on-tab-root-set (_root frame)
+  "Invalidate FRAME's sidebar after `edmacs-workspaces-set-tab-root' stamps a
+new root onto one of its tabs. Registered on workspaces.el's own
+`edmacs-workspaces-tab-root-set-functions' seam -- see that variable's
+docstring for why this is a hook member rather than a direct call. ROOT
+itself is unused: FRAME's whole tree, not just the stamped tab's own
+row, may depend on it (a project row derives its main root from
+whichever member of its tabs resolves one)."
+  (edmacs-sidebar-invalidate frame))
+
+(add-hook 'edmacs-workspaces-tab-root-set-functions #'edmacs-sidebar--on-tab-root-set)
 
 (defun edmacs-sidebar--on-tab-open (_tab)
   "Re-show the sidebar in a new tab -- a fresh tab drops the side window."
@@ -1825,30 +1926,31 @@ Interactively, FRAME is always the selected frame."
 (add-hook 'tab-bar-tab-post-open-functions #'edmacs-sidebar--on-tab-open)
 
 (defun edmacs-sidebar--on-tab-pre-close (_tab _last-tab-p)
-  "Redraw after the closing tab is actually removed from `tab-bar-tabs'.
-`tab-bar-tab-pre-close-functions' fires BEFORE that removal, so a
-synchronous redraw here would still show the closing tab; deferred one
-tick instead. `frame-live-p' is checked because the last-tab-p
-`delete-frame' branch can run and destroy the frame between this hook
-firing and the timer executing."
+  "Invalidate after the closing tab is actually removed from `tab-bar-tabs'.
+`tab-bar-tab-pre-close-functions' fires BEFORE that removal, so an
+invalidation here would still redraw a stale tree if it flushed before
+the removal lands; deferred one tick instead, same as before this
+routed through `edmacs-sidebar-invalidate'. `frame-live-p' is checked
+because the last-tab-p `delete-frame' branch can run and destroy the
+frame between this hook firing and the timer executing."
   ;; `tab-bar-tab-pre-close-functions' calls with (TAB LAST-TAB-P), no
   ;; frame slot -- ambient-reads: ok
   (let ((frame (selected-frame)))
     (run-at-time 0 nil
                  (lambda ()
                    (when (frame-live-p frame)
-                     (edmacs-sidebar--redraw frame))))))
+                     (edmacs-sidebar-invalidate frame))))))
 
 (add-hook 'tab-bar-tab-pre-close-functions #'edmacs-sidebar--on-tab-pre-close)
 
 (defun edmacs-sidebar--after-tab-rename (&rest _)
-  "Redraw the selected frame's sidebar after `tab-bar-rename-tab'.
+  "Invalidate the selected frame's sidebar after `tab-bar-rename-tab'.
 `tab-bar-rename-tab' has no dedicated hook; it always targets the current
 tab of the current frame, so this has nothing to key off besides the
 selected frame. Advice on a fixed `(&rest _)' signature, same reasoning
 as the hooks above."
   ;; ambient-reads: ok -- see the docstring above.
-  (edmacs-sidebar--redraw (selected-frame)))
+  (edmacs-sidebar-invalidate (selected-frame)))
 
 ;; A named function, not a lambda: `advice-add' with a symbol is
 ;; idempotent, so re-evaluating this file leaves one advice rather than

@@ -754,22 +754,52 @@ worktree must be left alone, not dragged onto it."
 
 (ert-deftest edmacs-workspaces-test-sweep-is-scheduled-off-the-redisplay-path ()
   "The sweep is installed, and only ever deferred -- never run in the hook.
-`window-buffer-change-functions' fires mid-redisplay."
+`window-buffer-change-functions' fires mid-redisplay. The scheduled
+function is this module's own thin wrapper
+(`edmacs-workspaces--run-stray-sweep', which clears the pending-timer
+bookkeeping before sweeping -- see `edmacs-workspaces--stray-sweep-timers')
+rather than `--relocate-stray-visits' directly; invoking it confirms the
+sweep still reaches that function."
   (should (memq #'edmacs-workspaces--on-window-buffer-change
                 window-buffer-change-functions))
-  (let ((scheduled '()))
-    (cl-letf (((symbol-function 'run-at-time)
-               (lambda (secs repeat fn &rest args)
-                 (push (list secs repeat fn args) scheduled)
-                 nil))
-              ((symbol-function 'edmacs-workspaces--relocate-stray-visits)
-               (lambda (_frame) (ert-fail "swept synchronously from the hook"))))
-      (edmacs-workspaces--on-window-buffer-change (selected-frame))
-      (should (= 1 (length scheduled)))
-      (pcase-let ((`(,secs ,repeat ,fn ,_args) (car scheduled)))
-        (should (equal secs 0))
-        (should-not repeat)
-        (should (eq fn #'edmacs-workspaces--relocate-stray-visits))))))
+  (remhash (selected-frame) edmacs-workspaces--stray-sweep-timers)
+  (unwind-protect
+      (let ((scheduled '()) (relocated '()))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (secs repeat fn &rest args)
+                     (push (list secs repeat fn args) scheduled)
+                     'edmacs-workspaces-test--fake-timer))
+                  ((symbol-function 'edmacs-workspaces--relocate-stray-visits)
+                   (lambda (frame) (push frame relocated))))
+          (edmacs-workspaces--on-window-buffer-change (selected-frame))
+          (should (= 1 (length scheduled)))
+          (pcase-let ((`(,secs ,repeat ,fn ,args) (car scheduled)))
+            (should (equal secs 0))
+            (should-not repeat)
+            (should (eq fn #'edmacs-workspaces--run-stray-sweep))
+            (apply fn args)
+            (should (equal relocated (list (selected-frame)))))))
+    (remhash (selected-frame) edmacs-workspaces--stray-sweep-timers)))
+
+(ert-deftest edmacs-workspaces-test-sweep-coalesces-a-burst-into-one-timer ()
+  "N firings of `window-buffer-change-functions' for the SAME frame within
+one command loop queue exactly one pending sweep timer, not N -- the
+rolling-debounce fix for the bug the phase context names: an unconditional
+fresh zero-delay timer per firing, with no pending-timer guard at all."
+  (remhash (selected-frame) edmacs-workspaces--stray-sweep-timers)
+  (unwind-protect
+      (let ((scheduled 0) (canceled 0))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (&rest _) (setq scheduled (1+ scheduled))
+                     (make-symbol (format "fake-timer-%d" scheduled))))
+                  ((symbol-function 'cancel-timer)
+                   (lambda (_timer) (setq canceled (1+ canceled)))))
+          (dotimes (_ 5)
+            (edmacs-workspaces--on-window-buffer-change (selected-frame)))
+          (should (= 5 scheduled))
+          (should (= 4 canceled))
+          (should (gethash (selected-frame) edmacs-workspaces--stray-sweep-timers))))
+    (remhash (selected-frame) edmacs-workspaces--stray-sweep-timers)))
 
 (ert-deftest edmacs-workspaces-test-sweep-re-entrancy-guard ()
   "A sweep already in progress neither re-enters nor re-schedules."
