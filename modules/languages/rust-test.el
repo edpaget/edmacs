@@ -2,8 +2,9 @@
 
 ;;; Commentary:
 ;; Covers the rust-analyzer workspace configuration `rust.el' merges into
-;; the shared eglot plist, and the two rustic settings that pick eglot and
-;; keep rustic's own initializationOptions in step with it.
+;; the shared eglot plist, the two rustic settings that pick eglot and keep
+;; rustic's own initializationOptions in step with it, and the removal of the
+;; two hooks rustic-flycheck installs whenever flycheck manages to load.
 ;;
 ;; Run with this file on the command line, from any `default-directory' --
 ;; the module path resolves against this file's own directory via
@@ -44,6 +45,15 @@
 ;; Fire the deferred `use-package rustic' `:config' body.
 (defvar rustic-mode-map (make-sparse-keymap))
 (provide 'rustic)
+
+;; rustic-flycheck.el installs these two at its own top level
+;; (rustic-flycheck.el:211,215). Seed them, then `provide' the feature to fire
+;; `rust.el''s `with-eval-after-load' against them -- at load time, so the
+;; assertion below cannot depend on test ordering.
+(defvar rustic-mode-hook nil)
+(add-hook 'rustic-mode-hook 'flycheck-mode)
+(add-hook 'rustic-mode-hook 'flymake-mode-off)
+(provide 'rustic-flycheck)
 
 (defun rust-test--section ()
   (plist-get (default-value 'eglot-workspace-configuration) :rust-analyzer))
@@ -91,6 +101,14 @@ has to serialize as false; nil would go over the wire as null."
   (should-not (with-temp-buffer
                 (insert-file-contents rust-test--module)
                 (re-search-forward "add-hook 'rust-ts-mode-hook" nil t))))
+
+(ert-deftest rust-test-rustic-flycheck-hooks-are-undone ()
+  "rustic loads rustic-flycheck the moment flycheck loads, and `go-mod-mode'
+requires flycheck unconditionally -- so visiting one go.mod is enough to put
+`flycheck-mode' and `flymake-mode-off' back on `rustic-mode-hook'.  Both must
+come off again."
+  (should-not (memq 'flycheck-mode rustic-mode-hook))
+  (should-not (memq 'flymake-mode-off rustic-mode-hook)))
 
 (provide 'rust-test)
 ;;; rust-test.el ends here

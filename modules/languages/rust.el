@@ -100,6 +100,15 @@
                               :closureReturnTypeHints (:enable "always")
                               :parameterHints (:enable :json-false))))))
 
+;; `go-mod-mode' requires flycheck unconditionally at its own top level, so
+;; visiting any go.mod still pulls the package in; rustic then loads
+;; rustic-flycheck, which puts `flycheck-mode' and `flymake-mode-off' on
+;; `rustic-mode-hook'. Undo both, or Rust buffers opened after that point lose
+;; flymake and get cargo check annotating over eglot's diagnostics.
+(with-eval-after-load 'rustic-flycheck
+  (remove-hook 'rustic-mode-hook 'flymake-mode-off)
+  (remove-hook 'rustic-mode-hook 'flycheck-mode))
+
 ;; ============================================================================
 ;; Cargo Mode - Additional cargo integration
 ;; ============================================================================

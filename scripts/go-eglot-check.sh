@@ -18,6 +18,9 @@
 #   - `edmacs-modeline-diagnostics' renders flymake's counts
 #   - `java-ts-mode-hook' is on `eglot-ensure' (the cross-language sweep)
 #   - flycheck is gone from the config entirely
+#   - and then, deliberately last, that visiting a go.mod -- which reloads
+#     flycheck via `go-mod-mode''s hard dependency on it -- does not hand Rust
+#     buffers back to flycheck through rustic-flycheck's hooks
 #
 # TWO TRAPS THIS SCRIPT EXISTS TO NAVIGATE
 #
@@ -251,6 +254,37 @@ perfectly fine interactively."
                          "java-ts-mode" "on eglot-ensure")
 (edmacs-go-check--report (not (featurep 'flycheck)) "flycheck-absent" "%S"
                          (featurep 'flycheck))
+
+;; Everything above runs with flycheck unloaded, which is the whole point of
+;; ordering this section last. `go-mod-mode' declares flycheck a hard
+;; `Package-Requires' dependency and requires it at its own top level, so
+;; opening one go.mod loads the package this roadmap retired -- no setting of
+;; ours can prevent that. rustic's standing `(with-eval-after-load 'flycheck
+;; (require 'rustic-flycheck))' then fires, and rustic-flycheck installs both
+;; `flycheck-mode' and `flymake-mode-off' on `rustic-mode-hook'. `rust.el'
+;; takes them straight back off; these are the assertions that it does.
+;;
+;; `require' rather than `find-file' on the module's own go.mod: go-mod-mode
+;; errors out of its own mode function against any Go newer than 1.19 (it
+;; matches "go1\.1[1-9]" against `go version'), so a find-file here would print
+;; a mode-specification error and fail the run for an unrelated reason. See the
+;; `go-mod-mode-rejects-modern-go' task. The `require' is the same top-level
+;; load a find-file performs, and it is the load -- not the mode function --
+;; that pulls flycheck in.
+(require 'go-mod-mode nil t)
+(edmacs-go-check--report (featurep 'go-mod-mode) "go-mod-mode-loads" "%S"
+                         (featurep 'go-mod-mode))
+(edmacs-go-check--report (featurep 'flycheck) "go-mod-reloads-flycheck"
+                         "the hazard is real: featurep=%S" (featurep 'flycheck))
+(require 'rustic nil t)
+(edmacs-go-check--report (featurep 'rustic-flycheck) "rustic-flycheck-loaded"
+                         "rustic=%S rustic-flycheck=%S"
+                         (featurep 'rustic) (featurep 'rustic-flycheck))
+(let ((hook (and (boundp 'rustic-mode-hook) rustic-mode-hook)))
+  (edmacs-go-check--report (not (memq 'flycheck-mode hook))
+                           "rust-flycheck-undone" "%S" hook)
+  (edmacs-go-check--report (not (memq 'flymake-mode-off hook))
+                           "rust-flymake-undone" "%S" hook))
 
 (princ (format "assert: go-eglot-check: %d checks, %d failed\n"
                edmacs-go-check-total edmacs-go-check-failures))
