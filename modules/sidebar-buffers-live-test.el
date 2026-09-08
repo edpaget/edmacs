@@ -778,6 +778,59 @@ add another contender either."
             (cancel-timer edmacs-sidebar-buffers--redraw-timer))
           (setq edmacs-sidebar-buffers--redraw-timer nil))))
 
+    (ert-deftest edmacs-sidebar-buffers-live-test-real-stack-push-burst-coalesces-to-one-redraw ()
+      "Integration companion to `-debounce-coalesces-bursts' above, which
+calls `--schedule-redraw' directly N times to stand in for a burst. This
+one drives the real trigger instead: N buffers pushed onto windows.el's
+actual master-and-stack column via real `find-file' calls -- each
+display lands in `edmacs-main-window' and displaces whatever was there
+onto the stack, windows.el's uniform \"everything lands in main\" rule,
+which is what a real burst of stack pushes fires
+`buffer-list-update-hook' from in production. The rolling debounce must
+still collapse the whole burst into exactly one `edmacs-sidebar--redraw'
+call. Unlike the test above, the real `buffer-list-update-hook' entry
+stays attached throughout -- exercising it for real is the entire point
+here."
+      (let ((root (edmacs-sidebar-buffers-live-test--make-root))
+            (redraw-count 0)
+            (edmacs-sidebar-buffers-debounce-seconds 0.05))
+        (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+          (unwind-protect
+              (let ((files (mapcar (lambda (n)
+                                      (edmacs-sidebar-buffers-live-test--write-file
+                                       root (format "f%d.el" n)))
+                                    '(0 1 2 3 4))))
+                (edmacs-sidebar-buffers-live-test--register-worktrees
+                 "/repo/.git" (list (cons "repo" root)))
+                (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
+                (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+                (when (timerp edmacs-sidebar-buffers--redraw-timer)
+                  (cancel-timer edmacs-sidebar-buffers--redraw-timer))
+                (setq edmacs-sidebar-buffers--redraw-timer nil)
+                (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
+                           (lambda (_frame) (setq redraw-count (1+ redraw-count)))))
+                  ;; Each `find-file' displaces the current main window's
+                  ;; buffer onto the stack -- the real production push path.
+                  (dolist (f files) (find-file f))
+                  (should (= 0 redraw-count))
+                  (should (timerp edmacs-sidebar-buffers--redraw-timer))
+                  (sleep-for 0.1)
+                  (sit-for 0)
+                  (should (= 1 redraw-count))
+                  (should-not edmacs-sidebar-buffers--redraw-timer)))
+            (when (timerp edmacs-sidebar-buffers--redraw-timer)
+              (cancel-timer edmacs-sidebar-buffers--redraw-timer))
+            (setq edmacs-sidebar-buffers--redraw-timer nil)
+            ;; `--stamp-current-tab-root's `tab-bar-change-tab-group' call
+            ;; also marks the frame dirty via `edmacs-sidebar-invalidate' --
+            ;; its idle-0 flush never runs under `sit-for' in `--batch' (see
+            ;; sidebar-test.el's own note on this), so drop it explicitly
+            ;; rather than leaving it pending for a later test to trip over.
+            (setq edmacs-sidebar--dirty-frames nil)
+            (when (timerp edmacs-sidebar--redraw-timer)
+              (cancel-timer edmacs-sidebar--redraw-timer))
+            (setq edmacs-sidebar--redraw-timer nil)))))
+
     (ert-deftest edmacs-sidebar-buffers-live-test-tab-switch-with-30-buffers-is-fast ()
       "Opening 30 nested file buffers in one tab keeps a later tab switch
 fast: the redraw this triggers (`edmacs-sidebar--on-tab-select') is pure
