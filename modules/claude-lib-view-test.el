@@ -146,6 +146,23 @@ command line."
 ;; AC1 -- one function, two modes, one substrate
 ;; ============================================================================
 
+(ert-deftest claude-lib-view-test-vector-cells-error-names-the-type ()
+  "A vector `:cells' of the right length must be rejected by TYPE, not length.
+It once failed the `listp' arm of a combined check and reported \"has 1
+cells but :columns declares 1\" -- a mismatch that is not there. The
+caller writes this call from the docstring, so a message naming the
+wrong problem costs a round trip."
+  (let ((err (should-error
+              (claude-lib-render "vector cells"
+                                 :columns [("Test" 10 nil)]
+                                 :rows (list (list :id 'a :cells (vector "a")))
+                                 :display nil)
+              :type 'user-error)))
+    (should (string-match-p "must be a list, not vector"
+                            (error-message-string err)))
+    (should-not (string-match-p "cells but :columns declares"
+                                (error-message-string err)))))
+
 (ert-deftest claude-lib-view-test-render-dispatches-three-modes ()
   "One entry point picks `rows', `unified' or `image' from the data itself."
   (claude-lib-view-test--with-views

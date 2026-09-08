@@ -505,7 +505,16 @@ index rather than surfacing as a signal from inside
             (user-error "claude-lib-render: row %d repeats the :id %S already used by row %d"
                         index id (gethash id seen)))
           (puthash id index seen)
-          (unless (and (listp cells) (= (length cells) (length columns)))
+          ;; Split from the length check below: a vector of the RIGHT
+          ;; length used to fail the `listp' arm and report "has 1 cells
+          ;; but :columns declares 1", naming a mismatch that is not
+          ;; there. The caller is a Claude session writing this call from
+          ;; a docstring, so a validation error that misnames the problem
+          ;; costs a whole round trip.
+          (unless (listp cells)
+            (user-error "claude-lib-render: row %d has :cells %S; it must be a list, not %s"
+                        index cells (type-of cells)))
+          (unless (= (length cells) (length columns))
             (user-error "claude-lib-render: row %d has %d cells but :columns declares %d"
                         index (length cells) (length columns)))
           (unless (seq-every-p #'stringp cells)
