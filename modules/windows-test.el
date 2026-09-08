@@ -1320,6 +1320,37 @@ phase's own Context on the two hooks coordinating, not colliding."
         (while (> (length (tab-bar-tabs)) tabs-before)
           (tab-bar-close-tab))))))
 
+(ert-deftest edmacs-windows-test-new-tab-from-a-side-window-keeps-a-real-main ()
+  "A tab created while a side window is selected still gets a usable main.
+`tab-bar-new-tab-to' binds `ignore-window-parameters' and
+`window--sides-inhibit-check' around its `delete-other-windows', so the
+SELECTED window survives whatever it is -- side parameters and
+`no-delete-other-windows' included. Creating a tab from the sidebar
+therefore left the new tab with a dedicated side window as its only
+window, `edmacs-main-window' returning it, `display-buffer' able to add
+nothing but more side windows, and `walk-window-tree' eventually
+exceeding `max-lisp-eval-depth'."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((tabs-before (length (tab-bar-tabs)))
+          (buf (generate-new-buffer "ewt-side-newtab")))
+      (unwind-protect
+          (let ((side (display-buffer-in-side-window
+                       buf '((side . left) (slot . 0)
+                             (window-parameters
+                              . ((no-delete-other-windows . t)))))))
+            (set-window-dedicated-p side t)
+            (select-window side)
+            (tab-bar-new-tab)
+            (should (>= (edmacs-windows-test--nonside-count) 1))
+            (let ((main (edmacs-main-window)))
+              (should main)
+              (should-not (window-parameter main 'window-side))
+              (should-not (window-dedicated-p main))))
+        (while (> (length (tab-bar-tabs)) tabs-before)
+          (tab-bar-close-tab))
+        (kill-buffer buf)))))
+
 ;; ---------------------------------------------------------------------------
 ;; AC2 -- main and stack (slot . buffer-name) pairs round-trip across
 ;; tab-bar-switch-to-next/prev-tab, as set equality
