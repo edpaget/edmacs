@@ -41,12 +41,17 @@
 ;; proportions -- a side window keeps the absolute width it was created at,
 ;; which a plain `balance-windows' can never fix.
 ;;
-;; `edmacs-windows-repair-frame' exists because core's own guard cannot
-;; fire on the one shape that matters here: `window-main-window' falls back
-;; to `frame-root-window', so it never returns nil and `window--sides-check'
+;; `edmacs-windows-normalize-frame' is the single enforcement point for
+;; "one non-side main window per frame".  Core's own guard cannot fire on
+;; the shape that matters here: `window-main-window' falls back to
+;; `frame-root-window', so it never returns nil and `window--sides-check'
 ;; reads a frame whose every window is a side window as a VALID side
-;; configuration.  Repair applies core's own remedy -- reset every
-;; `window-side' -- and re-designates main.
+;; configuration.  Normalize goes past core's remedy -- it clears every
+;; window parameter, collapses onto one survivor and re-designates main --
+;; and is driven from one `window-state-change-functions' member.  The two
+;; producers that could save such a layout are fixed at source instead:
+;; `tab-bar-new-tab-to' snapshots the layout with point in main, and
+;; `edmacs-windows-ws-ensure-main' sanitizes an already-saved one.
 ;;
 ;; Run the ERT suite with:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
@@ -230,6 +235,98 @@ answers about a SERIALIZED layout, where they are always names."
          (prev (mapcar #'car-safe (alist-get 'prev-buffers params))))
     (seq-filter #'stringp (cons own prev))))
 
+(defun edmacs-windows--ws-leaves (tree)
+  "Return the parameter alist of every `leaf' in TREE, depth-first.
+TREE is the STATE TREE half of a serialized `ws' -- the `cdr' of
+`window-state-get's raw (CONSTRAINTS-ALIST . STATE-TREE) return."
+  (pcase tree
+    (`(leaf . ,params) (list params))
+    (`(,(or 'vc 'hc) . ,rest)
+     (apply #'append
+            (mapcar (lambda (child)
+                      (and (consp child)
+                           (memq (car child) '(leaf vc hc))
+                           (edmacs-windows--ws-leaves child)))
+                    rest)))
+    (_ nil)))
+
+(defun edmacs-windows--ws-first-leaf (tree)
+  "Return TREE's first `leaf' node itself, depth-first, or nil.
+The node, not its parameters: callers rewrite it in place inside a copy."
+  (pcase tree
+    (`(leaf . ,_) tree)
+    (`(,(or 'vc 'hc) . ,rest)
+     (seq-some (lambda (child)
+                 (and (consp child)
+                      (memq (car child) '(leaf vc hc))
+                      (edmacs-windows--ws-first-leaf child)))
+               rest))
+    (_ nil)))
+
+(defun edmacs-windows-ws-side-only-p (ws)
+  "Non-nil when WS holds at least one leaf and every leaf is a side window.
+WS is a tab's serialized `ws' field verbatim -- `window-state-get's raw
+\(CONSTRAINTS-ALIST . STATE-TREE) cons, so the tree walked is its `cdr'.
+Walking WS directly would match nothing and always answer nil.
+
+This is the serialized form of the wedged shape: a state
+`window-state-put' accepts without complaint and that leaves the frame
+with no main window, from which every later `split-window' delegates
+through `window-main-window' back into itself."
+  (declare (side-effect-free t))
+  (let ((leaves (edmacs-windows--ws-leaves (cdr-safe ws))))
+    (and leaves
+         (seq-every-p (lambda (params)
+                        (alist-get 'window-side (alist-get 'parameters params)))
+                      leaves)
+         t)))
+
+(defconst edmacs-windows--ws-side-leaf-parameters
+  '(edmacs-main window-side window-slot no-other-window
+                no-delete-other-windows mode-line-format)
+  "Leaf parameters `edmacs-windows-ws-ensure-main' strips from its survivor.
+The side-window identity plus the styling a side placement leaves behind:
+a leaf promoted to main must not keep the popup chrome it used to have,
+which would otherwise re-persist through `window-persistent-parameters'.
+
+`edmacs-main' is on the list so the fresh `(edmacs-main . t)' is the ONLY
+one: `window--state-put-2' assigns each parameter in list order, so a
+stale nil-valued cell further down would silently undo it.")
+
+(defun edmacs-windows-ws-ensure-main (ws)
+  "Return WS with its first leaf usable as a main window.
+ENSURES rather than detects: WS comes back unchanged, `eq' and all, when
+it is not `edmacs-windows-ws-side-only-p', which is what makes this a
+fixed point on its own output and safe inside
+`edmacs-workspaces-migrate-frameset's pure transform.
+
+Otherwise returns a fresh copy -- WS is never mutated -- whose first leaf
+has `edmacs-windows--ws-side-leaf-parameters' removed, carries a single
+`edmacs-main' of its own, and is un-dedicated. Dedication lives in the leaf's
+`buffer' sub-alist as `(dedicated . side)', not among its parameters, so
+a sanitizer that only stripped `window-side' would restore a dedicated
+main window that `display-buffer' then refuses to reuse."
+  (if (not (edmacs-windows-ws-side-only-p ws))
+      ws
+    (let* ((copy (copy-tree ws))
+           (leaf (edmacs-windows--ws-first-leaf (cdr-safe copy))))
+      (when leaf
+        (let* ((leaf-params (cdr leaf))
+               (parameters (assq 'parameters leaf-params))
+               (buffer (assq 'buffer leaf-params))
+               (dedicated (and buffer (assq 'dedicated (cdr buffer)))))
+          (when dedicated (setcdr dedicated nil))
+          (if parameters
+              (setcdr parameters
+                      (cons '(edmacs-main . t)
+                            (seq-remove
+                             (lambda (cell)
+                               (memq (car-safe cell)
+                                     edmacs-windows--ws-side-leaf-parameters))
+                             (cdr parameters))))
+            (setcdr leaf (cons '(parameters (edmacs-main . t)) leaf-params)))))
+      copy)))
+
 (defun edmacs--swap-window-buffers (w1 w2)
   "Exchange the buffers shown in W1 and W2.
 Uses `window-swap-states' for ordinary windows; a side window keeps its
@@ -409,10 +506,14 @@ Unlike a plain number spliced into a `display-buffer-alist' entry at
 `defcustom'/`add-to-list' time, this re-reads the variable on every call, so
 rebinding `edmacs-stack-width' takes effect on the next popup or agent pane
 without re-registering any alist entry."
-  (let ((new-width (round (* edmacs-stack-width
-                              (window-total-width (frame-root-window window))))))
-    (ignore-errors
-      (window-resize window (- new-width (window-total-width window)) t 'safe))))
+  (let* ((new-width (round (* edmacs-stack-width
+                              (window-total-width (frame-root-window window)))))
+         (delta (- new-width (window-total-width window))))
+    ;; `window-resizable' reports the delta `safe' will actually accept, so a
+    ;; refusal is a zero-delta no-op here while a genuinely fixed-size window
+    ;; still signals.
+    (unless (zerop delta)
+      (window-resize window (window-resizable window delta t 'safe) t 'safe))))
 
 (defun edmacs-stack--popup-alist (&optional slot extra-params)
   "Return a `display-buffer-alist' action list for a stack popup.
@@ -555,6 +656,19 @@ FRAME defaults to the selected frame."
         (lambda (a b) (< (or (window-parameter a 'window-slot) 0)
                           (or (window-parameter b 'window-slot) 0)))))
 
+(defun edmacs-windows--delete-window-if-possible (window)
+  "Delete WINDOW when it can be deleted; return non-nil when it was.
+A no-op on a dead window, and on a parentless one -- the frame's sole
+ordinary window, where `delete-window' signals \"Attempt to delete
+minibuffer or sole ordinary window\". That refusal is the only one this
+config expects, and `delete-window' raises it as a plain `error' with no
+distinguishing symbol, so it is checked for rather than caught: every
+other refusal propagates. `edmacs-sidebar--enforce-width' argues the same
+policy for `window-resize'."
+  (when (and (window-live-p window) (window-parent window))
+    (delete-window window)
+    t))
+
 ;; ============================================================================
 ;; One buffer, one window: the displaced-copy sweep
 ;; ============================================================================
@@ -584,29 +698,15 @@ the one further down the column."
         (when (and (window-live-p window) (not (eq window main)))
           (let ((buffer (window-buffer window)))
             (if (memq buffer seen)
-                (ignore-errors (delete-window window))
+                (edmacs-windows--delete-window-if-possible window)
               (push buffer seen))))))))
 
-;; The net for every other restore path (`bury-buffer', `switch-to-prev-buffer',
-;; a frameset put back). `window-buffer-change-functions' runs from redisplay,
-;; so it never fires under `--batch' -- the `quit-restore-window' advice below
-;; covers the path that actually strands a copy, and this catches the rest a
-;; frame later.
-;;
-;; Deliberately kept synchronous here, unlike workspaces.el's own
-;; `window-buffer-change-functions' member (`--on-window-buffer-change'),
-;; which defers its stray-visit sweep to a timer: that sweep can select a
-;; different tab and display a buffer in a different window, real work
-;; redisplay-time code must never do, so it has no choice but to defer.
-;; This sweep only ever *deletes* a window -- `delete-window' is itself
-;; redisplay-safe (`quit-restore-window's own advice above already calls
-;; `edmacs-windows-dedupe-frame' straight from its own hook-adjacent path)
-;; -- so there is nothing here that needs the same deferral, and adding one
-;; would only let another stack push land between this hook's firing and
-;; its own eventual timer, growing the very duplicate this sweep exists to
-;; remove. The `--deduping' guard above is what actually matters for
-;; reentrancy (`delete-window' re-fires this same hook), and stays either way.
-(add-hook 'window-buffer-change-functions #'edmacs-windows-dedupe-frame)
+;; No hook registration of its own: `edmacs-windows-normalize-frame' subsumes
+;; this sweep and owns the single trigger. The `quit-restore-window' advice
+;; below still calls it directly -- that is the path which actually strands a
+;; copy, and it must run before the command returns rather than at the next
+;; redisplay. The `--deduping' guard stays either way: `delete-window' re-fires
+;; the hooks this is reachable from.
 
 ;; ============================================================================
 ;; window-sides-slots: one writer, claimed by edge name
@@ -770,10 +870,11 @@ Never acts on `edmacs-main-window' itself. Deletes the window -- an
 agent pane's live session buffer, in particular, is never killed -- then
 selects main."
   (interactive)
-  (let* ((main (or (edmacs-main-window) (edmacs-windows-repair-frame (selected-frame))))
+  (let* ((main (or (edmacs-main-window)
+                   (edmacs-windows-normalize-frame (selected-frame))))
          (window (selected-window)))
     (when (and (not (eq window main)) (window-live-p window))
-      (ignore-errors (delete-window window)))
+      (edmacs-windows--delete-window-if-possible window))
     (when (and main (window-live-p main))
       (select-window main))))
 
@@ -788,13 +889,14 @@ outright would leave the frame without one, so main demotes instead."
   (interactive)
   ;; Resolve main before reading `selected-window': repairing a wedged frame
   ;; can delete the window that was selected when the command was invoked.
-  (let* ((main (or (edmacs-main-window) (edmacs-windows-repair-frame (selected-frame))))
+  (let* ((main (or (edmacs-main-window)
+                   (edmacs-windows-normalize-frame (selected-frame))))
          (window (selected-window)))
     (if (eq window main)
         (if (edmacs--center-split-p)
             (edmacs-window-demote)
           (message "edmacs-window-delete-or-demote: no center split to demote into"))
-      (ignore-errors (delete-window window)))))
+      (edmacs-windows--delete-window-if-possible window))))
 
 ;; ============================================================================
 ;; Quitting: `:q' closes a buffer, never the frame
@@ -906,7 +1008,7 @@ nothing while still stashing the broken tree for the next toggle to
 restore. The restore branch's own \"no side windows state\" signal is
 reported rather than propagated."
   (interactive)
-  (edmacs-windows-repair-frame (selected-frame))
+  (edmacs-windows-normalize-frame (selected-frame))
   (condition-case err
       (window-toggle-side-windows)
     (error (message "edmacs-stack-toggle: %s" (error-message-string err)))))
@@ -935,20 +1037,20 @@ window -- agent panes are ordinary windows, so this is not restricted to
 the stack -- for which `edmacs-stack-agent-pane-p' reports its session
 has died; everything else, a popup with a live buffer included, is left
 alone.
-Finishes by calling `edmacs-windows-repair-frame', which re-designates
+Finishes by calling `edmacs-windows-normalize-frame', which re-designates
 main when the `edmacs-main' parameter did not survive the restore and
 rebuilds the tree outright when the restore left FRAME with no non-side
 window to designate. This is the single entry point for \"an external
 process left this frame in an unknown state\"; callers that only need the
-shape repaired -- and must not delete a dead agent pane -- call
-`edmacs-windows-repair-frame' directly instead."
+shape normalized -- and must not delete a dead agent pane -- call
+`edmacs-windows-normalize-frame' directly instead."
   (dolist (w (window-list frame 'no-minibuf))
     (when (and (window-live-p w)
                (or (and (eq (window-parameter w 'window-side) 'right)
                         (not (buffer-live-p (window-buffer w))))
                    (funcall edmacs-stack-agent-pane-p w)))
-      (ignore-errors (delete-window w))))
-  (edmacs-windows-repair-frame frame))
+      (edmacs-windows--delete-window-if-possible w)))
+  (edmacs-windows-normalize-frame frame))
 
 ;; ============================================================================
 ;; Shape repair: a frame must always have a main window
@@ -970,7 +1072,7 @@ shape repaired -- and must not delete a dead agent pane -- call
 ;; frames core calls healthy, so the guard has to live here.
 
 (defvar edmacs-windows-frame-repaired-functions nil
-  "Abnormal hook run with the repaired FRAME by `edmacs-windows-repair-frame'.
+  "Abnormal hook run with the repaired FRAME by `edmacs-windows-normalize-frame'.
 The extension point for anything that must be re-established once a frame
 regains a main window -- `modules/sidebar.el' joins it to re-show the left
 sidebar. A hook function must not call `display-buffer': repair can run
@@ -978,10 +1080,12 @@ from inside a `display-buffer' action function, so a member that re-enters
 `display-buffer' recurses. Calling `display-buffer-in-side-window'
 directly, as `edmacs-sidebar-show' does, is safe.")
 
-(defvar edmacs-windows--repairing nil
-  "Non-nil while `edmacs-windows-repair-frame' is rebuilding a frame.
-Makes a nested repair -- from the repaired hook, or from a
-`display-buffer' the hook triggers -- return the frame unchanged.")
+(defvar edmacs-windows--normalizing nil
+  "Non-nil while `edmacs-windows-normalize-frame' is working on a frame.
+Makes a nested normalize -- from the repaired hook, from a
+`display-buffer' the hook triggers, or from the
+`window-state-change-functions' member normalize's own mutations fire --
+return the frame unchanged rather than recurse.")
 
 (defun edmacs-windows-frame-wedged-p (frame)
   "Non-nil when FRAME has no main window.
@@ -995,122 +1099,182 @@ wedged -- neither is expected to hold a main window."
        (not (eq (frame-parameter frame 'minibuffer) 'only))
        (null (edmacs-windows--non-side-windows frame))))
 
-(defun edmacs-windows-repair-frame (frame)
-  "Give FRAME back a main window and return it.
-The remedy for the shape core reads as valid (see above): every window a
-side window, so nothing can be designated main and `display-buffer' can
-only add more side windows. Goes past core's own `window--sides-check'
-remedy of resetting every `window-side': clears every window parameter on
-every window, then collapses the frame to one ordinary, undedicated
-window and designates it main via `edmacs-window-set-main'.
+(defun edmacs-windows--repair-plan (frame)
+  "Return a plan to rebuild FRAME's main window, or nil when none is needed.
+Pure: reads FRAME's window structure and writes nothing.
 
-Clearing wholesale rather than a named few is deliberate -- the survivor
-becomes the frame's main window, and any parameter a stack placement left
-on it (`mode-line-format', `edmacs-stack-popup', anything added later)
-would otherwise style main as the popup it used to be, and re-persist
-through `window-persistent-parameters'.
+nil on a dead frame, a child frame, a minibuffer-only frame, and any
+frame that still has a non-side window -- exactly the frames
+`edmacs-windows-frame-wedged-p' calls healthy. A frame whose main window
+exists but is unstamped is healthy by this measure: there is a window to
+designate, so there is nothing to rebuild, and it is
+`edmacs-windows-normalize-frame's designate step that covers it.
+
+Otherwise a plist:
+  :survivor  the window that becomes main -- the first undedicated
+             window, else the first window, else nil
+  :clear     every window whose parameters must be nilled
+  :scratch-p non-nil when no undedicated window exists, so the survivor
+             holds a buffer belonging somewhere else (the sidebar's,
+             usually) and has to be evicted to `*scratch*'."
+  (declare (side-effect-free t))
+  (when (edmacs-windows-frame-wedged-p frame)
+    (let* ((windows (window-list frame 'no-minibuf))
+           (free (seq-find (lambda (w) (not (window-dedicated-p w))) windows)))
+      (list :survivor (or free (car windows))
+            :clear windows
+            :scratch-p (null free)))))
+
+(defun edmacs-windows--apply-repair-plan (frame plan)
+  "Rebuild FRAME according to PLAN and return the window that became main.
+The mutating half of `edmacs-windows--repair-plan's split. A no-op
+returning nil on a nil PLAN or a PLAN whose `:survivor' is not live.
+
+Clearing every parameter rather than a named few is deliberate: the
+survivor becomes the frame's main window, and any parameter a stack
+placement left on it (`mode-line-format', `edmacs-stack-popup', anything
+added later) would otherwise style main as the popup it used to be, and
+re-persist through `window-persistent-parameters'.
 
 Destructive to slot layout: `window-slot' goes with the rest, so a pinned
 stack pane loses its slot. The frame was already unusable, and
 `edmacs-stack--next-pin-slot' is not rewound, so later pins still
-allocate fresh slots.
-
-On a healthy frame, on a child or minibuffer-only frame, and
-re-entrantly, this only designates -- it rebuilds nothing, and returns
-whatever window carries `edmacs-main' once that designation has run.
-Finishes by running `edmacs-windows-frame-repaired-functions' with FRAME.
-Interactively, FRAME is always the selected frame."
-  (interactive (list (selected-frame)))
-  (cond
-   ((not (frame-live-p frame)) nil)
-   ((or edmacs-windows--repairing (not (edmacs-windows-frame-wedged-p frame)))
-    (when (called-interactively-p 'interactive)
-      (message "edmacs-windows-repair-frame: layout is healthy"))
-    ;; Designate, not merely look up: a frameset restore can bring back a
-    ;; healthy tree whose `edmacs-main' parameter did not survive, and
-    ;; `edmacs-stack-sweep-stale-panes' documents this call as the thing
-    ;; that gives such a frame its main window back.
-    (edmacs-windows-designate-main frame))
-   (t
-    (let ((edmacs-windows--repairing t))
+allocate fresh slots."
+  (let ((survivor (plist-get plan :survivor)))
+    (when (and plan (window-live-p survivor))
       (with-selected-frame frame
-        (let* ((windows (window-list frame 'no-minibuf))
-               (free (seq-find (lambda (w) (not (window-dedicated-p w))) windows))
-               (survivor (or free (car windows)))
-               (ignore-window-parameters t))
+        (let ((ignore-window-parameters t))
           (edmacs-windows--with-sides-check-inhibited
-            ;; Every parameter, not a named few: a stack placement can leave
-            ;; `mode-line-format', `edmacs-stack-popup' or any later marker
-            ;; on the window that becomes main, and a popup's styling must
-            ;; not outlive the popup.
-            (dolist (w windows)
-              (dolist (parameter (mapcar #'car (window-parameters w)))
-                (set-window-parameter w parameter nil)))
+            (dolist (w (plist-get plan :clear))
+              (when (window-live-p w)
+                (dolist (parameter (mapcar #'car (window-parameters w)))
+                  (set-window-parameter w parameter nil))))
             (set-window-dedicated-p survivor nil)
-            ;; Every window was dedicated, so the survivor is holding a
-            ;; buffer that belongs somewhere else -- the sidebar's, usually,
-            ;; which the repaired hook is about to re-show in a side window.
-            (unless free
+            (when (plist-get plan :scratch-p)
               (set-window-buffer survivor (get-buffer-create "*scratch*")))
             (delete-other-windows survivor)
-            (edmacs-window-set-main survivor)))
-        (run-hook-with-args 'edmacs-windows-frame-repaired-functions frame)
-        ;; The survivor was stamped by `edmacs-window-set-main' just above,
-        ;; so the pure lookup is what is wanted here.
-        (edmacs-main-window frame))))))
+            (edmacs-window-set-main survivor))))
+      survivor)))
 
-;; A root-window split on a frame that owns any side window is delegated by
-;; core's `split-window' to `window-main-window' -- and on a frame whose ONLY
-;; window is a side window that is the very same window, so it delegates to
-;; itself until `max-lisp-eval-depth' blows. (`edmacs-stack-toggle' documents
-;; the same `window-main-window'-returns-the-root trap.) `window-state-put'
-;; also accepts a saved layout of only side windows without complaint, so a
-;; tab saved in that shape restores the frame straight into it.
-;;
-;; The remedy here is deliberately NOT `edmacs-windows-repair-frame'. That one
-;; is for a frame whose layout is past saving: it clears every window
-;; parameter and collapses the frame to a single window. Run from a tab
-;; switch it destroys the layout of the tab being left -- which
-;; `tab-bar-select-tab' then SAVES -- and of the tab being entered, flattening
-;; every tab to one `*scratch*' window a switch at a time.
+(defun edmacs-windows-normalize-frame (frame)
+  "Restore FRAME's one-main-window invariant and return its main window.
+The single body every consumer goes through, and the only place the
+invariant is enforced. In order: rebuild the tree when
+`edmacs-windows--repair-plan' says one is needed, designate main (which
+is what covers a healthy tree whose `edmacs-main' parameter did not
+survive a restore), sweep the displaced copies
+`edmacs-windows-dedupe-frame' owns, and -- only when a plan was actually
+applied -- run `edmacs-windows-frame-repaired-functions' with FRAME.
 
-(defun edmacs-windows-ensure-main-window (frame)
-  "Give FRAME a main window if it has none, without dismantling anything.
-A no-op on any frame that already has a non-side window, so this is safe on
-the hot path of every tab switch. Where `edmacs-windows-repair-frame'
-collapses a frame to one bare window, this only adds the window that is
-missing and leaves every side window -- the sidebar included -- as it was.
+The hook is gated on a real repair on purpose: normalize now owns the
+trigger that used to belong to the dedupe sweep alone, so firing it on
+every pass would re-show the sidebar on every buffer change.
 
-Splits with `ignore-window-parameters' bound, because the split it needs is
-exactly the one core would otherwise delegate to `window-main-window' and so
-back to itself."
-  (when (and (frame-live-p frame) (edmacs-windows-frame-wedged-p frame))
-    (with-selected-frame frame
-      (let ((new (ignore-errors
-                   (let ((ignore-window-parameters t)
-                         (window--sides-inhibit-check t))
-                     (split-window (frame-root-window frame) nil 'right)))))
-        (when (window-live-p new)
-          (dolist (parameter (mapcar #'car (window-parameters new)))
-            (set-window-parameter new parameter nil))
-          (set-window-dedicated-p new nil)
-          (set-window-buffer new (get-buffer-create "*scratch*"))
-          (edmacs-window-set-main new)
-          (select-window new)))))
+Returns nil on a dead frame, and the frame's existing main window
+unchanged when re-entered (see `edmacs-windows--normalizing').
+`edmacs-windows-repair-frame' is the interactive wrapper over this."
   (when (frame-live-p frame)
-    (with-selected-frame frame (edmacs-main-window))))
+    (if edmacs-windows--normalizing
+        (edmacs-main-window frame)
+      (let ((edmacs-windows--normalizing t)
+            (plan (edmacs-windows--repair-plan frame)))
+        (when plan
+          (edmacs-windows--apply-repair-plan frame plan))
+        (edmacs-windows-designate-main frame)
+        (edmacs-windows-dedupe-frame frame)
+        (when plan
+          (run-hook-with-args 'edmacs-windows-frame-repaired-functions frame))
+        (edmacs-main-window frame)))))
 
-(defun edmacs-windows--ensure-main-around-tab-select (&rest _)
-  "Ensure a main window exists before and after `tab-bar-select-tab'.
-Before, because the incoming layout is restored into this frame; after,
-because `window-state-put' can restore a layout that is only side windows."
-  ;; `tab-bar-select-tab' takes a tab number, never a frame -- ambient-reads: ok
-  (edmacs-windows-ensure-main-window (selected-frame)))
+;; ---------------------------------------------------------------------------
+;; The single trigger: one dirty-frame set, one shared idle-0 flush
+;; ---------------------------------------------------------------------------
+;; The same coalescing rule `edmacs-sidebar-invalidate' uses, for the same
+;; reason: `window-state-change-functions' fires many times per command loop,
+;; and a normalize per firing is work redisplay does not need to pay for.
 
-(advice-add 'tab-bar-select-tab :before
-            #'edmacs-windows--ensure-main-around-tab-select)
-(advice-add 'tab-bar-select-tab :after
-            #'edmacs-windows--ensure-main-around-tab-select)
+(defvar edmacs-windows--dirty-frames nil
+  "Frames marked by `edmacs-windows-invalidate-frame', awaiting one
+coalesced normalize from `edmacs-windows--flush-dirty-frames'.")
+
+(defvar edmacs-windows--normalize-timer nil
+  "The single pending idle-0 timer that will run
+`edmacs-windows--flush-dirty-frames', or nil when none is pending.")
+
+(defun edmacs-windows--flush-dirty-frames ()
+  "Normalize every still-live frame in `edmacs-windows--dirty-frames', once.
+Clears the timer and swaps the dirty set out to a local FIRST, before
+normalizing anything: normalize's own mutations re-fire
+`window-state-change-functions', so a frame re-invalidated from inside
+this flush must arm a fresh timer rather than be added to a set this call
+is about to clear -- which would otherwise re-arm on every flush forever.
+A frame deleted between invalidation and flush is skipped."
+  (setq edmacs-windows--normalize-timer nil)
+  (let ((frames edmacs-windows--dirty-frames))
+    (setq edmacs-windows--dirty-frames nil)
+    (dolist (frame frames)
+      (when (frame-live-p frame)
+        (edmacs-windows-normalize-frame frame)))))
+
+(defun edmacs-windows-invalidate-frame (&optional frame)
+  "Mark FRAME for one coalesced `edmacs-windows-normalize-frame' pass.
+FRAME defaults to the selected frame. The `window-state-change-functions'
+member, chosen over `window-configuration-change-hook' because it is the
+abnormal hook that is handed a frame, so no ambient read is needed here.
+
+ONE deliberate divergence from `edmacs-sidebar-invalidate's otherwise
+identical rule: a frame `edmacs-windows-frame-wedged-p' already reports
+is normalized SYNCHRONOUSLY rather than deferred. That shape makes the
+very next `split-window' delegate through `window-main-window' back into
+itself until `max-lisp-eval-depth' blows, and a deferred pass runs after
+the command that would split -- too late to prevent it."
+  (let ((frame (or frame (selected-frame))))
+    (when (frame-live-p frame)
+      (if (edmacs-windows-frame-wedged-p frame)
+          (edmacs-windows-normalize-frame frame)
+        (unless (memq frame edmacs-windows--dirty-frames)
+          (push frame edmacs-windows--dirty-frames))
+        (unless edmacs-windows--normalize-timer
+          (setq edmacs-windows--normalize-timer
+                (run-with-idle-timer 0 nil #'edmacs-windows--flush-dirty-frames)))))))
+
+(add-hook 'window-state-change-functions #'edmacs-windows-invalidate-frame)
+
+(defun edmacs-windows-repair-frame (frame)
+  "Normalize FRAME and return its main window.
+The `SPC w r' entry point: a thin interactive wrapper over
+`edmacs-windows-normalize-frame', which holds the whole contract.
+Interactively, FRAME is always the selected frame."
+  (interactive (list (selected-frame)))
+  (let ((main (edmacs-windows-normalize-frame frame)))
+    (when (called-interactively-p 'interactive)
+      (message "edmacs-windows-repair-frame: %s"
+               (if (window-live-p main) "main window restored" "no main window")))
+    main))
+
+(defun edmacs-windows--select-main-before-new-tab (&rest _)
+  "Select the frame's main window before a new tab snapshots its layout.
+`tab-bar-new-tab-to' saves the current tab with `window-state-get' and
+then runs `delete-other-windows' with `ignore-window-parameters' bound,
+so whatever window holds point becomes the new tab's sole window. With
+point in the dedicated `*sidebar*' side window that snapshot is a
+side-only tree -- the shape `window-state-put' restores into a frame with
+no main window, from which every later `split-window' delegates through
+`window-main-window' back into itself.
+
+Advises `tab-bar-new-tab-to' rather than `tab-bar-new-tab': it is the
+single funnel every creator reaches -- `tab-bar-new-tab', `SPC T n',
+`other-tab-prefix' and `edmacs-workspaces--open-tab' alike."
+  ;; `tab-bar-new-tab-to' takes a tab number, never a frame -- ambient-reads: ok
+  (let ((frame (selected-frame)))
+    (when (and (frame-live-p frame)
+               (null (frame-parameter frame 'parent-frame))
+               (not (eq (frame-parameter frame 'minibuffer) 'only)))
+      (let ((main (edmacs-windows-designate-main frame)))
+        (when (and (window-live-p main) (not (eq main (selected-window))))
+          (select-window main))))))
+
+(advice-add 'tab-bar-new-tab-to :before #'edmacs-windows--select-main-before-new-tab)
 
 (defun edmacs-windows--display-buffer-in-recovered-main (buffer alist)
   "Display BUFFER in a main window recovered from a wedged frame.
@@ -1125,7 +1289,7 @@ never a frame -- `(selected-frame)' here is a forced read, not a default
 this function chose."
   ;; ambient-reads: ok -- see the docstring above.
   (when (edmacs-windows-frame-wedged-p (selected-frame))
-    (let ((main (edmacs-windows-repair-frame (selected-frame)))) ;; ambient-reads: ok
+    (let ((main (edmacs-windows-normalize-frame (selected-frame)))) ;; ambient-reads: ok
       (when (window-live-p main)
         (edmacs-windows--display-buffer-in buffer main 'reuse alist)))))
 

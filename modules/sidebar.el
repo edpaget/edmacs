@@ -1806,10 +1806,6 @@ return path, including the ones that produce no window."
       ;; `F1' header. `edmacs-workspaces-frame-usable-p' already answers "may
       ;; this config drive FRAME"; the sidebar simply never asked.
       (when (edmacs-workspaces-frame-usable-p frame)
-        ;; A frame with no non-side window would otherwise just have its
-        ;; existing slot-0 left window reused, leaving it wedged.
-        (when (edmacs-windows-frame-wedged-p frame)
-          (edmacs-windows-repair-frame frame))
         (let* ((buf (edmacs-sidebar--ensure-buffer frame))
                (width (edmacs-sidebar--target-width frame))
                (collapsed (frame-parameter frame 'edmacs-sidebar-collapsed))
@@ -1914,7 +1910,7 @@ return path. Interactively, FRAME is always the selected frame."
     (run-hook-with-args 'edmacs-sidebar-visibility-functions frame 'hidden)))
 
 ;; The repaired frame has a main window again but no sidebar; this is the
-;; hook `edmacs-windows-repair-frame' runs to put one back. Safe as a hook
+;; hook `edmacs-windows-normalize-frame' runs to put one back. Safe as a hook
 ;; member because `edmacs-sidebar-show' reaches
 ;; `display-buffer-in-side-window' directly rather than through
 ;; `display-buffer' -- see its docstring. `run-hook-with-args' funcalls

@@ -75,6 +75,7 @@
 (declare-function edmacs-windows-main-window-of "windows")
 (declare-function edmacs-windows-designate-main "windows")
 (declare-function edmacs-windows-ws-main-buffer-names "windows")
+(declare-function edmacs-windows-ws-ensure-main "windows")
 (declare-function edmacs-git-common-dir "git-common-dir")
 (declare-function edmacs-git-common-dir-main-worktree "git-common-dir")
 (declare-function edmacs-git-common-dir-repo-name "git-common-dir")
@@ -996,6 +997,11 @@ output."
                    (edmacs-workspaces--normalize-root
                     (alist-get edmacs-workspaces--legacy-root-parameter params))
                    (edmacs-workspaces--root-from-ws (alist-get 'ws params))))
+         ;; A side-only `ws' restores into a frame with no main window, from
+         ;; which every later `split-window' recurses; sanitizing it here is
+         ;; what lets an already-poisoned desktop file self-heal on boot.
+         (ws (assq 'ws params))
+         (fixed-ws (and ws (edmacs-windows-ws-ensure-main (cdr ws))))
          ;; A nil-valued root placeholder goes too, re-appended below with
          ;; a real value or not at all. An entry that already holds a
          ;; value is kept where it is and never re-appended -- appending a
@@ -1007,7 +1013,11 @@ output."
                                     edmacs-workspaces-root-parameter))))
          (kept (seq-remove (lambda (cell) (memq (car-safe cell) drop)) params)))
     (cons (car tab)
-          (append (mapcar (lambda (cell) (cons (car cell) (cdr cell))) kept)
+          (append (mapcar (lambda (cell)
+                            (if (eq (car cell) 'ws)
+                                (cons 'ws fixed-ws)
+                              (cons (car cell) (cdr cell))))
+                          kept)
                   (and (null had-root) root
                        (list (cons edmacs-workspaces-root-parameter root)))))))
 
@@ -1027,7 +1037,7 @@ tab rather than losing the frame's layout. TIME is the stamp a folded
 `current-tab' gains; it is derived from the frameset's own timestamp so
 that migrating twice yields `equal' results."
   (let* ((params (car state))
-         (window-state (cdr state))
+         (window-state (edmacs-windows-ws-ensure-main (cdr state)))
          (tabs (alist-get 'tabs params)))
     (if (null tabs)
         (list (edmacs-workspaces--migrate-tab

@@ -2453,8 +2453,8 @@ renders a full, untruncated label on the very first pre-window redraw."
       "Leave FRAME with one window: a dedicated left side window showing the
 sidebar buffer. That is the shape whose `delete-window' signals \"Attempt
 to delete minibuffer or sole ordinary window\", because the window has no
-parent -- reproduced by hand rather than via `edmacs-sidebar-show', which
-now repairs it."
+parent -- reproduced by hand, since no production path reaches it any
+more."
       (delete-other-windows)
       (let ((window (selected-window)))
         (set-window-buffer window (edmacs-sidebar--ensure-buffer frame))
@@ -2519,27 +2519,32 @@ own and must not delete."
             (should-not (edmacs-sidebar--window frame))
             (should-not (edmacs-windows-frame-wedged-p frame))))))
 
-    (ert-deftest edmacs-sidebar-test-show-into-mainless-frame-yields-side-window-and-main ()
-      "Without the repair, `display-buffer-in-side-window' just reuses the
-existing slot-0 left window and the frame stays wedged. The unchanged
-frame count is what proves repair rebuilt this frame rather than
-escaping to a new one."
+    (ert-deftest edmacs-sidebar-test-normalize-restores-both-main-and-the-sidebar ()
+      "`edmacs-sidebar-show' no longer un-wedges a frame itself -- it is a
+member of `edmacs-windows-frame-repaired-functions', so calling back into
+normalize from inside it would re-enter its own hook. The frame reaches
+it already rebuilt, and this is what proves the round trip: one
+`edmacs-windows-normalize-frame' on the sole-sidebar shape yields a real
+main window AND a left side window showing the sidebar again. The
+unchanged frame count proves the rebuild happened here rather than
+escaping to a new frame."
       (edmacs-sidebar-test--with-frame ()
         (save-window-excursion
           (let ((frames (length (frame-list))))
             (edmacs-sidebar-test--make-sole-sidebar-window frame)
             (should (edmacs-windows-frame-wedged-p frame))
             (should-not (edmacs-main-window))
-            (let ((window (edmacs-sidebar-show frame)))
-              (should (window-live-p window))
-              (should (eq (window-parameter window 'window-side) 'left))
-              (should (window-dedicated-p window))
+            (let ((main (edmacs-windows-normalize-frame frame)))
+              (should (window-live-p main))
+              (should-not (window-parameter main 'window-side))
               (should-not (edmacs-windows-frame-wedged-p frame))
               (should (= (length (frame-list)) frames))
-              (let ((main (edmacs-main-window)))
-                (should (window-live-p main))
-                (should-not (eq main window))
-                (should-not (window-parameter main 'window-side))))))))
+              ;; Put back by the repaired hook, not by anything in this test.
+              (let ((window (edmacs-sidebar--side-window frame)))
+                (should (window-live-p window))
+                (should (eq (window-parameter window 'window-side) 'left))
+                (should (window-dedicated-p window))
+                (should-not (eq main window))))))))
 
     (ert-deftest edmacs-sidebar-test-show-returns-nil-when-the-left-slot-is-forbidden ()
       "With no left slot available `display-buffer-in-side-window' returns
@@ -2609,8 +2614,10 @@ released window must not simply re-show it."
             (should (equal (buffer-name (window-buffer window)) "*scratch*"))))))
 
     (ert-deftest edmacs-sidebar-test-show-is-registered-on-the-repaired-hook ()
-      "Repair hands the frame back a main window but no sidebar; this hook
-membership is what puts one back."
+      "`edmacs-windows-normalize-frame' hands the frame back a main window
+but no sidebar; this hook membership is the ONLY thing that puts one
+back, now that `edmacs-sidebar-show' no longer normalizes the frame
+itself."
       (should (memq #'edmacs-sidebar-show edmacs-windows-frame-repaired-functions)))
 
     (ert-deftest edmacs-sidebar-test-side-window-accessor-ignores-ordinary-windows ()

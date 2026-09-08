@@ -77,7 +77,7 @@
 The suite's single window fixture, and the only place it writes
 `save-window-excursion'. Collapsing to one window and designating main is
 what every real frame arrives at -- `edmacs-windows--on-tab-open' stamps a
-new tab's sole window, and `edmacs-windows-repair-frame' re-stamps a
+new tab's sole window, and `edmacs-windows-normalize-frame' re-stamps a
 restored one -- so a test that starts here is starting from the shape
 production maintains rather than from whatever the previous test left.
 A test about designation itself clears the parameter inside BODY."
@@ -368,7 +368,7 @@ path silently."
     (split-window (selected-window) nil 'right)
     (edmacs-windows-test--unstamp-frame)
     (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
-    (let ((main (edmacs-windows-repair-frame (selected-frame))))
+    (let ((main (edmacs-windows-normalize-frame (selected-frame))))
       (should (window-live-p main))
       (should (equal (edmacs-windows-test--main-carriers) (list main))))))
 
@@ -1481,13 +1481,14 @@ prepending happened to produce."
       (should (null (edmacs-stack-windows))))))
 
 (ert-deftest edmacs-windows-test-tab-switch-does-not-flatten-a-healthy-layout ()
-  "The wedge guard on `tab-bar-select-tab' must not touch a usable frame.
-It runs on both sides of every tab switch, and `tab-bar-select-tab' SAVES
-the outgoing tab's layout -- so a guard that collapsed the frame would have
-that collapse written back into the tab, flattening every tab to a single
-`*scratch*' window one switch at a time. `edmacs-windows-ensure-main-window'
-is a no-op wherever a non-side window already exists, which is what makes it
-safe on that path."
+  "Nothing on the `tab-bar-select-tab' path may touch a usable frame.
+`tab-bar-select-tab' SAVES the outgoing tab's layout, so anything that
+collapsed the frame on that path would have the collapse written back
+into the tab, flattening every tab to a single
+`*scratch*' window one switch at a time. `edmacs-windows-normalize-frame'
+rebuilds nothing wherever a non-side window already exists, which is what
+keeps a healthy tab switch untouched now that no advice runs on that path
+at all."
   (save-window-excursion
     (let ((tabs-before (length (tab-bar-tabs)))
           (buf (generate-new-buffer "ewt-keeps-layout")))
@@ -1520,7 +1521,9 @@ because `tab-bar-new-tab-to' deletes other windows with
 `ignore-window-parameters' bound, so a tab created while the sidebar held
 point keeps the sidebar as its only window.
 
-This is the precondition the `tab-bar-select-tab' advice repairs."
+This is the precondition `edmacs-windows-ws-ensure-main' removes at the
+source -- and, for a layout already restored, `edmacs-windows-normalize-frame'
+repairs."
   (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-allside-ws")))
       (unwind-protect
@@ -1544,7 +1547,7 @@ This is the precondition the `tab-bar-select-tab' advice repairs."
               (should (edmacs-windows-frame-wedged-p (selected-frame)))
               ;; Which is exactly what the guard undoes -- without dismantling
               ;; the side window it found there.
-              (edmacs-windows-ensure-main-window (selected-frame))
+              (edmacs-windows-normalize-frame (selected-frame))
               (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
               (should-not (window-parameter (edmacs-main-window) 'window-side))
               (should (seq-find (lambda (w)
@@ -1563,7 +1566,7 @@ being split, so `split-window' delegates to itself until
 identical `split-window(#<window N on *sidebar*> 2 right nil nil)' frames,
 reached from `tab-bar-select-tab' -> `window-state-put'.
 
-`edmacs-windows-repair-frame' removes the precondition: this asserts the
+`edmacs-windows-normalize-frame' removes the precondition: this asserts the
 recursion is real on the wedged shape, and gone once repaired. The path
 from `tab-bar-select-tab' is not reproducible under `--batch' -- that call
 collapses the frame itself before restoring -- so the mechanism is pinned
@@ -1588,7 +1591,7 @@ here directly rather than through a driver that cannot fail."
                             (condition-case nil
                                 (progn (split-window (frame-root-window) 2 t) nil)
                               (error 'recursed)))))
-              (edmacs-windows-ensure-main-window (selected-frame))
+              (edmacs-windows-normalize-frame (selected-frame))
               (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
               (should-not (window-parameter (edmacs-main-window) 'window-side))
               (should (window-live-p (split-window (frame-root-window) 2 t)))))
@@ -2194,7 +2197,7 @@ the assertions are about the repaired main window, not about the frame
 being side-window-free."
   (edmacs-windows-test--with-clean-layout
     (cl-destructuring-bind (_left right) (edmacs-test-support-make-wedged-frame)
-      (let ((main (edmacs-windows-repair-frame (selected-frame))))
+      (let ((main (edmacs-windows-normalize-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
         (should-not (window-live-p right))
@@ -2204,7 +2207,7 @@ being side-window-free."
         (should-not (window-dedicated-p main))
         (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
         ;; Idempotent: a second call is the healthy-frame no-op.
-        (should (eq (edmacs-windows-repair-frame (selected-frame)) main))))))
+        (should (eq (edmacs-windows-normalize-frame (selected-frame)) main))))))
 
 (ert-deftest edmacs-windows-test-repair-frame-strips-every-parameter ()
   "The survivor becomes main, so it must not keep a stack pane's styling.
@@ -2220,7 +2223,7 @@ buffer is reused into it next."
       (set-window-dedicated-p left t)
       (set-window-parameter right 'mode-line-format 'none)
       (set-window-parameter right 'edmacs-stack-popup t)
-      (let ((main (edmacs-windows-repair-frame (selected-frame))))
+      (let ((main (edmacs-windows-normalize-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
         (should-not (window-parameter main 'mode-line-format))
@@ -2241,7 +2244,7 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
               (edmacs-test-support-make-wedged-frame)
             (set-window-buffer left buf)
             (dolist (w (list left right)) (set-window-dedicated-p w t))
-            (let ((main (edmacs-windows-repair-frame (selected-frame))))
+            (let ((main (edmacs-windows-normalize-frame (selected-frame))))
               (should (window-live-p main))
               (should-not (eq (window-buffer main) buf))
               (should (equal (buffer-name (window-buffer main)) "*scratch*"))))
@@ -2253,10 +2256,10 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
            (edmacs-windows-frame-repaired-functions
             (list (lambda (frame) (push frame seen)))))
       (edmacs-test-support-make-wedged-frame)
-      (edmacs-windows-repair-frame (selected-frame))
+      (edmacs-windows-normalize-frame (selected-frame))
       (should (equal seen (list (selected-frame))))
       ;; A healthy frame does not re-run it.
-      (edmacs-windows-repair-frame (selected-frame))
+      (edmacs-windows-normalize-frame (selected-frame))
       (should (equal seen (list (selected-frame)))))))
 
 (ert-deftest edmacs-windows-test-repair-frame-is-a-no-op-when-reentrant ()
@@ -2264,8 +2267,8 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
 rather than a recursion."
   (edmacs-windows-test--with-clean-layout
     (edmacs-test-support-make-wedged-frame)
-    (let ((edmacs-windows--repairing t))
-      (should-not (edmacs-windows-repair-frame (selected-frame)))
+    (let ((edmacs-windows--normalizing t))
+      (should-not (edmacs-windows-normalize-frame (selected-frame)))
       (should (edmacs-windows-frame-wedged-p (selected-frame))))))
 
 (ert-deftest edmacs-windows-test-wedged-p-excludes-child-and-minibuffer-frames ()
@@ -2286,7 +2289,7 @@ frame parameters are stubbed instead."
                        (funcall real frame parameter)))))
           (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
           ;; And repair is the healthy-frame no-op on such a frame.
-          (should-not (edmacs-windows-repair-frame (selected-frame))))))
+          (should-not (edmacs-windows-normalize-frame (selected-frame))))))
     ;; Still wedged once the stubs are gone -- nothing was repaired.
     (should (edmacs-windows-frame-wedged-p (selected-frame)))))
 
@@ -2370,7 +2373,7 @@ so the sole window itself is stripped, un-dedicated and evicted to
           (window (edmacs-test-support-make-wedged-frame 'sole)))
       (should-not (window-parent window))
       (should (edmacs-windows-frame-wedged-p (selected-frame)))
-      (let ((main (edmacs-windows-repair-frame (selected-frame))))
+      (let ((main (edmacs-windows-normalize-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
         (dolist (parameter '(window-side window-slot
@@ -2618,9 +2621,13 @@ collapsed onto the macro."
                   #'edmacs--rotate-preserve-window-parameters)))
     (should (= 1 (edmacs-windows-test--advice-count
                   'quit-restore-window #'edmacs-stack--quit-restore-window)))
-    (dolist (advice '(edmacs-windows--repair-before-tab-select
-                      edmacs-windows--repair-after-tab-select))
-      (should (= 1 (edmacs-windows-test--advice-count 'tab-bar-select-tab advice))))
+    ;; `tab-bar-select-tab' carries no advice at all now: the side-only tree
+    ;; is prevented at the producer instead.
+    (should (= 0 (edmacs-windows-test--advice-count
+                  'tab-bar-select-tab #'edmacs-windows--select-main-before-new-tab)))
+    (should (= 1 (edmacs-windows-test--advice-count
+                  'tab-bar-new-tab-to
+                  #'edmacs-windows--select-main-before-new-tab)))
     ;; The evil advices live inside `with-eval-after-load', so this asserts
     ;; nothing at all in a run where evil never loaded -- gate on it rather
     ;; than pass vacuously.
@@ -2630,5 +2637,318 @@ collapsed onto the macro."
                       (evil-window-up . edmacs-windows--reach-up)
                       (evil-window-down . edmacs-windows--reach-down)))
         (should (= 1 (edmacs-windows-test--advice-count (car pair) (cdr pair))))))))
+
+
+;; ---------------------------------------------------------------------------
+;; --repair-plan: the pure half of normalize
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-repair-plan-table ()
+  "Every shape `--repair-plan' has to answer for, driven as data.
+The plan is pure, so each row asserts on its return value alone; the
+`main present but unstamped' row is what pins that designation is
+`edmacs-windows-normalize-frame's job, not the plan's."
+  (dolist (row
+           (list
+            (list "healthy frame"
+                  (lambda ()
+                    (delete-other-windows)
+                    (edmacs-window-set-main (selected-window))
+                    nil)
+                  (lambda (_built)
+                    (should-not (edmacs-windows--repair-plan (selected-frame)))))
+            (list "side-only tree"
+                  (lambda () (edmacs-test-support-make-wedged-frame))
+                  (lambda (built)
+                    (let* ((before (window-state-get (frame-root-window) t))
+                           (plan (edmacs-windows--repair-plan (selected-frame))))
+                      (should plan)
+                      (should (window-live-p (plist-get plan :survivor)))
+                      (should (memq (plist-get plan :survivor) built))
+                      (should (= 2 (length (plist-get plan :clear))))
+                      (dolist (w built) (should (memq w (plist-get plan :clear))))
+                      (should-not (plist-get plan :scratch-p))
+                      ;; Pure: planning wrote nothing.
+                      (should (equal before
+                                     (window-state-get (frame-root-window) t))))))
+            (list "side-only tree, dedicated sidebar"
+                  (lambda () (edmacs-test-support-make-wedged-frame 'dedicated))
+                  (lambda (built)
+                    (let ((plan (edmacs-windows--repair-plan (selected-frame))))
+                      (should plan)
+                      (should (memq (plist-get plan :survivor) (cdr built)))
+                      (should-not (window-dedicated-p (plist-get plan :survivor)))
+                      (should (= 3 (length (plist-get plan :clear))))
+                      (should-not (plist-get plan :scratch-p)))))
+            (list "side-only tree, sole dedicated window"
+                  (lambda () (list (edmacs-test-support-make-wedged-frame 'sole)))
+                  (lambda (built)
+                    (let ((plan (edmacs-windows--repair-plan (selected-frame))))
+                      (should plan)
+                      (should (eq (plist-get plan :survivor) (car built)))
+                      (should (equal (plist-get plan :clear) built))
+                      (should (plist-get plan :scratch-p)))))
+            (list "no windows"
+                  (lambda () (edmacs-test-support-make-wedged-frame))
+                  (lambda (_built)
+                    ;; A live frame always has at least one window, so the
+                    ;; empty case only exists as a stub -- and the apply half
+                    ;; must still be a silent no-op on it.
+                    (let ((plan (cl-letf (((symbol-function 'window-list)
+                                           (lambda (&rest _) nil)))
+                                  (edmacs-windows--repair-plan (selected-frame)))))
+                      (should plan)
+                      (should-not (plist-get plan :survivor))
+                      (should-not (plist-get plan :clear))
+                      (should (plist-get plan :scratch-p))
+                      (should-not (edmacs-windows--apply-repair-plan
+                                   (selected-frame) plan)))))
+            (list "main present but unstamped"
+                  (lambda ()
+                    (delete-other-windows)
+                    (set-window-parameter (selected-window) 'edmacs-main nil)
+                    nil)
+                  (lambda (_built)
+                    (should-not (edmacs-main-window))
+                    ;; There IS a non-side window, so nothing needs rebuilding.
+                    (should-not (edmacs-windows--repair-plan (selected-frame)))
+                    ;; Normalize's designate step is what covers this case.
+                    (should (edmacs-windows-normalize-frame (selected-frame)))
+                    (should (window-parameter (selected-window) 'edmacs-main))))))
+    (cl-destructuring-bind (label builder check) row
+      (ert-info ((format "row: %s" label))
+        (edmacs-windows-test--with-clean-layout
+          (funcall check (funcall builder)))))))
+
+(ert-deftest edmacs-windows-test-repair-plan-returns-nil-on-child-and-minibuffer-frames ()
+  "A corfu-style child frame and a minibuffer-only frame hold no main
+window by design, so the plan must never propose collapsing one. Batch
+can build neither, so the two frame parameters are stubbed."
+  (edmacs-windows-test--with-clean-layout
+    (edmacs-test-support-make-wedged-frame)
+    (should (edmacs-windows--repair-plan (selected-frame)))
+    (let ((real (symbol-function 'frame-parameter)))
+      (dolist (stub '((parent-frame . t) (minibuffer . only)))
+        (cl-letf (((symbol-function 'frame-parameter)
+                   (lambda (frame parameter)
+                     (if (eq parameter (car stub))
+                         (cdr stub)
+                       (funcall real frame parameter)))))
+          (should-not (edmacs-windows--repair-plan (selected-frame))))))
+    ;; Still planned once the stubs are gone -- nothing was rebuilt.
+    (should (edmacs-windows--repair-plan (selected-frame)))))
+
+(ert-deftest edmacs-windows-test-normalize-subsumes-repair-and-dedupe ()
+  "One normalize pass rebuilds main AND sweeps a duplicated stack pane.
+The dedupe sweep lost its own `window-buffer-change-functions'
+registration when normalize took over the single trigger, so this is what
+proves it still runs."
+  (edmacs-windows-test--with-clean-layout
+    (let ((buf (generate-new-buffer "ewt-normalize-dupe")))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (set-window-buffer (selected-window) buf)
+            (edmacs-window-set-main (selected-window))
+            (edmacs-windows-test--display-claude-term-shaped-pane buf 0)
+            (should (= 1 (length (edmacs-stack-windows))))
+            (edmacs-windows-normalize-frame (selected-frame))
+            (should (edmacs-main-window))
+            (should (null (edmacs-stack-windows))))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-normalize-is-synchronous-on-a-wedged-frame ()
+  "The one documented divergence from the sidebar's deferral rule.
+A wedged frame makes the very next `split-window' recurse, so it must
+never survive to the next redisplay -- `edmacs-windows-invalidate-frame'
+normalizes it in place. A healthy frame is deferred instead, which the
+dirty set being non-empty BEFORE the flush is what measures: timers never
+fire under `--batch', so a test that skipped that assertion would pass
+whether or not anything was ever queued."
+  (edmacs-windows-test--with-clean-layout
+    (let ((edmacs-windows--dirty-frames nil)
+          (edmacs-windows--normalize-timer nil))
+      (unwind-protect
+          (progn
+            (edmacs-test-support-make-wedged-frame)
+            (edmacs-windows-invalidate-frame (selected-frame))
+            ;; Repaired in place, and nothing was queued for later.
+            (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+            (should (edmacs-main-window))
+            (should-not edmacs-windows--dirty-frames)
+            ;; Healthy now, so the same call defers.
+            (edmacs-windows-test--unstamp-frame)
+            (edmacs-windows-invalidate-frame (selected-frame))
+            (should (memq (selected-frame) edmacs-windows--dirty-frames))
+            (should-not (edmacs-main-window))
+            (edmacs-test-support-flush-window-normalize)
+            (should-not edmacs-windows--dirty-frames)
+            (should (edmacs-main-window)))
+        (when (timerp edmacs-windows--normalize-timer)
+          (cancel-timer edmacs-windows--normalize-timer))))))
+
+(ert-deftest edmacs-windows-test-normalize-is-the-single-window-state-change-member ()
+  "One hook, one member: the eight scattered repair call sites were
+retired in favour of this registration."
+  (should (memq #'edmacs-windows-invalidate-frame window-state-change-functions))
+  (should-not (memq #'edmacs-windows-dedupe-frame window-buffer-change-functions)))
+
+;; ---------------------------------------------------------------------------
+;; The producer: a side-only tree is never saved in the first place
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-new-tab-from-the-sidebar-saves-a-main-bearing-layout ()
+  "`tab-bar-new-tab-to' snapshots the outgoing tab with `window-state-get'
+and then deletes other windows with `ignore-window-parameters' bound, so
+whatever holds point becomes the new tab's sole window. With point in the
+sidebar that snapshot was a side-only tree; the `:before' advice moves
+point to main first, so it cannot be."
+  (edmacs-windows-test--with-clean-layout
+    (let ((buf (generate-new-buffer "ewt-newtab-sidebar")))
+      (unwind-protect
+          (edmacs-test-support-with-tabs-restored
+            (delete-other-windows)
+            (edmacs-window-set-main (selected-window))
+            (let ((side (display-buffer-in-side-window
+                         buf '((side . left) (slot . 0)
+                               (window-parameters
+                                . ((no-delete-other-windows . t)))))))
+              (set-window-dedicated-p side t)
+              (select-window side)
+              ;; The precondition, asserted rather than assumed.
+              (should (window-parameter (selected-window) 'window-side))
+              (tab-bar-new-tab)
+              ;; No saved tab may carry a side-only layout.
+              (dolist (tab (tab-bar-tabs))
+                (let ((ws (alist-get 'ws (cdr tab))))
+                  (when ws (should-not (edmacs-windows-ws-side-only-p ws)))))
+              (should-not (edmacs-windows-frame-wedged-p (selected-frame)))))
+        (kill-buffer buf)))))
+
+(ert-deftest edmacs-windows-test-ws-side-only-p-reads-the-state-tree ()
+  "`window-state-get' returns (CONSTRAINTS-ALIST . STATE-TREE); walking
+the cons itself instead of its `cdr' matches nothing and answers nil for
+every input."
+  (edmacs-windows-test--with-clean-layout
+    (edmacs-test-support-make-wedged-frame)
+    (let ((ws (window-state-get (frame-root-window) t)))
+      (should (edmacs-windows-ws-side-only-p ws))
+      ;; The tree alone, handed in where the whole cons belongs, is not one.
+      (should-not (edmacs-windows-ws-side-only-p (cdr ws))))
+    ;; A bare `delete-other-windows' signals on this shape, so the wedge is
+    ;; collapsed the way production collapses it.
+    (edmacs-windows-normalize-frame (selected-frame))
+    (should-not (edmacs-windows-ws-side-only-p
+                 (window-state-get (frame-root-window) t)))
+    ;; Neither a leafless tree nor a non-state value is side-only.
+    (should-not (edmacs-windows-ws-side-only-p nil))
+    (should-not (edmacs-windows-ws-side-only-p '(nil . (vc))))))
+
+(ert-deftest edmacs-windows-test-ws-ensure-main-is-a-pure-fixed-point ()
+  "A healthy `ws' comes back `eq'; a sanitized one is a fresh structure
+that leaves its input untouched and is its own fixed point."
+  (edmacs-windows-test--with-clean-layout
+    (delete-other-windows)
+    (let ((healthy (window-state-get (frame-root-window) t)))
+      (should (eq healthy (edmacs-windows-ws-ensure-main healthy))))
+    (edmacs-test-support-make-wedged-frame 'sole)
+    (let* ((ws (window-state-get (frame-root-window) t))
+           (snapshot (copy-tree ws))
+           (fixed (edmacs-windows-ws-ensure-main ws)))
+      (should-not (eq fixed ws))
+      (should (equal ws snapshot))
+      (should-not (edmacs-windows-ws-side-only-p fixed))
+      (should (equal fixed (edmacs-windows-ws-ensure-main fixed))))))
+
+(ert-deftest edmacs-windows-test-migrating-a-side-only-ws-restores-with-a-main-window ()
+  "The already-saved half of the producer fix: a desktop file poisoned
+before that fix landed self-heals on boot. The un-sanitized state is
+restored first, in the same test, so the sanitizer is what is measured."
+  (edmacs-windows-test--with-clean-layout
+    (let ((ws (progn (edmacs-test-support-make-wedged-frame 'sole)
+                     (window-state-get (frame-root-window) t))))
+      (edmacs-windows-normalize-frame (selected-frame))
+      (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+      ;; Raw: restoring it wedges the frame.
+      (window-state-put ws (frame-root-window) 'safe)
+      (should (edmacs-windows-frame-wedged-p (selected-frame)))
+      ;; Sanitized: it does not.
+      (edmacs-windows-normalize-frame (selected-frame))
+      (window-state-put (edmacs-windows-ws-ensure-main ws)
+                        (frame-root-window) 'safe)
+      (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+      (let ((main (edmacs-main-window)))
+        (should (window-live-p main))
+        (should-not (window-parameter main 'window-side))
+        (should-not (window-dedicated-p main))))))
+
+;; ---------------------------------------------------------------------------
+;; Window-tree mutation carries no bare `ignore-errors'
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-delete-window-if-possible-leaves-a-sole-window-alone ()
+  "The parentless shape is the only refusal this config expects, and it is
+checked for rather than caught -- so the helper is a silent no-op there
+and a real deletion anywhere else."
+  (edmacs-windows-test--with-clean-layout
+    (let ((window (edmacs-test-support-make-wedged-frame 'sole)))
+      (should-not (window-parent window))
+      (should-not (edmacs-windows--delete-window-if-possible window))
+      (should (window-live-p window))
+      (edmacs-windows-normalize-frame (selected-frame)))
+    (edmacs-windows-test--with-clean-layout
+      (delete-other-windows)
+      (let ((other (split-window (selected-window))))
+        (should (edmacs-windows--delete-window-if-possible other))
+        (should-not (window-live-p other))
+        ;; A dead window is a no-op too, not a signal.
+        (should-not (edmacs-windows--delete-window-if-possible other))))))
+
+(defun edmacs-windows-test--windows-source ()
+  "Return modules/windows.el's text, or skip when it cannot be located."
+  (let ((path (expand-file-name "modules/windows.el" default-directory)))
+    (unless (file-readable-p path)
+      (ert-skip "cannot locate modules/windows.el"))
+    (with-temp-buffer
+      (insert-file-contents path)
+      (buffer-string))))
+
+(ert-deftest edmacs-windows-test-no-bare-ignore-errors-around-window-mutation ()
+  "An `ignore-errors' around a window-tree mutation swallows the signal
+that says the layout is not what the caller assumed. Each such call site
+now either checks its one expected refusal (see
+`edmacs-windows--delete-window-if-possible') or clamps its request
+(`edmacs-stack--resize-width')."
+  (with-temp-buffer
+    (insert (edmacs-windows-test--windows-source))
+    (emacs-lisp-mode)
+    (goto-char (point-min))
+    (while (re-search-forward "(ignore-errors\\_>" nil t)
+      (let* ((start (match-beginning 0))
+             (end (save-excursion (goto-char start) (forward-sexp) (point)))
+             (form (buffer-substring-no-properties start end)))
+        (dolist (mutator '("delete-window" "delete-other-windows"
+                           "split-window" "window-resize" "set-window-buffer"))
+          (should-not (string-match-p (regexp-quote (concat "(" mutator))
+                                      form)))))))
+
+(ert-deftest edmacs-windows-test-repair-frame-has-only-three-source-mentions ()
+  "AC2's grep, enforced by the suite rather than by hand: the name
+survives only as the command's own `defun', its message, and the one
+cross-reference in `edmacs-windows-normalize-frame's docstring."
+  (let ((sidebar (expand-file-name "modules/sidebar.el" default-directory)))
+    (unless (file-readable-p sidebar)
+      (ert-skip "cannot locate modules/sidebar.el"))
+    (with-temp-buffer
+      (insert-file-contents sidebar)
+      (goto-char (point-min))
+      (should-not (search-forward "edmacs-windows-repair-frame" nil t))))
+  (with-temp-buffer
+    (insert (edmacs-windows-test--windows-source))
+    (goto-char (point-min))
+    (let ((n 0))
+      (while (search-forward "edmacs-windows-repair-frame" nil t)
+        (setq n (1+ n)))
+      (should (= n 3)))))
 
 ;;; windows-test.el ends here

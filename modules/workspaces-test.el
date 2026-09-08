@@ -1083,6 +1083,18 @@ genuinely the marked one rather than merely the first."
                    (prev-buffers ,@(mapcar (lambda (n) (list n 1 1))
                                            prev-names))))))
 
+(defun edmacs-workspaces-test--side-only-ws ()
+  "Return a tab `ws' whose every leaf is a side window.
+The serialized wedged shape -- what `tab-bar-new-tab-to' used to save
+when the sidebar held point, and what a desktop file written before the
+producer fix still carries. Same `(CONSTRAINTS-ALIST . TREE)' cons shape
+as `edmacs-workspaces-test--tab-ws'."
+  (cons '((min-height . 4) (min-width . 10))
+        `(leaf (parameters (edmacs-main) (window-side . left) (window-slot . 0)
+                           (no-other-window . t) (no-delete-other-windows . t))
+               (buffer "*sidebar*" (selected . t) (dedicated . side)
+                       (point . 1) (start . 1)))))
+
 (defun edmacs-workspaces-test--frames-model-fixture ()
   "Return a two-state frameset in the pre-roadmap frames model's shape.
 Deep-copied on every call: the literals below are compile-time
@@ -1313,7 +1325,56 @@ construction."
     (let ((fixture (edmacs-workspaces-test--frames-model-fixture)))
       (should (equal (edmacs-workspaces-migrate-frameset fixture)
                      (edmacs-workspaces-migrate-frameset
-                      (edmacs-workspaces-migrate-frameset fixture)))))))
+                      (edmacs-workspaces-migrate-frameset fixture)))))
+    ;; The `ws' sanitizer must be a fixed point too, or the transform grows
+    ;; its own output on every boot.
+    (let ((poisoned (edmacs-workspaces-test--frames-model-fixture)))
+      (setf (alist-get 'ws
+                       (cdr (assq 'current-tab
+                                  (alist-get 'tabs
+                                             (car (car (frameset-states poisoned)))))))
+            (edmacs-workspaces-test--side-only-ws))
+      (should (equal (edmacs-workspaces-migrate-frameset poisoned)
+                     (edmacs-workspaces-migrate-frameset
+                      (edmacs-workspaces-migrate-frameset poisoned)))))))
+
+(ert-deftest edmacs-workspaces-test-migrate-frameset-sanitizes-a-side-only-tab-ws ()
+  "A tab whose saved `ws' is all side windows restores into a frame with
+no main window, from which every later `split-window' recurses through
+`window-main-window' into itself. The migration -- which runs on every
+daemon boot -- rewrites the first leaf into a real main window instead,
+so an already-poisoned desktop file self-heals rather than needing a
+guard on the tab-switch hot path."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((poisoned (edmacs-workspaces-test--side-only-ws))
+           (fs (frameset--make
+                :version 1 :timestamp '(27294 4191 109240 0)
+                :app '(desktop . "208") :name "test"
+                :states (list (cons `((last-focus-update . t)
+                                      (tabs (current-tab (name . "edmacs")
+                                                         (edmacs-workspace-root
+                                                          . "/w/edmacs/"))
+                                            (tab (name . "poisoned")
+                                                 (time . 1.0)
+                                                 (edmacs-workspace-root
+                                                  . "/w/cloudcitydotgay/")
+                                                 (ws . ,poisoned)))
+                                      (height . 72))
+                                    nil))))
+           (tabs (alist-get 'tabs (car (car (frameset-states
+                                             (edmacs-workspaces-migrate-frameset
+                                              fs))))))
+           (ws (alist-get 'ws (cdr (seq-find (lambda (tab)
+                                               (alist-get 'ws (cdr tab)))
+                                             tabs)))))
+      (should ws)
+      (should (edmacs-windows-ws-side-only-p poisoned))
+      (should-not (edmacs-windows-ws-side-only-p ws))
+      ;; Pure: the input frameset still holds its poisoned copy.
+      (should (edmacs-windows-ws-side-only-p
+               (alist-get 'ws (cdr (assq 'tab (alist-get
+                                               'tabs
+                                               (car (car (frameset-states fs))))))))))))
 
 (ert-deftest edmacs-workspaces-test-migrate-new-shape-frameset-is-a-noop ()
   "A frameset already in the new shape comes back `equal' to its input --

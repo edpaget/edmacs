@@ -319,6 +319,19 @@ nil (default) -- [left-side | right-side], zero non-side windows -- the
        (list left right)))))
 
 ;; ============================================================================
+;; Deferred window normalization
+;; ============================================================================
+
+(defun edmacs-test-support-flush-window-normalize ()
+  "Run `edmacs-windows--flush-dirty-frames' now, if windows.el is loaded.
+`edmacs-windows-invalidate-frame' arms a zero-second idle timer, and
+timers never fire under `--batch' -- so a test of the deferred path that
+does not flush explicitly passes vacuously. A no-op when windows.el is
+absent, which keeps this callable from any suite."
+  (when (fboundp 'edmacs-windows--flush-dirty-frames)
+    (funcall 'edmacs-windows--flush-dirty-frames)))
+
+;; ============================================================================
 ;; Hermetic-suite state (timers, buffers, tab-bar-mode)
 ;; ============================================================================
 
