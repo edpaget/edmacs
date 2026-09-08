@@ -14,11 +14,16 @@
 #   - `textDocument/definition', `textDocument/references',
 #     `textDocument/typeDefinition', `textDocument/implementation' and
 #     `workspace/symbol' all answer with real, expected locations
-#   - jdtls advertises `renameProvider' and `codeActionProvider' (exercising
-#     rename for real would mutate the fixture on disk; capability
-#     advertisement plus the roadmap's already-proven global eglot-rename/
-#     eglot-code-actions bindings in programming.el is the same bar the
-#     sibling scripts hold definition/references to)
+#   - `eglot-rename' actually renames a local variable on disk (via a real
+#     `textDocument/rename' round trip through `eglot--apply-workspace-edit',
+#     not just a check that jdtls advertises `renameProvider'). The target is
+#     a variable local to the buffer already visited, so the resulting edit
+#     is "peaceful" and `eglot--apply-workspace-edit' applies it without a
+#     y-or-n-p prompt to answer in batch.
+#   - `eglot-code-actions', called on the real flymake diagnostic range from
+#     Broken.java, returns a real non-empty list of server-proposed actions
+#     -- not just that jdtls advertises `codeActionProvider'. The fixture is
+#     scratch (mktemp -d, deleted on exit), so mutating it here is free.
 #   - diagnostics appear via flymake, not flycheck, and
 #     `edmacs-modeline-diagnostics' renders their count
 #
@@ -262,12 +267,31 @@ perfectly fine interactively."
        (seq-some (lambda (s) (equal (plist-get s :name) "Greeter")) (or symbols []))
        "workspace-symbol" "%S" symbols))
 
+    ;; Real rename, not just a capability check. "g" is local to this
+    ;; buffer's main() method, so the resulting WorkspaceEdit touches only
+    ;; the buffer already visited here -- `eglot--apply-workspace-edit'
+    ;; treats that as "peaceful" and applies it with no y-or-n-p prompt.
+    ;; A single call, not a poll-and-retry: this one *applies* the edit, and
+    ;; every earlier check already proved the project is fully indexed.
+    (goto-char (point-min))
+    (search-forward "Greeting g")
+    (backward-char 1)
+    (let ((result (eglot--apply-workspace-edit
+                   server
+                   (eglot--request
+                    server :textDocument/rename
+                    (append (eglot--TextDocumentPositionParams) '(:newName "greeting")))
+                   'edmacs-java-check--rename)))
+      (edmacs-java-check--report
+       (and (car result)
+            (save-excursion (goto-char (point-min))
+                            (search-forward "greeting = new Greeter" nil t))
+            (save-excursion (goto-char (point-min))
+                            (search-forward "greeting.sayHello" nil t)))
+       "rename-applied" "%S buffer-now=%S" result
+       (buffer-substring-no-properties (point-min) (point-max))))
+
     (let ((capabilities (eglot--capabilities server)))
-      (edmacs-java-check--report (plist-get capabilities :renameProvider)
-                                 "rename-capability" "%S" (plist-get capabilities :renameProvider))
-      (edmacs-java-check--report (plist-get capabilities :codeActionProvider)
-                                 "code-action-capability" "%S"
-                                 (plist-get capabilities :codeActionProvider))
       (edmacs-java-check--report (plist-get capabilities :implementationProvider)
                                  "implementation-capability" "%S"
                                  (plist-get capabilities :implementationProvider)))))
@@ -300,7 +324,22 @@ perfectly fine interactively."
                                (flymake-diagnostics)))
                    60)))
   (edmacs-java-check--report diagnostic "error-diagnostic" "%S"
-                             (and diagnostic (flymake-diagnostic-text diagnostic))))
+                             (and diagnostic (flymake-diagnostic-text diagnostic)))
+  ;; Real code actions, not just a capability check: request them for the
+  ;; diagnostic's own range and confirm jdtls actually proposes fixes.
+  (when diagnostic
+    (let ((actions (edmacs-java-check--wait
+                    (lambda ()
+                      (ignore-errors
+                        (let ((a (eglot-code-actions (flymake-diagnostic-beg diagnostic)
+                                                     (flymake-diagnostic-end diagnostic)
+                                                     nil nil)))
+                          (and a (> (length a) 0) a))))
+                    60)))
+      (edmacs-java-check--report
+       (and actions (> (length actions) 0)
+            (seq-every-p (lambda (a) (plist-get a :title)) actions))
+       "code-action-invoked" "%S" (mapcar (lambda (a) (plist-get a :title)) actions)))))
 (edmacs-java-check--report (and (bound-and-true-p flymake-mode)
                                 (not (bound-and-true-p flycheck-mode))
                                 (string-match-p "\\`E[0-9]" (edmacs-modeline-diagnostics)))
