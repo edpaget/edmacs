@@ -1320,6 +1320,37 @@ phase's own Context on the two hooks coordinating, not colliding."
         (while (> (length (tab-bar-tabs)) tabs-before)
           (tab-bar-close-tab))))))
 
+(ert-deftest edmacs-windows-test-tab-switch-does-not-flatten-a-healthy-layout ()
+  "The wedge guard on `tab-bar-select-tab' must not touch a usable frame.
+It runs on both sides of every tab switch, and `tab-bar-select-tab' SAVES
+the outgoing tab's layout -- so a guard that collapsed the frame would have
+that collapse written back into the tab, flattening every tab to a single
+`*scratch*' window one switch at a time. `edmacs-windows-ensure-main-window'
+is a no-op wherever a non-side window already exists, which is what makes it
+safe on that path."
+  (save-window-excursion
+    (let ((tabs-before (length (tab-bar-tabs)))
+          (buf (generate-new-buffer "ewt-keeps-layout")))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (split-window)
+            (set-window-buffer (next-window) buf)
+            (let ((before (mapcar (lambda (w) (buffer-name (window-buffer w)))
+                                  (window-list nil 'no-minibuf))))
+              (should (= 2 (length before)))
+              (tab-bar-new-tab)
+              (tab-bar-switch-to-prev-tab)
+              (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+              ;; The layout came back, not a lone scratch window.
+              (should (= 2 (length (window-list nil 'no-minibuf))))
+              (should (member (buffer-name buf)
+                              (mapcar (lambda (w) (buffer-name (window-buffer w)))
+                                      (window-list nil 'no-minibuf))))))
+        (while (> (length (tab-bar-tabs)) tabs-before)
+          (tab-bar-close-tab))
+        (kill-buffer buf)))))
+
 (ert-deftest edmacs-windows-test-restoring-an-all-side-layout-wedges-the-frame ()
   "A tab saved holding only the sidebar restores the frame into the wedged
 shape, silently. `window-state-put' accepts such a state, returns normally,
@@ -1351,10 +1382,14 @@ This is the precondition the `tab-bar-select-tab' advice repairs."
               ;; Restoring the saved all-side layout succeeds and wedges it.
               (window-state-put state (frame-root-window) 'safe)
               (should (edmacs-windows-frame-wedged-p (selected-frame)))
-              ;; Which is exactly what the repair undoes.
-              (edmacs-windows-repair-frame (selected-frame))
+              ;; Which is exactly what the guard undoes -- without dismantling
+              ;; the side window it found there.
+              (edmacs-windows-ensure-main-window (selected-frame))
               (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
-              (should-not (window-parameter (edmacs-main-window) 'window-side))))
+              (should-not (window-parameter (edmacs-main-window) 'window-side))
+              (should (seq-find (lambda (w)
+                                  (eq (window-parameter w 'window-side) 'left))
+                                (window-list nil 'no-minibuf)))))
         (delete-other-windows)
         (kill-buffer buf)))))
 
@@ -1393,7 +1428,7 @@ here directly rather than through a driver that cannot fail."
                             (condition-case nil
                                 (progn (split-window (frame-root-window) 2 t) nil)
                               (error 'recursed)))))
-              (edmacs-windows-repair-frame (selected-frame))
+              (edmacs-windows-ensure-main-window (selected-frame))
               (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
               (should-not (window-parameter (edmacs-main-window) 'window-side))
               (should (window-live-p (split-window (frame-root-window) 2 t)))))

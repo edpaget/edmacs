@@ -1088,31 +1088,54 @@ FRAME is always the selected frame."
 ;; core's `split-window' to `window-main-window' -- and on a frame whose ONLY
 ;; window is a side window that is the very same window, so it delegates to
 ;; itself until `max-lisp-eval-depth' blows. (`edmacs-stack-toggle' documents
-;; the same `window-main-window'-returns-the-root trap.) `tab-bar-select-tab'
-;; reaches `split-window' through `window-state-put' while restoring a tab's
-;; layout, so a wedged frame has to be repaired before it runs, not after.
+;; the same `window-main-window'-returns-the-root trap.) `window-state-put'
+;; also accepts a saved layout of only side windows without complaint, so a
+;; tab saved in that shape restores the frame straight into it.
+;;
+;; The remedy here is deliberately NOT `edmacs-windows-repair-frame'. That one
+;; is for a frame whose layout is past saving: it clears every window
+;; parameter and collapses the frame to a single window. Run from a tab
+;; switch it destroys the layout of the tab being left -- which
+;; `tab-bar-select-tab' then SAVES -- and of the tab being entered, flattening
+;; every tab to one `*scratch*' window a switch at a time.
 
-(defun edmacs-windows--repair-before-tab-select (&rest _)
-  "Repair a wedged frame before `tab-bar-select-tab' restores a layout into it."
+(defun edmacs-windows-ensure-main-window (frame)
+  "Give FRAME a main window if it has none, without dismantling anything.
+A no-op on any frame that already has a non-side window, so this is safe on
+the hot path of every tab switch. Where `edmacs-windows-repair-frame'
+collapses a frame to one bare window, this only adds the window that is
+missing and leaves every side window -- the sidebar included -- as it was.
+
+Splits with `ignore-window-parameters' bound, because the split it needs is
+exactly the one core would otherwise delegate to `window-main-window' and so
+back to itself."
+  (when (and (frame-live-p frame) (edmacs-windows-frame-wedged-p frame))
+    (with-selected-frame frame
+      (let ((new (ignore-errors
+                   (let ((ignore-window-parameters t)
+                         (window--sides-inhibit-check t))
+                     (split-window (frame-root-window frame) nil 'right)))))
+        (when (window-live-p new)
+          (dolist (parameter (mapcar #'car (window-parameters new)))
+            (set-window-parameter new parameter nil))
+          (set-window-dedicated-p new nil)
+          (set-window-buffer new (get-buffer-create "*scratch*"))
+          (edmacs-window-set-main new)
+          (select-window new)))))
+  (when (frame-live-p frame)
+    (with-selected-frame frame (edmacs-main-window))))
+
+(defun edmacs-windows--ensure-main-around-tab-select (&rest _)
+  "Ensure a main window exists before and after `tab-bar-select-tab'.
+Before, because the incoming layout is restored into this frame; after,
+because `window-state-put' can restore a layout that is only side windows."
   ;; `tab-bar-select-tab' takes a tab number, never a frame -- ambient-reads: ok
-  (edmacs-windows-repair-frame (selected-frame)))
+  (edmacs-windows-ensure-main-window (selected-frame)))
 
 (advice-add 'tab-bar-select-tab :before
-            #'edmacs-windows--repair-before-tab-select)
-
-(defun edmacs-windows--repair-after-tab-select (&rest _)
-  "Repair a frame that a restored tab layout left with no main window.
-`window-state-put' accepts a saved state of only side windows without
-complaint -- it returns normally and leaves the frame wedged. A tab can be
-saved in exactly that shape: `tab-bar-new-tab-to' deletes other windows with
-`ignore-window-parameters' bound, so a tab created while the sidebar was
-selected keeps the sidebar as its only window. Restoring such a tab wedges
-the frame silently, and every later `split-window' on it recurses."
-  ;; `tab-bar-select-tab' takes a tab number, never a frame -- ambient-reads: ok
-  (edmacs-windows-repair-frame (selected-frame)))
-
+            #'edmacs-windows--ensure-main-around-tab-select)
 (advice-add 'tab-bar-select-tab :after
-            #'edmacs-windows--repair-after-tab-select)
+            #'edmacs-windows--ensure-main-around-tab-select)
 
 (defun edmacs-windows--display-buffer-in-recovered-main (buffer alist)
   "Display BUFFER in a main window recovered from a wedged frame.
