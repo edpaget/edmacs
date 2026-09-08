@@ -1816,8 +1816,11 @@ firing and the timer executing."
 ;; Hide the tab-bar strip; the sidebar is the model's only visible list
 ;; ============================================================================
 ;; Hides the strip without disabling `tab-bar-mode' -- `SPC T' stays intact.
+;; Must go through the setter: it is what pushes `tab-bar-lines' to 0 on frames
+;; that already exist. sessions.el turns `tab-bar-mode' on before this file
+;; loads, so a bare `setq' leaves those frames showing the strip.
 
-(setq tab-bar-show nil)
+(customize-set-variable 'tab-bar-show nil)
 
 ;; ============================================================================
 ;; window-sides-slots: claim LEFT, cap 1

@@ -1038,6 +1038,39 @@ worktree in a real Emacs session) to enable this test"))
       (should (null tab-bar-show))
       (should (fboundp 'tab-bar-switch-to-tab)))
 
+    ;; The variable reading nil is not the same as the strip being gone: only
+    ;; `tab-bar-show''s setter pushes `tab-bar-lines' to 0 on existing frames.
+    (ert-deftest edmacs-sidebar-test-tab-bar-show-clears-existing-frame-lines ()
+      (let* ((frame (selected-frame))
+             (orig-lines (frame-parameter frame 'tab-bar-lines))
+             (orig-show tab-bar-show))
+        (unwind-protect
+            (progn
+              ;; init.el loads sessions.el -- which enables `tab-bar-mode' --
+              ;; before sidebar.el, so the strip is already up on every live
+              ;; frame by the time sidebar.el goes to hide it.
+              (set-frame-parameter frame 'tab-bar-lines 1)
+              ;; A bare `setq' is inert here -- this is the regression.
+              (setq tab-bar-show nil)
+              (should (equal 1 (frame-parameter frame 'tab-bar-lines)))
+              ;; The setter's nil branch calls `tab-bar--update-tab-bar-lines'
+              ;; with FORCE, which is what actually drops the strip.
+              (customize-set-variable 'tab-bar-show nil)
+              (should (equal 0 (frame-parameter frame 'tab-bar-lines))))
+          (customize-set-variable 'tab-bar-show orig-show)
+          (set-frame-parameter frame 'tab-bar-lines orig-lines))))
+
+    ;; ... and sidebar.el must be the caller that goes through the setter.
+    (ert-deftest edmacs-sidebar-test-tab-bar-show-hidden-via-setter ()
+      (with-temp-buffer
+        (insert-file-contents
+         (expand-file-name "modules/sidebar.el" default-directory))
+        (goto-char (point-min))
+        (should-not (re-search-forward "^(setq tab-bar-show" nil t))
+        (goto-char (point-min))
+        (should (re-search-forward "^(customize-set-variable 'tab-bar-show nil)"
+                                   nil t))))
+
     (ert-deftest edmacs-sidebar-test-switch-to-tab-still-works ()
       (edmacs-sidebar-test--with-extra-tab
         (unwind-protect
