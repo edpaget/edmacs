@@ -148,10 +148,11 @@
 ;; window, not the current buffer. Undo the layout afterwards from a
 ;; configuration captured for the TARGET window's frame:
 ;; `save-window-excursion' only ever covers the selected frame, and this
-;; config is multi-frame by design. (This is phase 6's territory; until
-;; its reusable input-feeding helpers land, drive these raw primitives
-;; directly rather than inventing a helper symbol that does not exist
-;; yet.)
+;; config is multi-frame by design. `claude-lib-drive' and
+;; `claude-lib-drive-command' (`modules/claude-lib-drive.el') own that
+;; whole sequence -- and additionally cannot block the daemon, which
+;; driving the raw primitives by hand can -- so call one of them rather
+;; than reassembling the pin and the feed at each call site.
 ;;
 ;; `claude-lib-relevant-functions' is a per-project override, set via
 ;; `.dir-locals.el', naming which `claude-lib-' symbols matter most for

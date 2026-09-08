@@ -87,6 +87,15 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
   trip: a synthetic two-test suite run for real through
   `scripts/run-ert-suite.sh`, asserted against the returned plist and a
   real rasterised file
+- `modules/claude-lib-drive-test.el` -- the interaction driver's window
+  pin, frame-correct restore, `:choice` stub, output capture, timeout
+  backstop, reload report and the `-Q` gate
+- `modules/claude-lib-drive-live-test.el` -- the tier batch cannot reach:
+  the daemon-wide wedge reproduced as a negative control, the pre-fed
+  real `completing-read` and the unanswerable-prompt abort against real
+  throwaway daemons, and `scripts/claude-scratch.sh`'s guards and
+  lifecycle. Kills its daemons by signal, never through `emacsclient` --
+  a wedged daemon does not answer `(kill-emacs)` either
 - `modules/windows-test.el` -- master-and-stack layout, popup routing, the
   `SPC w` command set, tab/desktop persistence, the `display-buffer` catch-all
 - `modules/ui-test.el`, `modules/sidebar-test.el` -- ui.el and sidebar.el
@@ -455,6 +464,44 @@ STARTUP_CHECK_EVAL='(princ (format "assert: %S\n" window-sides-slots))' \
   scripts/startup-check.sh
 ```
 
+### Scratch daemon
+
+A form that reads the minibuffer does not merely hang its own `emacsclient`
+request -- it wedges the daemon for **every** later client, and recovery is
+not available through the eval channel (even `(kill-emacs)` never returns;
+the process needs a real kill). Interactive surfaces are the ordinary shape
+of an Emacs package, so prototyping them against the operator's live daemon
+is how that daemon dies.
+
+So: never the server name `server`, and never a bare interactive form.
+Drive commands through `claude-lib-drive` / `claude-lib-drive-command`
+(`modules/claude-lib-drive.el`, which cannot block), and drive them in a
+throwaway daemon:
+
+```bash
+scripts/claude-scratch.sh start          # per-checkout, name from the basename
+scripts/claude-scratch.sh eval '<FORM>'
+scripts/claude-scratch.sh restart
+scripts/claude-scratch.sh stop
+```
+
+It refuses `server` outright on every subcommand, runs `emacs -Q` and never
+`--init-directory` (see Worktrees below), takes module sources from the
+calling checkout and packages from the main one, and refuses to start rather
+than bootstrap when that package tree is missing.
+`EDMACS_SCRATCH_PACKAGES=none` gives a pure `-Q` daemon, which is the honest
+environment for reproducing a soft-dependency failure by hand.
+
+`claude-lib-reload` re-evaluates `defun`s but does **not** reset
+`defvar`/`defcustom`/`defface`, double-adds hooks, and stacks advice; it
+reports what it could not undo. The remedy is `restart`, which is cheap
+because the daemon is throwaway. Do not build a teardown framework.
+
+Before calling a prototype done, run `claude-lib-check-q` on it. The daemon
+has evil, consult, embark, magit and transient loaded, so a hard `require`
+in code whose dependency posture is *soft* is invisible there and only fails
+later, in the consumer repo's own `emacs -Q --batch` harness.
+
 ## Worktrees
 
 rdm roadmaps and tasks get their own git worktree under
@@ -542,6 +589,7 @@ edmacs/
 │   ├── programming.el     # LSP, Flycheck, Apheleia
 │   ├── ai.el              # Markdown editor polish
 │   ├── claude-lib.el      # Bash-driven eval channel + Claude's promoted-code library
+│   ├── claude-lib-drive.el # Drive interactive code with simulated input, unblockably
 │   ├── claude-term.el     # Claude CLI hosted in a ghostel terminal
 │   ├── claude-term-registry.el # Session registry + SPC a keymap
 │   ├── git-common-dir.el  # Worktree-aware git dir resolution

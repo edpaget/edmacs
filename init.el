@@ -113,6 +113,10 @@ LANGUAGE should be the name without the .el extension."
 (load-module "claude-lib-view")
 ;; One consumer on that substrate: ERT per-test wall-clock durations.
 (load-module "claude-lib-ert")
+;; The interaction half: drive a command with simulated input without
+;; blocking the eval channel. Outside the wrapper above for the same
+;; reason as the two loads before it.
+(load-module "claude-lib-drive")
 (load-module "claude-term")
 (load-module "claude-term-registry")
 ;; (load-module "org-config")
