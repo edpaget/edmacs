@@ -1320,6 +1320,44 @@ phase's own Context on the two hooks coordinating, not colliding."
         (while (> (length (tab-bar-tabs)) tabs-before)
           (tab-bar-close-tab))))))
 
+(ert-deftest edmacs-windows-test-restoring-an-all-side-layout-wedges-the-frame ()
+  "A tab saved holding only the sidebar restores the frame into the wedged
+shape, silently. `window-state-put' accepts such a state, returns normally,
+and leaves the frame with no main window -- from which every later
+`split-window' recurses (see the sibling test). That shape is reachable
+because `tab-bar-new-tab-to' deletes other windows with
+`ignore-window-parameters' bound, so a tab created while the sidebar held
+point keeps the sidebar as its only window.
+
+This is the precondition the `tab-bar-select-tab' advice repairs."
+  (save-window-excursion
+    (let ((buf (generate-new-buffer "ewt-allside-ws")))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (let ((side (display-buffer-in-side-window
+                         buf '((side . left) (slot . 0)))))
+              (set-window-dedicated-p side t)
+              (select-window side)
+              (let ((ignore-window-parameters t)) (delete-other-windows)))
+            (should (edmacs-windows-frame-wedged-p (selected-frame)))
+            (let ((state (window-state-get (frame-root-window) t)))
+              ;; Back to an ordinary frame before restoring.
+              (set-window-dedicated-p (selected-window) nil)
+              (set-window-parameter (selected-window) 'window-side nil)
+              (set-window-parameter (selected-window) 'window-slot nil)
+              (switch-to-buffer "*scratch*")
+              (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+              ;; Restoring the saved all-side layout succeeds and wedges it.
+              (window-state-put state (frame-root-window) 'safe)
+              (should (edmacs-windows-frame-wedged-p (selected-frame)))
+              ;; Which is exactly what the repair undoes.
+              (edmacs-windows-repair-frame (selected-frame))
+              (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+              (should-not (window-parameter (edmacs-main-window) 'window-side))))
+        (delete-other-windows)
+        (kill-buffer buf)))))
+
 (ert-deftest edmacs-windows-test-repair-clears-the-split-window-self-delegation ()
   "A frame whose only window is a side window makes `split-window' recurse.
 Core delegates a root-window split to `window-main-window' whenever the

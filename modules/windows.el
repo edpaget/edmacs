@@ -1100,6 +1100,20 @@ FRAME is always the selected frame."
 (advice-add 'tab-bar-select-tab :before
             #'edmacs-windows--repair-before-tab-select)
 
+(defun edmacs-windows--repair-after-tab-select (&rest _)
+  "Repair a frame that a restored tab layout left with no main window.
+`window-state-put' accepts a saved state of only side windows without
+complaint -- it returns normally and leaves the frame wedged. A tab can be
+saved in exactly that shape: `tab-bar-new-tab-to' deletes other windows with
+`ignore-window-parameters' bound, so a tab created while the sidebar was
+selected keeps the sidebar as its only window. Restoring such a tab wedges
+the frame silently, and every later `split-window' on it recurses."
+  ;; `tab-bar-select-tab' takes a tab number, never a frame -- ambient-reads: ok
+  (edmacs-windows-repair-frame (selected-frame)))
+
+(advice-add 'tab-bar-select-tab :after
+            #'edmacs-windows--repair-after-tab-select)
+
 (defun edmacs-windows--display-buffer-in-recovered-main (buffer alist)
   "Display BUFFER in a main window recovered from a wedged frame.
 Returns nil on any frame that still has a non-side window, which is what
