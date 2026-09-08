@@ -2621,8 +2621,8 @@ collapsed onto the macro."
                   #'edmacs--rotate-preserve-window-parameters)))
     (should (= 1 (edmacs-windows-test--advice-count
                   'quit-restore-window #'edmacs-stack--quit-restore-window)))
-    ;; `tab-bar-select-tab' carries no advice at all now: the side-only tree
-    ;; is prevented at the producer instead.
+    ;; `tab-bar-select-tab' carries no advice at all now: a side-only tree
+    ;; is sanitized on migration and normalized at redisplay instead.
     (should (= 0 (edmacs-windows-test--advice-count
                   'tab-bar-select-tab #'edmacs-windows--select-main-before-new-tab)))
     (should (= 1 (edmacs-windows-test--advice-count
@@ -2794,36 +2794,42 @@ retired in favour of this registration."
   (should-not (memq #'edmacs-windows-dedupe-frame window-buffer-change-functions)))
 
 ;; ---------------------------------------------------------------------------
-;; The producer: a side-only tree is never saved in the first place
+;; New tab from the sidebar: the new tab opens on main's buffer
 ;; ---------------------------------------------------------------------------
 
-(ert-deftest edmacs-windows-test-new-tab-from-the-sidebar-saves-a-main-bearing-layout ()
-  "`tab-bar-new-tab-to' snapshots the outgoing tab with `window-state-get'
-and then deletes other windows with `ignore-window-parameters' bound, so
-whatever holds point becomes the new tab's sole window. With point in the
-sidebar that snapshot was a side-only tree; the `:before' advice moves
-point to main first, so it cannot be."
+(ert-deftest edmacs-windows-test-new-tab-from-the-sidebar-opens-on-main ()
+  "`tab-bar-new-tab-to' keeps whichever window holds point as the new tab's
+sole window. Without the `:before' advice, point in the sidebar makes the
+new tab open on the sidebar's buffer, and the tab's root then derives
+from that buffer's directory; with it the new tab opens on main's buffer.
+The outgoing tab's saved `ws' is the whole frame tree either way -- the
+advice does not change what is saved, only what the new tab shows."
   (edmacs-windows-test--with-clean-layout
-    (let ((buf (generate-new-buffer "ewt-newtab-sidebar")))
+    (let ((main-buf (generate-new-buffer "ewt-newtab-main"))
+          (side-buf (generate-new-buffer "ewt-newtab-sidebar")))
       (unwind-protect
           (edmacs-test-support-with-tabs-restored
             (delete-other-windows)
+            (set-window-buffer (selected-window) main-buf)
             (edmacs-window-set-main (selected-window))
             (let ((side (display-buffer-in-side-window
-                         buf '((side . left) (slot . 0)
-                               (window-parameters
-                                . ((no-delete-other-windows . t)))))))
+                         side-buf '((side . left) (slot . 0)
+                                    (window-parameters
+                                     . ((no-delete-other-windows . t)))))))
               (set-window-dedicated-p side t)
               (select-window side)
               ;; The precondition, asserted rather than assumed.
               (should (window-parameter (selected-window) 'window-side))
               (tab-bar-new-tab)
-              ;; No saved tab may carry a side-only layout.
-              (dolist (tab (tab-bar-tabs))
-                (let ((ws (alist-get 'ws (cdr tab))))
-                  (when ws (should-not (edmacs-windows-ws-side-only-p ws)))))
+              ;; The new tab opens on main's buffer, not the side window's
+              ;; -- the assertion the advice's absence fails. (A real
+              ;; sidebar may join it here via the post-open seam.)
+              (should (eq (window-buffer (selected-window)) main-buf))
+              (should-not (window-parameter (selected-window) 'window-side))
+              (should-not (get-buffer-window side-buf))
               (should-not (edmacs-windows-frame-wedged-p (selected-frame)))))
-        (kill-buffer buf)))))
+        (kill-buffer main-buf)
+        (kill-buffer side-buf)))))
 
 (ert-deftest edmacs-windows-test-ws-side-only-p-reads-the-state-tree ()
   "`window-state-get' returns (CONSTRAINTS-ALIST . STATE-TREE); walking

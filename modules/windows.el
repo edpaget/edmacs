@@ -48,10 +48,12 @@
 ;; reads a frame whose every window is a side window as a VALID side
 ;; configuration.  Normalize goes past core's remedy -- it clears every
 ;; window parameter, collapses onto one survivor and re-designates main --
-;; and is driven from one `window-state-change-functions' member.  The two
-;; producers that could save such a layout are fixed at source instead:
-;; `tab-bar-new-tab-to' snapshots the layout with point in main, and
-;; `edmacs-windows-ws-ensure-main' sanitizes an already-saved one.
+;; and is driven from one `window-state-change-functions' member.  A
+;; side-only layout that reaches a saved frameset is sanitized by
+;; `edmacs-windows-ws-ensure-main' when the desktop is migrated on boot.
+;; `tab-bar-new-tab-to' is advised to select main first, but that does not
+;; stop the save: it snapshots the whole frame tree regardless of point,
+;; and the selection only decides which buffer the new tab opens on.
 ;;
 ;; Run the ERT suite with:
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
@@ -1253,14 +1255,16 @@ Interactively, FRAME is always the selected frame."
     main))
 
 (defun edmacs-windows--select-main-before-new-tab (&rest _)
-  "Select the frame's main window before a new tab snapshots its layout.
-`tab-bar-new-tab-to' saves the current tab with `window-state-get' and
-then runs `delete-other-windows' with `ignore-window-parameters' bound,
-so whatever window holds point becomes the new tab's sole window. With
-point in the dedicated `*sidebar*' side window that snapshot is a
-side-only tree -- the shape `window-state-put' restores into a frame with
-no main window, from which every later `split-window' delegates through
-`window-main-window' back into itself.
+  "Select the frame's main window before a new tab is created.
+`tab-bar-new-tab-to' snapshots the outgoing tab with `window-state-get'
+on the frame's root window, so the selection does NOT change what is
+saved: a side-only tree is saved side-only either way, and
+`edmacs-windows-ws-ensure-main' sanitizes it at restore. What the
+selection decides is which window survives `delete-other-windows' for
+the NEW tab, and so which buffer it opens on. With point in the dedicated
+`*sidebar*' side window the new tab would open on `*sidebar*' and
+`edmacs-workspaces--derive-root' would read its directory; with point in
+main it opens on main's buffer and inherits main's worktree.
 
 Advises `tab-bar-new-tab-to' rather than `tab-bar-new-tab': it is the
 single funnel every creator reaches -- `tab-bar-new-tab', `SPC T n',
