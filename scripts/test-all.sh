@@ -116,7 +116,7 @@ parse_wall_seconds() {
 }
 
 record_row() {
-  local name="$1" tier="$2" tests="$3" unexpected="$4" skipped="$5" wall="$6" skip_ok="$7"
+  local name="$1" tier="$2" tests="$3" unexpected="$4" skipped="$5" wall="$6" expected_skips="$7"
   RESULT_LINES+=("$(printf '%-42s [%-5s] tests=%-4s unexpected=%-3s skipped=%-3s wall=%ss' \
     "$name" "$tier" "$tests" "$unexpected" "$skipped" "$wall")")
   local numeric_tests="$tests" numeric_skipped="$skipped"
@@ -125,6 +125,8 @@ record_row() {
   TOTAL_TESTS=$((TOTAL_TESTS + numeric_tests))
   TOTAL_UNEXPECTED=$((TOTAL_UNEXPECTED + unexpected))
   TOTAL_SKIPPED=$((TOTAL_SKIPPED + numeric_skipped))
+  local skip_ok=1
+  [ "$numeric_skipped" -gt "$expected_skips" ] && skip_ok=0
   if [ "$unexpected" -gt 0 ]; then
     OVERALL_EXIT=1
   elif [ "$MAIN_CHECKOUT" -eq 1 ] && [ "$skip_ok" -eq 0 ]; then
@@ -168,7 +170,7 @@ run_batch_or_pty_row() {
   if ! parse_ert_summary "$output"; then
     echo "----- $name [$tier]: could not parse ERT summary from output -----" >&2
     printf '%s\n' "$output" | tail -20 >&2
-    record_row "$name" "$tier" "?" "1" "?" "$wall" 0
+    record_row "$name" "$tier" "?" "1" "?" "$wall" "$expected_skips"
     return
   fi
 
@@ -181,11 +183,7 @@ run_batch_or_pty_row() {
     printf '%s\n' "$output" | tail -10 >&2
   fi
 
-  local skip_ok=1
-  if [ "$skipped" -gt "$expected_skips" ]; then
-    skip_ok=0
-  fi
-  record_row "$name" "$tier" "$tests" "$unexpected" "$skipped" "$wall" "$skip_ok"
+  record_row "$name" "$tier" "$tests" "$unexpected" "$skipped" "$wall" "$expected_skips"
 }
 
 run_gui_row() {
@@ -217,7 +215,7 @@ run_gui_row() {
   if [ -z "$line" ]; then
     echo "----- $name [gui]: could not parse gui-ert.sh summary -----" >&2
     printf '%s\n' "$output" | tail -20 >&2
-    record_row "$name" "gui" "?" "1" "?" "$wall" 0
+    record_row "$name" "gui" "?" "1" "?" "$wall" "$expected_skips"
     return
   fi
 
@@ -232,11 +230,7 @@ run_gui_row() {
     printf '%s\n' "$output" | tail -10 >&2
   fi
 
-  local skip_ok=1
-  if [ "$skipped" -gt "$expected_skips" ]; then
-    skip_ok=0
-  fi
-  record_row "$name" "gui" "$tests" "$failed" "$skipped" "$wall" "$skip_ok"
+  record_row "$name" "gui" "$tests" "$failed" "$skipped" "$wall" "$expected_skips"
 }
 
 for row in "${MANIFEST[@]}"; do

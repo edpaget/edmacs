@@ -269,12 +269,37 @@ leaf key, so reading a serialized layout for it is the same question
                        (vc (leaf (parameters (edmacs-main . t))
                                  (prev-buffers ("z.el" 1 1))))))
                  '(t ("z.el" 1 1))))
+  ;; A marked leaf followed by an unmarked multi-leaf subtree -- the shape
+  ;; this project's own master-and-stack layout serializes to whenever a
+  ;; background tab has more than one stack pane. The stack subtree's own
+  ;; first-leaf fallback must not be mistaken for a mark and overwrite the
+  ;; real main leaf.
+  (should (equal (edmacs-windows-ws-main-leaf
+                  '(vc (leaf (parameters (edmacs-main . t))
+                             (prev-buffers ("real.el" 1 1)))
+                       (hc (leaf (prev-buffers ("a.el" 1 1)))
+                           (leaf (prev-buffers ("b.el" 1 1))))))
+                 '(t ("real.el" 1 1))))
+  ;; The same, one level deeper on both sides.
+  (should (equal (edmacs-windows-ws-main-leaf
+                  '(hc (vc (leaf (parameters (edmacs-main . t))
+                                 (prev-buffers ("real.el" 1 1))))
+                       (vc (leaf (prev-buffers ("a.el" 1 1)))
+                           (leaf (prev-buffers ("b.el" 1 1))))))
+                 '(t ("real.el" 1 1))))
   ;; Nothing marked: the first leaf is the fallback, for a tab saved before
-  ;; the convention existed.
+  ;; the convention existed -- and MARKED comes back nil, because nothing
+  ;; was actually marked.
   (should (equal (edmacs-windows-ws-main-leaf
                   '(vc (leaf (prev-buffers ("first.el" 1 1)))
                        (leaf (prev-buffers ("second.el" 1 1)))))
-                 '(t ("first.el" 1 1))))
+                 '(nil ("first.el" 1 1))))
+  ;; The fallback still reaches into a nested combination for its first leaf.
+  (should (equal (edmacs-windows-ws-main-leaf
+                  '(vc (hc (leaf (prev-buffers ("first.el" 1 1)))
+                           (leaf (prev-buffers ("second.el" 1 1))))
+                       (leaf (prev-buffers ("third.el" 1 1)))))
+                 '(nil ("first.el" 1 1))))
   ;; A leaf whose `parameters' is not an alist must not signal.
   (should (equal (edmacs-windows-ws-main-leaf '(leaf (parameters . nil))) '(nil)))
   (should (equal (edmacs-windows-ws-main-leaf nil) '(nil))))

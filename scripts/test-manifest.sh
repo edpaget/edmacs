@@ -51,7 +51,7 @@ MANIFEST=(
   "claude-term-test|batch|15|0|modules/claude-term.el,modules/claude-term-test.el|ert-run-tests-batch-and-exit"
   "claude-usage-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/claude-usage-test.el|ert-run-tests-batch-and-exit"
   "core-live-test|batch|15|0|modules/test-support.el,modules/core-live-test.el|ert-run-tests-batch-and-exit"
-  "git-common-dir-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/git-common-dir-test.el|ert-run-tests-batch-and-exit"
+  "git-common-dir-test|batch|15|0|modules/git-common-dir.el,modules/git-common-dir-test.el|ert-run-tests-batch-and-exit"
   "keybindings-test|batch|15|0|modules/test-support.el,modules/keybindings-test.el|ert-run-tests-batch-and-exit"
   "sessions-live-test|batch|15|2|modules/test-support.el,modules/git-common-dir.el,modules/sessions-live-test.el|ert-run-tests-batch-and-exit"
   "sessions-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/workspaces.el,modules/sessions-test.el|ert-run-tests-batch-and-exit"

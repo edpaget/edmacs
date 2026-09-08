@@ -175,9 +175,10 @@ out of the call site."
   "Return (MARKED . PREV-BUFFERS) for the leaf in WS marked `edmacs-main'.
 WS is the STATE TREE half of a tab's serialized `ws' field -- the `cdr'
 of `window-state-get's raw (CONSTRAINTS-ALIST . STATE-TREE) return.
-Recurses through `vc'/`hc' combination nodes, falling back to the first
-leaf found when nothing is marked `edmacs-main' (a tab created before
-this convention existed, or one with no main window for any other
+Recurses through `vc'/`hc' combination nodes. MARKED is non-nil only when
+a leaf genuinely carried the parameter; when nothing in the whole tree
+does, the first leaf's buffers come back with MARKED nil (a tab created
+before this convention existed, or one with no main window for any other
 reason). PREV-BUFFERS is a list of (NAME START POINT), the writable form
 `window-state-get's WRITABLE argument produces.
 
@@ -190,13 +191,17 @@ question `edmacs-main-window' answers for a live one."
             (marked (and (consp leaf-params) (alist-get 'edmacs-main leaf-params))))
        (cons (and marked t) (alist-get 'prev-buffers params))))
     (`(,(or 'vc 'hc) . ,rest)
+     ;; FOUND and FIRST must stay distinct all the way up: a subtree's
+     ;; first-leaf fallback is recorded with a nil MARKED flag, so an
+     ;; ancestor can never mistake it for a genuine mark and let an
+     ;; unmarked stack subtree overwrite the real main leaf.
      (let (found first)
        (dolist (child rest)
          (when (and (consp child) (memq (car child) '(leaf vc hc)))
            (let* ((result (edmacs-windows-ws-main-leaf child))
                   (marked (car result)) (pbs (cdr result)))
-             (unless first (setq first (cons t pbs)))
-             (when marked (setq found (cons t pbs))))))
+             (unless first (setq first (cons nil pbs)))
+             (when (and marked (not found)) (setq found (cons t pbs))))))
        (or found first (cons nil nil))))
     (_ (cons nil nil))))
 
