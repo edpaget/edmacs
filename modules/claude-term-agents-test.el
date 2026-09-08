@@ -17,7 +17,8 @@
 ;; neither is populated.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el \
 ;;         -l modules/claude-term.el \
 ;;         -l modules/claude-term-registry.el \
 ;;         -l modules/agents.el \
@@ -30,6 +31,12 @@
 (require 'ert)
 (require 'subr-x)
 (require 'cl-lib)
+
+;; See CLAUDE.md's Testing section: `cl-letf' on a C subr forces a
+;; synchronous native-comp trampoline build (~28s) the first time it is
+;; hit. Defensive here even where no target below is a subr.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
 
 ;; `(defvar ghostel-progress-function)' in claude-term-agents.el only
 ;; proclaims the symbol special for THAT file's remaining lexical
@@ -46,31 +53,12 @@
 ;; convention)
 ;; ============================================================================
 
-(defun claude-term-agents-test--locate-straight-build-root ()
-  "Return this checkout's `straight/build' directory, or nil.
-Tries this checkout's own `straight/build' first, then falls back to the
-sibling main `edmacs' checkout's `straight/build' -- see
-`edmacs-sidebar-test--locate-straight-build-root' for the identical
-worktree-vs-sibling-main-checkout rationale."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
 (defun claude-term-agents-test--ensure-nano-modeline ()
   "Load the real `nano-modeline', skipping the calling test if unavailable.
 nano-modeline needs only `cl-lib' beyond Emacs core, so a single
 `load-path' entry under the straight build root is enough."
   (unless (featurep 'nano-modeline)
-    (let* ((root (claude-term-agents-test--locate-straight-build-root))
+    (let* ((root (edmacs-test-support-straight-build-root))
            (dir (and root (expand-file-name "nano-modeline" root))))
       (unless (and dir (file-directory-p dir))
         (ert-skip (format "nano-modeline's straight build was not found at \
@@ -91,14 +79,6 @@ which needs a live term buffer."
     (or (claude-term-agents-test--construct-has-segment-p (car form))
         (claude-term-agents-test--construct-has-segment-p (cdr form))))
    (t nil)))
-
-(defmacro claude-term-agents-test--with-clean-state (&rest body)
-  "Run BODY with a fresh agent table and changed hook, isolated from any
-other suite's or this machine's real state."
-  (declare (indent 0))
-  `(let ((edmacs-agents--table (make-hash-table :test #'equal))
-         (edmacs-agents-changed-hook nil))
-     ,@body))
 
 (cl-defun claude-term-agents-test--seed-foreign-row
     (&key (root "/repo/wt/") (instance "%9") (status 'working))
@@ -122,7 +102,7 @@ ROOT/INSTANCE, and return it."
   "The create-functions handler adds a `claude-term'-sourced, `idle' row
 keyed exactly like `edmacs-agents--key' would build it, with LOCATOR set
 to the spawning buffer."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root (make-temp-file "claude-term-agents-test-root-" t))
            (buf (generate-new-buffer "claude-term-agents-test-buf")))
       (unwind-protect
@@ -148,7 +128,7 @@ is documented to be) still produces a row whose ROOT field, and whose
 table key, are truename'd -- matching `edmacs-agents--key's own
 normalization, so `edmacs-agents-set-status' lookups against the
 truename'd form still find it."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((real-dir (directory-file-name
                        (make-temp-file "claude-term-agents-test-real-" t)))
            (link-path (concat real-dir "-link"))
@@ -170,7 +150,7 @@ truename'd form still find it."
 (ert-deftest claude-term-agents-test-on-create-refresh-is-idempotent-upsert ()
   "A second create call for the same ROOT/INSTANCE (a restart's re-exec)
 overwrites the same key rather than adding a second row."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf1 (generate-new-buffer "claude-term-agents-test-buf1"))
            (buf2 (generate-new-buffer "claude-term-agents-test-buf2")))
@@ -188,7 +168,7 @@ overwrites the same key rather than adding a second row."
 (ert-deftest claude-term-agents-test-on-remove-deletes-only-that-row ()
   "The remove-functions handler deletes exactly the targeted row and
 leaves a stubbed foreign-sourced row under the same root untouched."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf")))
       (unwind-protect
@@ -205,7 +185,7 @@ leaves a stubbed foreign-sourced row under the same root untouched."
   "Removing with a nil INSTANCE (the default session ending) must find
 the row `claude-term-agents--on-create' stored under the normalized
 key, not under a literal nil the row was never keyed by."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf")))
       (unwind-protect
@@ -218,7 +198,7 @@ key, not under a literal nil the row was never keyed by."
 (ert-deftest claude-term-agents-test-on-remove-unknown-key-is-a-no-op ()
   "Removing a ROOT/INSTANCE with no matching row does not error -- a
 session killed while a status update against the same row races."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (should-not (claude-term-agents--on-remove "/no/such/root/" "ghost"))
     ;; Doubled: idempotent even when called twice in a row.
     (should-not (claude-term-agents--on-remove "/no/such/root/" "ghost"))))
@@ -232,7 +212,7 @@ session killed while a status update against the same row races."
   "The rename-functions handler moves the row from the old key to the new
 one, preserving its STATUS/UNREAD rather than resetting to `idle' -- a
 rename mid-`working' must not silently discard that state."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf")))
       (unwind-protect
@@ -257,14 +237,14 @@ rename mid-`working' must not silently discard that state."
   "Renaming a ROOT/OLD-INSTANCE with no matching row does not error and
 does not fabricate a new row -- e.g. a rename racing ahead of this
 file's own create listener."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (should-not (claude-term-agents--on-rename "/no/such/root/" "old" "new"))
     (should (zerop (hash-table-count edmacs-agents--table)))))
 
 (ert-deftest claude-term-agents-test-on-rename-leaves-other-rows-untouched ()
   "Renaming one claude-term row does not disturb a stubbed foreign-sourced row
 under the same root."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf"))
            (foreign-row (claude-term-agents-test--seed-foreign-row :root root)))
@@ -282,7 +262,7 @@ itself, through the real `claude-term-registry-rename-functions' hook
 this file's `add-hook' registers at load time, moves the mirrored row --
 closing the gap where the registry's rename entry point bypassed both
 of the other two hooks by direct `remhash'/`puthash'."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let ((claude-term-registry--table (make-hash-table :test #'equal))
           (root (make-temp-file "claude-term-agents-test-rename-root-" t))
           (buf (generate-new-buffer "claude-term-agents-test-rename-buf")))
@@ -308,7 +288,7 @@ of the other two hooks by direct `remhash'/`puthash'."
 (ert-deftest claude-term-agents-test-set-status-flips-only-the-claude-term-row ()
   "`edmacs-agents-set-status' with an explicit INSTANCE flips only that
 row; a foreign-sourced row under the same root is byte-identical afterward."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf"))
            (foreign-row (claude-term-agents-test--seed-foreign-row :root root)))
@@ -333,7 +313,7 @@ The row `claude-term-agents--on-create' stores for a nil INSTANCE must
 therefore already be keyed under that label, so the very first status
 update the hook sends UPDATES this row instead of creating a second,
 `:source' nil phantom one alongside it."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf")))
       (unwind-protect
@@ -361,7 +341,7 @@ the KEY/TITLE -- because `edmacs-sidebar-agents--claude-term-session'
 feeds this field straight into `claude-term-registry-get', whose own
 key (`claude-term-registry--key') is never normalized: a default
 session is registered, and stays registered, under a literal nil."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf")))
       (unwind-protect
@@ -383,7 +363,7 @@ must resolve via that row's own KEY rather than its raw (nil) INSTANCE
 field -- deriving from the field would look up a key this row was
 never stored under and spawn a duplicate, the same class of bug as the
 hook-driven case this phase closes."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf")))
       (unwind-protect
@@ -402,7 +382,7 @@ hook-driven case this phase closes."
   "`edmacs-agents-set-status' with STATUS `remove' deletes exactly the
 resolved row (the fix for the internal enum gap this phase closes) and
 leaves a foreign-sourced row under the same root in the table."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf"))
            (foreign-row (claude-term-agents-test--seed-foreign-row :root root)))
@@ -417,7 +397,7 @@ leaves a foreign-sourced row under the same root in the table."
 (ert-deftest claude-term-agents-test-set-status-remove-unknown-row-is-a-no-op ()
   "STATUS `remove' against a CWD/INSTANCE with no matching row does not
 error and creates nothing."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (edmacs-agents-set-status "/repo/wt/" 'remove "no-such-instance")
     (should (= 0 (hash-table-count edmacs-agents--table)))))
 
@@ -425,7 +405,7 @@ error and creates nothing."
   "Two rows (of any source) under the same root with no INSTANCE given
 still raises the existing ambiguity `user-error' -- no claude-term-only
 source-filtering is added by this phase."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (buf (generate-new-buffer "claude-term-agents-test-buf")))
       (unwind-protect
@@ -467,7 +447,7 @@ let-bound) `edmacs-agents--table'."
          (kill-buffer buf)))))
 
 (ert-deftest claude-term-agents-test-progress-set-while-working-appends-suffix ()
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (claude-term-agents-test--with-fake-session "/repo/wt/" "i1" 'working
       (claude-term-agents--update-progress-title 'set 42)
       (should (equal "i1 42%"
@@ -484,7 +464,7 @@ already have been defaulted away from a bare nil at create time (see
 `claude-term-agents--on-create'), or `string-match' inside
 `claude-term-agents--strip-progress-suffix' signals instead of
 rendering anything at all."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (claude-term-agents-test--with-fake-session "/repo/wt/" nil 'working
       (claude-term-agents--update-progress-title 'set 42)
       (should (equal (format "%s 42%%" claude-term-registry--default-instance-label)
@@ -494,7 +474,7 @@ rendering anything at all."
                                 edmacs-agents--table)))))))
 
 (ert-deftest claude-term-agents-test-progress-repeated-set-replaces-not-accumulates ()
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (claude-term-agents-test--with-fake-session "/repo/wt/" "i1" 'working
       (claude-term-agents--update-progress-title 'set 10)
       (claude-term-agents--update-progress-title 'set 90)
@@ -505,7 +485,7 @@ rendering anything at all."
 (ert-deftest claude-term-agents-test-progress-non-working-row-strips-suffix ()
   "A `set' report against a row that is not `working' (e.g. it finished
 mid-flight) strips any stale suffix instead of rendering a new one."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (claude-term-agents-test--with-fake-session "/repo/wt/" "i1" 'working
       (claude-term-agents--update-progress-title 'set 42)
       (setf (edmacs-agent-status (gethash (edmacs-agents--key "/repo/wt/" "i1")
@@ -517,7 +497,7 @@ mid-flight) strips any stale suffix instead of rendering a new one."
                                                     edmacs-agents--table)))))))
 
 (ert-deftest claude-term-agents-test-progress-remove-state-strips-suffix ()
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (claude-term-agents-test--with-fake-session "/repo/wt/" "i1" 'working
       (claude-term-agents--update-progress-title 'set 42)
       (claude-term-agents--update-progress-title 'remove nil)
@@ -528,7 +508,7 @@ mid-flight) strips any stale suffix instead of rendering a new one."
 (ert-deftest claude-term-agents-test-progress-non-claude-term-buffer-is-a-no-op ()
   "A plain ghostel buffer with no `claude-term--root' set (any other
 ghostel session) is silently ignored -- no error, no table mutation."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (with-temp-buffer
       (should-not (claude-term-agents--update-progress-title 'set 42))
       (should (= 0 (hash-table-count edmacs-agents--table))))))
@@ -536,7 +516,7 @@ ghostel session) is silently ignored -- no error, no table mutation."
 (ert-deftest claude-term-agents-test-progress-no-row-yet-is-a-no-op ()
   "A progress report racing ahead of the registry `put' (row not yet
 created) is silently ignored."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let ((buf (generate-new-buffer "claude-term-agents-test-early-buf")))
       (unwind-protect
           (with-current-buffer buf
@@ -548,7 +528,7 @@ created) is silently ignored."
 (ert-deftest claude-term-agents-test-progress-handler-chains-to-previous ()
   "The installed handler calls the previously-chained function first,
 then still updates the row."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (claude-term-agents-test--with-fake-session "/repo/wt/" "i1" 'working
       (let* ((calls nil)
              (claude-term-agents--chained-progress-function
@@ -562,7 +542,7 @@ then still updates the row."
 (ert-deftest claude-term-agents-test-progress-handler-chained-error-does-not-block-update ()
   "An error in the previously-chained handler is swallowed, not
 propagated -- the row update still happens."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (claude-term-agents-test--with-fake-session "/repo/wt/" "i1" 'working
       (let ((claude-term-agents--chained-progress-function (lambda (&rest _) (error "boom"))))
         (claude-term-agents--progress-handler 'set 42)
@@ -574,7 +554,7 @@ propagated -- the row update still happens."
   "A nil `claude-term-agents--chained-progress-function' (no prior
 handler was installed, or `ghostel-progress-function' was nil) is a
 no-op for the chained half, not an error."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (claude-term-agents-test--with-fake-session "/repo/wt/" "i1" 'working
       (let ((claude-term-agents--chained-progress-function nil))
         (claude-term-agents--progress-handler 'set 42)
@@ -622,7 +602,7 @@ session -- the row is keyed under the NORMALIZED label, not under a
 literal nil, so the lookup must normalize too or the segment silently
 renders blank forever. This is the exact hazard the phase body calls
 out by name."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (create-buf (generate-new-buffer "claude-term-agents-test-mlr-create"))
            (buf (generate-new-buffer "claude-term-agents-test-mlr-buf")))
@@ -646,7 +626,7 @@ out by name."
 first buffer's default-instance lookup returns -- no cross-instance
 bleed -- and a buffer with no `claude-term--root' at all (a plain,
 non-claude-term buffer) returns nil rather than erroring."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root "/repo/wt/")
            (default-buf (generate-new-buffer "claude-term-agents-test-mlr-default"))
            (named-buf (generate-new-buffer "claude-term-agents-test-mlr-named"))
@@ -677,7 +657,7 @@ non-claude-term buffer) returns nil rather than erroring."
 (ert-deftest claude-term-agents-test-mode-line-segment-glyphs ()
   "The segment renders the right glyph (or \"\") for every status/unread
 combination, plus the no-row and no-root cases."
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let ((buf (generate-new-buffer "claude-term-agents-test-glyphs-buf")))
       (unwind-protect
           (with-current-buffer buf
@@ -737,7 +717,7 @@ or term-mode buffer's does not -- the inversion of what the removed
 `edmacs-agents-test-mode-line-in-ghostel-and-term-lines' asserted for
 the old global splice."
   (claude-term-agents-test--ensure-nano-modeline)
-  (claude-term-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let ((nano-modeline-position #'nano-modeline-footer))
       (claude-term-agents-test--with-mode-line-state
         (claude-term-agents--install-mode-line-advice)
@@ -760,7 +740,7 @@ the old global splice."
 (ert-deftest claude-term-agents-test-mode-line-refresh-hooked ()
   "`claude-term-agents--refresh-mode-line' is installed on the real,
 top-level `edmacs-agents-changed-hook' -- read via `default-value' since
-`claude-term-agents-test--with-clean-state' `let'-shadows the hook to
+`edmacs-test-support-with-clean-agent-state' `let'-shadows the hook to
 nil for other tests and would otherwise hide the real top-level
 `add-hook'."
   (should (memq #'claude-term-agents--refresh-mode-line

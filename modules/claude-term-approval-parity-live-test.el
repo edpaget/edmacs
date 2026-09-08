@@ -100,6 +100,12 @@
 (require 'ert)
 (require 'cl-lib)
 
+;; See CLAUDE.md's Testing section: `cl-letf' on a C subr forces a
+;; synchronous native-comp trampoline build (~28s) the first time it is
+;; hit. Defensive here even where no target below is a subr.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
+
 ;; The real `inheritenv' package is not bootstrapped under `-Q --batch'
 ;; (straight.el is absent), but `claude-term--exec' unconditionally wraps
 ;; its `ghostel-exec' call in `(inheritenv ...)' -- same shim, and same

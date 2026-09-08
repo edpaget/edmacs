@@ -5,7 +5,8 @@
 ;; motion-state support (sidebar and other motion-state buffers).
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/keybindings-test.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/keybindings-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 
 ;;; Code:
@@ -14,27 +15,14 @@
 (require 'subr-x)
 (require 'seq)
 
-(defun edmacs-keybindings-test--locate-straight-repos-root ()
-  "Return this checkout's `straight/repos' directory, or nil.
-Tries this checkout's own `straight/repos' first, then falls back to the
-sibling main `edmacs' checkout's -- a roadmap worktree lives under
-`<parent>/edmacs__worktrees/<name>', sibling to the main
-`<parent>/edmacs' checkout."
-  (or
-   (let ((here (expand-file-name "straight/repos" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-repos (expand-file-name
-                           (concat repo-name "/straight/repos") projects-dir)))
-         (and (file-directory-p main-repos) main-repos))))))
+;; See CLAUDE.md's Testing section: `cl-letf' on a C subr forces a
+;; synchronous native-comp trampoline build (~28s) the first time it is
+;; hit. Defensive here even where no target below is a subr.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
 
 (defvar edmacs-keybindings-test--repos-root
-  (edmacs-keybindings-test--locate-straight-repos-root)
+  (edmacs-test-support-straight-repos-root)
   "This checkout's (or its sibling main checkout's) `straight/repos' root.")
 
 (defvar edmacs-keybindings-test--keybindings-loaded nil

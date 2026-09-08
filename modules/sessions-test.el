@@ -12,10 +12,11 @@
 ;;   - `edmacs-evil-config-add-c-x-chord' is stubbed as a no-op.
 ;;   - the real `general' is pulled off this checkout's (or its sibling
 ;;     main checkout's) `straight/build', mirroring
-;;     `edmacs-sidebar-test--locate-straight-build-root''s fallback.
+;;     `edmacs-test-support-straight-build-root''s fallback.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el \
 ;;         -l modules/workspaces.el -l modules/sessions-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 ;;
@@ -68,27 +69,8 @@
 (when (boundp 'native-comp-enable-subr-trampolines)
   (setq native-comp-enable-subr-trampolines nil))
 
-(defun edmacs-sessions-test--locate-straight-build-root ()
-  "Return this checkout's `straight/build' directory, or nil.
-Tries this checkout's own `straight/build' first, then falls back to
-the sibling main `edmacs' checkout's -- the same
-worktree-vs-sibling-main-checkout fallback
-`edmacs-sidebar-test--locate-straight-build-root' uses."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
 (defvar edmacs-sessions-test--build-root
-  (edmacs-sessions-test--locate-straight-build-root)
+  (edmacs-test-support-straight-build-root)
   "This checkout's (or its sibling main checkout's) `straight/build' root.")
 
 (if (null edmacs-sessions-test--build-root)

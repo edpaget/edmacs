@@ -8,8 +8,9 @@
 ;; `load-path' lacks it. So this file carries its own, different
 ;; invocation:
 ;;
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;         -l modules/sidebar-test.el -f ert-run-tests-batch-and-exit
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el \
+;;         -l modules/sidebar-test.el -f edmacs-sidebar-test-run-and-exit
 ;;
 ;; Note sidebar.el is NOT passed on the command line -- this file fixes
 ;; `load-path' against the straight build tree and loads sidebar.el itself,
@@ -32,8 +33,8 @@
 ;; `scripts/pty-ert.sh' allocates one directly and works in both
 ;; (140/140, no skips):
 ;;
-;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;         -l modules/sidebar-test.el -f ert-run-tests-batch-and-exit
+;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el -l modules/sidebar-test.el -f edmacs-sidebar-test-run-and-exit
 ;;
 ;; This draws real terminal escape sequences to that pty as a side
 ;; effect (the second frame is a live tty frame) -- harmless, but expect
@@ -60,54 +61,26 @@
 ;; loaded .el source and does not affect this).
 (setq native-comp-enable-subr-trampolines nil)
 
-(defun edmacs-sidebar-test--locate-straight-build-root ()
-  "Return this checkout's `straight/build' directory, or nil.
-Tries this checkout's own `straight/build' first -- present once this
-worktree has itself been opened as a real Emacs config and straight has
-bootstrapped it -- then falls back to the sibling main `edmacs' checkout's
-`straight/build', the same worktree-vs-sibling-main-checkout fallback
-`claude-term-test--locate-real-rotate' uses: a roadmap worktree lives
-under `<parent>/edmacs__worktrees/<name>', sibling to the main
-`<parent>/edmacs' checkout, and straight's build cache is per-checkout,
-not shared."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
-(defun edmacs-sidebar-test--add-magit-section-deps (build-root)
-  "Add `magit-section' and its transitive deps under BUILD-ROOT to `load-path'.
-cl-lib, eieio, subr-x, format-spec, and cursor-sensor ship with Emacs core
-and need no straight resolution; only these do."
-  (dolist (dep '("compat" "cond-let" "llama" "transient" "seq" "magit-section"))
-    (let ((dir (expand-file-name dep build-root)))
-      (when (file-directory-p dir)
-        (add-to-list 'load-path dir)))))
-
 (defvar edmacs-sidebar-test--build-root
-  (edmacs-sidebar-test--locate-straight-build-root)
+  (edmacs-test-support-straight-build-root)
   "This checkout's (or its sibling main checkout's) `straight/build' root.
 Also reused by the rotate.el lookup below -- a second, independent
 optional straight dependency.")
 
+(defconst edmacs-sidebar-test--self-file (or load-file-name buffer-file-name))
+
 (if (null edmacs-sidebar-test--build-root)
 
     (ert-deftest edmacs-sidebar-test-magit-section-unavailable ()
-      (ert-skip "magit-section's straight build was not found in this checkout \
+      (edmacs-test-support-report-suite-unavailable
+       edmacs-sidebar-test--self-file
+       "magit-section's straight build was not found in this checkout \
 or its sibling main checkout; bootstrap straight once (open this worktree in \
 a real Emacs session) to enable this suite"))
 
   (progn
 
-    (edmacs-sidebar-test--add-magit-section-deps edmacs-sidebar-test--build-root)
+    (edmacs-test-support-add-magit-section-deps edmacs-sidebar-test--build-root)
     ;; windows.el first: sidebar.el `require's it for `edmacs-windows-claim-side'.
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
@@ -117,16 +90,14 @@ a real Emacs session) to enable this suite"))
     ;; ==========================================================================
 
     (defmacro edmacs-sidebar-test--with-extra-tab (&rest body)
-      "Run BODY after adding one tab, restoring the original tab count after.
-Cleanup runs via `unwind-protect' regardless of BODY's outcome -- every
-test in this file shares the same real frame, so a failing assertion
-must never leave stray tabs behind for a later test."
+      "Run BODY after adding one tab, restoring the original tab count after
+via test-support.el's shared fixture -- every test in this file shares
+the same real frame, so a failing assertion must never leave stray tabs
+behind for a later test."
       (declare (indent 0))
-      `(let ((edmacs-sidebar-test--tab-count-before (length (tab-bar-tabs))))
-         (unwind-protect
-             (progn (tab-bar-new-tab) ,@body)
-           (while (> (length (tab-bar-tabs)) edmacs-sidebar-test--tab-count-before)
-             (tab-bar-close-tab)))))
+      `(edmacs-test-support-with-tabs-restored
+         (tab-bar-new-tab)
+         ,@body))
 
     (defun edmacs-sidebar-test--cleanup-sidebar (frame)
       "Hide and kill FRAME's sidebar window/buffer, if any."
@@ -182,28 +153,6 @@ must never leave stray tabs behind for a later test."
                 (should (looking-at-p "●"))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
-    (defun edmacs-sidebar-test--locate-straight-repos-root ()
-      "Return this checkout's `straight/repos' directory, or its sibling
-main checkout's -- the same fallback `edmacs-sidebar-test--locate-straight-build-root'
-uses for `straight/build'. Needed only as a fallback for `evil' below,
-whose `straight/build/evil' symlink can point at a worktree that has
-itself never bootstrapped straight (no `straight/repos' of its own),
-in which case `straight/repos/evil' -- straight's raw git checkout,
-identical content for a pure-elisp package with no build-time file
-subsetting -- still resolves."
-      (or
-       (let ((here (expand-file-name "straight/repos" default-directory)))
-         (and (file-directory-p here) here))
-       (let* ((root (directory-file-name (expand-file-name default-directory)))
-              (worktrees-dir (directory-file-name (file-name-directory root))))
-         (when (string-suffix-p "__worktrees" worktrees-dir)
-           (let* ((projects-dir (file-name-directory worktrees-dir))
-                  (repo-name (string-remove-suffix
-                              "__worktrees" (file-name-nondirectory worktrees-dir)))
-                  (main-repos (expand-file-name
-                               (concat repo-name "/straight/repos") projects-dir)))
-             (and (file-directory-p main-repos) main-repos))))))
-
     (defun edmacs-sidebar-test--locate-real-evil ()
       "Return the directory holding the real `evil.el', or nil.
 Tries `straight/build/evil' first (file-exists-p follows a working
@@ -211,10 +160,10 @@ symlink); falls back to `straight/repos/evil' when that symlink is
 broken or the build tree was never generated."
       (or
        (let* ((root (or edmacs-sidebar-test--build-root
-                         (edmacs-sidebar-test--locate-straight-build-root)))
+                         (edmacs-test-support-straight-build-root)))
               (path (and root (expand-file-name "evil/evil.el" root))))
          (and path (file-exists-p path) (file-name-directory path)))
-       (let* ((root (edmacs-sidebar-test--locate-straight-repos-root))
+       (let* ((root (edmacs-test-support-straight-repos-root))
               (path (and root (expand-file-name "evil/evil.el" root))))
          (and path (file-exists-p path) (file-name-directory path)))))
 
@@ -462,10 +411,9 @@ tab\" by default, since that is this phase's own new edge case."
       ;; -- `edmacs-sidebar-test-missing-worktree-row-is-marked' below
       ;; drives the probe deliberately, against real directories.
       `(let ((edmacs-sidebar-worktree-live-p-function #'always)
-             (edmacs-sidebar-test--tab-count-before (length (tab-bar-tabs)))
              (edmacs-sidebar-test--primed-roots nil))
          (unwind-protect
-             (progn
+             (edmacs-test-support-with-tabs-restored
                (dolist (entry ,spec)
                  (let* ((group (nth 0 entry)) (main-root (nth 1 entry)) (main-common (nth 2 entry))
                         (children (nthcdr 3 entry)))
@@ -480,8 +428,6 @@ tab\" by default, since that is this phase's own new edge case."
                        (edmacs-workspaces-set-tab-root root)
                        (tab-bar-change-tab-group group)))))
                ,@body)
-           (while (> (length (tab-bar-tabs)) edmacs-sidebar-test--tab-count-before)
-             (tab-bar-close-tab))
            (dolist (root edmacs-sidebar-test--primed-roots)
              (remhash root edmacs-git-common-dir-cache)))))
 
@@ -828,29 +774,6 @@ own Commentary on the workspaces fixtures above)."
     ;; have" convention `claude-term-test--ensure-real-rotate' uses for
     ;; rotate.el.
 
-    (defun edmacs-sidebar-test--make-second-frame-or-skip ()
-      "Return a second real frame on this process's controlling terminal, or skip.
-Passes `tty'/`tty-type' explicitly rather than relying on `window-system'
-alone: with no controlling terminal at all (the common `-Q --batch' case,
-run with no pty attached) opening \"/dev/tty\" fails and this skips, same
-as before. But run under a pty (e.g. `scripts/pty-ert.sh emacs -Q
---batch ...') \"/dev/tty\" does exist, and `tty-type' is hardcoded to
-\"xterm\" rather than inherited from `$TERM' because the invoking shell's
-own terminal type (e.g. \"xterm-ghostty\") may have no terminfo entry on
-this machine, which would otherwise fail with \"Unknown terminal type\"
-even though a real controlling terminal is attached; \"xterm\" is close
-to universally present in terminfo databases."
-      (condition-case e
-          (let ((frame (make-frame '((window-system . nil)
-                                      (tty . "/dev/tty")
-                                      (tty-type . "xterm")))))
-            (unless (frame-live-p frame)
-              (ert-skip "could not create a second frame in this batch environment"))
-            frame)
-        (error (ert-skip (format "could not create a second frame in this \
-batch environment (no controlling terminal? run under `scripts/pty-ert.sh \
-emacs ...' to exercise this test): %s" e)))))
-
     (ert-deftest edmacs-sidebar-test-singleton-buffer-shared-across-frames ()
       "Since edmacs-tab-groups phase 3's buffer collapse, two frames'
 sidebars resolve to the `eq' SAME buffer object -- there is no more
@@ -858,7 +781,7 @@ per-frame `*sidebar: <repo>*' name to be distinct. Deleting the
 NON-last frame showing it leaves the buffer alive for the remaining
 frame; deleting the LAST frame showing it kills the buffer."
       (let* ((f1 (selected-frame))
-             (f2 (edmacs-sidebar-test--make-second-frame-or-skip)))
+             (f2 (edmacs-test-support-make-second-frame-or-skip)))
         (unwind-protect
             (progn
               (edmacs-sidebar-show f1)
@@ -968,11 +891,11 @@ feature name) the same way `edmacs-sidebar-test--locate-real-evil' falls
 back to `straight/repos/evil', for the same broken-build-symlink case."
       (or
        (let ((root (or edmacs-sidebar-test--build-root
-                        (edmacs-sidebar-test--locate-straight-build-root))))
+                        (edmacs-test-support-straight-build-root))))
          (when root
            (let ((path (expand-file-name "rotate/rotate.el" root)))
              (and (file-exists-p path) path))))
-       (let ((root (edmacs-sidebar-test--locate-straight-repos-root)))
+       (let ((root (edmacs-test-support-straight-repos-root)))
          (when root
            (let ((path (expand-file-name "emacs-rotate/rotate.el" root)))
              (and (file-exists-p path) path))))))
@@ -3103,14 +3026,14 @@ other non-selected window (`edmacs-sidebar--anchor-region-to-bottom's own
 comment: redisplay keeps a backgrounded window's own point visible
 regardless of which frame or window is selected). Uses a genuinely
 separate, live frame \(not a stub\) via
-`edmacs-sidebar-test--make-second-frame-or-skip', mirroring this suite's
+`edmacs-test-support-make-second-frame-or-skip', mirroring this suite's
 other real-multi-frame tests. Asserts concrete state changes -- not
 merely `>=' between two values that can trivially agree at their
 untouched defaults -- so a guard that wrongly widens to skip every
 backgrounded frame's own selected window (not just the truly selected
 one) fails this test instead of passing it vacuously."
       (let* ((f1 (selected-frame))
-             (f2 (edmacs-sidebar-test--make-second-frame-or-skip))
+             (f2 (edmacs-test-support-make-second-frame-or-skip))
              buf window)
         (unwind-protect
             (progn
@@ -3318,5 +3241,19 @@ under an `F1' header a moment after drawing correctly."
         (should (equal (edmacs-sidebar-redraw-frames) (frame-list)))))
 
     )) ; end of build-root-found branch
+
+(defun edmacs-sidebar-test-run-and-exit ()
+  "Run this suite, undo any timer/buffer/`tab-bar-mode' it leaks, then exit.
+Point `-f' at this instead of `ert-run-tests-batch-and-exit' directly:
+that function calls `kill-emacs' itself, and `kill-emacs' does not run
+Lisp `unwind-protect' cleanups up its caller's stack -- wrapping ITS call
+in `edmacs-test-support-with-hermetic-state' would never actually run the
+cleanup. Calling the non-exiting `ert-run-tests-batch' inside the
+hermetic-state form, then exiting afterward with the same status
+`ert-run-tests-batch-and-exit' would have used, gets both properties."
+  (let (stats)
+    (edmacs-test-support-with-hermetic-state
+      (setq stats (ert-run-tests-batch nil)))
+    (kill-emacs (if (zerop (ert-stats-completed-unexpected stats)) 0 1))))
 
 ;;; sidebar-test.el ends here

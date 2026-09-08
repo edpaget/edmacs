@@ -14,7 +14,8 @@
 ;; claude-term-agents-test.el for that coverage now.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/agents.el -l modules/agents-test.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el -l modules/agents.el \
+;;         -l modules/agents-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 
 ;;; Code:
@@ -23,12 +24,11 @@
 (require 'subr-x)
 (require 'cl-lib)
 
-(defmacro edmacs-agents-test--with-clean-state (&rest body)
-  "Run BODY with a fresh agent table and changed hook."
-  (declare (indent 0))
-  `(let ((edmacs-agents--table (make-hash-table :test #'equal))
-         (edmacs-agents-changed-hook nil))
-     ,@body))
+;; See CLAUDE.md's Testing section: `cl-letf' on a C subr forces a
+;; synchronous native-comp trampoline build (~28s) the first time it is
+;; hit. Defensive here even where no target below is a subr.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
 
 ;; ============================================================================
 ;; edmacs-agents--compute-unread (the one shared transition rule)
@@ -64,7 +64,7 @@ refresh) preserves whatever it already was."
 
 (ert-deftest edmacs-agents-test-set-status-fires-hook-once ()
   "Each call to `edmacs-agents-set-status' fires the changed hook exactly once."
-  (edmacs-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root (make-temp-file "edmacs-agents-test-root-" t))
            (fire-count 0))
       (add-hook 'edmacs-agents-changed-hook (lambda (_keys) (cl-incf fire-count)))
@@ -81,7 +81,7 @@ refresh) preserves whatever it already was."
 (ert-deftest edmacs-agents-test-set-status-ambiguous-instance-errors ()
   "`edmacs-agents-set-status' with no INSTANCE and two existing rows
 under the same root signals a clear `user-error' instead of guessing."
-  (edmacs-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root (make-temp-file "edmacs-agents-test-root-" t)))
       (edmacs-agents-set-status root 'waiting "a")
       (edmacs-agents-set-status root 'waiting "b")
@@ -96,7 +96,7 @@ under the same root signals a clear `user-error' instead of guessing."
 survives no matter how old its heartbeat is -- there is no sweep any
 more, so a `waiting' or unread-`done' row is never silently discarded
 for sitting quiet."
-  (edmacs-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t))))
       (edmacs-agents-set-status root 'waiting)
       (let (key row)
@@ -114,7 +114,7 @@ for sitting quiet."
 (ert-deftest edmacs-agents-test-unread-transition ()
   "A transition into `done' sets `unread'; `edmacs-agents-mark-read'
 clears it and moves the row to `idle'."
-  (edmacs-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root (make-temp-file "edmacs-agents-test-root-" t)))
       (edmacs-agents-set-status root 'working)
       (let (key)
@@ -131,7 +131,7 @@ between) does not spuriously re-set `unread' once cleared -- contrast
 with `edmacs-agents-test-unread-transition', where the row passes back
 through `idle' (via `edmacs-agents-mark-read') before going `done'
 again, which IS a fresh transition and DOES re-set `unread'."
-  (edmacs-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
            (key (edmacs-agents--key root "%1"))
            (row (make-edmacs-agent :key key :root root :instance "%1"
@@ -155,7 +155,7 @@ again, which IS a fresh transition and DOES re-set `unread'."
 (ert-deftest edmacs-agents-test-mark-read-bumps-status-ts ()
   "`edmacs-agents-mark-read' clears unread, sets status to `idle', and
 bumps STATUS-TS to (approximately) now."
-  (edmacs-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
            (key (edmacs-agents--key root "%1"))
            (row (make-edmacs-agent :key key :root root :instance "%1"
@@ -177,7 +177,7 @@ bumps STATUS-TS to (approximately) now."
   "`edmacs-agents--list-entries' returns one `tabulated-list-entries' row
 per table row, keyed by the row's own key, with the unread `done' flag
 rendered as a trailing `*' and a read `idle' row rendered without one."
-  (edmacs-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
            (done-key (edmacs-agents--key root "%1"))
            (idle-key (edmacs-agents--key root "%2")))
@@ -209,7 +209,7 @@ rendered as a trailing `*' and a read `idle' row rendered without one."
 
 (ert-deftest edmacs-agents-test-list-entries-empty ()
   "An empty table produces an empty entries list, not an error."
-  (edmacs-agents-test--with-clean-state
+  (edmacs-test-support-with-clean-agent-state
     (should (equal (edmacs-agents--list-entries) nil))))
 
 (provide 'agents-test)

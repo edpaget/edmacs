@@ -27,13 +27,14 @@
 ;;
 ;; Tier 1 invocation (this is the CI-equivalent one):
 ;;
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el \
 ;;         -l modules/window-geometry-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 ;;
 ;; Tier 2 invocation:
 ;;
-;;   scripts/gui-ert.sh modules/window-geometry-live-test.el
+;;   scripts/gui-ert.sh modules/window-geometry-live-test.el t -l modules/test-support.el
 ;;
 ;; Like sidebar-test.el, this file is NOT given sidebar.el on the command
 ;; line -- it fixes `load-path' against the straight build tree itself so
@@ -51,27 +52,8 @@
 ;; subprocess, which magit-section and evil both trigger on load.
 (setq native-comp-enable-subr-trampolines nil)
 
-(defun edmacs-geometry-test--locate-straight-build-root ()
-  "Return this checkout's `straight/build' directory, or the sibling main
-checkout's.  Same worktree-vs-main fallback as sidebar-test.el: a
-worktree lives at `<parent>/edmacs__worktrees/<name>', sibling to the
-main `<parent>/edmacs' checkout, and only the main checkout has a
-populated package tree."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
 (defvar edmacs-geometry-test--build-root
-  (edmacs-geometry-test--locate-straight-build-root))
+  (edmacs-test-support-straight-build-root))
 
 (if (null edmacs-geometry-test--build-root)
 

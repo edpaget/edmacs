@@ -26,14 +26,15 @@
 ;; is stubbed. One benign "Cannot load bufferlo" notice is expected.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el \
 ;;         -l modules/sessions-live-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; Two tests here need a REAL graphical frame -- they drive the daemon's
 ;; own restore bridge and count graphical frames afterward, which a batch
 ;; frame cannot answer. They `ert-skip' in batch; run them with:
 ;;
-;;   scripts/gui-ert.sh modules/sessions-live-test.el
+;;   scripts/gui-ert.sh modules/sessions-live-test.el t -l modules/test-support.el
 ;;
 ;; from the MAIN checkout (never a worktree: see CLAUDE.md on
 ;; `--init-directory'). That script starts a throwaway daemon of its own
@@ -59,24 +60,8 @@
 (when (boundp 'native-comp-enable-subr-trampolines)
   (setq native-comp-enable-subr-trampolines nil))
 
-(defun edmacs-sessions-live-test--locate-straight-build-root ()
-  "Return this checkout's (or its sibling main checkout's) `straight/build'.
-Same worktree-vs-sibling-main-checkout fallback as sessions-test.el's."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
 (defvar edmacs-sessions-live-test--build-root
-  (edmacs-sessions-live-test--locate-straight-build-root))
+  (edmacs-test-support-straight-build-root))
 
 (if (null edmacs-sessions-live-test--build-root)
 
@@ -444,7 +429,8 @@ nil for every frame and neither `frameset-restore''s frame reuse nor a
 count of graphical frames means anything there."
       (unless (display-graphic-p)
         (ert-skip "needs a real graphical frame: run \
-`scripts/gui-ert.sh modules/sessions-live-test.el' from the main checkout")))
+`scripts/gui-ert.sh modules/sessions-live-test.el t -l modules/test-support.el' \
+from the main checkout")))
 
     (defmacro edmacs-sessions-live-test--drive-bridge (frameset &rest body)
       "Stash FRAMESET, run the real restore bridge on the selected frame, BODY.

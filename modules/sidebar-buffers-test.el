@@ -6,7 +6,8 @@
 ;; straight build tree before it can even be parsed under `-Q --batch' --
 ;; so this file carries the same kind of self-contained invocation:
 ;;
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el \
 ;;         -l modules/sidebar-buffers-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; sidebar.el and workspaces.el are NOT loaded (mirroring sidebar-agents-test.el's
@@ -28,40 +29,23 @@
 ;; subprocess the first time this file's own stubs are installed.
 (setq native-comp-enable-subr-trampolines nil)
 
-(defun edmacs-sidebar-buffers-test--locate-straight-build-root ()
-  "Same logic as sidebar-agents-test.el's own helper of the same shape."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
-(defun edmacs-sidebar-buffers-test--add-magit-section-deps (build-root)
-  (dolist (dep '("compat" "cond-let" "llama" "transient" "seq" "magit-section"))
-    (let ((dir (expand-file-name dep build-root)))
-      (when (file-directory-p dir)
-        (add-to-list 'load-path dir)))))
-
 (defvar edmacs-sidebar-buffers-test--build-root
-  (edmacs-sidebar-buffers-test--locate-straight-build-root))
+  (edmacs-test-support-straight-build-root))
+
+(defconst edmacs-sidebar-buffers-test--self-file (or load-file-name buffer-file-name))
 
 (if (null edmacs-sidebar-buffers-test--build-root)
 
     (ert-deftest edmacs-sidebar-buffers-test-magit-section-unavailable ()
-      (ert-skip "magit-section's straight build was not found in this checkout \
+      (edmacs-test-support-report-suite-unavailable
+       edmacs-sidebar-buffers-test--self-file
+       "magit-section's straight build was not found in this checkout \
 or its sibling main checkout; bootstrap straight once (open this worktree in \
 a real Emacs session) to enable this suite"))
 
   (progn
 
-    (edmacs-sidebar-buffers-test--add-magit-section-deps edmacs-sidebar-buffers-test--build-root)
+    (edmacs-test-support-add-magit-section-deps edmacs-sidebar-buffers-test--build-root)
 
     ;; sidebar-buffers.el's own forward `declare-function's for
     ;; sidebar.el/workspaces.el/windows.el/bufferlo are byte-compile hygiene
@@ -298,22 +282,13 @@ since `nerd-icons' is not loaded by this standalone suite."
     ;; RET -- visiting a buffer row (no-silent-no-op coverage)
     ;; ==========================================================================
 
-    (defmacro edmacs-sidebar-buffers-test--with-sidebar-buffer (&rest body)
-      "Run BODY in a fresh `magit-section-mode' temp buffer -- mirrors
-sidebar-agents-test.el's own helper of the same shape."
-      (declare (indent 0))
-      `(with-temp-buffer
-         (magit-section-mode)
-         (let ((inhibit-read-only t))
-           ,@body)))
-
     (ert-deftest edmacs-sidebar-buffers-test-visit-no-section-reports ()
       "`edmacs-sidebar-buffers-visit' signals `user-error' rather than doing
 nothing when there is no section at point at all -- the direct-call
 counterpart of sidebar.el's own no-silent-no-op fix, since RET never
 reaches this function without a buffer-file/-special section
 (`edmacs-sidebar-visit-at-point' gates on section type first)."
-      (edmacs-sidebar-buffers-test--with-sidebar-buffer
+      (edmacs-test-support-with-sidebar-buffer
         (should-error (edmacs-sidebar-buffers-visit) :type 'user-error)))
 
     (ert-deftest edmacs-sidebar-buffers-test-visit-file-row-without-root-reports ()
@@ -324,7 +299,7 @@ rows in a root section -- has no tab identity to resolve and reports
 rather than silently doing nothing."
       (edmacs-sidebar-buffers-test--with-buffers
           ((buf (edmacs-sidebar-buffers-test--file-buffer "/repo/a.el")))
-        (edmacs-sidebar-buffers-test--with-sidebar-buffer
+        (edmacs-test-support-with-sidebar-buffer
           (magit-insert-section (edmacs-sidebar-buffers-file buf)
             (insert "row\n"))
           (goto-char (point-min))
@@ -384,7 +359,7 @@ or a module-global instead of the FRAME actually passed in."
                     ;; is not a live frame, so the real `tab-bar-tabs' is
                     ;; stubbed too.
                     ((symbol-function 'tab-bar-tabs) (lambda (&rest _) nil)))
-            (edmacs-sidebar-buffers-test--with-sidebar-buffer
+            (edmacs-test-support-with-sidebar-buffer
               ;; Nested under an outer root, matching how the real
               ;; `edmacs-sidebar--redraw' always wraps this call -- called
               ;; bare, this section IS the magit root and a non-current

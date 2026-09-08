@@ -13,7 +13,8 @@
 ;; itself, below, rather than taking it on the command line. Run in batch
 ;; from the repository root:
 ;;
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el \
 ;;         -l modules/claude-usage-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; Note claude-usage.el is NOT passed on the command line -- this file
@@ -62,36 +63,8 @@
 ;; loads magit-section or evil.
 (setq native-comp-enable-subr-trampolines nil)
 
-(defun claude-usage-test--locate-straight-build-root ()
-  "Return this checkout's `straight/build' directory, or nil.
-Tries this checkout's own `straight/build' first, then falls back to the
-sibling main `edmacs' checkout's `straight/build' -- see
-`edmacs-sidebar-test--locate-straight-build-root' for the identical
-worktree-vs-sibling-main-checkout rationale."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
-(defun claude-usage-test--add-magit-section-deps (build-root)
-  "Add `magit-section' and its transitive deps under BUILD-ROOT to `load-path'.
-cl-lib, eieio, subr-x, format-spec, and cursor-sensor ship with Emacs core
-and need no straight resolution; only these do."
-  (dolist (dep '("compat" "cond-let" "llama" "transient" "seq" "magit-section"))
-    (let ((dir (expand-file-name dep build-root)))
-      (when (file-directory-p dir)
-        (add-to-list 'load-path dir)))))
-
 (defvar claude-usage-test--build-root
-  (claude-usage-test--locate-straight-build-root)
+  (edmacs-test-support-straight-build-root)
   "This checkout's (or its sibling main checkout's) `straight/build' root.
 Also reused by the evil lookup below -- a second, independent optional
 straight dependency.")
@@ -105,7 +78,7 @@ a real Emacs session) to enable this suite"))
 
   (progn
 
-    (claude-usage-test--add-magit-section-deps claude-usage-test--build-root)
+    (edmacs-test-support-add-magit-section-deps claude-usage-test--build-root)
 
     ;; Stub sidebar.el dependencies
     (defun edmacs-sidebar--fit (label width)
@@ -123,23 +96,6 @@ Mirrors sidebar.el's implementation for tests."
     ;; Test helpers -- real evil, for the keybinding-resolution tests
     ;; ==========================================================================
 
-    (defun claude-usage-test--locate-straight-repos-root ()
-      "Return this checkout's `straight/repos' directory, or its sibling
-main checkout's -- the same fallback `claude-usage-test--locate-straight-build-root'
-uses for `straight/build'."
-      (or
-       (let ((here (expand-file-name "straight/repos" default-directory)))
-         (and (file-directory-p here) here))
-       (let* ((root (directory-file-name (expand-file-name default-directory)))
-              (worktrees-dir (directory-file-name (file-name-directory root))))
-         (when (string-suffix-p "__worktrees" worktrees-dir)
-           (let* ((projects-dir (file-name-directory worktrees-dir))
-                  (repo-name (string-remove-suffix
-                              "__worktrees" (file-name-nondirectory worktrees-dir)))
-                  (main-repos (expand-file-name
-                               (concat repo-name "/straight/repos") projects-dir)))
-             (and (file-directory-p main-repos) main-repos))))))
-
     (defun claude-usage-test--locate-real-evil ()
       "Return the directory holding the real `evil.el', or nil.
 Tries `straight/build/evil' first (file-exists-p follows a working
@@ -147,10 +103,10 @@ symlink); falls back to `straight/repos/evil' when that symlink is
 broken or the build tree was never generated."
       (or
        (let* ((root (or claude-usage-test--build-root
-                         (claude-usage-test--locate-straight-build-root)))
+                         (edmacs-test-support-straight-build-root)))
               (path (and root (expand-file-name "evil/evil.el" root))))
          (and path (file-exists-p path) (file-name-directory path)))
-       (let* ((root (claude-usage-test--locate-straight-repos-root))
+       (let* ((root (edmacs-test-support-straight-repos-root))
               (path (and root (expand-file-name "evil/evil.el" root))))
          (and path (file-exists-p path) (file-name-directory path)))))
 
@@ -1110,7 +1066,7 @@ nano-modeline needs only `cl-lib' beyond Emacs core, so a single
 `load-path' entry under the straight build root is enough."
       (unless (featurep 'nano-modeline)
         (let* ((root (or claude-usage-test--build-root
-                          (claude-usage-test--locate-straight-build-root)))
+                          (edmacs-test-support-straight-build-root)))
                (dir (and root (expand-file-name "nano-modeline" root))))
           (unless (and dir (file-directory-p dir))
             (ert-skip (format "nano-modeline's straight build was not found at \

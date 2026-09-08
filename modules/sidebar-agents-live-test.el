@@ -46,11 +46,12 @@
 ;; named in sidebar-agents.el's own rename/kill docstrings.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el \
 ;;         -l modules/sidebar-agents-live-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; To actually exercise the second-frame tests:
-;;   scripts/pty-ert.sh emacs -Q --batch -l ert \
+;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/git-common-dir.el -l modules/sidebar-agents-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 
@@ -66,39 +67,23 @@
 ;; Loading sidebar.el + sidebar-agents.el for real (mirrors sidebar-test.el)
 ;; ==========================================================================
 
-(defun edmacs-sidebar-agents-live-test--locate-straight-build-root ()
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
-(defun edmacs-sidebar-agents-live-test--add-magit-section-deps (build-root)
-  (dolist (dep '("compat" "cond-let" "llama" "transient" "seq" "magit-section"))
-    (let ((dir (expand-file-name dep build-root)))
-      (when (file-directory-p dir)
-        (add-to-list 'load-path dir)))))
-
 (defvar edmacs-sidebar-agents-live-test--build-root
-  (edmacs-sidebar-agents-live-test--locate-straight-build-root))
+  (edmacs-test-support-straight-build-root))
+
+(defconst edmacs-sidebar-agents-live-test--self-file (or load-file-name buffer-file-name))
 
 (if (null edmacs-sidebar-agents-live-test--build-root)
 
     (ert-deftest edmacs-sidebar-agents-live-test-magit-section-unavailable ()
-      (ert-skip "magit-section's straight build was not found in this checkout \
+      (edmacs-test-support-report-suite-unavailable
+       edmacs-sidebar-agents-live-test--self-file
+       "magit-section's straight build was not found in this checkout \
 or its sibling main checkout; bootstrap straight once (open this worktree in \
 a real Emacs session) to enable this suite"))
 
   (progn
 
-    (edmacs-sidebar-agents-live-test--add-magit-section-deps
+    (edmacs-test-support-add-magit-section-deps
      edmacs-sidebar-agents-live-test--build-root)
 
     ;; workspaces.el IS loaded for real below, alongside windows.el and
@@ -238,25 +223,13 @@ file's Commentary in effect."
                           :title title :source source :locator locator :unread unread))
 
     (defmacro edmacs-sidebar-agents-live-test--with-clean-state (&rest body)
-      "Run BODY with fresh agent/module state, restored after, and this
-file's `--with-workspaces-overrides' in effect."
+      "Run BODY with fresh agent/module state (via test-support.el's shared
+sidebar-agents fixture), plus this file's own extra binding and
+`--with-workspaces-overrides' wrapper."
       (declare (indent 0))
-      `(let ((edmacs-agents--table (make-hash-table :test #'equal))
-             (edmacs-agents-changed-hook nil)
-             (edmacs-sidebar-agents--last-state (make-hash-table :test #'equal))
-             (edmacs-sidebar-agents--attention-cache nil)
-             (edmacs-sidebar-agents--attention-cursor 0)
-             (edmacs-sidebar-agents--pending-notification nil)
-             (edmacs-sidebar-agents--coalesce-timer nil)
-             (edmacs-sidebar-agents--elapsed-timer nil)
-             (edmacs-sidebar-agents-show-all nil)
-             (edmacs-sidebar-agents-live-test--open-worktree-tab-calls nil))
-         (unwind-protect
-             (edmacs-sidebar-agents-live-test--with-workspaces-overrides ,@body)
-           (when (timerp edmacs-sidebar-agents--coalesce-timer)
-             (cancel-timer edmacs-sidebar-agents--coalesce-timer))
-           (when (timerp edmacs-sidebar-agents--elapsed-timer)
-             (cancel-timer edmacs-sidebar-agents--elapsed-timer)))))
+      `(let ((edmacs-sidebar-agents-live-test--open-worktree-tab-calls nil))
+         (edmacs-test-support-with-clean-sidebar-agents-state
+           (edmacs-sidebar-agents-live-test--with-workspaces-overrides ,@body))))
 
     (defun edmacs-sidebar-agents-live-test--cleanup-sidebar (frame)
       (edmacs-sidebar-hide frame)
@@ -285,19 +258,6 @@ file's `--with-workspaces-overrides' in effect."
         (with-temp-buffer
           (insert-file-contents log)
           (split-string (buffer-string) "\n" t))))
-
-    (defun edmacs-sidebar-agents-live-test--make-second-frame-or-skip ()
-      "Same convention as sidebar-test.el's own helper of the same shape."
-      (condition-case e
-          (let ((frame (make-frame '((window-system . nil)
-                                      (tty . "/dev/tty")
-                                      (tty-type . "xterm")))))
-            (unless (frame-live-p frame)
-              (ert-skip "could not create a second frame in this batch environment"))
-            frame)
-        (error (ert-skip (format "could not create a second frame in this \
-batch environment (no controlling terminal? run under `scripts/pty-ert.sh \
-emacs ...' to exercise this test): %s" e)))))
 
     ;; ==========================================================================
     ;; AC2 -- RET visit: claude-term row pops to its own window
@@ -375,7 +335,7 @@ focused or not -- a permission prompt always notifies."
     (ert-deftest edmacs-sidebar-agents-live-test-toggle-all-affects-both-frames ()
       (edmacs-sidebar-agents-live-test--with-clean-state
         (let* ((f1 (selected-frame))
-               (f2 (edmacs-sidebar-agents-live-test--make-second-frame-or-skip))
+               (f2 (edmacs-test-support-make-second-frame-or-skip))
                (agent (edmacs-sidebar-agents-live-test--make-agent
                        :root "/repo/wt/" :status 'waiting :title "cross-frame-agent")))
           (puthash (edmacs-agent-key agent) agent edmacs-agents--table)

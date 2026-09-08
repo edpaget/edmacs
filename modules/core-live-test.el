@@ -20,7 +20,8 @@
 ;; could be written into the real user's own project list.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/core-live-test.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/core-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 
 ;;; Code:
@@ -37,23 +38,8 @@
 (when (boundp 'native-comp-enable-subr-trampolines)
   (setq native-comp-enable-subr-trampolines nil))
 
-(defun edmacs-core-live-test--locate-straight-build-root ()
-  "Return this checkout's (or its sibling main checkout's) `straight/build'."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
 (defvar edmacs-core-live-test--build-root
-  (edmacs-core-live-test--locate-straight-build-root))
+  (edmacs-test-support-straight-build-root))
 
 (defun edmacs-core-live-test--add-dep (dep)
   "Add DEP's directory under the located `straight/build' to `load-path'."

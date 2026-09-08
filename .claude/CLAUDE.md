@@ -18,6 +18,44 @@ third-party packages and the modules themselves are loaded by path.
 
 ### Testing
 
+#### Running everything before landing
+
+```bash
+scripts/test-all.sh all          # every suite, every tier
+scripts/test-all.sh batch        # just the plain -Q --batch tier
+scripts/test-all.sh pty          # just the four suites needing a controlling terminal
+scripts/test-all.sh gui          # just the suites needing a real graphical frame
+```
+
+This is the single pre-landing gate, driven by the manifest in
+`scripts/test-manifest.sh` -- one row per (suite, tier) pair, covering
+every file under `modules/*-test.el` across the batch/pty/gui tiers this
+document describes below. It reuses `scripts/run-ert-suite.sh` for the
+wall-budget check on batch and pty rows, `scripts/pty-ert.sh` to attach a
+controlling terminal for the pty tier, and `scripts/gui-ert.sh` for the
+gui tier (skipping a gui row gracefully, without failing the run, when no
+window server is available to create a frame at all -- distinct from a
+real failure inside a frame that WAS created). It prints one line per row
+(suite, tier, tests, unexpected, skipped, wall time) plus a final TOTAL,
+and exits non-zero on any unexpected result.
+
+The skip bar is per (suite, tier), not per suite: a suite that legitimately
+runs in more than one tier (the four pty suites also have a batch row; three
+suites have both a batch and a gui row) gets its own `expected_skips_on_main`
+per row in the manifest. The four pty suites' documented GUI-only skip counts
+below are the accepted baseline ONLY on their batch-tier row -- their
+pty-tier row must show zero skips, since attaching a pty is the whole reason
+that tier exists; a skip surviving it is a regression, not baseline noise.
+This stricter-per-tier bar is enforced only when run from the main checkout
+(detected via a populated `straight/build/`) -- a worktree legitimately sees
+more skips across the board, so there the script still fails on any
+unexpected result but does not additionally enforce the skip bar.
+
+Adding a 25th `modules/*-test.el` file, or a new tier for an existing one,
+means adding its row(s) to `scripts/test-manifest.sh` -- that file, and
+`modules/test-support.el`'s shared fixtures below, are the two places new
+test infrastructure belongs, not a fresh copy-paste into the new file.
+
 Tests are plain [ERT](https://www.gnu.org/software/emacs/manual/html_node/ert/)
 suites living beside the code they cover, as `modules/<module>-test.el`:
 
@@ -56,6 +94,17 @@ Each test file's own `;;; Commentary:` header carries its exact
 invocation, including the `*-live-test.el` variants and whatever they
 need in the environment. Add new tests to the existing `-test.el` file
 for the module -- **never** create throwaway files like `/tmp/test-*.el`.
+
+`modules/test-support.el` is the shared fixture module for cross-file
+test infrastructure: the straight `build`/`repos` root locators, the
+`magit-section` dependency-path setup, the second-real-frame-or-skip and
+graphical-frame-or-skip helpers, sidebar/agent-state and tab-restore
+fixtures, the parameterized wedged-frame builder, and the
+`with-hermetic-state` timer/buffer/`tab-bar-mode` snapshot-restore macro.
+A new suite that needs one of these loads it with `-l modules/test-support.el`
+and calls the shared definition rather than pasting a new local copy --
+see that file's own Commentary for the full list and for why (this repo
+already relearned the cost of that duplication once).
 
 #### A skipped test is unverified coverage, not a pass
 

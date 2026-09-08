@@ -756,7 +756,7 @@ A roadmap worktree's `.gitignore' keeps only `straight/versions/' (see
 this repo's own CLAUDE.md \"Worktrees\" section) -- so `evil.el' and
 `general.el' are only ever actually present in the main checkout's
 `straight/repos/'. Mirrors sidebar-test.el's own
-`--locate-straight-build-root' sibling-checkout convention, so a real
+`edmacs-test-support-straight-build-root' sibling-checkout convention, so a real
 key-dispatch test run from inside this roadmap's worktree still finds
 them rather than always skipping."
   (let* ((modules-dir (file-name-directory (or load-file-name buffer-file-name)))

@@ -33,12 +33,13 @@
 ;;
 ;; Tier 1 invocation (this is the CI-equivalent one):
 ;;
-;;   emacs -Q --batch -l ert -l modules/ui-live-test.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/ui-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 ;;
 ;; Tier 2 invocation:
 ;;
-;;   scripts/gui-ert.sh modules/ui-live-test.el
+;;   scripts/gui-ert.sh modules/ui-live-test.el t -l modules/test-support.el
 ;;
 ;; Both skip cleanly (a single reported skip) if this checkout and its
 ;; sibling main checkout have no bootstrapped straight tree.
@@ -50,27 +51,14 @@
 (require 'cl-lib)
 (require 'term)
 
-(defun edmacs-ui-live-test--locate-straight-build-root ()
-  "Return this checkout's `straight/build' directory, or nil.
-Tries this checkout's own `straight/build' first, then falls back to the
-sibling main `edmacs' checkout's `straight/build' -- see
-`edmacs-sidebar-test--locate-straight-build-root' for the identical
-worktree-vs-sibling-main-checkout rationale."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
+;; See CLAUDE.md's Testing section: `cl-letf' on a C subr forces a
+;; synchronous native-comp trampoline build (~28s) the first time it is
+;; hit. Defensive here even where no target below is a subr.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
 
 (defvar edmacs-ui-live-test--build-root
-  (edmacs-ui-live-test--locate-straight-build-root)
+  (edmacs-test-support-straight-build-root)
   "This checkout's (or its sibling main checkout's) `straight/build' root.")
 
 (if (null edmacs-ui-live-test--build-root)
@@ -124,8 +112,7 @@ mask as an empty string -- see the Commentary header."
 A live process may bind `term-raw-map' or attach filters a process-less
 buffer never does, so this repeats the assertion under a real GUI frame
 with a real shell attached, per the phase's explicit requirement."
-      (unless (display-graphic-p)
-        (ert-skip "needs a graphical frame; run via scripts/gui-ert.sh"))
+      (edmacs-test-support-gui-frame-or-skip)
       (let* ((nano-modeline-position #'nano-modeline-footer)
              (buf (make-term "edmacs-ui-live-test" (or (getenv "SHELL") "/bin/sh")))
              (proc (get-buffer-process buf)))

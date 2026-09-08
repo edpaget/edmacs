@@ -6,7 +6,8 @@
 ;; even be parsed under `-Q --batch' -- so this file carries the same
 ;; kind of self-contained invocation:
 ;;
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el -l modules/agents.el \
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el -l modules/agents.el \
 ;;         -l modules/sidebar-agents-test.el -f ert-run-tests-batch-and-exit
 ;;
 ;; agents.el is loaded for real (plain elisp, no external deps) so tests
@@ -18,7 +19,7 @@
 ;; Every test isolates the mutable module state it touches
 ;; (`edmacs-agents--table', `edmacs-sidebar-agents--last-state',
 ;; `edmacs-sidebar-agents--attention-cache'/`-cursor', notification/timer
-;; state) via `edmacs-sidebar-agents-test--with-clean-state', the same
+;; state) via `edmacs-test-support-with-clean-sidebar-agents-state', the same
 ;; convention `edmacs-agents-test--with-clean-state' uses.
 
 ;;; Code:
@@ -33,42 +34,23 @@
 ;; otherwise spawn a real native-comp trampoline-compiler subprocess.
 (setq native-comp-enable-subr-trampolines nil)
 
-(defun edmacs-sidebar-agents-test--locate-straight-build-root ()
-  "Return this checkout's (or its sibling main checkout's) `straight/build'.
-Identical logic to `edmacs-sidebar-test--locate-straight-build-root'."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
-(defun edmacs-sidebar-agents-test--add-magit-section-deps (build-root)
-  "Add `magit-section' and its transitive deps under BUILD-ROOT to `load-path'."
-  (dolist (dep '("compat" "cond-let" "llama" "transient" "seq" "magit-section"))
-    (let ((dir (expand-file-name dep build-root)))
-      (when (file-directory-p dir)
-        (add-to-list 'load-path dir)))))
-
 (defvar edmacs-sidebar-agents-test--build-root
-  (edmacs-sidebar-agents-test--locate-straight-build-root))
+  (edmacs-test-support-straight-build-root))
+
+(defconst edmacs-sidebar-agents-test--self-file (or load-file-name buffer-file-name))
 
 (if (null edmacs-sidebar-agents-test--build-root)
 
     (ert-deftest edmacs-sidebar-agents-test-magit-section-unavailable ()
-      (ert-skip "magit-section's straight build was not found in this checkout \
+      (edmacs-test-support-report-suite-unavailable
+       edmacs-sidebar-agents-test--self-file
+       "magit-section's straight build was not found in this checkout \
 or its sibling main checkout; bootstrap straight once (open this worktree in \
 a real Emacs session) to enable this suite"))
 
   (progn
 
-    (edmacs-sidebar-agents-test--add-magit-section-deps edmacs-sidebar-agents-test--build-root)
+    (edmacs-test-support-add-magit-section-deps edmacs-sidebar-agents-test--build-root)
 
     ;; sidebar-agents.el's own forward `declare-function's for sidebar.el
     ;; are byte-compile hygiene only; real stand-ins are provided here so
@@ -102,25 +84,6 @@ Mirrors sidebar.el's implementation for tests."
     ;; ==========================================================================
     ;; Test helpers
     ;; ==========================================================================
-
-    (defmacro edmacs-sidebar-agents-test--with-clean-state (&rest body)
-      "Run BODY with fresh agent/module state, restored after."
-      (declare (indent 0))
-      `(let ((edmacs-agents--table (make-hash-table :test #'equal))
-             (edmacs-agents-changed-hook nil)
-             (edmacs-sidebar-agents--last-state (make-hash-table :test #'equal))
-             (edmacs-sidebar-agents--attention-cache nil)
-             (edmacs-sidebar-agents--attention-cursor 0)
-             (edmacs-sidebar-agents--pending-notification nil)
-             (edmacs-sidebar-agents--coalesce-timer nil)
-             (edmacs-sidebar-agents--elapsed-timer nil)
-             (edmacs-sidebar-agents-show-all nil))
-         (unwind-protect
-             (progn ,@body)
-           (when (timerp edmacs-sidebar-agents--coalesce-timer)
-             (cancel-timer edmacs-sidebar-agents--coalesce-timer))
-           (when (timerp edmacs-sidebar-agents--elapsed-timer)
-             (cancel-timer edmacs-sidebar-agents--elapsed-timer)))))
 
     (cl-defun edmacs-sidebar-agents-test--make-agent
         (&key (root "/repo/wt/") (instance "%1") (status 'working)
@@ -234,7 +197,7 @@ failure here rather than a void-function deep in a behavioral test."
 `--label-suffix' actually call) finds an agent by truename-normalized
 root, not raw string equality -- so a tabless worktree's agent is found
 even when its own root string differs from the worktree list's."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (cl-letf (((symbol-function 'file-truename)
                    (lambda (p) (if (equal p "/repo/wt-b") "/real/wt-b" p))))
           (let ((agent (edmacs-sidebar-agents-test--put
@@ -243,7 +206,7 @@ even when its own root string differs from the worktree list's."
             (should-not (edmacs-sidebar-agents--for-root "/repo/wt-b"))))))
 
     (ert-deftest edmacs-sidebar-agents-test-for-root-no-match-is-empty ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (cl-letf (((symbol-function 'file-truename) #'identity))
           (edmacs-sidebar-agents-test--put
            (edmacs-sidebar-agents-test--make-agent :root "/gone/deleted-wt"))
@@ -285,7 +248,7 @@ even when its own root string differs from the worktree list's."
         (should-not (edmacs-sidebar-agents--compare b a))))
 
     (ert-deftest edmacs-sidebar-agents-test-attention-list-filters-and-sorts ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (let ((waiting (edmacs-sidebar-agents-test--make-agent
                          :root "/r1/" :instance "%1" :status 'waiting :status-ts 200))
               (unread-done (edmacs-sidebar-agents-test--make-agent
@@ -301,25 +264,12 @@ even when its own root string differs from the worktree list's."
     ;; Per-worktree rendering (AC1)
     ;; ==========================================================================
 
-    (defmacro edmacs-sidebar-agents-test--with-sidebar-buffer (&rest body)
-      "Run BODY in a fresh `magit-section-mode' temp buffer.
-`magit-section-mode' directly, not `edmacs-sidebar-mode' -- sidebar.el
-is deliberately not loaded by this suite (see this file's own
-Commentary on the module-boundary convention), and every
-`magit-insert-section' call needs is buffer-local state
-`magit-section-mode' itself sets up."
-      (declare (indent 0))
-      `(with-temp-buffer
-         (magit-section-mode)
-         (let ((inhibit-read-only t))
-           ,@body)))
-
     (ert-deftest edmacs-sidebar-agents-test-insert-for-worktree-renders-glyph-title-elapsed ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (let ((agent (edmacs-sidebar-agents-test--make-agent
                       :root "/repo/wt/" :status 'working :title "Claude Code"
                       :status-ts (float-time))))
-          (edmacs-sidebar-agents-test--with-sidebar-buffer
+          (edmacs-test-support-with-sidebar-buffer
             (edmacs-sidebar-agents--insert-group "/repo/wt/" (list agent))
             (let ((text (buffer-string)))
               (should (string-match-p (regexp-quote "*") text))
@@ -331,14 +281,14 @@ Commentary on the module-boundary convention), and every
 bare `bold' symbol replacing it -- see the dedicated status-face tests
 below for the exact layered shape."
       (let ((agent (edmacs-sidebar-agents-test--make-agent :status 'done :unread t)))
-        (edmacs-sidebar-agents-test--with-sidebar-buffer
+        (edmacs-test-support-with-sidebar-buffer
           (edmacs-sidebar-agents--insert-row agent)
           (let ((face (get-text-property (point-min) 'face)))
             (should (or (eq face 'bold) (and (listp face) (memq 'bold face))))))))
 
     (ert-deftest edmacs-sidebar-agents-test-insert-row-working-is-not-bold ()
       (let ((agent (edmacs-sidebar-agents-test--make-agent :status 'working)))
-        (edmacs-sidebar-agents-test--with-sidebar-buffer
+        (edmacs-test-support-with-sidebar-buffer
           (edmacs-sidebar-agents--insert-row agent)
           (should-not (text-property-any (point-min) (point-max) 'face 'bold)))))
 
@@ -347,13 +297,13 @@ below for the exact layered shape."
 agent-less worktree's row is byte-for-byte unchanged from before this
 phase, which is exactly what keeps sidebar-test.el's own worktree-count
 assertions passing untouched."
-      (edmacs-sidebar-agents-test--with-clean-state
-        (edmacs-sidebar-agents-test--with-sidebar-buffer
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (edmacs-test-support-with-sidebar-buffer
           (edmacs-sidebar-agents--on-worktree-section "/repo/no-agents/" t)
           (should (= (point-min) (point-max))))))
 
     (ert-deftest edmacs-sidebar-agents-test-label-suffix-counts-agents-for-root ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/repo/wt/" :instance "%1"))
         (edmacs-sidebar-agents-test--put
@@ -367,14 +317,14 @@ assertions passing untouched."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-agents-test-all-section-hidden-by-default ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put (edmacs-sidebar-agents-test--make-agent))
-        (edmacs-sidebar-agents-test--with-sidebar-buffer
+        (edmacs-test-support-with-sidebar-buffer
           (edmacs-sidebar-agents--insert-all-section (selected-frame))
           (should (= (point-min) (point-max))))))
 
     (ert-deftest edmacs-sidebar-agents-test-all-section-lists-in-attention-order ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (setq edmacs-sidebar-agents-show-all t)
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1"
@@ -382,7 +332,7 @@ assertions passing untouched."
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r2/" :instance "%2"
                                                   :status 'waiting :title "waiting-one"))
-        (edmacs-sidebar-agents-test--with-sidebar-buffer
+        (edmacs-test-support-with-sidebar-buffer
           (edmacs-sidebar-agents--insert-all-section (selected-frame))
           (should (string-match-p "ALL AGENTS" (buffer-string)))
           (should (< (progn (goto-char (point-min))
@@ -391,7 +341,7 @@ assertions passing untouched."
                             (search-forward "idle-one")))))))
 
     (ert-deftest edmacs-sidebar-agents-test-toggle-all-flips-and-redraws ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (let ((redraw-calls 0))
           (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
                      (lambda (_frame) (setq redraw-calls (1+ redraw-calls))))
@@ -413,7 +363,7 @@ assertions passing untouched."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-agents-test-visit-common-opens-tab-marks-read-redraws ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (let* ((agent (edmacs-sidebar-agents-test--make-agent
                        :root "/repo/wt/" :status 'done :unread t))
                (opened nil) (redraws 0))
@@ -475,14 +425,14 @@ nothing when there is no section at point at all -- the direct-call
 counterpart of edmacs-sidebar.el's own no-silent-no-op fix, since RET
 never reaches this function without one (`edmacs-sidebar-visit-at-point'
 only dispatches here for an `edmacs-sidebar-agent' section type)."
-      (edmacs-sidebar-agents-test--with-sidebar-buffer
+      (edmacs-test-support-with-sidebar-buffer
         (should-error (edmacs-sidebar-agents-visit) :type 'user-error)))
 
     (ert-deftest edmacs-sidebar-agents-test-visit-nil-value-reports ()
       "A section whose VALUE is nil -- `edmacs-sidebar-agents--insert-row'
 itself never constructs one this way, but a degenerate/direct-call
 construction could -- also reports rather than silently doing nothing."
-      (edmacs-sidebar-agents-test--with-sidebar-buffer
+      (edmacs-test-support-with-sidebar-buffer
         (magit-insert-section (edmacs-sidebar-agent nil)
           (insert "row\n"))
         (goto-char (point-min))
@@ -493,7 +443,7 @@ construction could -- also reports rather than silently doing nothing."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-agents-test-goto-attention-cycles-then-reports-none ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (let* ((waiting (edmacs-sidebar-agents-test--make-agent
                          :root "/r1/" :instance "%1" :status 'waiting :status-ts 100))
                (unread-done (edmacs-sidebar-agents-test--make-agent
@@ -533,7 +483,7 @@ construction could -- also reports rather than silently doing nothing."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-agents-test-transition-to-waiting-always-notifies ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (cl-letf (((symbol-function 'frame-focus-state) (lambda (_f) t)))  ; focused
           (let ((queued nil))
             (cl-letf (((symbol-function 'edmacs-sidebar-agents--queue-notify)
@@ -588,7 +538,7 @@ construction could -- also reports rather than silently doing nothing."
       "Several transitions inside the coalescing window collapse into one
 call to `edmacs-sidebar-agents-notify-function' -- a REAL timer, not a
 stubbed one, matching agents.el's own real-timer test convention."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (let* ((edmacs-sidebar-agents-coalesce-seconds 0.2)
                (calls nil)
                (edmacs-sidebar-agents-notify-function
@@ -605,7 +555,7 @@ stubbed one, matching agents.el's own real-timer test convention."
           (should (equal "two" (caar calls))))))
 
     (ert-deftest edmacs-sidebar-agents-test-observe-changes-drops-removed-key-no-notify ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (let ((key (cons "/repo/wt/" "%1")) (called nil))
           (puthash key 'working edmacs-sidebar-agents--last-state)
           (cl-letf (((symbol-function 'edmacs-sidebar-agents--on-transition)
@@ -619,7 +569,7 @@ stubbed one, matching agents.el's own real-timer test convention."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-agents-test-should-tick-requires-working-and-visible ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :status 'working))
         (cl-letf (((symbol-function 'edmacs-sidebar-agents--any-sidebar-visible-p)
@@ -630,7 +580,7 @@ stubbed one, matching agents.el's own real-timer test convention."
           (should-not (edmacs-sidebar-agents--should-tick-p)))))
 
     (ert-deftest edmacs-sidebar-agents-test-should-tick-false-with-no-working-agent ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :status 'idle))
         (cl-letf (((symbol-function 'edmacs-sidebar-agents--any-sidebar-visible-p)
@@ -638,7 +588,7 @@ stubbed one, matching agents.el's own real-timer test convention."
           (should-not (edmacs-sidebar-agents--should-tick-p)))))
 
     (ert-deftest edmacs-sidebar-agents-test-ensure-elapsed-timer-arms-and-disarms ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (cl-letf (((symbol-function 'edmacs-sidebar-agents--should-tick-p) (lambda () t)))
           (edmacs-sidebar-agents--ensure-elapsed-timer)
           (should (timerp edmacs-sidebar-agents--elapsed-timer)))
@@ -647,7 +597,7 @@ stubbed one, matching agents.el's own real-timer test convention."
           (should-not edmacs-sidebar-agents--elapsed-timer))))
 
     (ert-deftest edmacs-sidebar-agents-test-ensure-elapsed-timer-idempotent-when-already-armed ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (cl-letf (((symbol-function 'edmacs-sidebar-agents--should-tick-p) (lambda () t)))
           (edmacs-sidebar-agents--ensure-elapsed-timer)
           (let ((first edmacs-sidebar-agents--elapsed-timer))
@@ -659,7 +609,7 @@ stubbed one, matching agents.el's own real-timer test convention."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-agents-test-on-agents-changed-runs-all-three-steps ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (let ((observed nil) (redrawn nil) (checked nil))
           (cl-letf (((symbol-function 'edmacs-sidebar-agents--observe-changes)
                      (lambda (keys) (setq observed keys)))
@@ -681,7 +631,7 @@ stubbed one, matching agents.el's own real-timer test convention."
             (done (edmacs-sidebar-agents-test--make-agent :status 'done :unread nil))
             (working (edmacs-sidebar-agents-test--make-agent :status 'working))
             (idle (edmacs-sidebar-agents-test--make-agent :status 'idle)))
-        (edmacs-sidebar-agents-test--with-sidebar-buffer
+        (edmacs-test-support-with-sidebar-buffer
           (edmacs-sidebar-agents--insert-row waiting)
           (edmacs-sidebar-agents--insert-row done)
           (edmacs-sidebar-agents--insert-row working)
@@ -697,7 +647,7 @@ stubbed one, matching agents.el's own real-timer test convention."
 
     (ert-deftest edmacs-sidebar-agents-test-unread-done-layers-bold-over-done-face ()
       (let ((agent (edmacs-sidebar-agents-test--make-agent :status 'done :unread t)))
-        (edmacs-sidebar-agents-test--with-sidebar-buffer
+        (edmacs-test-support-with-sidebar-buffer
           (edmacs-sidebar-agents--insert-row agent)
           (should (equal (get-text-property (point-min) 'face)
                           (list 'bold 'edmacs-sidebar-agent-done-face))))))
@@ -824,7 +774,7 @@ whether or not `claude-term-registry.el' happens to be loaded first."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-agents-test-header-line-roll-up-counts-per-status ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
         (edmacs-sidebar-agents-test--put
@@ -839,7 +789,7 @@ whether or not `claude-term-registry.el' happens to be loaded first."
 a DIFFERENT project's worktree still counts, on a frame naming no one
 project -- one frame now shows every project, so a roll-up scoped to one
 no longer matches what the sidebar displays."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
         (edmacs-sidebar-agents-test--put
@@ -852,7 +802,7 @@ is handed -- it reads neither the retired per-frame repo parameter nor
 any per-repo worktree list. Structural since the frame-scoping wrapper
 was removed, but worth pinning: this is the phase 3 decision that the
 roll-up matches a tree showing every project, not one of them."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
         (edmacs-sidebar-agents-test--put
@@ -867,7 +817,7 @@ roll-up matches a tree showing every project, not one of them."
     (ert-deftest edmacs-sidebar-agents-test-header-line-omits-zero-counts ()
       "Only non-zero statuses appear -- the suffix renders inside a 30-column
 sidebar, so the prose form was truncated away entirely."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
         (should (equal "  [1⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))))
@@ -875,7 +825,7 @@ sidebar, so the prose form was truncated away entirely."
     (ert-deftest edmacs-sidebar-agents-test-header-line-fits-a-default-sidebar ()
       "The whole suffix fits `edmacs-sidebar-width' (30 body columns) even
 with two-digit counts in every status."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (dotimes (i 12)
           (edmacs-sidebar-agents-test--put
            (edmacs-sidebar-agents-test--make-agent
@@ -889,7 +839,7 @@ with two-digit counts in every status."
         (should (<= (length (edmacs-sidebar-agents--header-line (selected-frame))) 30))))
 
     (ert-deftest edmacs-sidebar-agents-test-header-line-nil-when-no-agents ()
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (should-not (edmacs-sidebar-agents--header-line (selected-frame)))))
 
     (ert-deftest edmacs-sidebar-agents-test-header-line-assigned-to-sidebar-extension-point ()
@@ -901,14 +851,14 @@ with two-digit counts in every status."
 
     (ert-deftest edmacs-sidebar-agents-test-collapsed-section-empty-when-no-agents ()
       "When no agents are tracked, collapsed section inserts nothing into buffer."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (with-temp-buffer
           (edmacs-sidebar-agents--collapsed-section (selected-frame) 40)
           (should (equal "" (buffer-string))))))
 
     (ert-deftest edmacs-sidebar-agents-test-collapsed-section-no-idle-agents ()
       "Idle agents are filtered out; inserts nothing when only idle agents exist."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'idle))
         (with-temp-buffer
@@ -917,7 +867,7 @@ with two-digit counts in every status."
 
     (ert-deftest edmacs-sidebar-agents-test-collapsed-section-formats-non-idle-agents ()
       "Non-idle agents render as glyph + first-letter-of-status, one per line."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
         (edmacs-sidebar-agents-test--put
@@ -932,7 +882,7 @@ with two-digit counts in every status."
 
     (ert-deftest edmacs-sidebar-agents-test-collapsed-section-respects-width ()
       "Each agent line fits within WIDTH columns using string-width measurement."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
         (edmacs-sidebar-agents-test--put
@@ -946,7 +896,7 @@ with two-digit counts in every status."
 
     (ert-deftest edmacs-sidebar-agents-test-collapsed-section-applies-face ()
       "Each agent line gets its status face applied."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'waiting))
         (with-temp-buffer
@@ -959,7 +909,7 @@ with two-digit counts in every status."
 
     (ert-deftest edmacs-sidebar-agents-test-collapsed-section-sorts-by-attention ()
       "Agents appear in attention order (waiting before working via --compare)."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         ;; Create agents in non-attention order to verify sorting
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
@@ -981,7 +931,7 @@ with two-digit counts in every status."
 
     (ert-deftest edmacs-sidebar-agents-test-collapsed-section-fits-at-real-width ()
       "At the real production collapsed width (4 columns), glyphs stay recognizable."
-      (edmacs-sidebar-agents-test--with-clean-state
+      (edmacs-test-support-with-clean-sidebar-agents-state
         (edmacs-sidebar-agents-test--put
          (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
         (edmacs-sidebar-agents-test--put

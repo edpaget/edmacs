@@ -91,13 +91,14 @@
 ;; `--reset-frame' is gone.
 ;;
 ;; Run with:
-;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;         -l modules/sidebar-buffers-live-test.el -f ert-run-tests-batch-and-exit
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el \
+;;         -l modules/sidebar-buffers-live-test.el -f edmacs-sidebar-buffers-live-test-run-and-exit
 ;;
 ;; To also exercise the second-frame tests:
-;;   scripts/pty-ert.sh emacs -Q --batch -l ert \
+;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/git-common-dir.el -l modules/sidebar-buffers-live-test.el \
-;;         -f ert-run-tests-batch-and-exit
+;;         -f edmacs-sidebar-buffers-live-test-run-and-exit
 
 ;;; Code:
 
@@ -113,30 +114,20 @@
 ;; Loading bufferlo + windows.el + sidebar.el + sidebar-buffers.el for real
 ;; ==========================================================================
 
-(defun edmacs-sidebar-buffers-live-test--locate-straight-build-root ()
-  "Same logic as sidebar-agents-live-test.el's own helper of the same shape."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
 (defvar edmacs-sidebar-buffers-live-test--build-root
-  (edmacs-sidebar-buffers-live-test--locate-straight-build-root))
+  (edmacs-test-support-straight-build-root))
+
+(defconst edmacs-sidebar-buffers-live-test--self-file
+  (or load-file-name buffer-file-name))
 
 (if (or (null edmacs-sidebar-buffers-live-test--build-root)
         (not (file-directory-p (expand-file-name
                                  "bufferlo" edmacs-sidebar-buffers-live-test--build-root))))
 
     (ert-deftest edmacs-sidebar-buffers-live-test-deps-unavailable ()
-      (ert-skip "magit-section's or bufferlo's straight build was not found in \
+      (edmacs-test-support-report-suite-unavailable
+       edmacs-sidebar-buffers-live-test--self-file
+       "magit-section's or bufferlo's straight build was not found in \
 this checkout or its sibling main checkout; bootstrap straight once (open this \
 worktree in a real Emacs session) to enable this suite"))
 
@@ -411,41 +402,6 @@ of ROOT's own buffers subsection in FRAME's sidebar buffer."
         (let ((section (edmacs-sidebar-buffers-live-test--find-buffers-root-section root)))
           (should section)
           (buffer-substring (oref section start) (oref section end)))))
-
-    (defun edmacs-sidebar-buffers-live-test--make-second-frame-or-skip ()
-      "Same convention as sidebar-test.el's own helper of the same shape.
-Extended to clean up after itself on the failure path: a failed tty
-`make-frame' with no real controlling terminal fires
-`before-make-frame-hook' (which bufferlo uses to set its own
-`bufferlo--tab-include-exclude-buffers-inhibit' flag) but errors before
-ever reaching `after-make-frame-functions' (which is what normally
-clears it) -- left alone, that flag stays permanently set for the rest
-of this batch process, silently disabling bufferlo's own new-tab
-buffer-list reset for every tab created afterward, in every frame
-\(observed: this broke `per-tab-isolation's `tab-bar-new-tab' call when
-it ran immediately after this test). It can also leave a half-made,
-non-functional frame behind and change the selected frame. All three
-are undone here before skipping."
-      (let ((original (selected-frame))
-            (before (frame-list)))
-        (cl-flet ((cleanup-and-skip (msg)
-                    (select-frame original 'norecord)
-                    (dolist (f (frame-list))
-                      (unless (or (memq f before) (not (frame-live-p f)))
-                        (ignore-errors (delete-frame f))))
-                    (when (boundp 'bufferlo--tab-include-exclude-buffers-inhibit)
-                      (setq bufferlo--tab-include-exclude-buffers-inhibit nil))
-                    (ert-skip msg)))
-          (condition-case e
-              (let ((frame (make-frame '((window-system . nil)
-                                          (tty . "/dev/tty")
-                                          (tty-type . "xterm")))))
-                (if (frame-live-p frame)
-                    frame
-                  (cleanup-and-skip "could not create a second frame in this batch environment")))
-            (error (cleanup-and-skip (format "could not create a second frame in this \
-batch environment (no controlling terminal? run under `scripts/pty-ert.sh \
-emacs ...' to exercise this test): %s" e)))))))
 
     ;; ==========================================================================
     ;; AC1 -- directory-tree grouping/ordering
@@ -770,7 +726,7 @@ before calling the helper and re-selected afterward -- otherwise f2 and
 regardless of whether the toggle is actually frame-local (see this
 file's own Commentary above)."
       (let* ((f1 (selected-frame))
-             (f2 (edmacs-sidebar-buffers-live-test--make-second-frame-or-skip)))
+             (f2 (edmacs-test-support-make-second-frame-or-skip)))
         (unwind-protect
             (progn
               (select-frame f1 'norecord)
@@ -936,7 +892,7 @@ in sidebar-test.el). Still catches the same frame-argument-mixup bug
 class: a wrong FRAME threaded into `bufferlo-buffer-list' renders the
 wrong tab's buffers regardless of how many buffers exist at once."
       (let* ((f1 (selected-frame))
-             (f2 (edmacs-sidebar-buffers-live-test--make-second-frame-or-skip))
+             (f2 (edmacs-test-support-make-second-frame-or-skip))
              (r1 (edmacs-sidebar-buffers-live-test--make-root))
              (r2 (edmacs-sidebar-buffers-live-test--make-root)))
         (unwind-protect
@@ -1069,3 +1025,19 @@ render/navigation/rename path."
               (ignore-errors (tab-bar-rename-tab "")))))))
 
     ))
+
+(defun edmacs-sidebar-buffers-live-test-run-and-exit ()
+  "Run this suite, undo any timer/buffer/`tab-bar-mode' it leaks, then exit.
+Point `-f' at this instead of `ert-run-tests-batch-and-exit' directly:
+that function calls `kill-emacs' itself, and `kill-emacs' does not run
+Lisp `unwind-protect' cleanups up its caller's stack -- wrapping ITS call
+in `edmacs-test-support-with-hermetic-state' would never actually run the
+cleanup. Calling the non-exiting `ert-run-tests-batch' inside the
+hermetic-state form, then exiting afterward with the same status
+`ert-run-tests-batch-and-exit' would have used, gets both properties."
+  (let (stats)
+    (edmacs-test-support-with-hermetic-state
+      (setq stats (ert-run-tests-batch nil)))
+    (kill-emacs (if (zerop (ert-stats-completed-unexpected stats)) 0 1))))
+
+;;; sidebar-buffers-live-test.el ends here

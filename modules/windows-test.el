@@ -5,10 +5,10 @@
 ;; live subprocess.
 ;;
 ;; Run with:
-;;   scripts/run-ert-suite.sh 30 emacs -Q --batch -l ert \
+;;   scripts/run-ert-suite.sh 30 emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/git-common-dir.el -l modules/claude-term.el \
 ;;         -l modules/workspaces.el -l modules/windows.el \
-;;         -l modules/windows-test.el -f ert-run-tests-batch-and-exit
+;;         -l modules/windows-test.el -f edmacs-windows-test-run-and-exit
 ;;
 ;; `modules/workspaces.el' is on that line because the AC4 load-order test
 ;; below loads `modules/sidebar.el' for real, leaving sidebar.el's
@@ -180,21 +180,17 @@
   (save-window-excursion
     (delete-other-windows)
     (edmacs-window-set-main (selected-window))
-    (let ((tabs-before (length (tab-bar-tabs))))
-      (unwind-protect
-          (progn
-            ;; `tab-bar-new-tab' runs `delete-other-windows' on a fresh
-            ;; window configuration, but `edmacs-windows--on-tab-open' (this
-            ;; phase's `tab-bar-tab-post-open-functions' hook) designates the
-            ;; new tab's sole window as main immediately.
-            (tab-bar-new-tab)
-            (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
-                               (window-list nil 'no-minibuf)))
-            (tab-bar-switch-to-prev-tab)
-            (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
-                               (window-list nil 'no-minibuf))))
-        (while (> (length (tab-bar-tabs)) tabs-before)
-          (tab-bar-close-tab))))))
+    (edmacs-test-support-with-tabs-restored
+      ;; `tab-bar-new-tab' runs `delete-other-windows' on a fresh
+      ;; window configuration, but `edmacs-windows--on-tab-open' (this
+      ;; phase's `tab-bar-tab-post-open-functions' hook) designates the
+      ;; new tab's sole window as main immediately.
+      (tab-bar-new-tab)
+      (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
+                         (window-list nil 'no-minibuf)))
+      (tab-bar-switch-to-prev-tab)
+      (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
+                         (window-list nil 'no-minibuf))))))
 
 ;; ============================================================================
 ;; windmove reachability: `no-other-window' + `edmacs-windmove-reachable'
@@ -370,48 +366,24 @@ never by holding onto the pre-restore object."
 ;; `-Q' and why a broken/never-bootstrapped straight build must skip
 ;; cleanly rather than error the whole suite out.
 
-(defun edmacs-windows-test--locate-straight-build-root ()
-  "Return this checkout's `straight/build' directory, or nil.
-Tries this checkout's own `straight/build' first, then falls back to the
-sibling main `edmacs' checkout's -- a roadmap worktree lives under
-`<parent>/edmacs__worktrees/<name>', sibling to the main
-`<parent>/edmacs' checkout, and straight's build cache is per-checkout."
-  (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-build (expand-file-name
-                           (concat repo-name "/straight/build") projects-dir)))
-         (and (file-directory-p main-build) main-build))))))
-
-(defun edmacs-windows-test--add-magit-section-deps (build-root)
-  "Add `magit-section' and its transitive deps under BUILD-ROOT to `load-path'.
-cl-lib, eieio, subr-x, format-spec, and cursor-sensor ship with Emacs core
-and need no straight resolution; only these do."
-  (dolist (dep '("compat" "cond-let" "llama" "transient" "seq" "magit-section"))
-    (let ((dir (expand-file-name dep build-root)))
-      (when (file-directory-p dir)
-        (add-to-list 'load-path dir)))))
-
 (defvar edmacs-windows-test--build-root
-  (edmacs-windows-test--locate-straight-build-root)
+  (edmacs-test-support-straight-build-root)
   "This checkout's (or its sibling main checkout's) `straight/build' root.")
+
+(defconst edmacs-windows-test--self-file (or load-file-name buffer-file-name))
 
 (if (null edmacs-windows-test--build-root)
 
     (ert-deftest edmacs-windows-test-window-sides-slots-load-order-unavailable ()
-      (ert-skip "magit-section's straight build was not found in this checkout \
+      (edmacs-test-support-report-suite-unavailable
+       edmacs-windows-test--self-file
+       "magit-section's straight build was not found in this checkout \
 or its sibling main checkout; bootstrap straight once (open this worktree in \
 a real Emacs session) to enable this test"))
 
   (progn
 
-    (edmacs-windows-test--add-magit-section-deps edmacs-windows-test--build-root)
+    (edmacs-test-support-add-magit-section-deps edmacs-windows-test--build-root)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
 
     (ert-deftest edmacs-windows-test-window-sides-slots-load-order ()
@@ -1076,27 +1048,8 @@ windows.el itself owns only the right one."
 ;; invocation self-contained, matching every other *-test.el file's
 ;; convention in this repo.
 
-(defun edmacs-windows-test--locate-straight-repos-root ()
-  "Return this checkout's `straight/repos' directory, or nil.
-Tries this checkout's own `straight/repos' first, then falls back to the
-sibling main `edmacs' checkout's -- see
-`edmacs-windows-test--locate-straight-build-root' above for why a
-roadmap worktree needs the fallback."
-  (or
-   (let ((here (expand-file-name "straight/repos" default-directory)))
-     (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
-          (worktrees-dir (directory-file-name (file-name-directory root))))
-     (when (string-suffix-p "__worktrees" worktrees-dir)
-       (let* ((projects-dir (file-name-directory worktrees-dir))
-              (repo-name (string-remove-suffix
-                          "__worktrees" (file-name-nondirectory worktrees-dir)))
-              (main-repos (expand-file-name
-                           (concat repo-name "/straight/repos") projects-dir)))
-         (and (file-directory-p main-repos) main-repos))))))
-
 (defvar edmacs-windows-test--repos-root
-  (edmacs-windows-test--locate-straight-repos-root)
+  (edmacs-test-support-straight-repos-root)
   "This checkout's (or its sibling main checkout's) `straight/repos' root.")
 
 (defvar edmacs-windows-test--keybindings-loaded nil
@@ -1310,15 +1263,11 @@ correctly re-shows a LEFT sidebar window in the same new tab -- see this
 phase's own Context on the two hooks coordinating, not colliding."
   (save-window-excursion
     (delete-other-windows)
-    (let ((tabs-before (length (tab-bar-tabs))))
-      (unwind-protect
-          (progn
-            (tab-bar-new-tab)
-            (should (= (edmacs-windows-test--nonside-count) 1))
-            (should (window-parameter (selected-window) 'edmacs-main))
-            (should (null (edmacs-stack-windows))))
-        (while (> (length (tab-bar-tabs)) tabs-before)
-          (tab-bar-close-tab))))))
+    (edmacs-test-support-with-tabs-restored
+      (tab-bar-new-tab)
+      (should (= (edmacs-windows-test--nonside-count) 1))
+      (should (window-parameter (selected-window) 'edmacs-main))
+      (should (null (edmacs-stack-windows))))))
 
 (ert-deftest edmacs-windows-test-tab-switch-does-not-flatten-a-healthy-layout ()
   "The wedge guard on `tab-bar-select-tab' must not touch a usable frame.
@@ -1447,23 +1396,21 @@ nothing but more side windows, and `walk-window-tree' eventually
 exceeding `max-lisp-eval-depth'."
   (save-window-excursion
     (delete-other-windows)
-    (let ((tabs-before (length (tab-bar-tabs)))
-          (buf (generate-new-buffer "ewt-side-newtab")))
+    (let ((buf (generate-new-buffer "ewt-side-newtab")))
       (unwind-protect
-          (let ((side (display-buffer-in-side-window
-                       buf '((side . left) (slot . 0)
-                             (window-parameters
-                              . ((no-delete-other-windows . t)))))))
-            (set-window-dedicated-p side t)
-            (select-window side)
-            (tab-bar-new-tab)
-            (should (>= (edmacs-windows-test--nonside-count) 1))
-            (let ((main (edmacs-main-window)))
-              (should main)
-              (should-not (window-parameter main 'window-side))
-              (should-not (window-dedicated-p main))))
-        (while (> (length (tab-bar-tabs)) tabs-before)
-          (tab-bar-close-tab))
+          (edmacs-test-support-with-tabs-restored
+            (let ((side (display-buffer-in-side-window
+                         buf '((side . left) (slot . 0)
+                               (window-parameters
+                                . ((no-delete-other-windows . t)))))))
+              (set-window-dedicated-p side t)
+              (select-window side)
+              (tab-bar-new-tab)
+              (should (>= (edmacs-windows-test--nonside-count) 1))
+              (let ((main (edmacs-main-window)))
+                (should main)
+                (should-not (window-parameter main 'window-side))
+                (should-not (window-dedicated-p main)))))
         (kill-buffer buf)))))
 
 ;; ---------------------------------------------------------------------------
@@ -1480,14 +1427,13 @@ exceeding `max-lisp-eval-depth'."
 (ert-deftest edmacs-windows-test-stack-round-trips-next-prev-tab ()
   (save-window-excursion
     (delete-other-windows)
-    (let* ((tabs-before (length (tab-bar-tabs)))
-           (main1-buf (generate-new-buffer "ewt-persist-main-1"))
+    (let* ((main1-buf (generate-new-buffer "ewt-persist-main-1"))
            (pane1a (generate-new-buffer "ewt-persist-pane-1a"))
            (pane1b (generate-new-buffer "ewt-persist-pane-1b"))
            (main2-buf (generate-new-buffer "ewt-persist-main-2"))
            (pane2a (generate-new-buffer "ewt-persist-pane-2a")))
       (unwind-protect
-          (progn
+          (edmacs-test-support-with-tabs-restored
             (set-window-buffer (selected-window) main1-buf)
             (edmacs-window-set-main (selected-window))
             (edmacs-windows-test--display-claude-term-shaped-pane pane1a 0)
@@ -1504,8 +1450,6 @@ exceeding `max-lisp-eval-depth'."
                 (tab-bar-switch-to-next-tab)
                 (should (eq (window-buffer (edmacs-main-window)) main2-buf))
                 (should (seq-set-equal-p (edmacs-windows-test--stack-pairs) tab2-pairs #'equal)))))
-        (while (> (length (tab-bar-tabs)) tabs-before)
-          (tab-bar-close-tab))
         (dolist (b (list main1-buf pane1a pane1b main2-buf pane2a))
           (when (buffer-live-p b) (kill-buffer b)))))))
 
@@ -2129,67 +2073,9 @@ stock `quit-restore-window', which can resurrect a stale prior buffer."
 ;; ============================================================================
 ;; The batch frame is effectively 80x25 for splitting purposes no matter
 ;; what `set-frame-width' reports, so a sized `(split-window w 40 'right)'
-;; signals "Window ... too small for splitting". Every helper below uses
-;; sizeless splits only.
-
-(defun edmacs-windows-test--make-wedged-frame ()
-  "Turn the selected frame into [left-side | right-side], zero non-side
-windows -- the shape `edmacs-main-window' reports nil for. Returns the
-two windows, left first. Callers run inside `save-window-excursion'."
-  (delete-other-windows)
-  (let* ((left (selected-window))
-         (right (split-window left nil 'right)))
-    (dolist (w (list left right))
-      (set-window-parameter w 'edmacs-main nil))
-    (set-window-parameter left 'window-side 'left)
-    (set-window-parameter left 'window-slot 0)
-    (set-window-parameter left 'no-other-window t)
-    (set-window-parameter left 'no-delete-other-windows t)
-    (set-window-parameter right 'window-side 'right)
-    (set-window-parameter right 'window-slot 0)
-    (list left right)))
-
-(defun edmacs-windows-test--make-dedicated-wedged-frame ()
-  "Like `edmacs-windows-test--make-wedged-frame', but the selected window is
-a DEDICATED left side window and two undedicated right side windows sit
-beside it -- the real-world shape, where repair picks one of the others as
-its survivor and deletes the window the command was invoked from.
-Returns the three windows, left first."
-  (delete-other-windows)
-  (let* ((left (selected-window))
-         (right (split-window left nil 'right))
-         (right2 (split-window right nil 'below)))
-    (dolist (w (list left right right2))
-      (set-window-parameter w 'edmacs-main nil))
-    (set-window-parameter left 'window-side 'left)
-    (set-window-parameter left 'window-slot 0)
-    (set-window-parameter left 'no-other-window t)
-    (set-window-parameter left 'no-delete-other-windows t)
-    (set-window-dedicated-p left t)
-    (set-window-parameter right 'window-side 'right)
-    (set-window-parameter right 'window-slot 0)
-    (set-window-parameter right2 'window-side 'right)
-    (set-window-parameter right2 'window-slot 1)
-    (select-window left)
-    (list left right right2)))
-
-(defun edmacs-windows-test--make-sole-side-window-frame ()
-  "Turn the selected frame into ONE dedicated left side window that IS the
-frame root -- `window-parent' nil. The shape actually observed in the
-running daemon (`:nwin 1 :root-side left'), and the one the two helpers
-above cannot build: with no parent, `delete-window' signals \"Attempt to
-delete minibuffer or sole ordinary window\" and `delete-other-windows'
-is a no-op, so repair has to release the window in place rather than
-collapse onto a sibling. Returns the window."
-  (delete-other-windows)
-  (let ((window (selected-window)))
-    (set-window-parameter window 'edmacs-main nil)
-    (set-window-parameter window 'window-side 'left)
-    (set-window-parameter window 'window-slot 0)
-    (set-window-parameter window 'no-other-window t)
-    (set-window-parameter window 'no-delete-other-windows t)
-    (set-window-dedicated-p window t)
-    window))
+;; signals "Window ... too small for splitting". The three wedged shapes
+;; below all come from `edmacs-test-support-make-wedged-frame' (nil,
+;; `dedicated', `sole'), which uses sizeless splits only.
 
 (ert-deftest edmacs-windows-test-core-sides-check-passes-a-mainless-frame ()
   "Pins why an edmacs-side guard is needed at all: core reads a frame of
@@ -2200,7 +2086,7 @@ branch is unreachable and `window--sides-check' resets nothing --
 while `edmacs-main-window', which only counts leaf non-side windows,
 correctly reports nil."
   (save-window-excursion
-    (cl-destructuring-bind (left right) (edmacs-windows-test--make-wedged-frame)
+    (cl-destructuring-bind (left right) (edmacs-test-support-make-wedged-frame)
       (should-not (window--sides-check-failed (selected-frame)))
       (window--sides-check (selected-frame))
       (should (eq (window-parameter left 'window-side) 'left))
@@ -2218,7 +2104,7 @@ sidebar whenever `modules/sidebar.el' is loaded into the session -- so
 the assertions are about the repaired main window, not about the frame
 being side-window-free."
   (save-window-excursion
-    (cl-destructuring-bind (_left right) (edmacs-windows-test--make-wedged-frame)
+    (cl-destructuring-bind (_left right) (edmacs-test-support-make-wedged-frame)
       (let ((main (edmacs-windows-repair-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
@@ -2239,7 +2125,7 @@ both are registered in `window-persistent-parameters', so a leftover would
 re-persist through each `window-state' round trip and leave main
 mode-line-less for whatever buffer is reused into it next."
   (save-window-excursion
-    (cl-destructuring-bind (left right) (edmacs-windows-test--make-wedged-frame)
+    (cl-destructuring-bind (left right) (edmacs-test-support-make-wedged-frame)
       ;; The popup is the undedicated window, so repair's survivor search
       ;; prefers it over the dedicated sidebar -- it becomes main.
       (set-window-dedicated-p left t)
@@ -2263,7 +2149,7 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
     (let ((buf (generate-new-buffer "ewt-wedged-dedicated")))
       (unwind-protect
           (cl-destructuring-bind (left right)
-              (edmacs-windows-test--make-wedged-frame)
+              (edmacs-test-support-make-wedged-frame)
             (set-window-buffer left buf)
             (dolist (w (list left right)) (set-window-dedicated-p w t))
             (let ((main (edmacs-windows-repair-frame (selected-frame))))
@@ -2277,7 +2163,7 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
     (let* ((seen nil)
            (edmacs-windows-frame-repaired-functions
             (list (lambda (frame) (push frame seen)))))
-      (edmacs-windows-test--make-wedged-frame)
+      (edmacs-test-support-make-wedged-frame)
       (edmacs-windows-repair-frame (selected-frame))
       (should (equal seen (list (selected-frame))))
       ;; A healthy frame does not re-run it.
@@ -2288,7 +2174,7 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
   "The hook may itself reach repair; the guard must make that a no-op
 rather than a recursion."
   (save-window-excursion
-    (edmacs-windows-test--make-wedged-frame)
+    (edmacs-test-support-make-wedged-frame)
     (let ((edmacs-windows--repairing t))
       (should-not (edmacs-windows-repair-frame (selected-frame)))
       (should (edmacs-windows-frame-wedged-p (selected-frame))))))
@@ -2300,7 +2186,7 @@ collapse a popup. Batch cannot make either kind (`make-frame' has no
 terminal, and `parent-frame' cannot name the frame itself), so the two
 frame parameters are stubbed instead."
   (save-window-excursion
-    (edmacs-windows-test--make-wedged-frame)
+    (edmacs-test-support-make-wedged-frame)
     (should (edmacs-windows-frame-wedged-p (selected-frame)))
     (let ((real (symbol-function 'frame-parameter)))
       (dolist (stub '((parent-frame . t) (minibuffer . only)))
@@ -2324,7 +2210,7 @@ frame) because `display-buffer-in-side-window' always succeeds."
           (frames (length (frame-list))))
       (unwind-protect
           (progn
-            (edmacs-windows-test--make-wedged-frame)
+            (edmacs-test-support-make-wedged-frame)
             (let ((win (display-buffer buf)))
               (should (window-live-p win))
               (should-not (window-parameter win 'window-side))
@@ -2352,7 +2238,7 @@ frame) because `display-buffer-in-side-window' always succeeds."
 
 (ert-deftest edmacs-windows-test-sweep-stale-panes-repairs-a-wedged-frame ()
   (save-window-excursion
-    (edmacs-windows-test--make-wedged-frame)
+    (edmacs-test-support-make-wedged-frame)
     (let ((main (edmacs-stack-sweep-stale-panes (selected-frame))))
       (should (window-live-p main))
       (should (eq main (edmacs-main-window)))
@@ -2365,7 +2251,7 @@ point in a `no-other-window' side window with no way back."
                      edmacs-window-delete-or-demote
                      edmacs-stack-toggle))
     (save-window-excursion
-      (edmacs-windows-test--make-wedged-frame)
+      (edmacs-test-support-make-wedged-frame)
       (funcall command)
       (should (edmacs-main-window))
       (should-not (edmacs-windows-frame-wedged-p (selected-frame))))))
@@ -2381,7 +2267,7 @@ window itself."
                      edmacs-window-delete-or-demote
                      edmacs-stack-toggle))
     (save-window-excursion
-      (edmacs-windows-test--make-dedicated-wedged-frame)
+      (edmacs-test-support-make-wedged-frame 'dedicated)
       (funcall command)
       (should (edmacs-main-window))
       (should (window-live-p (edmacs-main-window)))
@@ -2393,7 +2279,7 @@ so the sole window itself is stripped, un-dedicated and evicted to
 *scratch* -- and no new frame is popped to escape it."
   (save-window-excursion
     (let ((frames (length (frame-list)))
-          (window (edmacs-windows-test--make-sole-side-window-frame)))
+          (window (edmacs-test-support-make-wedged-frame 'sole)))
       (should-not (window-parent window))
       (should (edmacs-windows-frame-wedged-p (selected-frame)))
       (let ((main (edmacs-windows-repair-frame (selected-frame))))
@@ -2417,7 +2303,7 @@ it was never reached."
           (frames (length (frame-list))))
       (unwind-protect
           (progn
-            (edmacs-windows-test--make-sole-side-window-frame)
+            (edmacs-test-support-make-wedged-frame 'sole)
             (let ((win (display-buffer buf)))
               (should (window-live-p win))
               (should-not (window-parameter win 'window-side))
@@ -2436,7 +2322,7 @@ regression this asserts against."
                      edmacs-window-delete-or-demote
                      edmacs-stack-toggle))
     (save-window-excursion
-      (edmacs-windows-test--make-sole-side-window-frame)
+      (edmacs-test-support-make-wedged-frame 'sole)
       (funcall command)
       (should (window-live-p (edmacs-main-window)))
       (should-not (edmacs-windows-frame-wedged-p (selected-frame))))))
@@ -2553,5 +2439,19 @@ main takes a stack pane's buffer and hands its own -- already duplicated
             (should (= 2 (length (edmacs-stack-windows)))))
         (kill-buffer a)
         (kill-buffer b)))))
+
+(defun edmacs-windows-test-run-and-exit ()
+  "Run this suite, undo any timer/buffer/`tab-bar-mode' it leaks, then exit.
+Point `-f' at this instead of `ert-run-tests-batch-and-exit' directly:
+that function calls `kill-emacs' itself, and `kill-emacs' does not run
+Lisp `unwind-protect' cleanups up its caller's stack -- wrapping ITS call
+in `edmacs-test-support-with-hermetic-state' would never actually run the
+cleanup. Calling the non-exiting `ert-run-tests-batch' inside the
+hermetic-state form, then exiting afterward with the same status
+`ert-run-tests-batch-and-exit' would have used, gets both properties."
+  (let (stats)
+    (edmacs-test-support-with-hermetic-state
+      (setq stats (ert-run-tests-batch nil)))
+    (kill-emacs (if (zerop (ert-stats-completed-unexpected stats)) 0 1))))
 
 ;;; windows-test.el ends here
