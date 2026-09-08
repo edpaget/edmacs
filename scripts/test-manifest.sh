@@ -41,7 +41,7 @@ MANIFEST=(
   "claude-term-approval-parity-live-test|batch|30|2|modules/git-common-dir.el,modules/claude-term.el,modules/claude-term-registry.el,modules/claude-term-approval-parity-live-test.el|ert-run-tests-batch-and-exit"
   "claude-term-live-test|batch|30|5|modules/claude-term.el,modules/claude-term-registry.el,modules/claude-term-live-test.el|ert-run-tests-batch-and-exit"
   "claude-term-registry-live-test|batch|15|0|modules/git-common-dir.el,modules/claude-term.el,modules/claude-term-registry.el,modules/claude-term-registry-live-test.el|ert-run-tests-batch-and-exit"
-  "claude-term-registry-test|batch|15|0|modules/git-common-dir.el,modules/claude-term.el,modules/claude-term-registry.el,modules/claude-term-registry-test.el|ert-run-tests-batch-and-exit"
+  "claude-term-registry-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/claude-term.el,modules/claude-term-registry.el,modules/claude-term-registry-test.el|ert-run-tests-batch-and-exit"
   "claude-term-test|batch|15|0|modules/claude-term.el,modules/claude-term-test.el|ert-run-tests-batch-and-exit"
   "claude-usage-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/claude-usage-test.el|ert-run-tests-batch-and-exit"
   "core-live-test|batch|15|0|modules/test-support.el,modules/core-live-test.el|ert-run-tests-batch-and-exit"

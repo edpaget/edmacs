@@ -323,10 +323,21 @@ nil (default) -- [left-side | right-side], zero non-side windows -- the
 
 (defmacro edmacs-test-support-with-hermetic-state (&rest body)
   "Run BODY, then undo any timer, buffer, or `tab-bar-mode' state it leaked.
-Snapshots `timer-list', `(buffer-list)' and `tab-bar-mode' before BODY;
-afterward (regardless of BODY's outcome, via `unwind-protect'), cancels
-any timer not in the snapshot, kills any live buffer not in the
-snapshot, and restores `tab-bar-mode' to its snapshotted value.
+Snapshots `timer-list', the live buffer names, and `tab-bar-mode' before
+BODY; afterward (regardless of BODY's outcome, via `unwind-protect'),
+cancels any timer not in the snapshot, kills any live buffer whose name
+was not in the snapshot, and restores `tab-bar-mode' to its snapshotted
+value.
+
+Buffers are tracked by NAME rather than object identity: a test that
+kills and recreates a pre-existing, module-owned buffer (e.g. a helper
+that resets `*Warnings*') gets back a new object with the same name, and
+name-based tracking recognizes it as already accounted for instead of
+killing it as \"new\" -- object-identity tracking did exactly that and
+permanently lost the real buffer the one time this ran. Timers have no
+such stable identity to key on, so they stay identity-tracked; a
+production debounce timer a test reschedules (cancel-and-replace, same
+callback) is treated as new and canceled at cleanup, same as before.
 
 Meant to wrap a whole suite's run once -- around the call to
 `ert-run-tests-batch', not around each `ert-deftest' body -- matching
@@ -335,7 +346,8 @@ rather than a per-test guarantee that could paper over one test's real
 dependency on state an earlier test in the same file left behind."
   (declare (indent 0))
   `(let ((edmacs-test-support--timers-before (copy-sequence timer-list))
-         (edmacs-test-support--buffers-before (copy-sequence (buffer-list)))
+         (edmacs-test-support--buffer-names-before
+          (mapcar #'buffer-name (buffer-list)))
          (edmacs-test-support--tab-bar-mode-before tab-bar-mode))
      (unwind-protect
          (progn ,@body)
@@ -344,7 +356,8 @@ dependency on state an earlier test in the same file left behind."
            (cancel-timer timer)))
        (dolist (buf (buffer-list))
          (when (and (buffer-live-p buf)
-                    (not (memq buf edmacs-test-support--buffers-before)))
+                    (not (member (buffer-name buf)
+                                 edmacs-test-support--buffer-names-before)))
            (kill-buffer buf)))
        (unless (eq tab-bar-mode edmacs-test-support--tab-bar-mode-before)
          (tab-bar-mode (if edmacs-test-support--tab-bar-mode-before 1 -1))))))

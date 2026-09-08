@@ -69,10 +69,14 @@
 Also reused by the evil lookup below -- a second, independent optional
 straight dependency.")
 
+(defconst claude-usage-test--self-file (or load-file-name buffer-file-name))
+
 (if (null claude-usage-test--build-root)
 
     (ert-deftest claude-usage-test-magit-section-unavailable ()
-      (ert-skip "magit-section's straight build was not found in this checkout \
+      (edmacs-test-support-report-suite-unavailable
+       claude-usage-test--self-file
+       "magit-section's straight build was not found in this checkout \
 or its sibling main checkout; bootstrap straight once (open this worktree in \
 a real Emacs session) to enable this suite"))
 

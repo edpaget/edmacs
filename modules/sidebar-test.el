@@ -62,6 +62,8 @@
 (setq native-comp-enable-subr-trampolines nil)
 
 (defvar edmacs-sidebar-test--build-root
+  ;; Formerly this file's own `edmacs-sidebar-test--locate-straight-build-root';
+  ;; consolidated into modules/test-support.el's `edmacs-test-support-straight-build-root'.
   (edmacs-test-support-straight-build-root)
   "This checkout's (or its sibling main checkout's) `straight/build' root.
 Also reused by the rotate.el lookup below -- a second, independent

@@ -55,10 +55,14 @@
 (defvar edmacs-geometry-test--build-root
   (edmacs-test-support-straight-build-root))
 
+(defconst edmacs-geometry-test--self-file (or load-file-name buffer-file-name))
+
 (if (null edmacs-geometry-test--build-root)
 
     (ert-deftest edmacs-geometry-test-straight-unavailable ()
-      (ert-skip "no bootstrapped straight/build found in this checkout or its \
+      (edmacs-test-support-report-suite-unavailable
+       edmacs-geometry-test--self-file
+       "no bootstrapped straight/build found in this checkout or its \
 sibling main checkout; sidebar.el's `magit-section' dependency cannot be \
 resolved"))
 

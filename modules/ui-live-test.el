@@ -61,10 +61,14 @@
   (edmacs-test-support-straight-build-root)
   "This checkout's (or its sibling main checkout's) `straight/build' root.")
 
+(defconst edmacs-ui-live-test--self-file (or load-file-name buffer-file-name))
+
 (if (null edmacs-ui-live-test--build-root)
 
     (ert-deftest edmacs-ui-live-test-straight-unavailable ()
-      (ert-skip "no bootstrapped straight/build found in this checkout or its \
+      (edmacs-test-support-report-suite-unavailable
+       edmacs-ui-live-test--self-file
+       "no bootstrapped straight/build found in this checkout or its \
 sibling main checkout; bootstrap straight once (open this worktree in a real \
 Emacs session) to enable this suite"))
 
