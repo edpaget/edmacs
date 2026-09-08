@@ -9,12 +9,19 @@
 ;;   scripts/run-ert-suite.sh 120 \
 ;;     emacs -Q --batch -l ert \
 ;;           -l modules/claude-lib.el \
+;;           -l modules/claude-lib-view.el \
 ;;           -l modules/claude-lib-drive.el \
 ;;           -l modules/claude-lib-drive-test.el \
 ;;           -f ert-run-tests-batch-and-exit
 ;;
 ;; The budget is generous because `claude-lib-check-q' forks two real
 ;; `emacs -Q --batch' children per check.
+;;
+;; `claude-lib-view.el' is loaded even though this file tests
+;; `claude-lib-drive.el': the skill document names
+;; `claude-lib-render-rasterize', and
+;; `claude-lib-drive-test-skill-names-only-live-symbols' resolves every
+;; `claude-lib-' symbol the skill mentions against the running image.
 ;;
 ;; NOT HERE, and deliberately: everything about minibuffer PROMPTS.
 ;; Under `--batch', `noninteractive' is t and `read-from-minibuffer'
@@ -433,10 +440,10 @@ docstrings, which would go stale invisibly."
                                   (format "modules/%s.el" symbol)
                                   claude-lib-drive-test--repo-root)))))))
 
-(ert-deftest claude-lib-drive-test-skill-carries-no-plugin-manifest ()
-  "Phase 7 owns the manifest and the injection; this phase seeds content only."
-  (should-not (file-exists-p (expand-file-name "claude-plugin/.claude-plugin/plugin.json"
-                                               claude-lib-drive-test--repo-root))))
+(ert-deftest claude-lib-drive-test-skill-carries-the-plugin-manifest ()
+  "Phase 7 has landed: the manifest it owns now exists alongside the skill."
+  (should (file-exists-p (expand-file-name "claude-plugin/.claude-plugin/plugin.json"
+                                           claude-lib-drive-test--repo-root))))
 
 ;; ============================================================================
 ;; The scratch script's guards, as plain text -- lifecycle is in the live suite
