@@ -984,12 +984,17 @@ buffer, which callers always arrange to be the one WINDOW displays."
                        (goto-char (point-max))
                        (vertical-motion (- body-height) window)
                        (point))))
-          ;; Point wins in the window the user is actually in. Forcing the
-          ;; scroll there drags the cursor out of the project rows and into
-          ;; the usage block, and the next redraw drags it back -- which is
-          ;; what made `C-w h' land in the usage section and `k' fail to
-          ;; climb out of it.
-          (unless (and (eq window (frame-selected-window (window-frame window)))
+          ;; Point wins in the window the user is actually in -- the
+          ;; process-wide selected window, not merely WINDOW's own frame's
+          ;; selected window: a backgrounded frame's own selected window
+          ;; still gets the forced scroll below, same as any other
+          ;; non-selected window (`edmacs-sidebar-test-anchor-region-pulls-
+          ;; point-forward-on-unselected-frame' covers this). Forcing the
+          ;; scroll in the truly-selected window drags the cursor out of
+          ;; the project rows and into the usage block, and the next
+          ;; redraw drags it back -- which is what made `C-w h' land in
+          ;; the usage section and `k' fail to climb out of it.
+          (unless (and (eq window (frame-selected-window (selected-frame)))
                        (< (window-point window) start))
             (set-window-start window start t)
             ;; Point may sit above the forced start (e.g. a backgrounded

@@ -3094,36 +3094,50 @@ window at all."
             (should (equal before (buffer-string)))))))
 
     (ert-deftest edmacs-sidebar-test-anchor-region-pulls-point-forward-on-unselected-frame ()
-      "The overflow branch's point-pull-forward step must not be gated on
-WINDOW being the globally `selected-window' -- redisplay keeps every
-window's own point visible regardless of which frame is selected, so a
-window on a real, backgrounded frame needs the same treatment a
-selected-window's already gets. Uses a genuinely separate, live frame
-\(not a stub\) via `edmacs-sidebar-test--make-second-frame-or-skip',
-mirroring this suite's other real-multi-frame tests: fails against the
-old `eq'-gated code (point stays stuck above `window-start'), passes
-once the guard runs for every window."
+      "The overflow branch's force-scroll-and-pull-forward step must not be
+gated on WINDOW's own frame being the selected frame -- only on WINDOW
+being the process-wide `selected-window' itself. A window on a real,
+backgrounded frame is not that window, so it must still get the forced
+`window-start' and the point pulled forward to meet it, exactly like any
+other non-selected window (`edmacs-sidebar--anchor-region-to-bottom's own
+comment: redisplay keeps a backgrounded window's own point visible
+regardless of which frame or window is selected). Uses a genuinely
+separate, live frame \(not a stub\) via
+`edmacs-sidebar-test--make-second-frame-or-skip', mirroring this suite's
+other real-multi-frame tests. Asserts concrete state changes -- not
+merely `>=' between two values that can trivially agree at their
+untouched defaults -- so a guard that wrongly widens to skip every
+backgrounded frame's own selected window (not just the truly selected
+one) fails this test instead of passing it vacuously."
       (let* ((f1 (selected-frame))
              (f2 (edmacs-sidebar-test--make-second-frame-or-skip))
              buf window)
         (unwind-protect
             (progn
               ;; `make-frame' selects the frame it creates -- select F1 back
-              ;; so F2's window below is genuinely NOT the selected window.
+              ;; so F2's window below is genuinely NOT the selected window,
+              ;; even though it is F2's own frame-selected window.
               (select-frame f1)
               (setq buf (generate-new-buffer " *anchor-unselected-frame-test*"))
               (setq window (frame-first-window f2))
               (set-window-buffer window buf)
               (with-current-buffer buf
                 (dotimes (i 20) (insert (format "row %d\n" i)))
-                (let ((region-start (point)))
+                (let ((region-start (point))
+                      (start-before-call (window-start window)))
                   (insert "anchored one\nanchored two\n")
                   ;; Well above where the forced overflow `window-start' will land.
                   (set-window-point window (point-min))
                   (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 5)))
                     (should (eq f1 (selected-frame)))
+                    (should (eq window (frame-selected-window f2)))
+                    (should-not (eq window (selected-window)))
                     (edmacs-sidebar--anchor-region-to-bottom window region-start))
-                  (should (>= (window-point window) (window-start window))))))
+                  ;; The force-scroll branch actually ran: `window-start'
+                  ;; moved off its pre-call value, and point was pulled all
+                  ;; the way forward to meet it rather than left behind.
+                  (should-not (= (window-start window) start-before-call))
+                  (should (= (window-point window) (window-start window))))))
           (when (buffer-live-p buf) (kill-buffer buf))
           (when (frame-live-p f2) (delete-frame f2)))))
 
