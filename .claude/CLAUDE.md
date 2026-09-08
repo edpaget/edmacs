@@ -69,6 +69,9 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
 - `modules/windows-test.el` -- master-and-stack layout, popup routing, the
   `SPC w` command set, tab/desktop persistence, the `display-buffer` catch-all
 - `modules/ui-test.el`, `modules/sidebar-test.el` -- ui.el and sidebar.el
+- `modules/programming-test.el` -- the `SPC c` keymap programming.el owns,
+  resolved end to end through real evil/general loaded from the straight
+  repos tree (this checkout's, falling back to the sibling main checkout's)
 - `modules/ui-live-test.el` -- term-mode nano-modeline rendering, real
   `nano-modeline` package loaded from the straight build tree; two-tier
   (process-less buffer, then a live `make-term` subprocess via
