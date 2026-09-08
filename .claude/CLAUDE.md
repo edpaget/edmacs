@@ -311,6 +311,16 @@ stdin")`, and the major-mode body aborts *before* running its hooks -- so
 `<mode>-hook` still lists `eglot-ensure` while nothing ever connects. Assert
 `treesit-language-available-p` up front rather than debugging the client.
 
+`scripts/java-eglot-check.sh` is the same shape again, for Java/jdtls. It
+builds a throwaway Maven project (jdtls resolves Maven natively -- no
+system `mvn` on PATH is needed for a project with no external dependencies)
+and asserts definition, references, type-definition, implementation and
+workspace/symbol all answer for real, `rename`/`codeAction` are advertised
+in the server's capabilities, `lsp-workspaces` stays empty, and diagnostics
+render through flymake. jdtls is a cold JVM plus a project import on every
+run, so its deadlines run longer than the sibling scripts' (150s to first
+attach).
+
 ### Compilation
 
 Modules are loaded from source, not byte-compiled as a build step. To check

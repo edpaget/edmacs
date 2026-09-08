@@ -407,8 +407,11 @@ until something pulls -- and batch runs no command loop to do it."
 
 ;;; ----------------------------------------------------------------- Sweep
 
+;; global-flycheck-mode itself stays on regardless of any one language --
+;; `edmacs--eglot-disable-flycheck' (programming.el) turns flycheck-mode off
+;; per-buffer once eglot attaches, for every language including Java now.
 (edmacs-langs--report (bound-and-true-p global-flycheck-mode)
-                      "global-flycheck-mode" "still on, for Java")
+                      "global-flycheck-mode" "still globally on (per-buffer disabled under eglot)")
 
 (princ (format "assert: eglot-languages-check: %d checks, %d failed\n"
                edmacs-langs-total edmacs-langs-failures))

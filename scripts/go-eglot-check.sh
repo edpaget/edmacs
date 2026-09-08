@@ -14,7 +14,9 @@
 #   - gopls' `unusedparams' analyzer fires, so the `analyses' setting is
 #     in effect rather than merely echoed back
 #   - `edmacs-modeline-diagnostics' renders flymake's counts
-#   - Java, the last lsp-mode language, is untouched
+#   - lsp-mode is not wired to any `java-ts-mode-hook' entry (Java moved to
+#     eglot in the phase-5 roadmap-edmacs-builtins commit; nothing in this
+#     repo hooks lsp-deferred to any language any more)
 #
 # TWO TRAPS THIS SCRIPT EXISTS TO NAVIGATE
 #
@@ -242,14 +244,16 @@ perfectly fine interactively."
                          (bound-and-true-p flymake-mode)
                          (bound-and-true-p flycheck-mode))
 
-;; Java is the one language still on lsp-mode, still reporting through
-;; flycheck. Its `lsp-deferred' hook is registered from a `use-package'
-;; `:config' form, so the mode library has to be loaded before the hook list
-;; says anything at all.
+;; Java moved to eglot in the phase-5 roadmap-edmacs-builtins commit -- no
+;; language hooks `lsp-deferred' any more. Its hook is registered from a
+;; `use-package' `:config' form, so the mode library has to be loaded before
+;; the hook list says anything at all. `scripts/java-eglot-check.sh' is the
+;; dedicated check for Java's own eglot/jdtls behavior; this is just the
+;; cross-language sweep confirming lsp-mode was not left wired anywhere.
 (require 'java-ts-mode nil t)
-(edmacs-go-check--report (and (memq 'lsp-deferred java-ts-mode-hook)
-                              (not (memq 'eglot-ensure java-ts-mode-hook)))
-                         "java-ts-mode" "still on lsp-deferred")
+(edmacs-go-check--report (and (memq 'eglot-ensure java-ts-mode-hook)
+                              (not (memq 'lsp-deferred java-ts-mode-hook)))
+                         "java-ts-mode" "on eglot-ensure, no lsp-deferred")
 (edmacs-go-check--report (bound-and-true-p global-flycheck-mode) "global-flycheck-mode" "on")
 
 (princ (format "assert: go-eglot-check: %d checks, %d failed\n"
