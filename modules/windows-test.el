@@ -1320,6 +1320,48 @@ phase's own Context on the two hooks coordinating, not colliding."
         (while (> (length (tab-bar-tabs)) tabs-before)
           (tab-bar-close-tab))))))
 
+(ert-deftest edmacs-windows-test-repair-clears-the-split-window-self-delegation ()
+  "A frame whose only window is a side window makes `split-window' recurse.
+Core delegates a root-window split to `window-main-window' whenever the
+frame owns any side window; on this shape that call returns the very window
+being split, so `split-window' delegates to itself until
+`max-lisp-eval-depth' blows. Captured live as
+`walk-window-tree-1: Lisp nesting exceeds max-lisp-eval-depth' with 1567
+identical `split-window(#<window N on *sidebar*> 2 right nil nil)' frames,
+reached from `tab-bar-select-tab' -> `window-state-put'.
+
+`edmacs-windows-repair-frame' removes the precondition: this asserts the
+recursion is real on the wedged shape, and gone once repaired. The path
+from `tab-bar-select-tab' is not reproducible under `--batch' -- that call
+collapses the frame itself before restoring -- so the mechanism is pinned
+here directly rather than through a driver that cannot fail."
+  (save-window-excursion
+    (let ((buf (generate-new-buffer "ewt-wedge-split")))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (let ((side (display-buffer-in-side-window
+                         buf '((side . left) (slot . 0)))))
+              (set-window-dedicated-p side t)
+              (select-window side)
+              (let ((ignore-window-parameters t)) (delete-other-windows))
+              ;; The precondition, asserted rather than assumed.
+              (should (edmacs-windows-frame-wedged-p (selected-frame)))
+              (should (eq (window-main-window) (selected-window)))
+              ;; Bounded so the recursion errors promptly instead of running
+              ;; to the default depth.
+              (should (eq 'recursed
+                          (let ((max-lisp-eval-depth 200))
+                            (condition-case nil
+                                (progn (split-window (frame-root-window) 2 t) nil)
+                              (error 'recursed)))))
+              (edmacs-windows-repair-frame (selected-frame))
+              (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+              (should-not (window-parameter (edmacs-main-window) 'window-side))
+              (should (window-live-p (split-window (frame-root-window) 2 t)))))
+        (delete-other-windows)
+        (kill-buffer buf)))))
+
 (ert-deftest edmacs-windows-test-new-tab-from-a-side-window-keeps-a-real-main ()
   "A tab created while a side window is selected still gets a usable main.
 `tab-bar-new-tab-to' binds `ignore-window-parameters' and

@@ -1084,6 +1084,22 @@ FRAME is always the selected frame."
         (run-hook-with-args 'edmacs-windows-frame-repaired-functions frame)
         (edmacs-main-window))))))
 
+;; A root-window split on a frame that owns any side window is delegated by
+;; core's `split-window' to `window-main-window' -- and on a frame whose ONLY
+;; window is a side window that is the very same window, so it delegates to
+;; itself until `max-lisp-eval-depth' blows. (`edmacs-stack-toggle' documents
+;; the same `window-main-window'-returns-the-root trap.) `tab-bar-select-tab'
+;; reaches `split-window' through `window-state-put' while restoring a tab's
+;; layout, so a wedged frame has to be repaired before it runs, not after.
+
+(defun edmacs-windows--repair-before-tab-select (&rest _)
+  "Repair a wedged frame before `tab-bar-select-tab' restores a layout into it."
+  ;; `tab-bar-select-tab' takes a tab number, never a frame -- ambient-reads: ok
+  (edmacs-windows-repair-frame (selected-frame)))
+
+(advice-add 'tab-bar-select-tab :before
+            #'edmacs-windows--repair-before-tab-select)
+
 (defun edmacs-windows--display-buffer-in-recovered-main (buffer alist)
   "Display BUFFER in a main window recovered from a wedged frame.
 Returns nil on any frame that still has a non-side window, which is what
