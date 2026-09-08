@@ -58,8 +58,9 @@ a real Emacs session) to enable this suite"))
     (defun edmacs-sidebar--buffer (_frame) nil)
     (defun edmacs-sidebar--redraw (_frame) nil)
     (defun edmacs-sidebar--find-buffer-section (_name) nil)
-    (defun edmacs-workspaces-group-name (_root) nil)
-    (defun edmacs-workspaces-find-tab (_group _root &optional _frame) nil)
+    ;; Root-keyed, matching workspaces.el: a tab's group is derived from
+    ;; its root there, so there is no group argument to pass any more.
+    (defun edmacs-workspaces-find-tab (_root &optional _frame) nil)
     (defun edmacs-windows-main-window-of (_frame) nil)
     (defun edmacs-windows-ws-main-leaf (_ws) (cons nil nil))
     (defun edmacs-window-pop-buffer-to-main (_buffer) nil)

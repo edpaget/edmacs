@@ -458,6 +458,21 @@ and face; the render is one unindented row each."
                         (car (edmacs-sidebar-test--render-to-string
                               (edmacs-sidebar--plan nil) 20)))))))
 
+    (ert-deftest edmacs-sidebar-test-plan-flat-tab-with-a-root-carries-its-identity ()
+      "A flat-list tab that DOES carry a worktree root gets the same
+`(GROUP . ROOT)' value a project/worktree row does, so RET resolves it
+by identity instead of by a position a reorder can invalidate. The
+frame has no group at all here, so the GROUP half is nil -- that is the
+documented shape, not a defect. A rootless sibling keeps its bare tab
+number: it has no identity to key on, and `(nil . nil)' would turn RET
+on the daemon's boot tab into a `user-error'."
+      (edmacs-sidebar-test--with-plan-fixture
+          '((:group nil :tabs (("boot" nil nil nil)
+                               ("wt" "/repoZ/wt/" roadmap t))))
+        (let ((rows (edmacs-sidebar-test--rows-of-kind 'tab (edmacs-sidebar--plan nil))))
+          (should (equal (list 1 (cons nil "/repoZ/wt/"))
+                         (mapcar (lambda (r) (plist-get r :value)) rows))))))
+
     (ert-deftest edmacs-sidebar-test-plan-collapsed ()
       "A collapsed frame plans exactly the two collapsed hook rows -- no
 project, worktree or tab row at all -- with :anchor on the second and
@@ -702,15 +717,15 @@ section, not `magit-root-section' and not the project row above it."
              (index (tab-bar--tab-index tab (tab-bar-tabs target) target)))
         (and index (1+ index))))
 
-    (defun edmacs-workspaces-find-tab (group root &optional frame)
-      (seq-find (lambda (tab)
-                  (and (equal (funcall tab-bar-tab-group-function tab) group)
-                       (equal (edmacs-workspaces-tab-root tab) root)))
+    ;; Root-keyed, exactly as workspaces.el is: a tab's group is derived
+    ;; FROM its root there, so a group test could only ever hide the tab.
+    (defun edmacs-workspaces-find-tab (root &optional frame)
+      (seq-find (lambda (tab) (equal (edmacs-workspaces-tab-root tab) root))
                 (tab-bar-tabs (or frame (selected-frame)))))
 
-    (defun edmacs-workspaces-select-tab (group root &optional frame)
+    (defun edmacs-workspaces-select-tab (root &optional frame)
       (let* ((target (or frame (selected-frame)))
-             (tab (edmacs-workspaces-find-tab group root target)))
+             (tab (edmacs-workspaces-find-tab root target)))
         (when tab
           (let ((number (1+ (tab-bar--tab-index tab (tab-bar-tabs target) target))))
             (if frame (with-selected-frame frame (tab-bar-select-tab number))
@@ -790,6 +805,54 @@ tab\" by default, since that is this phase's own new edge case."
            (dolist (root edmacs-sidebar-test--primed-roots)
              (remhash root edmacs-git-common-dir-cache)))))
 
+    (ert-deftest edmacs-sidebar-test-plan-files-a-tab-by-the-group-function-not-the-stored-param ()
+      "A tab whose stored `group' disagrees with its root is filed under the
+root's project, because every bucketing step the planner takes --
+`edmacs-workspaces-groups', `-tabs-in-group', `-current-group' -- reads
+`tab-bar-tab-group-function', never `(alist-get \\='group tab)'.
+Production installs `edmacs-workspaces-tab-group' there, which derives
+the group from the root; this test installs an equivalent root-deriving
+lambda so the assertion needs no git resolution at all.
+
+The pre-phase bug this pins: `SPC T n' made a tab inherit the
+ORIGINATING tab's group and then stamped it with its own root, so the
+sidebar bucketed it by group and classified it by root -- and it
+rendered as a kind-nil child under the wrong project."
+      (edmacs-test-support-with-tabs-restored
+        (let* ((root "/repoN__worktrees/roadmap-n/")
+               (common "/repoN/main/.git")
+               (tab-bar-tab-group-function
+                (lambda (tab)
+                  (when-let* ((r (edmacs-workspaces-tab-root tab)))
+                    (if (string-match-p "repoN" r) "repoN" "other")))))
+          (puthash root common edmacs-git-common-dir-cache)
+          (puthash "/repoN/main/" common edmacs-git-common-dir-cache)
+          (unwind-protect
+              (progn
+                (tab-bar-new-tab)
+                (tab-bar-rename-tab "roadmap-n")
+                (edmacs-workspaces-set-tab-root root)
+                ;; The disagreement: a stored group naming another project.
+                (setf (alist-get 'group (cdr (tab-bar--current-tab-find))) "other")
+                (let* ((edmacs-sidebar-force-text-glyphs t)
+                       (edmacs-sidebar-main-root-function (lambda (_tabs) "/repoN/main/"))
+                       (rows (edmacs-sidebar--plan (selected-frame)))
+                       (projects (seq-filter
+                                  (lambda (r) (eq (plist-get r :kind) 'project)) rows))
+                       (repo-n (seq-find (lambda (r) (equal (plist-get r :group) "repoN"))
+                                         projects))
+                       (other (seq-find (lambda (r) (equal (plist-get r :group) "other"))
+                                        projects)))
+                  (should repo-n)
+                  (should-not other)
+                  (should (member root
+                                  (mapcar (lambda (r) (plist-get r :root))
+                                          (seq-filter
+                                           (lambda (r) (eq (plist-get r :kind) 'worktree))
+                                           (plist-get repo-n :children)))))))
+            (remhash root edmacs-git-common-dir-cache)
+            (remhash "/repoN/main/" edmacs-git-common-dir-cache)))))
+
     (ert-deftest edmacs-sidebar-test-activate-project-row-opens-once-then-reselects ()
       "RET on a project row whose main tab isn't open calls
 `edmacs-workspaces-open-project' exactly once; RET again finds the
@@ -866,16 +929,17 @@ be mistaken for this one (AC4)."
         (goto-char (point-min))
         (let (select-calls open-project-calls open-worktree-calls found-calls)
           (cl-letf (((symbol-function 'edmacs-workspaces-select-tab)
-                     (lambda (group root) (push (cons group root) select-calls)))
+                     (lambda (root) (push root select-calls)))
                     ((symbol-function 'edmacs-workspaces-open-project)
                      (lambda (root) (push root open-project-calls)))
                     ((symbol-function 'edmacs-workspaces-open-worktree)
                      (lambda (root) (push root open-worktree-calls)))
                     ((symbol-function 'edmacs-workspaces-find-tab)
-                     (lambda (group root) (push (cons group root) found-calls) 'fake-tab)))
+                     (lambda (root) (push root found-calls) 'fake-tab)))
             (edmacs-sidebar-activate))
-          (should (equal found-calls '(("g1" . "/repo/wt/"))))
-          (should (equal select-calls '(("g1" . "/repo/wt/"))))
+          ;; The ROW's GROUP half is never passed: lookup is keyed on ROOT.
+          (should (equal found-calls '("/repo/wt/")))
+          (should (equal select-calls '("/repo/wt/")))
           (should-not open-project-calls)
           (should-not open-worktree-calls))))
 
@@ -893,12 +957,12 @@ defensive fallback AC7 says only a project row can reach."
         (goto-char (point-min))
         (let (select-calls open-project-calls open-worktree-calls)
           (cl-letf (((symbol-function 'edmacs-workspaces-select-tab)
-                     (lambda (group root) (push (cons group root) select-calls)))
+                     (lambda (root) (push root select-calls)))
                     ((symbol-function 'edmacs-workspaces-open-project)
                      (lambda (root) (push root open-project-calls)))
                     ((symbol-function 'edmacs-workspaces-open-worktree)
                      (lambda (root) (push root open-worktree-calls)))
-                    ((symbol-function 'edmacs-workspaces-find-tab) (lambda (_group _root) nil))
+                    ((symbol-function 'edmacs-workspaces-find-tab) (lambda (_root) nil))
                     ((symbol-function 'edmacs-workspaces-classify-root) (lambda (_root) 'main)))
             (edmacs-sidebar-activate))
           (should (equal open-project-calls '("/repo/main/")))
@@ -917,7 +981,7 @@ signals `user-error' rather than opening anything."
             (magit-insert-section (edmacs-sidebar-tab (cons "g1" "/repo/wt/"))
               (magit-insert-heading "wt row"))))
         (goto-char (point-min))
-        (cl-letf (((symbol-function 'edmacs-workspaces-find-tab) (lambda (_group _root) nil))
+        (cl-letf (((symbol-function 'edmacs-workspaces-find-tab) (lambda (_root) nil))
                   ((symbol-function 'edmacs-workspaces-classify-root) (lambda (_root) 'roadmap)))
           (should-error (edmacs-sidebar-activate) :type 'user-error))))
 
@@ -2643,7 +2707,7 @@ past more than one level, unlike the old bespoke single-level walks."
           (let (closed)
             (cl-letf (((symbol-function 'tab-bar-close-tab) (lambda (n) (push n closed)))
                       ((symbol-function 'edmacs-workspaces-find-tab)
-                       (lambda (_group _root) 'fake-tab))
+                       (lambda (_root) 'fake-tab))
                       ((symbol-function 'tab-bar--tab-index)
                        (lambda (_tab &optional _tabs _frame) 2)))
               (edmacs-sidebar-close-worktree))
@@ -2675,7 +2739,7 @@ tab -- the generic (non-agent) branch of the shared walk."
                       ((symbol-function 'read-from-minibuffer)
                        (lambda (&rest _) "edmacs-sidebar-test-nested-rename"))
                       ((symbol-function 'edmacs-workspaces-find-tab)
-                       (lambda (_group _root) 'fake-tab))
+                       (lambda (_root) 'fake-tab))
                       ((symbol-function 'tab-bar--tab-index)
                        (lambda (_tab &optional _tabs _frame) 1)))
               (edmacs-sidebar-rename-at-point))
@@ -2722,7 +2786,7 @@ since the label itself is what changed."
             ;; as a side effect, which would otherwise hijack "current
             ;; buffer" away from the sidebar buffer for the rest of that
             ;; form.
-            (edmacs-workspaces-select-tab "repoL" "/repoL/main/")
+            (edmacs-workspaces-select-tab "/repoL/main/")
             (edmacs-sidebar--redraw (selected-frame))
             (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
               (should (equal (oref (magit-current-section) value) (cons "repoL" "/repoL/main/")))
@@ -2774,7 +2838,7 @@ Step-1 data-shape fix."
             ;; as a side effect, which would otherwise hijack "current
             ;; buffer" away from the sidebar buffer for the rest of that
             ;; form.
-            (edmacs-workspaces-select-tab "repoL" "/repoL/main/")
+            (edmacs-workspaces-select-tab "/repoL/main/")
             (edmacs-sidebar--redraw (selected-frame))
             (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
               (let (child)
@@ -3272,11 +3336,12 @@ redrawn -- every other still-live dirty frame is still redrawn."
 
     (ert-deftest edmacs-sidebar-test-tab-group-change-invalidates-without-buffer-list-event ()
       "A tab-bar group change alone -- via
-`tab-bar-tab-post-change-group-functions', which
-`edmacs-workspaces-assign-group' drives through the real
-`tab-bar-change-tab-group' -- invalidates the selected frame's sidebar
-with no buffer-list activity involved at all, matching the phase
-context's own \"no trigger exists for `tab-bar-change-tab-group'\" bug."
+`tab-bar-tab-post-change-group-functions', which core's
+`tab-bar-change-tab-group' runs (an interactive `M-x tab-group'; this
+config itself no longer writes a tab's `group') -- invalidates the
+selected frame's sidebar with no buffer-list activity involved at all,
+matching the phase context's own \"no trigger exists for
+`tab-bar-change-tab-group'\" bug."
       (let ((frame (selected-frame)) (redraw-count 0))
         (edmacs-sidebar-test--with-clean-redraw-queue
           (cl-letf (((symbol-function 'edmacs-sidebar--redraw)

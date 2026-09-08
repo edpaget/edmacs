@@ -108,11 +108,14 @@ a real Emacs session) to enable this suite"))
     ;;   file's own stand-in used to hard-code -- so it needs no override
     ;;   of its own.
     ;; - `edmacs-workspaces-open-worktree' -- a bespoke override that
-    ;;   actually drives `tab-bar-new-tab'/`tab-bar-change-tab-group', not
+    ;;   actually drives `tab-bar-new-tab' and stamps the root itself, not
     ;;   a no-op: the real implementation calls
     ;;   `edmacs-workspaces-group-name', which (git-common-dir stubbed nil)
     ;;   can never resolve a fixture root and would `user-error' on the
     ;;   temp-directory root `real-claude-term-row-visit-and-kill' visits.
+    ;;   It stamps the root explicitly rather than relying on the post-open
+    ;;   hook, which workspaces.el now solely owns and which this file does
+    ;;   not load workspaces.el to install.
     ;;   Tracks each call in
     ;;   `edmacs-sidebar-agents-live-test--open-worktree-tab-calls', which
     ;;   `edmacs-sidebar-agents-live-test-toggle-all-affects-both-frames'
@@ -124,13 +127,13 @@ a real Emacs session) to enable this suite"))
       (select-frame-set-input-focus (selected-frame))
       (let* ((root (file-truename dir))
              (group (file-name-nondirectory (directory-file-name root))))
-        (unless (edmacs-workspaces-find-tab group root (selected-frame))
+        (unless (edmacs-workspaces-find-tab root (selected-frame))
           (tab-bar-new-tab)
           (setf (alist-get edmacs-sidebar-agents-live-test--root-parameter
                             (cdr (tab-bar--current-tab-find)))
                 root)
           (tab-bar-change-tab-group group))
-        (edmacs-workspaces-select-tab group root (selected-frame))))
+        (edmacs-workspaces-select-tab root (selected-frame))))
 
     (defmacro edmacs-sidebar-agents-live-test--with-workspaces-overrides (&rest body)
       "Run BODY with the two workspaces.el overrides described in this

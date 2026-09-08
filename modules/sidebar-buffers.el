@@ -57,7 +57,6 @@
 ;; sidebar-agents.el's own forward-ref blocks.
 
 (declare-function bufferlo-buffer-list "bufferlo")
-(declare-function edmacs-workspaces-group-name "workspaces")
 (declare-function edmacs-workspaces-find-tab "workspaces")
 (declare-function edmacs-workspaces-tab-number "workspaces")
 (declare-function edmacs-windows-main-window-of "windows")
@@ -593,16 +592,16 @@ this needs no root-keyed lookup at all."
 (defun edmacs-sidebar-buffers--tab-number-for-root (root &optional frame)
   "Return ROOT's open tab's 1-based `tab-bar-tabs' index in FRAME
 (default the selected frame), or nil when ROOT has no open tab.
-Routed entirely through workspaces.el -- `edmacs-workspaces-group-name'
-derives ROOT's own project group, `edmacs-workspaces-find-tab' the open
-tab in it -- the config's one tab/root lookup surface. Needed here (unlike
+Routed entirely through workspaces.el's `edmacs-workspaces-find-tab',
+the config's one tab/root lookup surface, which is keyed on ROOT alone
+-- a tab's group is derived from its root, so there is no group to
+resolve first. Needed here (unlike
 `--on-worktree-section'/`--select-tab-if-needed', which already have a
 TAB-NUMBER in hand) because RET/`[`/`]` resolve a row's tab long after
 render time, from nothing but the buffers-root section's own stable
 ROOT value."
   (let ((target (or frame (selected-frame))))
-    (when-let* ((group (edmacs-workspaces-group-name root))
-                (tab (edmacs-workspaces-find-tab group root target)))
+    (when-let* ((tab (edmacs-workspaces-find-tab root target)))
       (edmacs-workspaces-tab-number tab target))))
 
 ;;;###autoload

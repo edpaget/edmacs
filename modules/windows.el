@@ -171,6 +171,33 @@ the selected one, and spelling the frame out is what keeps that mix-up
 out of the call site."
   (edmacs-main-window frame))
 
+(defun edmacs-windows--ws-main-leaf-params (ws)
+  "Return (MARKED . LEAF-PARAMS) for the leaf in WS marked `edmacs-main'.
+The shared recursion behind `edmacs-windows-ws-main-leaf' and
+`edmacs-windows-ws-main-buffer-names'; LEAF-PARAMS is the matched
+`(leaf . PARAMS)' node's own parameter alist, nil when the tree holds no
+leaf at all. See `edmacs-windows-ws-main-leaf' for what WS is and what
+MARKED means."
+  (pcase ws
+    (`(leaf . ,params)
+     (let* ((leaf-params (alist-get 'parameters params))
+            (marked (and (consp leaf-params) (alist-get 'edmacs-main leaf-params))))
+       (cons (and marked t) params)))
+    (`(,(or 'vc 'hc) . ,rest)
+     ;; FOUND and FIRST must stay distinct all the way up: a subtree's
+     ;; first-leaf fallback is recorded with a nil MARKED flag, so an
+     ;; ancestor can never mistake it for a genuine mark and let an
+     ;; unmarked stack subtree overwrite the real main leaf.
+     (let (found first)
+       (dolist (child rest)
+         (when (and (consp child) (memq (car child) '(leaf vc hc)))
+           (let* ((result (edmacs-windows--ws-main-leaf-params child))
+                  (marked (car result)) (params (cdr result)))
+             (unless first (setq first (cons nil params)))
+             (when (and marked (not found)) (setq found (cons t params))))))
+       (or found first (cons nil nil))))
+    (_ (cons nil nil))))
+
 (defun edmacs-windows-ws-main-leaf (ws)
   "Return (MARKED . PREV-BUFFERS) for the leaf in WS marked `edmacs-main'.
 WS is the STATE TREE half of a tab's serialized `ws' field -- the `cdr'
@@ -185,38 +212,23 @@ reason). PREV-BUFFERS is a list of (NAME START POINT), the writable form
 Lives here rather than in a consumer because `edmacs-main' is this
 module's own leaf key: reading a serialized layout for it is the same
 question `edmacs-main-window' answers for a live one."
-  (pcase ws
-    (`(leaf . ,params)
-     (let* ((leaf-params (alist-get 'parameters params))
-            (marked (and (consp leaf-params) (alist-get 'edmacs-main leaf-params))))
-       (cons (and marked t) (alist-get 'prev-buffers params))))
-    (`(,(or 'vc 'hc) . ,rest)
-     ;; FOUND and FIRST must stay distinct all the way up: a subtree's
-     ;; first-leaf fallback is recorded with a nil MARKED flag, so an
-     ;; ancestor can never mistake it for a genuine mark and let an
-     ;; unmarked stack subtree overwrite the real main leaf.
-     (let (found first)
-       (dolist (child rest)
-         (when (and (consp child) (memq (car child) '(leaf vc hc)))
-           (let* ((result (edmacs-windows-ws-main-leaf child))
-                  (marked (car result)) (pbs (cdr result)))
-             (unless first (setq first (cons nil pbs)))
-             (when (and marked (not found)) (setq found (cons t pbs))))))
-       (or found first (cons nil nil))))
-    (_ (cons nil nil))))
+  (let ((result (edmacs-windows--ws-main-leaf-params ws)))
+    (cons (car result) (alist-get 'prev-buffers (cdr result)))))
 
-(defun edmacs-windows--on-tab-open (_tab)
-  "Designate the new tab's sole window as main.
-`tab-bar-new-tab' runs `delete-other-windows' before post-open hooks
-fire, so a fresh tab already starts with zero right-side windows; this
-only needs to stamp `edmacs-main'. A second, independent hook on the
-same variable -- `modules/sidebar.el's `edmacs-sidebar--on-tab-open' --
-re-shows the left sidebar."
-  ;; `tab-bar-tab-post-open-functions' calls with (TAB), no window slot --
-  ;; ambient-reads: ok
-  (edmacs-window-set-main (selected-window)))
+(defun edmacs-windows-ws-main-buffer-names (ws)
+  "Return the buffer names WS's main leaf knows, most-specific first.
+The leaf's own displayed buffer name, then the names in its
+`prev-buffers' -- the order a caller wanting to identify what that
+window was showing should try them in. Leaf selection is
+`edmacs-windows-ws-main-leaf's, unchanged.
 
-(add-hook 'tab-bar-tab-post-open-functions #'edmacs-windows--on-tab-open)
+Only strings are returned: a `ws' captured without `window-state-get's
+WRITABLE argument holds live buffer objects instead of names, and this
+answers about a SERIALIZED layout, where they are always names."
+  (let* ((params (cdr (edmacs-windows--ws-main-leaf-params ws)))
+         (own (car-safe (alist-get 'buffer params)))
+         (prev (mapcar #'car-safe (alist-get 'prev-buffers params))))
+    (seq-filter #'stringp (cons own prev))))
 
 (defun edmacs--swap-window-buffers (w1 w2)
   "Exchange the buffers shown in W1 and W2.

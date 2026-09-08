@@ -7,6 +7,14 @@
 ;; a tty frame alone when it runs through the real, unstubbed
 ;; `after-make-frame-functions' entry.
 ;;
+;; `edmacs-workspaces-stamp-frame-tabs' never selects a tab: F2's CURRENT
+;; tab is stamped from F2's own live window (which is why a second real
+;; frame is what proves it, rather than a `with-selected-frame' that
+;; would hide a cross-frame read), and a BACKGROUND tab of F2 from the
+;; layout serialized in its own `ws'. The background arm below stubs
+;; `tab-bar-select-tab' fatal so a regression to the old select-and-derive
+;; walk fails here rather than merely getting slower.
+;;
 ;; A second frame here is a tty frame (`(tty . "/dev/tty")'), so this
 ;; process needs a CONTROLLING TERMINAL -- which `emacs -Q --batch' run
 ;; from a script or an agent's tool call does not have. Both tests
@@ -127,10 +135,59 @@ rule out."
           ;; stamps nothing at all.
           (edmacs-workspaces--on-tab-post-open tab)
           (should-not (edmacs-workspaces-tab-root tab))
-          ;; The frame-scoped entry point stamps F2's OWN directory.
-          (edmacs-workspaces-stamp-frame-tabs f2)
+          ;; The frame-scoped entry point stamps F2's OWN directory, with
+          ;; nothing selected at any point.
+          (cl-letf (((symbol-function 'tab-bar-select-tab)
+                     (lambda (&rest _) (error "tab-bar-select-tab called"))))
+            (edmacs-workspaces-stamp-frame-tabs f2))
           (should (equal (edmacs-workspaces-tab-root tab)
                          (file-name-as-directory (file-truename dir-b)))))))))
+
+(ert-deftest edmacs-workspaces-live-test-stamps-a-background-tab-from-its-ws ()
+  "A BACKGROUND tab of a background frame -- the shape a desktop restore
+produces for every tab but one -- is stamped from the layout serialized
+in its own `ws', with `tab-bar-select-tab' fatal throughout. Selecting
+each unstamped tab in turn was what the old walk did, once per tab on
+every daemon boot, running both tab-select repair advices, a sidebar
+redraw and a stray-sweep timer each time."
+  (edmacs-workspaces-live-test--with-sandbox sandbox
+    (let ((dir-a (expand-file-name "repo-a" sandbox))
+          (dir-b (expand-file-name "repo-b" sandbox))
+          (edmacs-workspaces-stray-visit-relocate nil)
+          (buf nil))
+      (make-directory dir-a t)
+      (make-directory dir-b t)
+      (dolist (d (list dir-a dir-b))
+        (let ((default-directory d))
+          (call-process "git" nil nil nil "init" "--quiet")))
+      (unwind-protect
+          (progn
+            ;; The buffer the background tab's main leaf names, live and
+            ;; sitting in repo-b -- exactly what `desktop' will have
+            ;; recreated by the time the eager restore window closes.
+            (setq buf (get-buffer-create "edmacs-ws-live-bg"))
+            (with-current-buffer buf
+              (setq-local default-directory (file-name-as-directory dir-b)))
+            (edmacs-workspaces-live-test--with-frames (f1 f2)
+              (select-frame f1)
+              (dired dir-a)
+              (should (eq (selected-frame) f1))
+              (tab-bar-tabs f2)
+              (let* ((current (assq 'current-tab (frame-parameter f2 'tabs)))
+                     (background
+                      (list 'tab (cons 'name "bg")
+                            (cons 'ws
+                                  (cons '((min-height . 4) (min-width . 10))
+                                        '(leaf (parameters (edmacs-main . t))
+                                               (buffer "edmacs-ws-live-bg"
+                                                       (selected . t) (point . 1))))))))
+                (set-frame-parameter f2 'tabs (list current background))
+                (cl-letf (((symbol-function 'tab-bar-select-tab)
+                           (lambda (&rest _) (error "tab-bar-select-tab called"))))
+                  (edmacs-workspaces-stamp-frame-tabs f2))
+                (should (equal (edmacs-workspaces-tab-root background)
+                               (file-name-as-directory (file-truename dir-b)))))))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
 
 ;; ============================================================================
 ;; Fullscreen policy -- a real frame, through the real unstubbed hook

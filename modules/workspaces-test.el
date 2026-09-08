@@ -12,9 +12,15 @@
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
-;;         -l modules/git-common-dir.el \
+;;         -l modules/git-common-dir.el -l modules/windows.el \
 ;;         -l modules/workspaces.el -l modules/workspaces-test.el \
 ;;         -f edmacs-test-support-run-and-exit
+;;
+;; modules/windows.el is not optional: workspaces.el owns the config's
+;; only `tab-bar-tab-post-open-functions' entry and calls
+;; `edmacs-windows-designate-main' and `edmacs-windows-ws-main-buffer-names'
+;; from it, so a real `tab-bar-new-tab' without windows.el loaded dies
+;; with a void-function.
 
 ;;; Code:
 
@@ -22,6 +28,12 @@
 (require 'subr-x)
 (require 'cl-lib)
 (require 'tab-bar)
+;; For `desktop-buffer-args-list', the pending-restore list
+;; `edmacs-workspaces--buffer-name-directory' falls back to. Required
+;; rather than `defvar'd so the variable is special exactly as it is in
+;; production, where sessions.el has loaded desktop.el long before any
+;; restore-time stamping runs.
+(require 'desktop)
 
 ;; None of the stubs below target a subr (all are plain Lisp `defun's in
 ;; git-common-dir.el, vc-git.el, or tab-bar.el), so no native-comp subr
@@ -36,14 +48,21 @@ Snapshots and restores the frame's `tabs' parameter around BODY, so one
 test's real tab-bar mutations (`tab-bar-new-tab', `tab-bar-select-tab',
 `tab-bar-change-tab-group', ...) never leak into the next. Resetting the
 parameter to nil and calling `tab-bar-tabs' once forces a single fresh
-default tab, per `tab-bar-tabs' own \"create default tabs\" branch."
+default tab, per `tab-bar-tabs' own \"create default tabs\" branch.
+
+`edmacs-workspaces--group-memo' is cleared on both edges too: a group
+name is derived from a root through whatever git stub was in force, and
+a memoized answer surviving into the next test would serve one fixture's
+repo layout to another's roots."
   (declare (indent 0))
   `(let ((saved (frame-parameter nil 'tabs)))
      (unwind-protect
          (progn
+           (edmacs-workspaces-clear-group-memo)
            (set-frame-parameter nil 'tabs nil)
            (tab-bar-tabs)
            ,@body)
+       (edmacs-workspaces-clear-group-memo)
        (set-frame-parameter nil 'tabs saved))))
 
 ;; ============================================================================
@@ -59,9 +78,15 @@ default tab, per `tab-bar-tabs' own \"create default tabs\" branch."
     (should (equal (edmacs-workspaces-group-name "/repo/wt/") "repo"))))
 
 (ert-deftest edmacs-workspaces-test-group-name-nil-when-unresolvable ()
-  "A ROOT git-common-dir cannot resolve at all yields nil, not an error."
+  "A LIVE directory git-common-dir cannot resolve at all yields nil, not
+an error and not a path-derived name: the daemon's boot tab is stamped
+with a real home directory and must stay ungrouped.
+`edmacs-workspaces-test-group-name-path-fallback' covers the other side
+-- a root that is NOT on disk, where the path is all there is."
   (cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_) nil)))
-    (should-not (edmacs-workspaces-group-name "/not/a/repo/"))))
+    (should (file-directory-p (temporary-file-directory)))
+    (should-not (edmacs-workspaces-group-name
+                 (file-name-as-directory (temporary-file-directory))))))
 
 ;; ============================================================================
 ;; edmacs-workspaces-classify-root
@@ -207,38 +232,80 @@ unless this function guards against it first."
                              (concat "file-notify" "-rm-watch")
                              "run-with-timer" "run-with-idle-timer"))
       (should-not (string-match-p (regexp-quote forbidden) source)))
+    ;; `edmacs-workspaces--group-memo' is deliberately not spelled
+    ;; "cache": it is a pure root->name memo with no watch, no timer and
+    ;; no invalidation of its own, not the retired worktree-discovery
+    ;; cache this assertion exists to keep out. The grep therefore stays
+    ;; on the literal word, and the memo must never adopt it.
     (should-not (string-match-p "(defvar [^\n]*cache" source))))
 
 ;; ============================================================================
 ;; Group assignment: through `tab-bar-change-tab-group', adjacency
 ;; ============================================================================
 
-(ert-deftest edmacs-workspaces-test-assign-group-calls-tab-bar-change-tab-group ()
-  (edmacs-workspaces-test--with-scratch-tabs
-    (let ((calls '()))
-      (cl-letf* ((real (symbol-function 'tab-bar-change-tab-group))
-                 ((symbol-function 'tab-bar-change-tab-group)
-                  (lambda (name &optional n)
-                    (push (list name n) calls)
-                    (funcall real name n))))
-        (edmacs-workspaces-assign-group "proj-a")
-        (should (equal calls '(("proj-a" nil))))))))
+(ert-deftest edmacs-workspaces-test-nothing-writes-a-tab-group-parameter ()
+  "The `group' tab parameter is not part of a tab's stored identity any
+more, so no non-test module may write one -- neither directly nor via
+core's `tab-bar-change-tab-group'. A stored group that disagreed with
+its root is exactly what made a tab invisible to `find-tab' and
+misfiled in the sidebar."
+  (dolist (file (edmacs-workspaces-test--module-files))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((text (buffer-string)))
+        (dolist (forbidden '("(tab-bar-change-tab-group" "(setf (alist-get 'group"))
+          (should (equal (list file forbidden nil)
+                         (list file forbidden
+                               (string-match-p (regexp-quote forbidden) text)))))))))
 
-(ert-deftest edmacs-workspaces-test-assign-group-adjacency ()
-  "Grouping the 1st and 3rd of three tabs ends with them adjacent."
-  (edmacs-workspaces-test--with-scratch-tabs
-    (tab-bar-rename-tab "t1")
-    (tab-bar-new-tab)
-    (tab-bar-rename-tab "t2")
-    (tab-bar-new-tab)
-    (tab-bar-rename-tab "t3")
-    ;; t1 is now tab 1, t2 tab 2, t3 (current) tab 3.
-    (edmacs-workspaces-assign-group "proj-a" 1)
-    (edmacs-workspaces-assign-group "proj-a" (1+ (tab-bar--current-tab-index)))
-    (let* ((names (mapcar (lambda (tab) (alist-get 'name tab)) (tab-bar-tabs)))
-           (t1-pos (seq-position names "t1"))
-           (t3-pos (seq-position names "t3")))
-      (should (= 1 (abs (- t1-pos t3-pos)))))))
+(ert-deftest edmacs-workspaces-test-move-tab-to-group-adjacency ()
+  "Rooting the 1st and 3rd of three tabs in one repo ends with them adjacent.
+Core's own `tab-bar-move-tab-to-group' cannot do this any more: it reads
+`(alist-get \\='group tab)', which nothing writes now, so it would see
+three ungrouped tabs and move none of them."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (let ((wt-a (edmacs-workspaces-test--dir "repoA__worktrees/a"))
+            (wt-b (edmacs-workspaces-test--dir "repoA__worktrees/b"))
+            (other (edmacs-workspaces-test--dir "repoB")))
+        (edmacs-workspaces-set-tab-root wt-a)
+        (tab-bar-rename-tab "t1")
+        (tab-bar-new-tab)
+        (edmacs-workspaces-set-tab-root other)
+        (tab-bar-rename-tab "t2")
+        (tab-bar-new-tab)
+        (edmacs-workspaces-set-tab-root wt-b)
+        (tab-bar-rename-tab "t3")
+        ;; t1 (repoA) is tab 1, t2 (repoB) tab 2, t3 (repoA, current) tab 3.
+        (should (equal (mapcar #'edmacs-workspaces-test--group-of (tab-bar-tabs))
+                       '("repoA" "repoB" "repoA")))
+        (edmacs-workspaces-move-tab-to-group)
+        (let* ((names (mapcar (lambda (tab) (alist-get 'name tab)) (tab-bar-tabs)))
+               (t1-pos (seq-position names "t1"))
+               (t3-pos (seq-position names "t3")))
+          (should (= 1 (abs (- t1-pos t3-pos)))))))))
+
+(ert-deftest edmacs-workspaces-test-move-tab-to-group-leaves-a-settled-tab-alone ()
+  "A tab already inside its group's bounds is not moved, and an ungrouped
+one (no root at all) is left where it is rather than shoved to the end."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (let ((wt-a (edmacs-workspaces-test--dir "repoA__worktrees/a"))
+            (wt-b (edmacs-workspaces-test--dir "repoA__worktrees/b")))
+        (edmacs-workspaces-set-tab-root wt-a)
+        (tab-bar-rename-tab "t1")
+        (tab-bar-new-tab)
+        (edmacs-workspaces-set-tab-root wt-b)
+        (tab-bar-rename-tab "t2")
+        (tab-bar-new-tab)
+        (tab-bar-rename-tab "t3")
+        (let ((before (mapcar (lambda (tab) (alist-get 'name tab)) (tab-bar-tabs))))
+          ;; t3 carries no root, so it has no group to be moved toward.
+          (should-not (edmacs-workspaces-test--group-of
+                       (edmacs-workspaces-test--current-tab)))
+          (edmacs-workspaces-move-tab-to-group)
+          (should (equal before
+                         (mapcar (lambda (tab) (alist-get 'name tab)) (tab-bar-tabs)))))))))
 
 ;; ============================================================================
 ;; find-tab / select-tab across two (group, root) pairs
@@ -247,40 +314,74 @@ unless this function guards against it first."
 (ert-deftest edmacs-workspaces-test-find-and-select-tab ()
   (edmacs-workspaces-test--with-scratch-tabs
     (edmacs-workspaces-set-tab-root "/root/a/")
-    (edmacs-workspaces-assign-group "group-a")
     (tab-bar-new-tab)
     (edmacs-workspaces-set-tab-root "/root/b/")
-    (edmacs-workspaces-assign-group "group-b")
-    (should-not (edmacs-workspaces-find-tab "group-a" "/root/b/"))
-    (should (edmacs-workspaces-find-tab "group-a" "/root/a/"))
-    (should (edmacs-workspaces-find-tab "group-b" "/root/b/"))
-    (edmacs-workspaces-select-tab "group-a" "/root/a/")
+    (should-not (edmacs-workspaces-find-tab "/root/c/"))
+    (should (edmacs-workspaces-find-tab "/root/a/"))
+    (should (edmacs-workspaces-find-tab "/root/b/"))
+    (edmacs-workspaces-select-tab "/root/a/")
     (should (equal (edmacs-workspaces-tab-root
                     (tab-bar--current-tab-find nil (selected-frame)))
                    "/root/a/"))))
 
+(ert-deftest edmacs-workspaces-test-find-tab-is-keyed-on-root-alone ()
+  "AC4's lookup half: a stale stored `group' cannot hide a tab from
+`find-tab'. Under the old (GROUP, ROOT) key it did, and `open-worktree'
+then created a second tab for a worktree already open."
+  (edmacs-workspaces-test--with-scratch-tabs
+    (edmacs-workspaces-set-tab-root "/root/a/")
+    (let ((tab (edmacs-workspaces-test--current-tab)))
+      ;; What `M-x tab-group' still writes, and what `SPC T n' used to
+      ;; leave behind: a `group' entry saying something else entirely.
+      (setf (alist-get 'group (cdr tab)) "bogus")
+      (should (eq tab (edmacs-workspaces-find-tab "/root/a/")))
+      (should (eq tab (edmacs-workspaces-select-tab "/root/a/"))))))
+
+(ert-deftest edmacs-workspaces-test-no-two-argument-find-tab-call-sites ()
+  "The rekey has to be complete: a leftover `(find-tab GROUP ROOT)' call
+would silently pass GROUP as the root and match nothing at all."
+  (dolist (file (edmacs-workspaces-test--module-files))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (while (re-search-forward
+              "(edmacs-workspaces-\\(?:find\\|select\\)-tab\\_>" nil t)
+        (let ((args (save-excursion
+                      (goto-char (match-beginning 0))
+                      (let ((end (progn (forward-sexp) (point))))
+                        (buffer-substring (match-end 0) (1- end))))))
+          ;; ROOT plus an optional FRAME: never three.
+          (should (equal (list file args)
+                         (list file
+                               (if (< (length (split-string args nil t)) 3)
+                                   args
+                                 "TOO MANY ARGUMENTS")))))))))
+
 (ert-deftest edmacs-workspaces-test-select-tab-nil-when-no-match ()
   (edmacs-workspaces-test--with-scratch-tabs
-    (should-not (edmacs-workspaces-select-tab "no-such-group" "/no/such/root/"))))
+    (should-not (edmacs-workspaces-select-tab "/no/such/root/"))))
 
 ;; ============================================================================
 ;; Group / tabs-in-group enumeration excludes ungrouped tabs
 ;; ============================================================================
 
 (ert-deftest edmacs-workspaces-test-groups-excludes-ungrouped-tabs ()
-  (edmacs-workspaces-test--with-scratch-tabs
-    ;; The single default tab from the fixture carries no group at all.
-    (should-not (edmacs-workspaces-groups))
-    (tab-bar-new-tab)
-    (edmacs-workspaces-assign-group "group-a")
-    (should (equal (edmacs-workspaces-groups) '("group-a")))))
+  "A tab with no ROOT has no group: the group IS a function of the root."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      ;; The single default tab from the fixture carries no root at all.
+      (should-not (edmacs-workspaces-groups))
+      (tab-bar-new-tab)
+      (edmacs-workspaces-set-tab-root (edmacs-workspaces-test--dir "repoA"))
+      (should (equal (edmacs-workspaces-groups) '("repoA"))))))
 
 (ert-deftest edmacs-workspaces-test-tabs-in-group-excludes-ungrouped ()
-  (edmacs-workspaces-test--with-scratch-tabs
-    (tab-bar-new-tab)
-    (edmacs-workspaces-assign-group "group-a")
-    (should (= 1 (length (edmacs-workspaces-tabs-in-group "group-a"))))
-    (should-not (edmacs-workspaces-tabs-in-group nil))))
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (tab-bar-new-tab)
+      (edmacs-workspaces-set-tab-root (edmacs-workspaces-test--dir "repoA"))
+      (should (= 1 (length (edmacs-workspaces-tabs-in-group "repoA"))))
+      (should-not (edmacs-workspaces-tabs-in-group nil)))))
 
 ;; ============================================================================
 ;; Phase 2 fixture: a real temp repo tree, with git-common-dir stubbed onto it
@@ -324,6 +425,7 @@ own payload -- and the hook's membership is asserted separately by
   `(let ((window-buffer-change-functions nil)
          (edmacs-workspaces-test--tmp
           (file-name-as-directory (file-truename (make-temp-file "edmacs-ws-" t)))))
+     (edmacs-workspaces-clear-group-memo)
      (unwind-protect
          (cl-letf (((symbol-function 'edmacs-git-common-dir)
                     (lambda (root)
@@ -359,6 +461,7 @@ own payload -- and the hook's membership is asserted separately by
                                 (mapconcat #'identity (seq-take parts depth) "/")
                                 edmacs-workspaces-test--tmp)))))))))
            ,@body)
+       (edmacs-workspaces-clear-group-memo)
        (delete-directory edmacs-workspaces-test--tmp t))))
 
 (defun edmacs-workspaces-test--current-tab ()
@@ -424,20 +527,28 @@ own payload -- and the hook's membership is asserted separately by
         (should (= 2 (length (edmacs-workspaces-tabs-in-group "repoA"))))
         ;; Re-invoking from another tab selects the existing one.
         (let ((count (length (tab-bar-tabs))))
-          (edmacs-workspaces-select-tab "repoA" main)
+          (edmacs-workspaces-select-tab main)
           (edmacs-workspaces-open-worktree wt)
           (should (= count (length (tab-bar-tabs))))
           (should (equal (edmacs-workspaces-tab-root (edmacs-workspaces-test--current-tab))
                          wt)))))))
 
-(ert-deftest edmacs-workspaces-test-open-worktree-scoped-by-group ()
-  "Same root, different project group: not a duplicate."
+(ert-deftest edmacs-workspaces-test-open-worktree-groups-by-root ()
+  "A worktree tab is found by its root and files under its own repo's group.
+There is no such thing as \"the same root in another project's group\"
+any more: `edmacs-workspaces-tab-group' derives the group FROM the root,
+so a root determines exactly one group."
   (edmacs-workspaces-test--with-repos
     (edmacs-workspaces-test--with-scratch-tabs
-      (let ((wt (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x")))
+      (let ((wt (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x"))
+            (other (edmacs-workspaces-test--dir "repoB")))
         (edmacs-workspaces-open-worktree wt)
-        (should (edmacs-workspaces-find-tab "repoA" wt))
-        (should-not (edmacs-workspaces-find-tab "repoB" wt))))))
+        (should (edmacs-workspaces-find-tab wt))
+        (should-not (edmacs-workspaces-find-tab other))
+        (should (member (edmacs-workspaces-find-tab wt)
+                        (edmacs-workspaces-tabs-in-group "repoA")))
+        (should-not (member (edmacs-workspaces-find-tab wt)
+                            (edmacs-workspaces-tabs-in-group "repoB")))))))
 
 ;; ============================================================================
 ;; AC3 -- three projects, three groups, one frame
@@ -531,7 +642,7 @@ post-open hook rather than surviving its absence."
         (let ((before (length (tab-bar-tabs))))
           (edmacs-workspaces-open-worktree wt)
           (should (= (1+ before) (length (tab-bar-tabs))))
-          (should (edmacs-workspaces-find-tab "repoA" wt))
+          (should (edmacs-workspaces-find-tab wt))
           (should (equal (edmacs-workspaces-tab-root (edmacs-workspaces-test--current-tab))
                          wt)))))))
 
@@ -572,7 +683,7 @@ post-open hook rather than surviving its absence."
              (stray nil))
         (edmacs-workspaces-open-project a)
         (edmacs-workspaces-open-worktree b)
-        (edmacs-workspaces-select-tab "repoA" a)
+        (edmacs-workspaces-select-tab a)
         (unwind-protect
             (progn
               (setq stray (dired-noselect b))
@@ -597,7 +708,7 @@ post-open hook rather than surviving its absence."
                                b))
                 (should (memq stray (mapcar #'window-buffer (window-list nil 'never))))
                 ;; ...and no longer in A's.
-                (edmacs-workspaces-select-tab "repoA" a)
+                (edmacs-workspaces-select-tab a)
                 (should-not (memq stray
                                   (mapcar #'window-buffer (window-list nil 'never))))))
           (when (buffer-live-p stray) (kill-buffer stray)))))))
@@ -627,7 +738,7 @@ assertion would hold without the sweep having moved anything."
         (edmacs-workspaces-open-project a)
         (edmacs-workspaces-open-worktree b)
         (edmacs-workspaces-open-worktree c)
-        (edmacs-workspaces-select-tab "repoA" a)
+        (edmacs-workspaces-select-tab a)
         (unwind-protect
             (progn
               (setq stray-b (dired-noselect b-sub))
@@ -643,9 +754,9 @@ assertion would hold without the sweep having moved anything."
               (should (edmacs-workspaces--stray-tab-number stray-c))
               (edmacs-workspaces--relocate-stray-visits (selected-frame))
               ;; Both arrived, not just whichever was discovered last.
-              (edmacs-workspaces-select-tab "repoA" b)
+              (edmacs-workspaces-select-tab b)
               (should (memq stray-b (mapcar #'window-buffer (window-list nil 'never))))
-              (edmacs-workspaces-select-tab "repoA" c)
+              (edmacs-workspaces-select-tab c)
               (should (memq stray-c (mapcar #'window-buffer (window-list nil 'never)))))
           (when (buffer-live-p stray-b) (kill-buffer stray-b))
           (when (buffer-live-p stray-c) (kill-buffer stray-c)))))))
@@ -674,15 +785,15 @@ Real directories, because `file-in-directory-p' short-circuits on a
               (inner (edmacs-workspaces-test--dir "outer/inner"))
               (sub (edmacs-workspaces-test--dir "outer/inner/sub"))
               (other (edmacs-workspaces-test--dir "elsewhere")))
-          ;; Grouped, because only a project tab is ever a relocation target.
+          ;; The fixture's `--repo-of' names every top-level directory as
+          ;; its own repo, so all three roots derive a real group.
+          ;; Grouped, because only a project tab is ever a relocation
+          ;; target -- and a stamped root is now all it takes.
           (edmacs-workspaces-set-tab-root outer)
-          (edmacs-workspaces-assign-group "repoA")
           (tab-bar-new-tab)
           (edmacs-workspaces-set-tab-root inner)
-          (edmacs-workspaces-assign-group "repoA")
           (tab-bar-new-tab)
           (edmacs-workspaces-set-tab-root other)
-          (edmacs-workspaces-assign-group "repoB")
           (cl-letf (((symbol-function 'edmacs-workspaces--buffer-dir)
                      (lambda (_) sub)))
             (should (equal (edmacs-workspaces-tab-root
@@ -716,7 +827,9 @@ tab's buffer, which is exactly the wanted answer here."
                                 (cdr tab))))))))))
 
 (ert-deftest edmacs-workspaces-test-post-open-hook-is-stamp-only ()
-  "No reconciliation, no tab closing, no group assignment in the hook."
+  "No reconciliation, no tab closing, no group write in the hook.
+Designating a main window and running the seam are the only additions;
+neither reconciles nor closes anything."
   (let ((source (with-temp-buffer
                   (insert-file-contents
                    (edmacs-workspaces-test--repo-file "modules/workspaces.el"))
@@ -727,7 +840,7 @@ tab's buffer, which is exactly the wanted answer here."
                               source start))
            (body (substring source start end)))
       (dolist (forbidden '("tab-bar-close-tab" "tab-bar-select-tab"
-                           "seq-find" "edmacs-workspaces-assign-group"))
+                           "seq-find" "tab-bar-change-tab-group"))
         (should-not (string-match-p (regexp-quote forbidden) body))))))
 
 (ert-deftest edmacs-workspaces-test-stray-sweep-ignores-ungrouped-tab ()
@@ -737,12 +850,15 @@ ancestor of everything -- so a visit to a file outside every open
 worktree must be left alone, not dragged onto it."
   (edmacs-workspaces-test--with-repos
     (edmacs-workspaces-test--with-scratch-tabs
-      (let* ((home (edmacs-workspaces-test--dir "home"))
-             (loose (edmacs-workspaces-test--dir "home/loose"))
+      (let* ((boot (file-name-as-directory (file-truename (temporary-file-directory))))
+             (loose (edmacs-workspaces-test--dir "loose"))
              (wt (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x"))
              (buf nil))
-        ;; The fixture's ungrouped tab stands in for the boot tab.
-        (edmacs-workspaces-set-tab-root home)
+        ;; The daemon's boot tab: a LIVE directory outside every repo, so
+        ;; it derives no group at all -- and it contains the whole
+        ;; fixture, which is exactly the "ancestor of everything" shape
+        ;; that made excluding it necessary.
+        (edmacs-workspaces-set-tab-root boot)
         (should-not (edmacs-workspaces-test--group-of
                      (edmacs-workspaces-test--current-tab)))
         (edmacs-workspaces-open-worktree wt)
@@ -825,13 +941,26 @@ fresh zero-delay timer per firing, with no pending-timer guard at all."
 ;; included. Paths are synthetic (`/w/...') so `file-truename' resolves
 ;; no symlink and needs nothing on disk.
 
+(defmacro edmacs-workspaces-test--clearing-group-memo (&rest body)
+  "Run BODY with `edmacs-workspaces--group-memo' cleared on both edges.
+Every fixture that stubs git resolution needs this: a group name is
+derived from a root through whichever stub was in force when it was
+first asked for, and `edmacs-workspaces-tab-group' memoizes the answer
+per root. Without the clear, one fixture's repo layout is served to the
+next fixture's identically named roots."
+  (declare (indent 0))
+  `(unwind-protect
+       (progn (edmacs-workspaces-clear-group-memo) ,@body)
+     (edmacs-workspaces-clear-group-memo)))
+
 (defmacro edmacs-workspaces-test--with-stub-git (&rest body)
   "Run BODY with git resolution stubbed onto the `/w/<repo>/' fixture layout.
 Group derivation must go through the same `edmacs-workspaces-group-name'
 the runtime open paths use, or the migrated group strings would not be
 `equal' to the ones a later reopen computes."
   (declare (indent 0))
-  `(cl-letf (((symbol-function 'edmacs-git-common-dir)
+  `(edmacs-workspaces-test--clearing-group-memo
+    (cl-letf (((symbol-function 'edmacs-git-common-dir)
               (lambda (root)
                 ;; `/w/<repo>/' and `/w/<repo>__worktrees/<slug>/' both
                 ;; resolve to `<repo>', mirroring rdm's on-disk layout.
@@ -848,7 +977,7 @@ the runtime open paths use, or the migrated group strings would not be
                 (file-name-nondirectory
                  (directory-file-name
                   (file-name-directory (directory-file-name common)))))))
-     ,@body))
+      ,@body)))
 
 (defun edmacs-workspaces-test--window-state (buffer-names)
   "Return a window-state literal shaped like a real saved frame's.
@@ -867,6 +996,25 @@ strips `wc-bl'/`wc-bbl' on save."
           (parameters (edmacs-stack-popup . t) (edmacs-main . t))
           (buffer ,(car buffer-names) (selected . t) (point . 1) (start . 1)))
     (bufferlo-buffer-list ,buffer-names)))
+
+(defun edmacs-workspaces-test--tab-ws (buffer-name &optional prev-names)
+  "Return a tab `ws' value showing BUFFER-NAME in its `edmacs-main' leaf.
+`window-state-get's RAW return shape: a `(CONSTRAINTS-ALIST . TREE)'
+cons, which is what tab-bar.el stores and therefore what
+`edmacs-workspaces--root-from-ws' is handed. Distinct from
+`edmacs-workspaces-test--window-state', which is the flat sanitized
+literal the desktop-migration tests assert bufferlo entries against and
+carries no such cons.
+
+The sidebar side window comes first, so the leaf the derivation picks is
+genuinely the marked one rather than merely the first."
+  (cons '((min-height . 4) (min-width . 10))
+        `(hc (leaf (parameters (window-side . left) (window-slot . 0))
+                   (buffer "*sidebar*" (selected) (point . 1) (start . 1)))
+             (leaf (parameters (edmacs-main . t))
+                   (buffer ,buffer-name (selected . t) (point . 1) (start . 1))
+                   (prev-buffers ,@(mapcar (lambda (n) (list n 1 1))
+                                           prev-names))))))
 
 (defun edmacs-workspaces-test--frames-model-fixture ()
   "Return a two-state frameset in the pre-roadmap frames model's shape.
@@ -912,10 +1060,18 @@ them in place for every later test in the process."
 (defun edmacs-workspaces-test--tab-values (tabs key)
   (delq nil (mapcar (lambda (tab) (alist-get key (cdr tab))) tabs)))
 
+(defun edmacs-workspaces-test--tab-groups (tabs)
+  "Return TABS' DERIVED group names, nils dropped.
+The migrated tabs carry no stored `group' at all any more, so every
+assertion about grouping has to go through `tab-bar-tab-group-function'
+-- which is exactly what the sidebar and the tab bar themselves read."
+  (delq nil (mapcar (lambda (tab) (funcall tab-bar-tab-group-function (cdr tab)))
+                    tabs)))
+
 (ert-deftest edmacs-workspaces-test-migrate-frames-model-fixture ()
   "AC2: the real desktop's shape converts with no project or worktree lost.
-Every tab keeps its worktree, gains its project group, and swaps
-the legacy `edmacs-root' for this module's own parameter -- a
+Every tab keeps its worktree, derives its project group from it, and
+swaps the legacy `edmacs-root' for this module's own parameter -- a
 migration that reshaped the frames but left the old name in place would
 restore tabs the new model cannot read at all."
   (edmacs-workspaces-test--with-stub-git
@@ -924,8 +1080,10 @@ restore tabs the new model cannot read at all."
            (tabs (edmacs-workspaces-test--migrated-tabs out)))
       (should (= 1 (length (frameset-states out))))
       (should (= 2 (length tabs)))
-      (should (equal (edmacs-workspaces-test--tab-values tabs 'group)
+      (should (equal (edmacs-workspaces-test--tab-groups tabs)
                      '("edmacs" "cloudcitydotgay")))
+      ;; The stored entry is gone entirely: the group is derived now.
+      (should-not (edmacs-workspaces-test--tab-values tabs 'group))
       (should (equal (sort (edmacs-workspaces-test--tab-values
                             tabs edmacs-workspaces-root-parameter)
                            #'string<)
@@ -942,30 +1100,33 @@ restore tabs the new model cannot read at all."
       (should (equal (alist-get 'name (cdr (assq 'current-tab tabs))) "edmacs")))))
 
 (ert-deftest edmacs-workspaces-test-migrate-leaves-a-rootless-tab-ungrouped ()
-  "A tab with no root of any kind belongs to no project, so the frame's
-group must not be grafted onto it. The daemon's boot tab is exactly that
-tab; filing it under the frame's group rendered it as a phantom worktree
-row inside that project's tree in the sidebar. The frame-group fallback
-still applies to a tab that HAS a root whose repo will not resolve."
+  "A tab with no root of any kind belongs to no project. The daemon's boot
+tab is exactly that tab; filing it under a frame-wide group rendered it
+as a phantom worktree row inside that project's tree in the sidebar.
+There is no frame-wide group left to graft: the group is derived from
+the tab's own root, and a rootless tab has none."
   (let* ((rootless (list 'tab (cons 'name "*sidebar*") (list 'explicit-name)))
-         (out (edmacs-workspaces--migrate-tab rootless "edmacs")))
+         (out (edmacs-workspaces--migrate-tab rootless)))
     (should (null (alist-get 'group (cdr out))))
+    (should (null (funcall tab-bar-tab-group-function (cdr out))))
     (should (null (alist-get edmacs-workspaces-root-parameter (cdr out))))
     ;; Still a fixed point on its own output.
-    (should (equal out (edmacs-workspaces--migrate-tab out "edmacs")))))
+    (should (equal out (edmacs-workspaces--migrate-tab out)))))
 
 (ert-deftest edmacs-workspaces-test-migrate-still-groups-a-legacy-rooted-tab ()
   "The rootless carve-out above must not disarm the migration itself: a tab
-carrying only the LEGACY root parameter is what the frames model saved, and
-it still has to come back with both a group and this module's root."
+carrying only the LEGACY root parameter is what the frames model saved,
+and it still has to come back with this module's root -- and therefore
+with a derived group."
+  (edmacs-workspaces-test--clearing-group-memo
   (let* ((legacy (list 'tab (cons 'name "old")
                        (cons edmacs-workspaces--legacy-root-parameter
                              (expand-file-name default-directory))))
-         (out (edmacs-workspaces--migrate-tab legacy "edmacs")))
-    (should (alist-get 'group (cdr out)))
+         (out (edmacs-workspaces--migrate-tab legacy)))
+    (should (funcall tab-bar-tab-group-function (cdr out)))
     (should (alist-get edmacs-workspaces-root-parameter (cdr out)))
     (should (null (alist-get edmacs-workspaces--legacy-root-parameter
-                             (cdr out))))))
+                             (cdr out)))))))
 
 (ert-deftest edmacs-workspaces-test-migrate-folds-window-state-into-ws ()
   "AC5: a folded `current-tab' MUST gain the frame's window state as `ws'.
@@ -1012,8 +1173,8 @@ assembled, so each group's tabs have to be made contiguous here."
                     '((tab (edmacs-root . "/w/edmacs__worktrees/roadmap-x/")
                            (name . "roadmap-x") (time . 1.0) (ws nil)))))
       (let* ((out (edmacs-workspaces-migrate-frameset fixture))
-             (groups (mapcar (lambda (tab) (alist-get 'group (cdr tab)))
-                             (edmacs-workspaces-test--migrated-tabs out))))
+             (groups (edmacs-workspaces-test--tab-groups
+                      (edmacs-workspaces-test--migrated-tabs out))))
         (should (equal groups '("edmacs" "edmacs" "cloudcitydotgay")))))))
 
 (ert-deftest edmacs-workspaces-test-migrate-drops-only-duplicate-pairs ()
@@ -1036,27 +1197,29 @@ the same project must survive."
                        '("/w/edmacs-other/" "/w/edmacs/")))))))
 
 (ert-deftest edmacs-workspaces-test-migrate-keeps-a-tab-whose-worktree-is-gone ()
-  "A root pointing at a removed worktree keeps its tab: the group falls
-back to the pure repo name of the frame's own legacy `edmacs-repo',
-which needs no disk access at all."
-  (cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_root) nil))
-            ((symbol-function 'edmacs-git-common-dir-repo-name)
-             (lambda (common)
-               (file-name-nondirectory
-                (directory-file-name
-                 (file-name-directory (directory-file-name common)))))))
-    (let* ((out (edmacs-workspaces-migrate-frameset
-                 (edmacs-workspaces-test--frames-model-fixture)))
-           (tabs (edmacs-workspaces-test--migrated-tabs out)))
-      (should (= 2 (length tabs)))
-      (should (equal (sort (edmacs-workspaces-test--tab-values tabs 'group) #'string<)
-                     '("cloudcitydotgay" "edmacs"))))))
+  "A root pointing at a removed worktree keeps its tab AND its project.
+Git resolution answers nothing for a directory that is not there, and
+the frame-level `edmacs-repo' fallback is gone with the frames model, so
+what keeps such a tab inside its project is
+`edmacs-workspaces--group-name-from-path': the `/w/<repo>/' fixture
+roots do not exist on disk, so their own leaf basename names the repo.
+Without it the tab would drop out of the sidebar's tree entirely instead
+of rendering with `edmacs-sidebar-missing-worktree-face'."
+  (edmacs-workspaces-test--clearing-group-memo
+    (cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_root) nil)))
+      (let* ((out (edmacs-workspaces-migrate-frameset
+                   (edmacs-workspaces-test--frames-model-fixture)))
+             (tabs (edmacs-workspaces-test--migrated-tabs out)))
+        (should (= 2 (length tabs)))
+        (should (equal (sort (edmacs-workspaces-test--tab-groups tabs) #'string<)
+                       '("cloudcitydotgay" "edmacs")))))))
 
 (ert-deftest edmacs-workspaces-test-migrate-state-without-tabs-keeps-its-layout ()
   "A frame state carrying no `tabs' parameter contributes a synthesized
 ungrouped tab rather than losing that frame's whole layout."
-  (cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_root) nil))
-            ((symbol-function 'edmacs-git-common-dir-repo-name) (lambda (_) nil)))
+  (edmacs-workspaces-test--clearing-group-memo
+   (cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_root) nil))
+             ((symbol-function 'edmacs-git-common-dir-repo-name) (lambda (_) nil)))
     (let* ((ws (edmacs-workspaces-test--window-state '("scratch")))
            (fs (frameset--make
                 :version 1 :timestamp '(27294 4191 109240 0)
@@ -1068,7 +1231,7 @@ ungrouped tab rather than losing that frame's whole layout."
            (tabs (edmacs-workspaces-test--migrated-tabs
                   (edmacs-workspaces-migrate-frameset fs))))
       (should (= 2 (length tabs)))
-      (should (equal (alist-get 'ws (cdr (car (last tabs)))) ws)))))
+      (should (equal (alist-get 'ws (cdr (car (last tabs)))) ws))))))
 
 ;; ----------------------------------------------------------------------------
 ;; AC3 -- the migration is a fixed point, not a one-shot
@@ -1095,11 +1258,9 @@ daemon's boot path permanently safe."
                :app '(desktop . "208") :name "test"
                :states (list (cons `((last-focus-update . t)
                                      (tabs (current-tab (name . "edmacs")
-                                                        (group . "edmacs")
                                                         (edmacs-workspace-root
                                                          . "/w/edmacs/"))
                                            (tab (name . "cloudcitydotgay")
-                                                (group . "cloudcitydotgay")
                                                 (time . 1.0)
                                                 (edmacs-workspace-root
                                                  . "/w/cloudcitydotgay/")
@@ -1107,6 +1268,26 @@ daemon's boot path permanently safe."
                                      (height . 72))
                                    nil)))))
       (should (equal (edmacs-workspaces-migrate-frameset fs) fs)))))
+
+(ert-deftest edmacs-workspaces-test-migrate-drops-a-stored-group ()
+  "AC1: a stored `group' does not survive the migration at all, even when
+it AGREES with the root. It is not part of a tab's identity any more, and
+leaving one behind would let a later `M-x tab-group' reintroduce exactly
+the disagreement this phase removes."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((fs (frameset--make
+                :version 1 :timestamp '(27294 4191 109240 0)
+                :app '(desktop . "208") :name "test"
+                :states (list (cons `((last-focus-update . t)
+                                      (tabs (current-tab
+                                             (name . "edmacs")
+                                             (group . "edmacs")
+                                             (edmacs-workspace-root . "/w/edmacs/"))))
+                                    nil))))
+           (tabs (edmacs-workspaces-test--migrated-tabs
+                  (edmacs-workspaces-migrate-frameset fs))))
+      (should-not (edmacs-workspaces-test--tab-values tabs 'group))
+      (should (equal (edmacs-workspaces-test--tab-groups tabs) '("edmacs"))))))
 
 (ert-deftest edmacs-workspaces-test-migrate-does-not-mutate-its-input ()
   "Without this the idempotency assertions above could pass by aliasing."
@@ -1144,6 +1325,236 @@ would duplicate it."
                   (edmacs-workspaces-migrate-frameset fs))))
       (should (equal (alist-get edmacs-workspaces-root-parameter (cdr (car tabs)))
                      (file-name-as-directory (file-truename "/w/edmacs")))))))
+
+;; ============================================================================
+;; Phase 6 -- the root is a tab's whole identity
+;; ============================================================================
+
+(ert-deftest edmacs-workspaces-test-tab-group-is-derived-from-the-root ()
+  "`tab-bar-tab-group-function' is this module's, and it reads the ROOT.
+A stored `group' saying otherwise is inert -- that disagreement is the
+state this phase removes."
+  (should (eq tab-bar-tab-group-function #'edmacs-workspaces-tab-group))
+  (edmacs-workspaces-test--with-stub-git
+    (let ((tab '(tab (edmacs-workspace-root . "/w/edmacs__worktrees/roadmap-x/")
+                     (group . "cloudcitydotgay"))))
+      (should (equal (edmacs-workspaces-tab-group tab) "edmacs"))
+      (should (equal (funcall tab-bar-tab-group-function tab) "edmacs")))
+    ;; A tab with no root has no group at all.
+    (should-not (edmacs-workspaces-tab-group '(tab (name . "boot"))))))
+
+(ert-deftest edmacs-workspaces-test-group-memo-is-per-root-and-clearable ()
+  "The memo answers once per ROOT and is a pure function of it -- so the
+derivation must not run twice for the same root, and clearing it must
+make the next call derive again."
+  (edmacs-workspaces-test--clearing-group-memo
+    (let ((calls 0))
+      (cl-letf (((symbol-function 'edmacs-git-common-dir)
+                 (lambda (_root) (setq calls (1+ calls)) "/w/edmacs/.git"))
+                ((symbol-function 'edmacs-git-common-dir-repo-name)
+                 (lambda (_common) "edmacs")))
+        (should (equal (edmacs-workspaces--group-name-memoized "/w/edmacs/") "edmacs"))
+        (should (equal (edmacs-workspaces--group-name-memoized "/w/edmacs/") "edmacs"))
+        (should (= calls 1))
+        ;; A negative answer is memoized too, or every ungrouped tab pays
+        ;; the derivation on every redisplay.
+        (edmacs-workspaces-clear-group-memo)
+        (setq calls 0))
+      (let ((live (file-name-as-directory (temporary-file-directory))))
+        (cl-letf (((symbol-function 'edmacs-git-common-dir)
+                   (lambda (_root) (setq calls (1+ calls)) nil)))
+          (should-not (edmacs-workspaces--group-name-memoized live))
+          (should-not (edmacs-workspaces--group-name-memoized live))
+          (should (= calls 1)))))))
+
+(ert-deftest edmacs-workspaces-test-group-name-path-fallback ()
+  "With git resolution answering nothing: an rdm worktree path still names
+its repo, a MISSING directory falls back to its own leaf, and a LIVE
+non-repo directory stays ungrouped -- the daemon's boot tab is stamped
+with a real home directory and must not render as a phantom project."
+  (edmacs-workspaces-test--clearing-group-memo
+    (cl-letf (((symbol-function 'edmacs-git-common-dir) (lambda (_root) nil)))
+      (should (equal (edmacs-workspaces-group-name "/w/edmacs__worktrees/roadmap-x/")
+                     "edmacs"))
+      (should (equal (edmacs-workspaces-group-name "/w/gone-repo/") "gone-repo"))
+      ;; A directory that really is there.
+      (should-not (edmacs-workspaces-group-name (file-name-as-directory
+                                                 (temporary-file-directory))))
+      ;; Never stat a remote path from the group function's hot path.
+      (should-not (edmacs-workspaces-group-name "/ssh:host:/srv/app/")))))
+
+(ert-deftest edmacs-workspaces-test-migrate-rewrites-a-group-that-disagrees-with-its-root ()
+  "AC1 end to end: a tab whose stored group names another project comes
+out of the migration carrying no stored group, deriving the RIGHT one,
+findable by root, and bucketed under the root's project -- the exact
+bucketing `edmacs-sidebar--plan-projects' does."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((root "/w/edmacs__worktrees/roadmap-x/")
+           (fs (frameset--make
+                :version 1 :timestamp '(27294 4191 109240 0)
+                :app '(desktop . "208") :name "test"
+                :states (list (cons `((last-focus-update . t)
+                                      (tabs (current-tab
+                                             (name . "roadmap-x")
+                                             ;; The `SPC T n' bug: the tab
+                                             ;; inherited the originating
+                                             ;; tab's group, then was
+                                             ;; stamped with its own root.
+                                             (group . "cloudcitydotgay")
+                                             (edmacs-workspace-root . ,root))))
+                                    nil))))
+           (tabs (edmacs-workspaces-test--migrated-tabs
+                  (edmacs-workspaces-migrate-frameset fs)))
+           (tab (car tabs)))
+      (should (= 1 (length tabs)))
+      (should-not (alist-get 'group (cdr tab)))
+      (should (equal (funcall tab-bar-tab-group-function (cdr tab)) "edmacs"))
+      (edmacs-workspaces-test--with-scratch-tabs
+        (set-frame-parameter nil 'tabs tabs)
+        (should (eq (car tabs) (edmacs-workspaces-find-tab root)))
+        (should (member (car tabs) (edmacs-workspaces-tabs-in-group "edmacs")))
+        (should-not (member (car tabs)
+                            (edmacs-workspaces-tabs-in-group "cloudcitydotgay")))))))
+
+(ert-deftest edmacs-workspaces-test-open-worktree-finds-a-misgrouped-tab ()
+  "AC4: `open-worktree' on a tab poisoned with a bogus stored group
+switches to it rather than creating a second tab for the same worktree."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (let ((main (edmacs-workspaces-test--dir "repoA"))
+            (wt (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x")))
+        (edmacs-workspaces-open-project main)
+        (edmacs-workspaces-open-worktree wt)
+        (setf (alist-get 'group (cdr (edmacs-workspaces-test--current-tab))) "bogus")
+        (edmacs-workspaces-select-tab main)
+        (let ((count (length (tab-bar-tabs))))
+          (edmacs-workspaces-open-worktree wt)
+          (should (= count (length (tab-bar-tabs))))
+          (should (equal (edmacs-workspaces-tab-root
+                          (edmacs-workspaces-test--current-tab))
+                         wt)))))))
+
+(ert-deftest edmacs-workspaces-test-stamp-frame-tabs-never-selects-a-tab ()
+  "AC2: a three-tab frame is stamped with `tab-bar-select-tab' fatal.
+The current tab derives from its live window; the two background tabs
+derive from their own serialized `ws' main leaf, which is the whole
+point -- selecting each in turn ran two tab-select repair advices, a
+sidebar redraw and a stray-sweep timer per tab, on the boot path."
+  (edmacs-workspaces-test--with-repos
+    (let* ((frame (selected-frame))
+           (saved (frame-parameter frame 'tabs))
+           (a (edmacs-workspaces-test--dir "repoA"))
+           (b (edmacs-workspaces-test--dir "repoB"))
+           (c (edmacs-workspaces-test--dir "repoC"))
+           (buf-b nil) (buf-c nil))
+      (unwind-protect
+          (progn
+            (setq buf-b (get-buffer-create "ws-bg-b")
+                  buf-c (get-buffer-create "ws-bg-c"))
+            (with-current-buffer buf-b (setq-local default-directory b))
+            (with-current-buffer buf-c (setq-local default-directory c))
+            (let ((tabs (list (list 'current-tab (cons 'name "a"))
+                              (list 'tab (cons 'name "b")
+                                    (cons 'ws (edmacs-workspaces-test--tab-ws "ws-bg-b")))
+                              (list 'tab (cons 'name "c")
+                                    (cons 'ws (edmacs-workspaces-test--tab-ws "ws-bg-c"))))))
+              (set-frame-parameter frame 'tabs tabs)
+              (cl-letf (((symbol-function 'edmacs-workspaces--derive-frame-root)
+                         (lambda (_frame) a))
+                        ((symbol-function 'tab-bar-select-tab)
+                         (lambda (&rest _) (error "tab-bar-select-tab called"))))
+                (edmacs-workspaces-stamp-frame-tabs frame))
+              (should (equal (mapcar #'edmacs-workspaces-tab-root tabs)
+                             (list a b c)))))
+        (when (buffer-live-p buf-b) (kill-buffer buf-b))
+        (when (buffer-live-p buf-c) (kill-buffer buf-c))
+        (set-frame-parameter frame 'tabs saved)))))
+
+(ert-deftest edmacs-workspaces-test-root-from-ws-uses-the-desktop-args-list ()
+  "`desktop-restore-eager' is 10, so at `desktop-after-read-hook' time most
+restored buffers do not exist yet: a `get-buffer'-only derivation would
+answer nil for nearly every background tab. The pending-restore list is
+the fallback that makes the migration actually stamp them."
+  (edmacs-workspaces-test--with-repos
+    (let* ((root (edmacs-workspaces-test--dir "repoA"))
+           (file (expand-file-name "notes.org" root))
+           (ws (edmacs-workspaces-test--tab-ws "notes.org")))
+      (should-not (get-buffer "notes.org"))
+      ;; No live buffer and no pending entry: nothing to derive from.
+      (let ((desktop-buffer-args-list nil))
+        (should-not (edmacs-workspaces--root-from-ws ws)))
+      (let ((desktop-buffer-args-list (list (list file "notes.org" 'org-mode))))
+        (should (equal (edmacs-workspaces--root-from-ws ws) root))))))
+
+(ert-deftest edmacs-workspaces-test-root-from-ws-fails-soft ()
+  "Nothing derivable is nil, never a signal: this runs under
+`desktop-after-read-hook', where an error reaching a frameless daemon's
+top level exits it 255."
+  (let ((desktop-buffer-args-list nil))
+    (should-not (edmacs-workspaces--root-from-ws nil))
+    (should-not (edmacs-workspaces--root-from-ws '(nil)))
+    (should-not (edmacs-workspaces--root-from-ws (cons nil '(leaf))))
+    ;; Names that resolve to no live buffer and no pending restore.
+    (should-not (edmacs-workspaces--root-from-ws
+                 (edmacs-workspaces-test--tab-ws "no-such-buffer")))
+    ;; The whole (CONSTRAINTS . TREE) cons passed where the TREE belongs
+    ;; reads as "nothing derivable" rather than as an error.
+    (should-not (edmacs-workspaces--root-from-ws
+                 (cons nil (edmacs-workspaces-test--tab-ws "no-such-buffer"))))))
+
+(ert-deftest edmacs-workspaces-test-source-has-no-select-loop ()
+  "AC2 asserted on the source, not just the behaviour: `stamp-frame-tabs'
+must not name `tab-bar-select-tab' at all."
+  (let* ((source (with-temp-buffer
+                   (insert-file-contents
+                    (edmacs-workspaces-test--repo-file "modules/workspaces.el"))
+                   (buffer-string)))
+         (start (string-match
+                 (regexp-quote "(defun edmacs-workspaces-stamp-frame-tabs") source))
+         (end (string-match "^(defun \\|^;; =====" source (1+ start)))
+         (body (substring source start end)))
+    (should-not (string-match-p (regexp-quote "tab-bar-select-tab") body))
+    (should-not (string-match-p (regexp-quote "dotimes") body))))
+
+(ert-deftest edmacs-workspaces-test-owns-the-only-tab-post-open-entry ()
+  "AC3: exactly one `add-hook' on core's post-open variable anywhere under
+modules/, and it is this module's. The three independent entries this
+replaced ran in an `add-hook'-prepending order nobody chose, and the
+sidebar's redraw won it -- so the first tree drawn for a new tab saw an
+unstamped tab."
+  (let ((sites '()))
+    (dolist (file (edmacs-workspaces-test--module-files))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (while (search-forward "(add-hook 'tab-bar-tab-post-open-functions" nil t)
+          (push (file-name-nondirectory file) sites))))
+    (should (equal sites '("workspaces.el"))))
+  ;; Only this config's own entries are counted: a real session also
+  ;; carries bufferlo's `bufferlo--tab-include-exclude-buffers', which is
+  ;; a third-party package's and not ours to collapse.
+  (should (equal (seq-filter (lambda (f) (string-prefix-p "edmacs-" (symbol-name f)))
+                             tab-bar-tab-post-open-functions)
+                 (list #'edmacs-workspaces--on-tab-post-open))))
+
+(ert-deftest edmacs-workspaces-test-new-tab-is-stamped-before-the-seam-runs ()
+  "AC3's ordering guarantee: by the time a
+`edmacs-workspaces-tab-post-open-functions' member runs, the new tab
+carries its root and the frame carries a designated main window."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (let* ((wt (edmacs-workspaces-test--dir "repoA__worktrees/roadmap-x"))
+             (seen '())
+             (probe (lambda (tab frame)
+                      (push (list (edmacs-workspaces-tab-root tab)
+                                  (funcall tab-bar-tab-group-function tab)
+                                  (and (edmacs-windows-main-window-of frame) t)
+                                  (eq frame (selected-frame)))
+                            seen))))
+        (let ((edmacs-workspaces-tab-post-open-functions (list probe)))
+          (edmacs-workspaces-open-worktree wt))
+        (should (= 1 (length seen)))
+        (should (equal (car seen) (list wt "repoA" t t)))))))
 
 ;; ============================================================================
 ;; Frame eligibility -- edmacs-workspaces-frame-usable-p
@@ -1265,21 +1676,25 @@ into the desktop file forever."
       (set-frame-parameter frame 'tabs saved))))
 
 (ert-deftest edmacs-workspaces-test-current-tab-root-and-group ()
-  "The two public current-tab accessors read the tab, never a buffer."
-  (let* ((frame (selected-frame))
-         (saved (frame-parameter frame 'tabs))
-         (tab (list 'current-tab
-                    (cons 'edmacs-workspace-root "/repo/wt/")
-                    (cons 'group "repo"))))
-    (unwind-protect
-        (progn
-          (set-frame-parameter frame 'tabs (list tab))
-          (should (equal (edmacs-workspaces-current-tab-root frame) "/repo/wt/"))
-          (should (equal (edmacs-workspaces-current-group frame) "repo"))
-          (set-frame-parameter frame 'tabs (list (list 'current-tab)))
-          (should-not (edmacs-workspaces-current-tab-root frame))
-          (should-not (edmacs-workspaces-current-group frame)))
-      (set-frame-parameter frame 'tabs saved))))
+  "The two public current-tab accessors read the tab, never a buffer --
+and the group comes from the ROOT, not from a stored `group' entry
+saying something else."
+  (edmacs-workspaces-test--with-stub-git
+    (let* ((frame (selected-frame))
+           (saved (frame-parameter frame 'tabs))
+           (tab (list 'current-tab
+                      (cons 'edmacs-workspace-root "/w/edmacs__worktrees/roadmap-x/")
+                      (cons 'group "cloudcitydotgay"))))
+      (unwind-protect
+          (progn
+            (set-frame-parameter frame 'tabs (list tab))
+            (should (equal (edmacs-workspaces-current-tab-root frame)
+                           "/w/edmacs__worktrees/roadmap-x/"))
+            (should (equal (edmacs-workspaces-current-group frame) "edmacs"))
+            (set-frame-parameter frame 'tabs (list (list 'current-tab)))
+            (should-not (edmacs-workspaces-current-tab-root frame))
+            (should-not (edmacs-workspaces-current-group frame)))
+        (set-frame-parameter frame 'tabs saved)))))
 
 (ert-deftest edmacs-workspaces-test-root-survives-frameset-tab-filter ()
   "The desktop half of \"every tab is stamped\": `frameset-filter-tabs'

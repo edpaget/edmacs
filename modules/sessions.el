@@ -256,6 +256,13 @@ replays is migrated to exactly one state before it is stashed (see
 `edmacs-sessions--stash-frameset-for-daemon'), so the session has one
 GUI frame holding every project as a tab group.
 
+No tab is selected on the way through. FRAME's current tab takes its
+root from the live window it is showing; every background tab takes its
+own from the layout it already carries -- see
+`edmacs-workspaces--root-from-ws'. The per-tab selection walk this
+replaced ran both tab-select repair advices, a sidebar redraw and a
+stray-sweep timer once per tab, on the boot path.
+
 A tab whose stamped worktree directory is gone deliberately KEEPS its
 stamp. Under the frames model a dead stamp was cleared so a live root
 could be re-derived for the frame's one repo; under groups the stamp IS

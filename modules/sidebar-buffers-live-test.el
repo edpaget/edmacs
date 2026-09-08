@@ -157,12 +157,14 @@ worktree in a real Emacs session) to enable this suite"))
     ;;   unconditionally keeps `edmacs-sidebar--derive-main-root' from ever
     ;;   attempting a real (and here, pointlessly failing) `git' subprocess
     ;;   -- critical for this file's own composed no-shellout guard test.
-    ;; - `edmacs-workspaces-group-name' -- resolved by scanning tabs for
-    ;;   one whose stamped root equals ROOT, returning its real
-    ;;   `tab-bar-tab-group-function' group, since the real implementation
+    ;; - `edmacs-workspaces-group-name' -- a ROOT -> GROUP table filled by
+    ;;   `--stamp-current-tab-root', since the real implementation
     ;;   (git-common-dir-based) can never resolve a fixture root at all.
-    ;;   `edmacs-sidebar-buffers--tab-number-for-root' (sidebar-buffers.el)
-    ;;   needs this to resolve RET/`[`/`]` against a real open tab.
+    ;;   It has to be keyed on the ROOT and nothing else: production's
+    ;;   `tab-bar-tab-group-function' is `edmacs-workspaces-tab-group',
+    ;;   which derives a tab's group by calling exactly this function on
+    ;;   the tab's root -- so an override that read a tab's group back out
+    ;;   of `tab-bar-tab-group-function' would recurse forever.
     ;; - `edmacs-workspaces-classify-root' -- ROOT classifies `main' when it
     ;;   is the first root ever stamped for its group, else nil; the real
     ;;   implementation is also git-common-dir-based and could never
@@ -192,18 +194,16 @@ worktree in a real Emacs session) to enable this suite"))
     ;; git worktree) at all.
     (defvar edmacs-sidebar-buffers-live-test--group-main-roots (make-hash-table :test #'equal))
 
+    ;; ROOT -> the group `--stamp-current-tab-root' filed it under. The
+    ;; whole derivation this suite has in place of git resolution.
+    (defvar edmacs-sidebar-buffers-live-test--root-groups (make-hash-table :test #'equal))
+
     (defun edmacs-sidebar-buffers-live-test--group-name-override (root)
-      "Return ROOT's already-assigned tab-bar group, found by scanning
-every live frame's tabs for one whose stamped root equals ROOT -- see
-this file's Commentary above on why the real, git-common-dir-based
-`edmacs-workspaces-group-name' cannot resolve a fixture root at all."
-      (catch 'edmacs-sidebar-buffers-live-test--group-found
-        (dolist (frame (frame-list))
-          (dolist (tab (tab-bar-tabs frame))
-            (when (equal (alist-get edmacs-sidebar-buffers-live-test--root-parameter tab) root)
-              (throw 'edmacs-sidebar-buffers-live-test--group-found
-                     (funcall tab-bar-tab-group-function tab)))))
-        nil))
+      "Return ROOT's fixture group -- a pure ROOT -> GROUP lookup.
+See this file's Commentary on why this must not consult a tab's group:
+production derives a tab's group by calling this function on the tab's
+root, so reading one back would recurse."
+      (gethash root edmacs-sidebar-buffers-live-test--root-groups))
 
     (defun edmacs-sidebar-buffers-live-test--classify-root-override (root)
       "See `edmacs-sidebar-buffers-live-test--group-main-roots'."
@@ -277,6 +277,15 @@ renders lower down and confuse a test's own text-matching assertions."
                           (cdr (tab-bar--current-tab-find)))
               root)
         (tab-bar-rename-tab (file-name-nondirectory (directory-file-name root)))
+        ;; The ROOT -> GROUP entry is what the real
+        ;; `edmacs-workspaces-tab-group' will derive from; the memo has to
+        ;; be dropped alongside it, since a root reused across scenarios
+        ;; would otherwise be served its previous scenario's group.
+        (puthash root group edmacs-sidebar-buffers-live-test--root-groups)
+        (edmacs-workspaces-clear-group-memo)
+        ;; Still written, though nothing reads it: keeping the stored
+        ;; entry in place is what makes these scenarios evidence that the
+        ;; derived group -- not the stored one -- is what the render uses.
         (tab-bar-change-tab-group group)
         (unless (gethash group edmacs-sidebar-buffers-live-test--group-main-roots)
           (puthash group root edmacs-sidebar-buffers-live-test--group-main-roots)))
@@ -309,7 +318,9 @@ renders lower down and confuse a test's own text-matching assertions."
       ;; tests' own scenarios; without this a later test's root could be
       ;; wrongly classified `main' by a stale entry an earlier test left
       ;; behind under the same group string.
-      (clrhash edmacs-sidebar-buffers-live-test--group-main-roots))
+      (clrhash edmacs-sidebar-buffers-live-test--group-main-roots)
+      (clrhash edmacs-sidebar-buffers-live-test--root-groups)
+      (edmacs-workspaces-clear-group-memo))
 
     (defmacro edmacs-sidebar-buffers-live-test--with-scenario (roots &rest body)
       "Run BODY with a clean single-tab frame, then unwind: close any
@@ -955,6 +966,14 @@ wrong tab's buffers regardless of how many buffers exist at once."
              (f2 (edmacs-test-support-make-second-frame-or-skip))
              (r1 (edmacs-sidebar-buffers-live-test--make-root))
              (r2 (edmacs-sidebar-buffers-live-test--make-root)))
+        ;; This test builds its frames by hand rather than through
+        ;; `--with-scenario', so it has to install the workspaces
+        ;; overrides itself: without them the real, git-based
+        ;; `edmacs-workspaces-group-name' resolves no fixture root, both
+        ;; tabs derive no group, and `edmacs-sidebar--plan' falls through
+        ;; to the flat tab list -- which runs no worktree-section hook at
+        ;; all, so the buffer rows this asserts on are simply absent.
+        (edmacs-sidebar-buffers-live-test--with-workspaces-overrides
         (unwind-protect
             (let ((p (edmacs-sidebar-buffers-live-test--write-file r1 "p.el"))
                   (q (edmacs-sidebar-buffers-live-test--write-file r2 "q.el")))
@@ -986,7 +1005,7 @@ wrong tab's buffers regardless of how many buffers exist at once."
           (edmacs-sidebar-buffers-live-test--reset-frame f2)
           (delete-frame f2)
           (select-frame f1 'norecord)
-          (switch-to-buffer (get-buffer-create "*scratch*")))))
+          (switch-to-buffer (get-buffer-create "*scratch*"))))))
 
     ;; ==========================================================================
     ;; d -- kill the buffer at point

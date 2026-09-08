@@ -270,11 +270,14 @@ restore."
              (set-frame-parameter ,f 'tabs ,saved)))))
 
     (defun edmacs-sessions-live-test--build-workspace-tabs (frame)
-      "Build three grouped, rooted tabs on FRAME and return their (GROUP . ROOT)s.
+      "Build three rooted tabs on FRAME and return their (GROUP . ROOT)s.
 Two projects, one of them with two worktrees -- the shape a migrated
-desktop produces. The roots are synthetic: nothing here resolves them
-through git, they are only the `equal'-compared keys
-`edmacs-workspaces-find-tab' matches on."
+desktop produces. Only the ROOT is ever stamped: a tab's group is
+derived from it by `edmacs-workspaces-tab-group', so there is nothing
+else to write. The roots are synthetic; git never resolves them here,
+which is why `edmacs-workspaces-group-name' is stubbed onto the
+`/w/<repo>[__worktrees/<slug>]' shape for the duration -- the same
+derivation the real one would perform on a real layout."
       (let ((specs '(("edmacs" . "/w/edmacs/")
                      ("edmacs" . "/w/edmacs__worktrees/roadmap-x/")
                      ("cloudcitydotgay" . "/w/cloudcitydotgay/"))))
@@ -283,24 +286,43 @@ through git, they are only the `equal'-compared keys
             (dolist (spec specs)
               (unless first (tab-bar-new-tab))
               (setq first nil)
-              (edmacs-workspaces-set-tab-root (cdr spec) frame)
-              (edmacs-workspaces-assign-group (car spec) nil frame))))
+              (edmacs-workspaces-set-tab-root (cdr spec) frame))))
         specs))
+
+    (defmacro edmacs-sessions-live-test--with-synthetic-groups (&rest body)
+      "Run BODY with group derivation stubbed onto this file's `/w/...' roots.
+Cleared from the memo on both edges: `edmacs-workspaces-tab-group'
+memoizes per root, and these roots are reused across tests."
+      (declare (indent 0))
+      `(unwind-protect
+           (progn
+             (edmacs-workspaces-clear-group-memo)
+             (cl-letf (((symbol-function 'edmacs-workspaces-group-name)
+                        (lambda (root)
+                          (cond ((string-prefix-p "/w/edmacs" root) "edmacs")
+                                ((string-prefix-p "/w/cloudcitydotgay" root)
+                                 "cloudcitydotgay")
+                                ((string-prefix-p "/w/cloud" root) "cloud")))))
+               ,@body))
+         (edmacs-workspaces-clear-group-memo)))
 
     (ert-deftest edmacs-sessions-live-test-frameset-round-trips-groups-and-roots ()
       "AC1: every project group, every worktree tab within it, each tab's
 `edmacs-workspace-root' and the previously selected tab all come back
 from a real `frameset-save'/`desktop-restore-frameset' round trip.
 
-Two upstream facts carry this and are pinned here rather than argued:
-`frameset-filter-tabs' strips only the `wc-*' keys on save, so `group'
-and a custom root parameter survive; and the `group' parameter needs no
-stamping of this module's own -- tab-bar persists it itself."
+The upstream fact that carries this is pinned here rather than argued:
+`frameset-filter-tabs' strips only the `wc-*' keys on save, so a custom
+root parameter survives. The GROUP needs no persistence at all any more
+-- it is derived from the restored root, so this also proves a session
+comes back correctly grouped with nothing about grouping in the desktop
+file."
       (let ((frame (selected-frame)))
+        (edmacs-sessions-live-test--with-synthetic-groups
         (edmacs-sessions-live-test--with-scratch-tabs frame
           (let* ((specs (edmacs-sessions-live-test--build-workspace-tabs frame))
                  (selected (nth 1 specs)))
-            (edmacs-workspaces-select-tab (car selected) (cdr selected) frame)
+            (edmacs-workspaces-select-tab (cdr selected) frame)
             (let ((name (alist-get 'name (cdr (tab-bar--current-tab-find nil frame)))))
               (let ((desktop-saved-frameset (frameset-save (list frame)))
                     (desktop-restore-frames t)
@@ -315,9 +337,12 @@ stamping of this module's own -- tab-bar persists it itself."
                              '("cloudcitydotgay" "edmacs")))
               (should (= 2 (length (edmacs-workspaces-tabs-in-group "edmacs" frame))))
               (dolist (spec specs)
-                (should (edmacs-workspaces-find-tab (car spec) (cdr spec) frame)))
+                (should (edmacs-workspaces-find-tab (cdr spec) frame)))
+              ;; Nothing about grouping is in the desktop file at all.
+              (should-not (seq-some (lambda (tab) (alist-get 'group (cdr tab)))
+                                    (tab-bar-tabs frame)))
               (should (equal (alist-get 'name (cdr (tab-bar--current-tab-find nil frame)))
-                             name)))))))
+                             name))))))))
 
     (ert-deftest edmacs-sessions-live-test-migrated-frameset-restores-groups-and-roots ()
       "The same assertions over a frameset that went through the real
@@ -326,6 +351,7 @@ projects' tabs out. This is the desktop half of AC1/AC2 end to end --
 `workspaces-test.el' proves the transform, this proves Emacs restores
 what the transform produced."
       (let ((frame (selected-frame)))
+        (edmacs-sessions-live-test--with-synthetic-groups
         (edmacs-sessions-live-test--with-scratch-tabs frame
           (let* ((saved
                   (progn
@@ -354,11 +380,7 @@ what the transform produced."
                  (fs (progn (setf (frameset-states saved)
                                   (list state other))
                             saved))
-                 (migrated
-                  (cl-letf (((symbol-function 'edmacs-workspaces-group-name)
-                             (lambda (root)
-                               (if (string-prefix-p "/w/edmacs" root) "edmacs" "cloud"))))
-                    (edmacs-workspaces-migrate-frameset fs))))
+                 (migrated (edmacs-workspaces-migrate-frameset fs)))
             (should (= 1 (length (frameset-states migrated))))
             (let ((desktop-saved-frameset migrated)
                   (desktop-restore-frames t)
@@ -368,11 +390,14 @@ what the transform produced."
             (should (frame-live-p frame))
             (should (equal (sort (copy-sequence (edmacs-workspaces-groups frame)) #'string<)
                            '("cloud" "edmacs")))
-            (should (edmacs-workspaces-find-tab "edmacs" "/w/edmacs/" frame))
-            (should (edmacs-workspaces-find-tab "cloud" "/w/cloud/" frame))
-            ;; The legacy parameter is gone from every restored tab.
+            (should (edmacs-workspaces-find-tab "/w/edmacs/" frame))
+            (should (edmacs-workspaces-find-tab "/w/cloud/" frame))
+            ;; The legacy parameter is gone from every restored tab, and so
+            ;; is any stored `group' -- the migration drops it outright.
             (should-not (seq-some (lambda (tab) (alist-get 'edmacs-root (cdr tab)))
-                                  (tab-bar-tabs frame)))))))
+                                  (tab-bar-tabs frame)))
+            (should-not (seq-some (lambda (tab) (alist-get 'group (cdr tab)))
+                                  (tab-bar-tabs frame))))))))
 
     ;; ========================================================================
     ;; AC5 -- bufferlo already scopes buffers per TAB, with no configuration
@@ -458,17 +483,18 @@ always zero."
       (edmacs-sessions-live-test--skip-unless-graphic)
       (let ((frame (selected-frame)))
         (edmacs-sessions-live-test--with-restored-frame frame
-          (edmacs-sessions-live-test--with-scratch-tabs frame
-            (edmacs-workspaces-set-tab-root "/w/edmacs/" frame)
-            (edmacs-workspaces-assign-group "edmacs" nil frame)
-            (let ((migrated (edmacs-workspaces-migrate-frameset
-                             (frameset-save (list frame)))))
-              (edmacs-sessions-live-test--drive-bridge migrated
-                (should (= 1 (seq-count (lambda (f)
-                                          (and (frame-live-p f) (display-graphic-p f)))
-                                        (frame-list))))
-                (should (frame-live-p frame))
-                (should (edmacs-workspaces-find-tab "edmacs" "/w/edmacs/" frame))))))))
+          (edmacs-sessions-live-test--with-synthetic-groups
+            (edmacs-sessions-live-test--with-scratch-tabs frame
+              ;; Only the root is stamped: the group is derived from it.
+              (edmacs-workspaces-set-tab-root "/w/edmacs/" frame)
+              (let ((migrated (edmacs-workspaces-migrate-frameset
+                               (frameset-save (list frame)))))
+                (edmacs-sessions-live-test--drive-bridge migrated
+                  (should (= 1 (seq-count (lambda (f)
+                                            (and (frame-live-p f) (display-graphic-p f)))
+                                          (frame-list))))
+                  (should (frame-live-p frame))
+                  (should (edmacs-workspaces-find-tab "/w/edmacs/" frame)))))))))
 
     (ert-deftest edmacs-sessions-live-test-bridge-restores-a-selectable-folded-tab ()
       "A tab folded out of a second frame carries that frame's whole window
@@ -478,9 +504,9 @@ must yield real windows, not an empty frame."
       (edmacs-sessions-live-test--skip-unless-graphic)
       (let ((frame (selected-frame)))
         (edmacs-sessions-live-test--with-restored-frame frame
-          (edmacs-sessions-live-test--with-scratch-tabs frame
+          (edmacs-sessions-live-test--with-synthetic-groups
+           (edmacs-sessions-live-test--with-scratch-tabs frame
             (edmacs-workspaces-set-tab-root "/w/edmacs/" frame)
-            (edmacs-workspaces-assign-group "edmacs" nil frame)
             (let* ((saved (frameset-save (list frame)))
                    (state (car (frameset-states saved)))
                    (other (cons (append '((frameset--id . "1111-2222-3333-4444")
@@ -500,12 +526,12 @@ must yield real windows, not an empty frame."
                 (should (= 1 (seq-count (lambda (f)
                                           (and (frame-live-p f) (display-graphic-p f)))
                                         (frame-list))))
-                (let ((folded (edmacs-workspaces-select-tab "cloud" "/w/cloud/" frame)))
+                (let ((folded (edmacs-workspaces-select-tab "/w/cloud/" frame)))
                   (should folded)
                   (should (equal (edmacs-workspaces-tab-root
                                   (tab-bar--current-tab-find nil frame))
                                  "/w/cloud/"))
-                  (should (window-live-p (frame-selected-window frame))))))))))
+                  (should (window-live-p (frame-selected-window frame)))))))))))
 
     (provide 'sessions-live-test)))
 ;;; sessions-live-test.el ends here

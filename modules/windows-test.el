@@ -10,10 +10,15 @@
 ;;         -l modules/workspaces.el -l modules/windows.el \
 ;;         -l modules/windows-test.el -f edmacs-test-support-run-and-exit
 ;;
-;; `modules/workspaces.el' is on that line because the AC4 load-order test
-;; below loads `modules/sidebar.el' for real, leaving sidebar.el's
-;; `tab-bar-tab-post-open-functions' entry installed for the rest of the
-;; run -- and its redraw calls `edmacs-workspaces-groups'. Without
+;; `modules/workspaces.el' is on that line for two reasons. It owns the
+;; config's ONLY `tab-bar-tab-post-open-functions' entry -- windows.el's
+;; own former entry is gone, and `edmacs-windows-designate-main' is now
+;; called from workspaces.el's handler -- so without it a real
+;; `tab-bar-new-tab' designates no main window at all. And the AC4
+;; load-order test below loads `modules/sidebar.el' for real, leaving
+;; sidebar.el's entry on workspaces.el's
+;; `edmacs-workspaces-tab-post-open-functions' seam installed for the rest
+;; of the run -- and its redraw calls `edmacs-workspaces-groups'. Without
 ;; workspaces.el the 13 tests that drive a real `tab-bar-new-tab' after
 ;; that point fail with a void-function rather than skipping; see
 ;; .claude/CLAUDE.md on a header invocation not being the complete one by
@@ -304,6 +309,55 @@ leaf key, so reading a serialized layout for it is the same question
   (should (equal (edmacs-windows-ws-main-leaf '(leaf (parameters . nil))) '(nil)))
   (should (equal (edmacs-windows-ws-main-leaf nil) '(nil))))
 
+(ert-deftest edmacs-windows-test-ws-main-buffer-names-most-specific-first ()
+  "The main leaf's OWN displayed buffer, then its `prev-buffers' -- the
+order a caller identifying what that window was showing should try.
+Same leaf selection as `edmacs-windows-ws-main-leaf', so a marked leaf
+still wins over an earlier unmarked one and a whole tree with nothing
+marked still falls back to its first leaf."
+  (should (equal (edmacs-windows-ws-main-buffer-names
+                  '(leaf (parameters (edmacs-main . t))
+                         (buffer "own.el" (selected . t) (point . 1))
+                         (prev-buffers ("a.el" 1 1) ("b.el" 1 1))))
+                 '("own.el" "a.el" "b.el")))
+  ;; The sidebar leaf comes first in the tree and is NOT the answer.
+  (should (equal (edmacs-windows-ws-main-buffer-names
+                  '(hc (leaf (parameters (window-side . left))
+                             (buffer "*sidebar*" (point . 1)))
+                       (leaf (parameters (edmacs-main . t))
+                             (buffer "own.el" (selected . t) (point . 1)))))
+                 '("own.el")))
+  ;; Nothing marked anywhere: the first leaf is the fallback, exactly as
+  ;; `edmacs-windows-ws-main-leaf' falls back.
+  (should (equal (edmacs-windows-ws-main-buffer-names
+                  '(vc (leaf (buffer "first.el" (point . 1)))
+                       (leaf (buffer "second.el" (point . 1)))))
+                 '("first.el")))
+  ;; An empty tree, and a leaf with no buffer at all.
+  (should (equal (edmacs-windows-ws-main-buffer-names nil) '()))
+  (should (equal (edmacs-windows-ws-main-buffer-names '(leaf)) '()))
+  ;; A non-writable `ws' holds live buffer OBJECTS, not names: this
+  ;; answers about a SERIALIZED layout, so those are filtered out rather
+  ;; than handed on as if they were names.
+  (should (equal (edmacs-windows-ws-main-buffer-names
+                  `(leaf (buffer ,(current-buffer) (point . 1))))
+                 '())))
+
+(ert-deftest edmacs-windows-test-ws-main-leaf-contract-is-unchanged ()
+  "The phase-3 contract sidebar-buffers.el:215 consumes -- a (MARKED .
+PREV-BUFFERS) cons -- survives the refactor that added the buffer-name
+accessor beside it."
+  (let ((ws '(vc (leaf (prev-buffers ("x.el" 1 1)))
+                 (leaf (parameters (edmacs-main . t))
+                       (buffer "own.el" (selected . t) (point . 1))
+                       (prev-buffers ("y.el" 1 1) ("z.el" 1 1))))))
+    (should (equal (edmacs-windows-ws-main-leaf ws)
+                   '(t ("y.el" 1 1) ("z.el" 1 1))))
+    ;; The leaf's own buffer is NOT in `ws-main-leaf's answer, only in
+    ;; `ws-main-buffer-names' -- the two must not have merged.
+    (should (equal (mapcar #'car (cdr (edmacs-windows-ws-main-leaf ws)))
+                   '("y.el" "z.el")))))
+
 (ert-deftest edmacs-windows-test-repair-frame-designates-on-a-healthy-frame ()
   "Repair's healthy branch is the surviving home of the old lazy stamp:
 `edmacs-stack-sweep-stale-panes' documents it as what re-designates main
@@ -353,10 +407,11 @@ stale-pane sweep drop their `with-selected-frame' wrappers."
   (edmacs-windows-test--with-clean-layout
     (edmacs-window-set-main (selected-window))
     (edmacs-test-support-with-tabs-restored
-      ;; `tab-bar-new-tab' runs `delete-other-windows' on a fresh
-      ;; window configuration, but `edmacs-windows--on-tab-open' (this
-      ;; phase's `tab-bar-tab-post-open-functions' hook) designates the
-      ;; new tab's sole window as main immediately.
+      ;; `tab-bar-new-tab' runs `delete-other-windows' on a fresh window
+      ;; configuration, but workspaces.el's
+      ;; `edmacs-workspaces--on-tab-post-open' -- the config's sole
+      ;; `tab-bar-tab-post-open-functions' entry -- calls
+      ;; `edmacs-windows-designate-main' immediately.
       (tab-bar-new-tab)
       (should (seq-find (lambda (w) (window-parameter w 'edmacs-main))
                          (window-list nil 'no-minibuf)))
@@ -556,7 +611,25 @@ a real Emacs session) to enable this test"))
       (should (equal window-sides-slots '(1 nil nil nil)))
       ;; Both edges arrive through the claim API, each naming its owner.
       (should (equal (assq 'left edmacs-windows--side-claims) '(left 1 . sidebar)))
-      (should (equal (assq 'right edmacs-windows--side-claims) '(right nil . windows))))))
+      (should (equal (assq 'right edmacs-windows--side-claims) '(right nil . windows))))
+
+    (ert-deftest edmacs-windows-test-one-post-open-owner-after-all-modules-loaded ()
+      "With windows.el, workspaces.el and the real sidebar.el all loaded,
+core's `tab-bar-tab-post-open-functions' holds exactly ONE entry, and it
+is workspaces.el's. This is the only place all three are in one process,
+so it is the only place the collapse can actually be asserted -- three
+independent entries used to sit here in an `add-hook'-prepending order
+nobody chose, and the sidebar's redraw ran first, before the tab was
+stamped. windows.el is called directly by that owner; sidebar.el
+registers on its `edmacs-workspaces-tab-post-open-functions' seam."
+      ;; This config's own entries only: a real session also carries
+      ;; bufferlo's `bufferlo--tab-include-exclude-buffers', which is a
+      ;; third-party package's and not ours to collapse.
+      (should (equal (seq-filter (lambda (f) (string-prefix-p "edmacs-" (symbol-name f)))
+                                 tab-bar-tab-post-open-functions)
+                     (list #'edmacs-workspaces--on-tab-post-open)))
+      (should (memq #'edmacs-sidebar--on-tab-open
+                    edmacs-workspaces-tab-post-open-functions)))))
 
 ;; ============================================================================
 ;; Popup routing, pinning, and quit-restore (this phase)
@@ -1396,9 +1469,10 @@ buffer's local map so evil actually collects its auxiliary keymap."
 no stale RIGHT stack windows. Not asserted as \"exactly one window total\":
 when this file's own AC4 load-order section below has loaded the real
 `modules/sidebar.el' (this checkout has a bootstrapped straight build),
-that module's own independent `tab-bar-tab-post-open-functions' hook
-correctly re-shows a LEFT sidebar window in the same new tab -- see this
-phase's own Context on the two hooks coordinating, not colliding."
+that module's member of `edmacs-workspaces-tab-post-open-functions'
+correctly re-shows a LEFT sidebar window in the same new tab -- it runs
+AFTER the main designation now, rather than in whatever order `add-hook'
+prepending happened to produce."
   (edmacs-windows-test--with-clean-layout
     (edmacs-test-support-with-tabs-restored
       (tab-bar-new-tab)

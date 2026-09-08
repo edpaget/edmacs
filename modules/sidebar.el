@@ -834,8 +834,9 @@ contract."
 ;;   :children  child rows
 ;;   :anchor    t on the rows making up the bottom-anchored region
 ;;   :value     the magit section value -- a `(GROUP . ROOT)' cons for
-;;              project/worktree rows, the 1-based tab number for `tab'
-;;              rows. Must be produced verbatim, or
+;;              project/worktree rows and for any `tab' row whose tab
+;;              carries a root; the 1-based tab number only for a `tab'
+;;              row with no root at all. Must be produced verbatim, or
 ;;              `edmacs-sidebar--capture-positions'/`--restore-positions'
 ;;              lose point and fold identity across a redraw.
 ;;   :hook :args  on a `hook' row only: a section-contribution hook the
@@ -870,16 +871,29 @@ so a plan-level test can supply a root with no git repo behind it.")
 
 (defun edmacs-sidebar--plan-tabs (frame tabs)
   "Return one `tab' row per member of TABS, FRAME's own tab list.
-The flat, group-less shape: the section value is the bare 1-based tab
-number. FRAME is passed explicitly -- without it the number resolves
-against the selected frame and comes back nil for a tab belonging to
-another."
+The flat, group-less shape, reached only when FRAME carries no tab-bar
+group at all. A row for a tab that HAS a worktree root carries the same
+`(GROUP . ROOT)' cons value every project/worktree row does, so
+activation resolves it by identity and a tab reorder cannot send RET to
+a different tab than the row names.
+
+A tab with no root has no such identity, so it keeps the bare 1-based
+tab number -- the one reorder-stale value left in the plan, and
+deliberately so: those are batch's own tab and the daemon's boot tab,
+this list's real population, and a `(nil . nil)' value would turn RET on
+them into a `user-error' where it used to select the tab.
+
+FRAME is passed explicitly -- without it the number resolves against the
+selected frame and comes back nil for a tab belonging to another."
   (mapcar (lambda (tab)
-            (list :kind 'tab
-                  :value (edmacs-workspaces-tab-number tab frame)
-                  :label (edmacs-sidebar--tab-label tab)
-                  :face (and (eq (car tab) 'current-tab)
-                             'edmacs-sidebar-current-tab-face)))
+            (let ((root (edmacs-workspaces-tab-root tab)))
+              (list :kind 'tab
+                    :value (if root
+                               (cons (funcall tab-bar-tab-group-function tab) root)
+                             (edmacs-workspaces-tab-number tab frame))
+                    :label (edmacs-sidebar--tab-label tab)
+                    :face (and (eq (car tab) 'current-tab)
+                               'edmacs-sidebar-current-tab-face))))
           tabs))
 
 (defun edmacs-sidebar--plan-worktree (group tab kind frame)
@@ -1276,17 +1290,18 @@ Resolves point to its enclosing `edmacs-sidebar-tab' row first (see
 `edmacs-sidebar--enclosing-worktree'), so this also reaches the
 worktree from a nested descendant -- e.g. sidebar-buffers.el's own
 `buffers' heading -- not only from the tab row itself. An integer
-section value (the group-less flat tab list) is already the 1-based
-tab-number `tab-bar-select-tab' expects -- it treats 0 as a \"reselect
+section value (a flat-list tab with no root of its own) is already the
+1-based tab-number `tab-bar-select-tab' expects -- it treats 0 as a \"reselect
 current tab\" sentinel, so redraw stores `(1+ index)', never the raw
 0-based index. A `(GROUP . ROOT)' cons (a project or worktree child row,
-edmacs-tab-groups phase 3) is looked up via `edmacs-workspaces-find-tab',
-passing GROUP explicitly -- this is what makes a row unable to select a
-tab in a different project structurally, not merely by path uniqueness
-\(AC4\): a match selects that tab via `edmacs-workspaces-select-tab';
-with no match, a project row whose ROOT is itself the repo's main
-worktree \(`edmacs-workspaces-classify-root' returns `main') opens the
-whole project via `edmacs-workspaces-open-project' -- find-or-create,
+edmacs-tab-groups phase 3) is looked up on its ROOT alone via
+`edmacs-workspaces-find-tab' -- a worktree root belongs to exactly one
+repo, so the row's GROUP is a function of it and testing it too could
+only ever hide the tab the row names: a match selects that tab via
+`edmacs-workspaces-select-tab'; with no match, a project row whose ROOT
+is itself the repo's main worktree \(`edmacs-workspaces-classify-root'
+returns `main') opens the whole project via
+`edmacs-workspaces-open-project' -- find-or-create,
 correct in every state per that function's own contract, so repeat
 activations never duplicate a tab. A worktree child row's value is
 always drawn from an already-open tab (AC7), so it can never reach the
@@ -1300,9 +1315,9 @@ signals `user-error' instead of silently doing nothing."
     (cond
      ((integerp value) (tab-bar-select-tab value))
      ((consp value)
-      (let ((group (car value)) (root (cdr value)))
+      (let ((root (cdr value)))
         (cond
-         ((edmacs-workspaces-find-tab group root) (edmacs-workspaces-select-tab group root))
+         ((edmacs-workspaces-find-tab root) (edmacs-workspaces-select-tab root))
          ((eq (edmacs-workspaces-classify-root root) 'main) (edmacs-workspaces-open-project root))
          (t (user-error "No open tab for this worktree")))))
      (t (user-error "Nothing to do on this row")))))
@@ -1397,10 +1412,12 @@ to the first row and DELTA < 0 is a no-op."
 
 (defun edmacs-sidebar--section-tab-number (section)
   "Return the open tab-number for tab-row SECTION's value, or nil.
-An integer value (the group-less flat tab list) is itself always an
-open tab's number; a `(GROUP . ROOT)' cons (a project or worktree child
-row) is looked up via `edmacs-workspaces-find-tab', returning nil when
-GROUP has no open tab at ROOT -- e.g. a project row whose main tab isn't
+An integer value (a tab carrying no root at all -- see
+`edmacs-sidebar--plan-tabs') is itself always an open tab's number; a
+`(GROUP . ROOT)' cons (a project or worktree child row, or a flat row
+whose tab has a root) is looked up on its ROOT alone via
+`edmacs-workspaces-find-tab', returning nil when no tab is open at ROOT
+-- e.g. a project row whose main tab isn't
 open, which is what makes `d' on it a no-op rather than opening one
 \(only RET/`edmacs-sidebar-activate' is allowed to open\). Ambient on the
 selected frame, like every other command in this section -- a
@@ -1410,7 +1427,7 @@ and `edmacs-sidebar-rename-at-point'."
   (let ((value (and section (slot-boundp section 'value) (oref section value))))
     (cond ((integerp value) value)
           ((consp value)
-           (when-let* ((tab (edmacs-workspaces-find-tab (car value) (cdr value))))
+           (when-let* ((tab (edmacs-workspaces-find-tab (cdr value))))
              ;; No FRAME argument on this call chain to prefer -- ambient-reads: ok
              (edmacs-workspaces-tab-number tab))))))
 
@@ -2011,13 +2028,21 @@ whichever member of its tabs resolves one)."
 
 (add-hook 'edmacs-workspaces-tab-root-set-functions #'edmacs-sidebar--on-tab-root-set)
 
-(defun edmacs-sidebar--on-tab-open (_tab)
-  "Re-show the sidebar in a new tab -- a fresh tab drops the side window."
-  ;; `tab-bar-tab-post-open-functions' calls with (TAB), no frame slot --
-  ;; ambient-reads: ok
-  (edmacs-sidebar-show (selected-frame)))
+(defun edmacs-sidebar--on-tab-open (_tab &optional frame)
+  "Re-show the sidebar in a new tab of FRAME (default selected).
+Registered on workspaces.el's `edmacs-workspaces-tab-post-open-functions'
+rather than on core's `tab-bar-tab-post-open-functions', which
+workspaces.el now solely owns: that seam guarantees the new tab is
+already stamped with its worktree root when this runs, so the first tree
+drawn for it files it under the right project instead of under none.
 
-(add-hook 'tab-bar-tab-post-open-functions #'edmacs-sidebar--on-tab-open)
+`edmacs-sidebar-show', not `edmacs-sidebar-invalidate': `tab-bar-new-tab'
+runs `delete-other-windows' before any post-open hook fires, so the new
+tab has no side window at all and `edmacs-sidebar--redraw' would no-op
+on it. `show' is what recreates the window, and it redraws internally."
+  (edmacs-sidebar-show (or frame (selected-frame))))
+
+(add-hook 'edmacs-workspaces-tab-post-open-functions #'edmacs-sidebar--on-tab-open)
 
 (defun edmacs-sidebar--on-tab-pre-close (_tab _last-tab-p)
   "Invalidate after the closing tab is actually removed from `tab-bar-tabs'.

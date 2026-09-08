@@ -32,6 +32,12 @@
 #   local copy. For gui, this field is instead the selector
 #   scripts/gui-ert.sh takes ("t" for every test).
 #
+# workspaces-test and sessions-test both load modules/windows.el before
+# modules/workspaces.el: workspaces.el's post-open handler calls
+# `edmacs-windows-designate-main' directly (it is the sole owner of
+# `tab-bar-tab-post-open-functions'), so a suite that drives a real
+# `tab-bar-new-tab' without windows.el dies with a void-function.
+#
 # windows-test's batch row expects 1: its cross-frame main-window lookup
 # asks for a tty frame on /dev/tty, which no batch run has. The pty tier
 # would clear it, but a single test does not earn a whole extra row --
@@ -54,7 +60,7 @@ MANIFEST=(
   "git-common-dir-test|batch|15|0|modules/git-common-dir.el,modules/git-common-dir-test.el|ert-run-tests-batch-and-exit"
   "keybindings-test|batch|15|0|modules/test-support.el,modules/keybindings-test.el|ert-run-tests-batch-and-exit"
   "sessions-live-test|batch|15|2|modules/test-support.el,modules/git-common-dir.el,modules/sessions-live-test.el|ert-run-tests-batch-and-exit"
-  "sessions-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/workspaces.el,modules/sessions-test.el|ert-run-tests-batch-and-exit"
+  "sessions-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/windows.el,modules/workspaces.el,modules/sessions-test.el|ert-run-tests-batch-and-exit"
   "sidebar-agents-live-test|batch|15|1|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-agents-live-test.el|ert-run-tests-batch-and-exit"
   "sidebar-agents-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/agents.el,modules/sidebar-agents-test.el|ert-run-tests-batch-and-exit"
   "sidebar-buffers-live-test|batch|15|2|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-buffers-live-test.el|edmacs-test-support-run-and-exit"
@@ -64,8 +70,8 @@ MANIFEST=(
   "ui-test|batch|15|0|modules/ui.el,modules/ui-test.el|ert-run-tests-batch-and-exit"
   "window-geometry-live-test|batch|15|4|modules/test-support.el,modules/git-common-dir.el,modules/window-geometry-live-test.el|ert-run-tests-batch-and-exit"
   "windows-test|batch|30|1|modules/test-support.el,modules/git-common-dir.el,modules/claude-term.el,modules/workspaces.el,modules/windows.el,modules/windows-test.el|edmacs-test-support-run-and-exit"
-  "workspaces-live-test|batch|15|2|modules/git-common-dir.el,modules/windows.el,modules/workspaces.el,modules/workspaces-live-test.el|ert-run-tests-batch-and-exit"
-  "workspaces-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/workspaces.el,modules/workspaces-test.el|edmacs-test-support-run-and-exit"
+  "workspaces-live-test|batch|15|3|modules/git-common-dir.el,modules/windows.el,modules/workspaces.el,modules/workspaces-live-test.el|ert-run-tests-batch-and-exit"
+  "workspaces-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/windows.el,modules/workspaces.el,modules/workspaces-test.el|edmacs-test-support-run-and-exit"
 
   "sidebar-test|pty|30|0|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-test.el|edmacs-test-support-run-and-exit"
   "sidebar-buffers-live-test|pty|30|0|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-buffers-live-test.el|edmacs-test-support-run-and-exit"

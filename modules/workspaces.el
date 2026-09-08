@@ -7,11 +7,20 @@
 ;; "what worktree is this?" -- every other module asks it rather than
 ;; deriving an answer of its own.
 ;;
-;; It installs two hooks: a stamp-only entry on
-;; `tab-bar-tab-post-open-functions', so a tab made by any route (`SPC T n',
-;; a package's `other-tab-prefix') still carries a root; and a
-;; `window-buffer-change-functions' entry that schedules the stray-visit
-;; sweep off the redisplay path.
+;; A tab's worktree ROOT is its whole stored identity. Its group is
+;; derived from that root by `edmacs-workspaces-tab-group', installed as
+;; `tab-bar-tab-group-function', and its name likewise by sessions.el's
+;; `tab-bar-tab-name-function' -- so the two cannot disagree with the
+;; root or with each other, and `edmacs-workspaces-find-tab' is keyed on
+;; the root alone. Nothing here writes a tab's `group' alist entry.
+;;
+;; It installs two hooks: the config's SOLE entry on
+;; `tab-bar-tab-post-open-functions', which identifies a new tab made by
+;; any route (`SPC T n', a package's `other-tab-prefix') -- stamping its
+;; root, designating its main window, then running
+;; `edmacs-workspaces-tab-post-open-functions' for everyone else, in that
+;; order; and a `window-buffer-change-functions' entry that schedules the
+;; stray-visit sweep off the redisplay path.
 ;;
 ;; Two upstream facts (Emacs 31.1) the desktop migration rests on, neither
 ;; derivable from the code here:
@@ -24,6 +33,15 @@
 ;;   restored tab. That is what makes a folded frame's window state its
 ;;   tab's `ws', and what carries bufferlo's per-tab buffer list across a
 ;;   restart once desktop has stripped `wc-bl'/`wc-bbl'.
+;; - `tab-bar-move-tab-to-group' and `tab-bar-change-tab-group' both read
+;;   and write the raw `group' alist entry rather than going through
+;;   `tab-bar-tab-group-function'. With the entry unwritten, core's
+;;   relocation sees every tab as ungrouped and stops keeping a project's
+;;   tabs contiguous -- hence `edmacs-workspaces-move-tab-to-group'.
+;;
+;; That same `ws' is also what a restored background tab's root is derived
+;; FROM (`edmacs-workspaces--root-from-ws'), which is why
+;; `edmacs-workspaces-stamp-frame-tabs' never selects a tab.
 ;;
 ;; One hazard: group names come from `edmacs-git-common-dir-repo-name',
 ;; which returns only the final component of the resolved main worktree.
@@ -55,6 +73,8 @@
 ;; plain-`load' module system. Declared here so this file byte-compiles
 ;; standalone and so `workspaces-test.el' can run under `-Q --batch'.
 (declare-function edmacs-windows-main-window-of "windows")
+(declare-function edmacs-windows-designate-main "windows")
+(declare-function edmacs-windows-ws-main-buffer-names "windows")
 (declare-function edmacs-git-common-dir "git-common-dir")
 (declare-function edmacs-git-common-dir-main-worktree "git-common-dir")
 (declare-function edmacs-git-common-dir-repo-name "git-common-dir")
@@ -63,13 +83,91 @@
 ;; Group name derivation
 ;; ============================================================================
 
+(defun edmacs-workspaces--group-name-from-path (root)
+  "Return ROOT's project group name derived from its PATH alone, or nil.
+Pure string work with one `file-directory-p' guard, and the reason a tab
+whose worktree directory has been deleted stays inside its project
+rather than dropping out of the sidebar tree entirely: git resolution
+answers nil for a gone directory, and the tab's stamp IS its identity
+\(see `edmacs-sessions--finish-frameset-restore').
+
+Two shapes, in order: rdm's `<repo>__worktrees/<slug>' layout, whose
+parent basename names the repo; then ROOT's own leaf basename, but ONLY
+for a directory that is not there. A LIVE directory that git could not
+resolve is a genuine non-repo -- the daemon's boot tab is stamped with
+`~/' -- and must stay ungrouped, or it renders as a phantom project.
+Remote roots are refused before the stat: this runs from the group
+function's hot path."
+  (when (stringp root)
+    (pcase-let ((`(,leaf . ,parent) (edmacs-workspaces--leaf-and-parent root)))
+      (cond
+       ((and parent (string-suffix-p "__worktrees" parent))
+        (let ((name (string-remove-suffix "__worktrees" parent)))
+          (and (> (length name) 0) name)))
+       ((and leaf (> (length leaf) 0)
+             (not (file-remote-p root))
+             (not (file-directory-p root)))
+        leaf)))))
+
 (defun edmacs-workspaces-group-name (root)
   "Return ROOT's project tab-bar group name, or nil when ROOT has none.
 Reuses `edmacs-git-common-dir'/`edmacs-git-common-dir-repo-name' rather
 than re-deriving a repo name from ROOT's own path directly -- see this
-file's Commentary on the symlink dependency those two functions carry."
-  (when-let* ((common (edmacs-git-common-dir root)))
-    (edmacs-git-common-dir-repo-name common)))
+file's Commentary on the symlink dependency those two functions carry --
+and falls back to `edmacs-workspaces--group-name-from-path' only when
+that resolution answers nothing at all."
+  (or (when-let* ((common (edmacs-git-common-dir root)))
+        (edmacs-git-common-dir-repo-name common))
+      (edmacs-workspaces--group-name-from-path root)))
+
+(defvar edmacs-workspaces--group-memo (make-hash-table :test #'equal)
+  "ROOT -> its `edmacs-workspaces-group-name', or the symbol `none'.
+A pure root-to-name memo, nothing like the retired worktree-discovery
+layer: it installs no watch and no timer, holds no directory listing,
+and every entry is a function of its key alone. It exists because
+`tab-bar-tab-group-function' is called for every tab on every redisplay
+and every sidebar plan, and the git resolution behind a group name is a
+`file-truename' walk. `none' rather than nil is stored for an ungrouped
+root so a negative answer is memoized too.
+
+Cleared by `edmacs-workspaces-clear-group-memo'; a test that stubs git
+resolution MUST call it on entry and on exit, or one test's stubbed
+answer is served to the next.")
+
+(defun edmacs-workspaces-clear-group-memo ()
+  "Forget every memoized group name. Returns nil."
+  (clrhash edmacs-workspaces--group-memo)
+  nil)
+
+(defun edmacs-workspaces--group-name-memoized (root)
+  "Return ROOT's group name, deriving it at most once per ROOT."
+  (let ((hit (gethash root edmacs-workspaces--group-memo 'miss)))
+    (if (eq hit 'miss)
+        (let ((name (ignore-errors (edmacs-workspaces-group-name root))))
+          (puthash root (or name 'none) edmacs-workspaces--group-memo)
+          name)
+      (and (not (eq hit 'none)) hit))))
+
+(defun edmacs-workspaces-tab-group (tab)
+  "Return TAB's project group name, derived from TAB's worktree root.
+Installed as `tab-bar-tab-group-function', which makes the root a tab's
+single stored identity and the group a pure function of it. TAB's own
+`group' alist entry is no longer read by anything in this config, and
+nothing here writes one; core's `tab-bar-change-tab-group' (an
+interactive `M-x tab-group') still writes that entry, and it is simply
+inert -- the derived name wins.
+
+Two things fall out of this. A tab whose stored group disagreed with its
+root -- the state `SPC T n' produced, since `tab-bar-new-tab-group' made
+a new tab inherit the ORIGINATING tab's group regardless of the root it
+was then stamped with -- cannot exist any more. And core's own
+`tab-bar-move-tab-to-group' stops working, because it reads the raw
+alist rather than this function: `edmacs-workspaces-move-tab-to-group'
+is the replacement."
+  (when-let* ((root (edmacs-workspaces-tab-root tab)))
+    (edmacs-workspaces--group-name-memoized root)))
+
+(setq tab-bar-tab-group-function #'edmacs-workspaces-tab-group)
 
 ;; ============================================================================
 ;; Enumeration -- groups, and the tabs inside one
@@ -160,14 +258,6 @@ through that one from anywhere a `tab-bar-tabs' call would re-enter the
 post-open hook."
   (tab-bar--current-tab-find nil frame))
 
-(defun edmacs-workspaces--tab-bar-current-tab-index ()
-  "Return the selected frame's current tab's 0-based index, or nil.
-Wraps tab-bar.el's internal `tab-bar--current-tab-index', which takes no
-frame of its own and always reads the selected one. Checked against
-Emacs 30."
-  ;; The wrapped internal reads the selected frame itself -- ambient-reads: ok
-  (tab-bar--current-tab-index))
-
 (defun edmacs-workspaces-tab-root (tab)
   "Return TAB's worktree root, or nil.
 A pure read: no derivation, no side effect."
@@ -196,12 +286,14 @@ the session via desktop."
     (run-hook-with-args 'edmacs-workspaces-tab-root-set-functions root frame)
     root))
 
-(defun edmacs-workspaces-find-tab (group root &optional frame)
-  "Return the tab of FRAME (default selected) whose group is GROUP and
-worktree root is ROOT, or nil."
-  (seq-find (lambda (tab)
-              (and (equal (funcall tab-bar-tab-group-function tab) group)
-                   (equal (edmacs-workspaces-tab-root tab) root)))
+(defun edmacs-workspaces-find-tab (root &optional frame)
+  "Return the tab of FRAME (default selected) whose worktree root is ROOT.
+Nil when FRAME has no such tab. Keyed on ROOT alone: since
+`edmacs-workspaces-tab-group' derives a tab's group FROM its root, a
+group test here is either redundant (it re-derives what ROOT already
+determines) or wrong (it reads a stale stored `group' and hides the very
+tab it was asked for, so the caller opens a second one)."
+  (seq-find (lambda (tab) (equal (edmacs-workspaces-tab-root tab) root))
             (tab-bar-tabs (or frame (selected-frame)))))
 
 (defun edmacs-workspaces-tab-number (tab &optional frame)
@@ -215,36 +307,62 @@ place a core change would have to be chased to."
          (index (tab-bar--tab-index tab (tab-bar-tabs target) target)))
     (and index (1+ index))))
 
-(defun edmacs-workspaces-select-tab (group root &optional frame)
-  "Find and select the tab of FRAME matching GROUP and ROOT.
+(defun edmacs-workspaces-select-tab (root &optional frame)
+  "Find and select the tab of FRAME whose worktree root is ROOT.
 Returns the tab, or nil when none matches -- selection is skipped
-entirely in that case. `tab-bar-select-tab' has no FRAME argument of its
-own (it always operates on the selected frame), so the call is wrapped
-in `with-selected-frame' -- unconditionally, since wrapping the
-already-selected frame is harmless."
+entirely in that case. Root-keyed for the reason
+`edmacs-workspaces-find-tab' gives. `tab-bar-select-tab' has no FRAME
+argument of its own (it always operates on the selected frame), so the
+call is wrapped in `with-selected-frame' -- unconditionally, since
+wrapping the already-selected frame is harmless."
   (let* ((target (or frame (selected-frame)))
-         (tab (edmacs-workspaces-find-tab group root target)))
+         (tab (edmacs-workspaces-find-tab root target)))
     (when tab
       (with-selected-frame target
         (tab-bar-select-tab (edmacs-workspaces-tab-number tab target))))
     tab))
 
 ;; ============================================================================
-;; Group assignment -- always through `tab-bar-change-tab-group'
+;; Group contiguity -- keeping a project's tabs adjacent
 ;; ============================================================================
 
-(defun edmacs-workspaces-assign-group (group-name &optional tab-number frame)
-  "Assign GROUP-NAME to TAB-NUMBER (default the current tab) of FRAME.
-The only writer of a tab's `group' parameter in this module. Routed
-through `tab-bar-change-tab-group' rather than a raw `alist-get' write,
-so `tab-bar-tab-post-change-group-functions' -- whose default,
-`tab-bar-move-tab-to-group', is what keeps a group's tabs contiguous --
-keeps running. `tab-bar-change-tab-group' has no FRAME argument of its
-own (it always operates on the selected frame), so the call is wrapped
-in `with-selected-frame' -- unconditionally, since wrapping the
-already-selected frame is harmless."
+(defun edmacs-workspaces-move-tab-to-group (&optional tab frame)
+  "Relocate TAB (default FRAME's current tab) next to its own group's tabs.
+Core's `tab-bar-move-tab-to-group' is the algorithm, reimplemented here
+for one reason: it reads a tab's group as `(alist-get \='group tab)',
+not through `tab-bar-tab-group-function'. Now that nothing writes the
+raw entry (`edmacs-workspaces-tab-group' derives it), core's version
+sees every tab as ungrouped and stops relocating anything -- a new
+project's tab would simply be appended at the end of the bar, splitting
+whichever group already sat there.
+
+A tab whose group is new to FRAME goes to the end; one whose group is
+already present moves to that group's near edge; one already inside its
+group's bounds is left where it is."
   (with-selected-frame (or frame (selected-frame))
-    (tab-bar-change-tab-group group-name tab-number)))
+    (let* ((tabs (funcall tab-bar-tabs-function))
+           (tab (or tab (tab-bar--current-tab-find tabs)))
+           (tab-index (tab-bar--tab-index tab tabs))
+           (group (funcall tab-bar-tab-group-function tab))
+           (beg (and group
+                     (seq-position tabs group
+                                   (lambda (other g)
+                                     (and (not (eq other tab))
+                                          (equal (funcall tab-bar-tab-group-function other)
+                                                 g))))))
+           (len (when beg
+                  (seq-position (nthcdr beg tabs) group
+                                (lambda (other g)
+                                  (not (equal (funcall tab-bar-tab-group-function other)
+                                              g))))))
+           (pos (cond
+                 ((null tab-index) nil)
+                 ((null beg) (and group -1))
+                 ((and len (>= tab-index beg) (<= tab-index (+ beg len))) nil)
+                 ((and len (> tab-index (+ beg len))) (+ beg len 1))
+                 ((< tab-index beg) beg))))
+      (when pos
+        (tab-bar-move-tab-to pos (1+ tab-index))))))
 
 ;; ============================================================================
 ;; Worktree enumeration -- on demand, no cache
@@ -322,24 +440,48 @@ worktree tab should stamp that same worktree."
               (dir (buffer-local-value 'default-directory buf)))
     (edmacs-workspaces--worktree-root-of dir)))
 
-(defun edmacs-workspaces--on-tab-post-open (tab)
-  "Stamp TAB's worktree root. This module's only post-open hook entry.
-Stamp-only by design: no reconciliation, no tab closing, no group
-assignment (`tab-bar-new-tab-group' is t, so TAB already inherited the
-originating tab's group, and re-assigning here would re-enter
-`tab-bar-tab-post-change-group-functions').
+(defvar edmacs-workspaces-tab-post-open-functions nil
+  "Abnormal hook run with (TAB FRAME) once a new tab is fully identified.
+The seam that makes this module the SOLE entry on core's
+`tab-bar-tab-post-open-functions'. Before any member runs, TAB carries
+its worktree root and FRAME carries a designated main window -- that
+ordering guarantee is the whole reason three independent `add-hook's on
+the core variable collapsed into one owner. Their relative order there
+was an accident of `add-hook' prepending, and the sidebar's redraw won
+it: the first thing drawn for a new tab saw an unstamped tab and filed
+it under no project.
 
-The guard is the frames model's, for the same reason: `tab-bar-tabs' also
-runs this hook for a default tab it auto-creates on a frame it never
-names, and stamping that one from the selected frame's buffer would
-reintroduce cross-frame derivation."
+Same swappable-seam convention as
+`edmacs-workspaces-tab-root-set-functions': workspaces.el loads before
+sidebar.el (see init.el's `load-module' order) and has no sidebar.el
+function to call directly without an upward reference, so sidebar.el
+registers here. windows.el loads FIRST, so its own work is a direct
+call rather than a hook member.")
+
+(defun edmacs-workspaces--on-tab-post-open (tab)
+  "Identify a brand-new TAB: stamp its root, designate main, run the seam.
+This config's only `tab-bar-tab-post-open-functions' entry, and the
+order is the contract `edmacs-workspaces-tab-post-open-functions'
+documents. Still no reconciliation, no tab closing and no group write --
+a tab's group is derived from the root stamped here
+\(`edmacs-workspaces-tab-group').
+
+The guard is the frames model's, and every step belongs inside it:
+`tab-bar-tabs' also runs this hook for a default tab it auto-creates on
+a frame it never names, and stamping that one from the selected frame's
+buffer would reintroduce cross-frame derivation. Designation and the
+seam run whether or not a root was derivable -- a fresh tab has one
+window and no sidebar either way."
   ;; `tab-bar-tab-post-open-functions' calls with (TAB), no frame slot --
   ;; ambient-reads: ok
-  (when (eq tab (edmacs-workspaces--current-tab (selected-frame)))
-    (when-let* ((root (or edmacs-workspaces--pending-tab-root
-                          (edmacs-workspaces--derive-root))))
-      ;; `setf', never `push': see `edmacs-workspaces-set-tab-root'.
-      (setf (alist-get edmacs-workspaces-root-parameter (cdr tab)) root))))
+  (let ((frame (selected-frame)))
+    (when (eq tab (edmacs-workspaces--current-tab frame))
+      (when-let* ((root (or edmacs-workspaces--pending-tab-root
+                            (edmacs-workspaces--derive-root))))
+        ;; `setf', never `push': see `edmacs-workspaces-set-tab-root'.
+        (setf (alist-get edmacs-workspaces-root-parameter (cdr tab)) root))
+      (edmacs-windows-designate-main frame)
+      (run-hook-with-args 'edmacs-workspaces-tab-post-open-functions tab frame))))
 
 (add-hook 'tab-bar-tab-post-open-functions #'edmacs-workspaces--on-tab-post-open)
 
@@ -406,27 +548,93 @@ supplies none."
               (dir (buffer-local-value 'default-directory buffer)))
     (edmacs-workspaces--worktree-root-of dir)))
 
+(defun edmacs-workspaces--buffer-name-directory (name)
+  "Return the directory of the buffer called NAME, or nil.
+The live buffer's own file directory (or its `default-directory') when
+one exists; otherwise the file `desktop' is going to restore that buffer
+from, read out of `desktop-buffer-args-list'.
+
+That second path is not a nicety. sessions.el sets
+`desktop-restore-eager' to 10, so at `desktop-after-read-hook' time --
+when a restored frame's tabs are stamped -- most of the session's
+buffers have not been created yet; a `get-buffer'-only lookup would
+answer nil for nearly every background tab and the whole ws derivation
+would come back empty. No `require' of desktop: this must stay callable
+with desktop.el never loaded, which `bound-and-true-p' gives."
+  (when (stringp name)
+    (or (when-let* ((buf (get-buffer name)))
+          (if-let* ((file (buffer-file-name buf)))
+              (file-name-directory file)
+            (buffer-local-value 'default-directory buf)))
+        ;; Each entry is (DESKTOP-FILE-NAME BUFFER-NAME MAJOR-MODE ...).
+        (when-let* ((entry (seq-find (lambda (args) (equal (nth 1 args) name))
+                                     (bound-and-true-p desktop-buffer-args-list)))
+                    (file (nth 0 entry))
+                    ((stringp file)))
+          (file-name-directory file)))))
+
+(defun edmacs-workspaces--root-from-ws (ws)
+  "Return the worktree root a tab's serialized WS shows, normalized, or nil.
+WS is the tab's `ws' field verbatim: `window-state-get's raw
+\(CONSTRAINTS-ALIST . STATE-TREE) cons, so the tree handed on is its
+`cdr'. Passing the whole cons instead would fall through
+`edmacs-windows-ws-main-buffer-names' pattern match and read as \"no
+root derivable\" rather than as an error.
+
+This is what lets a background tab be stamped without ever being
+selected: its main leaf's buffer names, most-specific first, each
+resolved to a directory and then to the worktree containing it. Fails
+soft everywhere -- a tab whose buffers name nothing resolvable simply
+keeps no root, because this runs under `desktop-after-read-hook', where
+a signal reaching a frameless daemon's top level exits it 255."
+  (when (consp ws)
+    (seq-some (lambda (name)
+                (when-let* ((dir (edmacs-workspaces--buffer-name-directory name)))
+                  (edmacs-workspaces--worktree-root-of dir)))
+              (ignore-errors (edmacs-windows-ws-main-buffer-names (cdr ws))))))
+
+(defun edmacs-workspaces--stamp-tab (tab root)
+  "Stamp ROOT onto TAB without selecting it. Returns ROOT.
+Takes no frame: a tab's parameter alist is the tab object itself, so
+there is no frame-relative addressing left to get wrong here.
+The frame-and-tab-explicit writer `edmacs-workspaces-set-tab-root' is
+not: that one stamps whichever tab is CURRENT, which is exactly the
+constraint the restore walk no longer accepts. `setf', never `push',
+for the reason `edmacs-workspaces-set-tab-root' documents."
+  (setf (alist-get edmacs-workspaces-root-parameter (cdr tab)) root)
+  root)
+
 (defun edmacs-workspaces-stamp-frame-tabs (frame)
   "Stamp every tab of FRAME that carries no worktree root yet.
-A background tab has no live window to derive from, so each unstamped
-tab is selected in turn, stamped, and the original selection restored.
+No tab is ever selected. FRAME's CURRENT tab derives its root from the
+live window it is showing; every background tab derives its own from the
+serialized layout it already carries (`edmacs-workspaces--root-from-ws'),
+which is the same information selecting it would have put on screen.
+
+The select loop this replaced ran two tab-select repair advices, a
+sidebar redraw and a stray-sweep timer per tab, on a path that runs on
+every daemon boot. `edmacs-workspaces-tab-root-set-functions' fires once
+per frame after the walk, not once per tab, for the same reason.
+
 This is the restore path for a tab that reaches the session without a
 root -- one saved by a desktop written before the stamp existed, or one
 whose window state named a directory no derivation had seen. Without it
 such a tab reads nil forever and the sidebar can file it under no
 project at all."
   (when (frame-live-p frame)
-    (with-selected-frame frame
-      (let ((original (edmacs-workspaces--tab-bar-current-tab-index))
-            (count (length (tab-bar-tabs frame))))
-        (unwind-protect
-            (dotimes (i count)
-              (unless (edmacs-workspaces-tab-root (nth i (tab-bar-tabs frame)))
-                (tab-bar-select-tab (1+ i))
-                (when-let* ((root (edmacs-workspaces--derive-frame-root frame)))
-                  (edmacs-workspaces-set-tab-root root frame))))
-          (when (and original (< original count))
-            (tab-bar-select-tab (1+ original))))))))
+    (let ((current (edmacs-workspaces--current-tab frame))
+          (stamped nil))
+      (dolist (tab (tab-bar-tabs frame))
+        (unless (edmacs-workspaces-tab-root tab)
+          (when-let* ((root (if (eq tab current)
+                                (edmacs-workspaces--derive-frame-root frame)
+                              (edmacs-workspaces--root-from-ws
+                               (alist-get 'ws tab)))))
+            (edmacs-workspaces--stamp-tab tab root)
+            (setq stamped root))))
+      (when stamped
+        (run-hook-with-args 'edmacs-workspaces-tab-root-set-functions stamped frame))
+      stamped)))
 
 ;; ============================================================================
 ;; The current tab's identity
@@ -451,7 +659,7 @@ boot tab, or batch's own)."
 ;; Entry points -- open a project's group, open a worktree's tab
 ;; ============================================================================
 
-(defun edmacs-workspaces--open-tab (root group)
+(defun edmacs-workspaces--open-tab (root _group)
   "Create and return a tab showing worktree ROOT, in project GROUP.
 The single `tab-bar-new-tab' caller in this module. Step order is
 load-bearing:
@@ -463,14 +671,15 @@ load-bearing:
   into `display-buffer-in-tab', re-firing
   `tab-bar-tab-post-open-functions' before the original override has
   cleared itself -- the frames model's documented `excessive-lisp-nesting'.
-- `edmacs-workspaces-assign-group' runs LAST, because
-  `tab-bar-change-tab-group' fires `tab-bar-move-tab-to-group', which
-  reorders the tab list. Every earlier step therefore addresses the tab
-  as \"current\" rather than by a captured tab-number; the moved tab
-  stays selected, so running the assignment last is safe.
+- `edmacs-workspaces-move-tab-to-group' runs LAST, because it reorders
+  the tab list. Every earlier step therefore addresses the tab as
+  \"current\" rather than by a captured tab-number; the moved tab stays
+  selected, so running the relocation last is safe.
 
-GROUP is assigned unconditionally: `tab-bar-new-tab-group' is t, so the
-new tab inherited whatever group the previously selected tab had."
+GROUP is not written anywhere: the new tab's group is derived from the
+root stamped on it (`edmacs-workspaces-tab-group'). GROUP is still taken
+as an argument because the relocation and the caller's own naming both
+speak in terms of it."
   (let ((display-buffer-overriding-action '(nil . nil))
         (switch-to-buffer-obey-display-actions nil))
     ;; The new tab opens directly on ROOT's dired buffer. With the default
@@ -485,7 +694,7 @@ new tab inherited whatever group the previously selected tab had."
       (tab-bar-new-tab))
     (dired root)
     (tab-bar-rename-tab (file-name-nondirectory (directory-file-name root)))
-    (edmacs-workspaces-assign-group group))
+    (edmacs-workspaces-move-tab-to-group))
   ;; Every step above acts on the ambient frame by design -- ambient-reads: ok
   (edmacs-workspaces--current-tab (selected-frame)))
 
@@ -517,7 +726,7 @@ group inside the ambient frame."
     (unless group
       (user-error "Not inside a git repository: %s" root))
     (let ((main (edmacs-workspaces-main-root root)))
-      (or (edmacs-workspaces-select-tab group main)
+      (or (edmacs-workspaces-select-tab main)
           ;; Open the main-worktree tab even when the group already holds
           ;; linked-worktree tabs. Selecting a sibling instead leaves the
           ;; main checkout unreachable from `SPC p p' for as long as any
@@ -543,18 +752,25 @@ interactive prompt, never from a hook or the redisplay path."
 
 (defun edmacs-workspaces-open-worktree (dir)
   "Open or select worktree DIR's tab, inside its project's group.
-Find-or-create, scoped by (group, root): a tab for the same root in a
-DIFFERENT project's group is correctly not treated as a duplicate. ROOT
-is normalized exactly as `edmacs-workspaces--open-tab' stamps it
-\(truename plus trailing slash) -- the two forms must agree or every
-invocation would duplicate a tab instead of finding it."
+Find-or-create keyed on ROOT alone: a worktree root belongs to exactly
+one repo, so its group is a function of it and adding a group test to
+the lookup could only ever hide the tab -- which is precisely what a
+stale stored `group' used to do, leaving this creating a second tab for
+a worktree already open. ROOT is normalized exactly as
+`edmacs-workspaces--open-tab' stamps it \(truename plus trailing slash);
+the two forms must agree or every invocation would duplicate a tab
+instead of finding it.
+
+The group is still resolved first, and a root with none still
+`user-error's: an ungrouped tab is invisible to the sidebar's project
+tree."
   (interactive (list (edmacs-workspaces--read-worktree current-prefix-arg)))
   (let* ((root (edmacs-workspaces--normalize-root dir))
          (group (edmacs-workspaces-group-name root)))
     (unless group
       (user-error "Not inside a git repository: %s" root))
-    (if (edmacs-workspaces-find-tab group root)
-        (edmacs-workspaces-select-tab group root)
+    (if (edmacs-workspaces-find-tab root)
+        (edmacs-workspaces-select-tab root)
       (edmacs-workspaces--open-tab root group))))
 
 ;; ============================================================================
@@ -751,76 +967,48 @@ the single surviving frame keeps."
   (or (seq-find (lambda (state) (alist-get 'last-focus-update (car state))) states)
       (car states)))
 
-(defun edmacs-workspaces--state-group (state)
-  "Return the project group name for frameset STATE, or nil. Never signals.
-Derived through `edmacs-workspaces-group-name' on one of the state's own
-tab roots, so the string is `equal' to what the runtime open paths
-compute -- anything else would silently duplicate a group the first time
-a migrated project is reopened. Falls back to the pure repo-name of the
-legacy `edmacs-repo' frame parameter, which keeps a tab whose worktree
-directory is gone inside its project rather than dropping it."
-  (let* ((params (car state))
-         (root (seq-some (lambda (tab) (edmacs-workspaces--tab-root-of (cdr tab)))
-                         (alist-get 'tabs params))))
-    (or (and root (ignore-errors (edmacs-workspaces-group-name root)))
-        (let ((repo (alist-get 'edmacs-repo params)))
-          (and (stringp repo)
-               (ignore-errors (edmacs-git-common-dir-repo-name repo)))))))
+(defun edmacs-workspaces--migrate-tab (tab)
+  "Return a fresh copy of TAB carrying this module's worktree root and no
+`group'. TAB's car (`tab' vs `current-tab') is preserved.
 
-(defun edmacs-workspaces--state-group-if-needed (state)
-  "Return STATE's group name only when some tab of STATE still needs one.
-Deriving a group reaches git, and this migration runs on every daemon
-boot, not once: a frameset already carrying groups must cost nothing."
-  (let ((tabs (alist-get 'tabs (car state))))
-    (when (or (null tabs)
-              (seq-some (lambda (tab) (null (alist-get 'group (cdr tab)))) tabs))
-      (edmacs-workspaces--state-group state))))
+Two entries are dropped outright. The legacy root parameter goes because
+a migrated tab the new model cannot read is the whole failure that
+rename guards against. `group' goes because it is no longer part of a
+tab's stored identity at all: `edmacs-workspaces-tab-group' derives it
+from the root, so a stored one is at best a duplicate of the derived
+answer and at worst a stale disagreement -- exactly the state that made
+a tab invisible to `edmacs-workspaces-find-tab' and unfindable in the
+sidebar's project tree. Dropping it here is what converges an old
+desktop on load rather than at some later edit.
 
-(defun edmacs-workspaces--migrate-tab (tab group)
-  "Return a fresh copy of TAB carrying a `group' and this module's root.
-Ensures rather than re-derives: an existing non-nil `group' or
-`edmacs-workspace-root' is kept untouched -- and nothing then reaches
-git at all -- so this is a fixed point on its own output. The legacy
-root parameter is dropped: a migrated tab the new model cannot read is
-the whole failure this rename guards against. TAB's car (`tab' vs
-`current-tab') is preserved.
-
-A missing group is derived from TAB's OWN root first, and only then from
-GROUP, its frame's. The frames model let a tab sit in a frame belonging
-to another repo (`sessions.el''s tab namer has a case for exactly that),
-and a frame-wide group would file such a tab under the wrong project."
+The root is ENSURED rather than re-derived: an existing
+`edmacs-workspace-root' is kept untouched. A missing one is taken from
+the legacy parameter, and failing that derived from TAB's own serialized
+`ws' -- which is what lets a restored tab reach the session already
+stamped, with nothing selected. Both make this a fixed point on its own
+output."
   (let* ((params (cdr tab))
-         (had-group (alist-get 'group params))
          (had-root (alist-get edmacs-workspaces-root-parameter params))
          (root (or had-root
                    (edmacs-workspaces--normalize-root
-                    (alist-get edmacs-workspaces--legacy-root-parameter params))))
-         ;; The frame's GROUP is the fallback for a tab that HAS a root whose
-         ;; repo will not resolve -- never for a rootless one. The daemon's
-         ;; boot tab has no root and belongs to no project; filing it under
-         ;; the frame's group renders it as a phantom worktree row inside
-         ;; that project's tree.
-         (group (or had-group
-                    (and root
-                         (or (ignore-errors (edmacs-workspaces-group-name root))
-                             group))))
-         ;; The legacy root always goes; a nil-valued `group'/root
-         ;; placeholder goes too, re-appended below with a real value or
-         ;; not at all. An entry that already holds a value is kept where
-         ;; it is and never re-appended -- appending a second cons would
-         ;; shadow nothing but would make this transform grow its output
-         ;; on every pass instead of being a fixed point.
+                    (alist-get edmacs-workspaces--legacy-root-parameter params))
+                   (edmacs-workspaces--root-from-ws (alist-get 'ws params))))
+         ;; A nil-valued root placeholder goes too, re-appended below with
+         ;; a real value or not at all. An entry that already holds a
+         ;; value is kept where it is and never re-appended -- appending a
+         ;; second cons would shadow nothing but would make this transform
+         ;; grow its output on every pass instead of being a fixed point.
          (drop (delq nil (list edmacs-workspaces--legacy-root-parameter
-                               (and (null had-group) 'group)
-                               (and (null had-root) edmacs-workspaces-root-parameter))))
+                               'group
+                               (and (null had-root)
+                                    edmacs-workspaces-root-parameter))))
          (kept (seq-remove (lambda (cell) (memq (car-safe cell) drop)) params)))
     (cons (car tab)
           (append (mapcar (lambda (cell) (cons (car cell) (cdr cell))) kept)
-                  (and (null had-group) group (list (cons 'group group)))
                   (and (null had-root) root
                        (list (cons edmacs-workspaces-root-parameter root)))))))
 
-(defun edmacs-workspaces--fold-state (state group time)
+(defun edmacs-workspaces--fold-state (state time)
   "Return the tabs a non-primary frameset STATE contributes to the fold.
 STATE's `current-tab' becomes an ordinary `tab' carrying the frame's
 whole window state as its `ws': a `current-tab' has none by construction
@@ -842,11 +1030,10 @@ that migrating twice yields `equal' results."
         (list (edmacs-workspaces--migrate-tab
                `(tab (name . ,(or (alist-get 'name params) "tab"))
                      (time . ,time)
-                     (ws . ,window-state))
-               group))
+                     (ws . ,window-state))))
       (mapcar
        (lambda (tab)
-         (let ((migrated (edmacs-workspaces--migrate-tab tab group)))
+         (let ((migrated (edmacs-workspaces--migrate-tab tab)))
            (if (eq (car tab) 'current-tab)
                (cons 'tab
                      (append (seq-remove (lambda (cell) (memq (car-safe cell) '(ws time)))
@@ -860,16 +1047,17 @@ that migrating twice yields `equal' results."
 Groups keep first-seen order. `tab-bar-move-tab-to-group' -- which keeps
 a group contiguous for a live frame -- is not running while a frameset
 is being assembled, so contiguity has to be built in here."
-  (let ((order '()) (next 0))
+  (let ((order '()) (next 0)
+        (group-of (lambda (tab) (funcall tab-bar-tab-group-function (cdr tab)))))
     (dolist (tab tabs)
-      (let ((group (alist-get 'group (cdr tab))))
+      (let ((group (funcall group-of tab)))
         (unless (assoc group order)
           (push (cons group next) order)
           (setq next (1+ next)))))
     (sort (copy-sequence tabs)
           (lambda (a b)
-            (< (cdr (assoc (alist-get 'group (cdr a)) order))
-               (cdr (assoc (alist-get 'group (cdr b)) order)))))))
+            (< (cdr (assoc (funcall group-of a) order))
+               (cdr (assoc (funcall group-of b) order)))))))
 
 (defun edmacs-workspaces-migrate-frameset (fs)
   "Return FS converted from the frames model to groups and tabs in one frame.
@@ -883,10 +1071,12 @@ detects, so it cannot re-fire on its own output.
 Every frame state folds into the one `edmacs-workspaces--primary-state'
 picks: each other frame's tabs join it, its `current-tab' demoted to an
 ordinary tab carrying that frame's window state as its `ws'. Tabs gain
-the project `group' their frame's `edmacs-repo'/root implies and this
-module's `edmacs-workspace-root' in place of the old `edmacs-root';
-`edmacs-repo'/`edmacs-repo-missing' are dropped from the surviving
-frame, which now holds several projects and can no longer name one.
+this module's `edmacs-workspace-root' in place of the old `edmacs-root'
+-- derived from the tab's own `ws' when it carries neither -- and LOSE
+any stored `group', which is now derived from that root
+\(`edmacs-workspaces-tab-group'); `edmacs-repo'/`edmacs-repo-missing'
+are dropped from the surviving frame, which now holds several projects
+and can no longer name one.
 
 A frameset that is not one, or that carries no states at all, is
 returned untouched -- the empty-frameset guard on the restore side must
@@ -899,22 +1089,19 @@ keep seeing exactly what it sees today."
            (tabs '())
            (seen '()))
       (dolist (tab (alist-get 'tabs (car primary)))
-        (let ((migrated (edmacs-workspaces--migrate-tab
-                         tab (edmacs-workspaces--state-group-if-needed primary))))
+        (let ((migrated (edmacs-workspaces--migrate-tab tab)))
           (push migrated tabs)
-          (push (cons (alist-get 'group (cdr migrated))
-                      (alist-get edmacs-workspaces-root-parameter (cdr migrated)))
-                seen)))
+          (push (alist-get edmacs-workspaces-root-parameter (cdr migrated)) seen)))
       (dolist (state states)
         (unless (eq state primary)
-          (dolist (tab (edmacs-workspaces--fold-state
-                        state (edmacs-workspaces--state-group-if-needed state) time))
-            (let ((key (cons (alist-get 'group (cdr tab))
-                             (alist-get edmacs-workspaces-root-parameter (cdr tab)))))
-              ;; Dedupe only on a real (group, root) pair: two rootless tabs
-              ;; are not evidence of the same worktree, and AC2 loses nothing.
-              (unless (and (cdr key) (member key seen))
-                (push key seen)
+          (dolist (tab (edmacs-workspaces--fold-state state time))
+            (let ((root (alist-get edmacs-workspaces-root-parameter (cdr tab))))
+              ;; Dedupe only on a real ROOT -- group is now a function of
+              ;; it, so a (group, root) key could only ever agree with this
+              ;; one. Two ROOTLESS tabs are not evidence of the same
+              ;; worktree, and AC2 loses nothing by keeping both.
+              (unless (and root (member root seen))
+                (push root seen)
                 (push tab tabs))))))
       (setq tabs (edmacs-workspaces--sort-tabs-by-group (nreverse tabs)))
       ;; `tab-bar--current-tab-find' is a bare `(assq 'current-tab tabs)', so
