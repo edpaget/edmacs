@@ -100,6 +100,71 @@ behind for a later test."
           (kill-buffer buf))
         (set-frame-parameter frame 'edmacs-sidebar-buffer nil)))
 
+    (defmacro edmacs-sidebar-test--with-frame (bindings &rest body)
+      "Run BODY over the selected frame, then clean its sidebar up again.
+The frame is bound to FRAME -- deliberately anaphoric, since that is the
+name the bodies collapsed onto this macro already used.  BINDINGS are
+extra `let*' bindings, evaluated after FRAME and visible to BODY: the
+`let' head each of these tests used to open by hand.  Forms in BODY after
+a `:cleanup' keyword run during the unwind, ahead of
+`edmacs-sidebar-test--cleanup-sidebar', which runs whatever BODY did.
+
+Every test in this file shares one real frame, so that teardown is not
+optional: a failing assertion must not leave a sidebar window or buffer
+behind for the next test to trip over."
+      (declare (indent 1) (debug (sexp body)))
+      (let* ((tail (memq :cleanup body))
+             (main (if tail (butlast body (length tail)) body)))
+        `(let* ((frame (selected-frame)) ,@bindings)
+           (unwind-protect
+               (progn ,@main)
+             ,@(cdr tail)
+             (edmacs-sidebar-test--cleanup-sidebar frame)))))
+
+    (defun edmacs-sidebar-test--reset-redraw-queue ()
+      "Empty `edmacs-sidebar--dirty-frames' and cancel any pending flush."
+      (setq edmacs-sidebar--dirty-frames nil)
+      (when (timerp edmacs-sidebar--redraw-timer)
+        (cancel-timer edmacs-sidebar--redraw-timer))
+      (setq edmacs-sidebar--redraw-timer nil))
+
+    (defmacro edmacs-sidebar-test--with-clean-redraw-queue (&rest body)
+      "Run BODY over an empty coalescing redraw queue, emptied again after.
+One test's pending idle redraw must not fire inside the next one, and a
+test asserting on the queue must not inherit a dirty frame from a
+previous one."
+      (declare (indent 0))
+      `(unwind-protect
+           (progn (edmacs-sidebar-test--reset-redraw-queue) ,@body)
+         (edmacs-sidebar-test--reset-redraw-queue)))
+
+    (defmacro edmacs-sidebar-test--with-no-shellout (&rest body)
+      "Run BODY, then assert it reached no subprocess primitive at all.
+Every process-spawning entry point is advised to RECORD the call rather
+than block it, so a violation names the exact primitive.  The
+expectation is zero, never \"zero except N\"; the trailing
+`sleep-for'/`sit-for' gives an asynchronous spawn a chance to land
+before the assertion reads the tally."
+      (declare (indent 0))
+      `(let ((violations nil)
+             (guarded '(call-process call-process-region process-file
+                        start-process start-file-process make-process)))
+         (unwind-protect
+             (progn
+               (dolist (fn guarded)
+                 (advice-add fn :before (lambda (&rest _) (push fn violations))
+                             (list (cons 'name (edmacs-sidebar-test--guard-name fn)))))
+               ,@body
+               (sleep-for 0.2)
+               (sit-for 0)
+               (should-not violations))
+           (dolist (fn guarded)
+             (advice-remove fn (edmacs-sidebar-test--guard-name fn))))))
+
+    (defun edmacs-sidebar-test--guard-name (fn)
+      "Name the `edmacs-sidebar-test--with-no-shellout' advice on FN."
+      (intern (format "edmacs-sidebar-test--guard-%s" fn)))
+
     ;; ==========================================================================
     ;; AC1 -- redraw content, marker, RET-driven visit, 1-based numbering,
     ;; frame-explicit tab-index lookups
@@ -107,27 +172,25 @@ behind for a later test."
 
     (ert-deftest edmacs-sidebar-test-visit-tab-selects-and-moves-marker ()
       (edmacs-sidebar-test--with-extra-tab
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show (selected-frame))
-              ;; The newly-added tab is current, at index 1.
-              (should (= 1 (tab-bar--current-tab-index)))
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (goto-char (point-min))
-                (edmacs-sidebar-activate))
-              ;; `--on-tab-select' now routes through `edmacs-sidebar-
-              ;; invalidate' (a deferred idle-0 redraw), not a synchronous
-              ;; `--redraw' -- flush it manually, since idle timers never
-              ;; fire under `sit-for' in `--batch'.
-              (edmacs-sidebar--flush-dirty-frames)
-              ;; RET on the first (non-current) row actually selected it --
-              ;; not a no-op under `tab-bar-select-tab's 0-as-sentinel
-              ;; semantics, and not off-by-one to the tab before it.
-              (should (= 0 (tab-bar--current-tab-index)))
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (goto-char (point-min))
-                (should (looking-at-p "●"))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+        (edmacs-sidebar-test--with-frame ()
+          (edmacs-sidebar-show (selected-frame))
+          ;; The newly-added tab is current, at index 1.
+          (should (= 1 (tab-bar--current-tab-index)))
+          (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+            (goto-char (point-min))
+            (edmacs-sidebar-activate))
+          ;; `--on-tab-select' now routes through `edmacs-sidebar-
+          ;; invalidate' (a deferred idle-0 redraw), not a synchronous
+          ;; `--redraw' -- flush it manually, since idle timers never
+          ;; fire under `sit-for' in `--batch'.
+          (edmacs-sidebar--flush-dirty-frames)
+          ;; RET on the first (non-current) row actually selected it --
+          ;; not a no-op under `tab-bar-select-tab's 0-as-sentinel
+          ;; semantics, and not off-by-one to the tab before it.
+          (should (= 0 (tab-bar--current-tab-index)))
+          (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+            (goto-char (point-min))
+            (should (looking-at-p "●"))))))
 
     (defun edmacs-sidebar-test--locate-real-evil ()
       "Return the directory holding the real `evil.el', or nil.
@@ -156,6 +219,24 @@ a real Emacs session) to enable this test"))
           (let ((load-path (cons dir load-path)))
             (require 'evil)))))
 
+    (defmacro edmacs-sidebar-test--with-real-evil-motion (&rest body)
+      "Load real evil, enter motion state in a fresh sidebar buffer, run BODY.
+`evil-mode' is a global minor mode, so it is switched back off after
+BODY however BODY ends -- a left-on evil would change key lookup for
+every later test in this file."
+      (declare (indent 0))
+      `(progn
+         (edmacs-sidebar-test--ensure-real-evil)
+         (unwind-protect
+             (progn
+               (evil-mode 1)
+               (with-temp-buffer
+                 (edmacs-sidebar-mode)
+                 (evil-motion-state)
+                 (should (eq evil-state 'motion))
+                 ,@body))
+           (evil-mode -1))))
+
     (ert-deftest edmacs-sidebar-test-ret-and-q-resolve-through-real-evil-keymaps ()
       "Regression test for the RET-shadowed-by-evil-motion-state fix.
 A plain `define-key' on `edmacs-sidebar-mode-map' alone is invisible to
@@ -170,17 +251,9 @@ roadmap phase 6's type-dispatching generalization) rather than directly
 to `edmacs-sidebar-activate' -- see
 `edmacs-sidebar-test-visit-at-point-dispatches-by-section-type' below
 for coverage of the dispatch itself."
-      (edmacs-sidebar-test--ensure-real-evil)
-      (unwind-protect
-          (progn
-            (evil-mode 1)
-            (with-temp-buffer
-              (edmacs-sidebar-mode)
-              (evil-motion-state)
-              (should (eq evil-state 'motion))
-              (should (eq (key-binding (kbd "RET")) #'edmacs-sidebar-visit-at-point))
-              (should (eq (key-binding (kbd "q")) #'edmacs-sidebar-hide))))
-        (evil-mode -1)))
+      (edmacs-sidebar-test--with-real-evil-motion
+        (should (eq (key-binding (kbd "RET")) #'edmacs-sidebar-visit-at-point))
+        (should (eq (key-binding (kbd "q")) #'edmacs-sidebar-hide))))
 
     (ert-deftest edmacs-sidebar-test-visit-at-point-dispatches-by-section-type ()
       "`edmacs-sidebar-visit-at-point' calls `edmacs-sidebar-agents-visit'
@@ -737,22 +810,20 @@ project row\" claim."
                        (tab-bar-change-tab-group "repoD")))
                     ((symbol-function 'edmacs-workspaces-open-worktree)
                      (lambda (_root) (setq worktree-open-calls (1+ worktree-open-calls)))))
-            (unwind-protect
-                (progn
-                  (edmacs-sidebar-show (selected-frame))
-                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                    (goto-char (point-min))
-                    (edmacs-sidebar-activate))
-                  (should (= 1 open-calls))
-                  (let ((before (length (tab-bar-tabs))))
-                    (edmacs-sidebar--redraw (selected-frame))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (goto-char (point-min))
-                      (edmacs-sidebar-activate))
-                    (should (= 1 open-calls))
-                    (should (= before (length (tab-bar-tabs)))))
-                  (should (= 0 worktree-open-calls)))
-              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+            (edmacs-sidebar-test--with-frame ()
+              (edmacs-sidebar-show (selected-frame))
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                (goto-char (point-min))
+                (edmacs-sidebar-activate))
+              (should (= 1 open-calls))
+              (let ((before (length (tab-bar-tabs))))
+                (edmacs-sidebar--redraw (selected-frame))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (goto-char (point-min))
+                  (edmacs-sidebar-activate))
+                (should (= 1 open-calls))
+                (should (= before (length (tab-bar-tabs)))))
+              (should (= 0 worktree-open-calls)))))))
 
     (ert-deftest edmacs-sidebar-test-close-worktree-project-row-noop-child-row-closes ()
       "`d' on a project row whose main tab isn't open is a no-op (never
@@ -762,19 +833,17 @@ opens one); `d' on an open worktree child row closes its tab."
              ("/repoE__worktrees/roadmap-x/" "roadmap-x")))
         (let (closed)
           (cl-letf (((symbol-function 'tab-bar-close-tab) (lambda (n) (push n closed))))
-            (unwind-protect
-                (progn
-                  (edmacs-sidebar-show (selected-frame))
-                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                    ;; First (top-level) row: the project, main tab closed.
-                    (goto-char (point-min))
-                    (edmacs-sidebar-close-worktree)
-                    (should-not closed)
-                    ;; Its child row: "x", open.
-                    (forward-line 1)
-                    (edmacs-sidebar-close-worktree)
-                    (should closed)))
-              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+            (edmacs-sidebar-test--with-frame ()
+              (edmacs-sidebar-show (selected-frame))
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                ;; First (top-level) row: the project, main tab closed.
+                (goto-char (point-min))
+                (edmacs-sidebar-close-worktree)
+                (should-not closed)
+                ;; Its child row: "x", open.
+                (forward-line 1)
+                (edmacs-sidebar-close-worktree)
+                (should closed)))))))
 
     ;; ==========================================================================
     ;; edmacs-sidebar-activate direct-call coverage, one per row-type in the
@@ -963,49 +1032,36 @@ own Commentary on the workspaces fixtures above)."
       (edmacs-sidebar-test--with-project
           '(("repoG" "/repoG/main/" "/repoG/main/.git"
              ("/repoG/main/" "main") ("/repoG__worktrees/roadmap-z/" "roadmap-z")))
-        (let ((violations nil)
-              (guarded '(call-process call-process-region process-file
-                         start-process start-file-process make-process)))
-          (cl-letf (((symbol-function 'edmacs-workspaces-open-project) (lambda (_root) nil))
-                    ;; `edmacs-workspaces-find-tab' stays real (it is the
-                    ;; lookup this test's own classify-root/main-root claim
-                    ;; is about), but a REAL `edmacs-workspaces-select-tab'
-                    ;; would call the real `tab-bar-select-tab' and re-fire
-                    ;; `edmacs-sidebar--on-tab-select''s nested redraw from
-                    ;; inside this loop's own `with-current-buffer' --
-                    ;; recorded instead, since all that matters here is that
-                    ;; activating an already-open row never reaches a
-                    ;; subprocess primitive.
-                    ((symbol-function 'edmacs-workspaces-select-tab) (lambda (&rest _) nil))
-                    ((symbol-function 'tab-bar-close-tab) (lambda (&optional _n) nil)))
-            (unwind-protect
-                (progn
-                  (dolist (fn guarded)
-                    (advice-add fn :before
-                                (lambda (&rest _) (push fn violations))
-                                `((name . ,(intern (format "edmacs-sidebar-test--guard-wt-%s" fn))))))
-                  (edmacs-sidebar-show (selected-frame))
-                  (dotimes (_ 50)
-                    (edmacs-sidebar--redraw (selected-frame))
-                    (edmacs-sidebar--render (edmacs-sidebar--plan (selected-frame)) 32)
-                    (edmacs-sidebar--on-tab-select nil nil)
-                    (edmacs-sidebar--on-tab-open nil)
-                    (edmacs-sidebar--on-tab-pre-close nil nil)
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      ;; First (top-level) row: the project, main tab open.
-                      (goto-char (point-min))
-                      (edmacs-sidebar-activate)
-                      (edmacs-sidebar-close-worktree)
-                      ;; Its child row: "z", open too.
-                      (forward-line 1)
-                      (edmacs-sidebar-activate)
-                      (edmacs-sidebar-close-worktree)))
-                  (sleep-for 0.2)
-                  (sit-for 0)
-                  (should-not violations))
-              (dolist (fn guarded)
-                (advice-remove fn (intern (format "edmacs-sidebar-test--guard-wt-%s" fn))))
-              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+        (cl-letf (((symbol-function 'edmacs-workspaces-open-project) (lambda (_root) nil))
+                  ;; `edmacs-workspaces-find-tab' stays real (it is the
+                  ;; lookup this test's own classify-root/main-root claim
+                  ;; is about), but a REAL `edmacs-workspaces-select-tab'
+                  ;; would call the real `tab-bar-select-tab' and re-fire
+                  ;; `edmacs-sidebar--on-tab-select''s nested redraw from
+                  ;; inside this loop's own `with-current-buffer' --
+                  ;; recorded instead, since all that matters here is that
+                  ;; activating an already-open row never reaches a
+                  ;; subprocess primitive.
+                  ((symbol-function 'edmacs-workspaces-select-tab) (lambda (&rest _) nil))
+                  ((symbol-function 'tab-bar-close-tab) (lambda (&optional _n) nil)))
+          (edmacs-sidebar-test--with-frame ()
+            (edmacs-sidebar-test--with-no-shellout
+              (edmacs-sidebar-show (selected-frame))
+              (dotimes (_ 50)
+                (edmacs-sidebar--redraw (selected-frame))
+                (edmacs-sidebar--render (edmacs-sidebar--plan (selected-frame)) 32)
+                (edmacs-sidebar--on-tab-select nil nil)
+                (edmacs-sidebar--on-tab-open nil)
+                (edmacs-sidebar--on-tab-pre-close nil nil)
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  ;; First (top-level) row: the project, main tab open.
+                  (goto-char (point-min))
+                  (edmacs-sidebar-activate)
+                  (edmacs-sidebar-close-worktree)
+                  ;; Its child row: "z", open too.
+                  (forward-line 1)
+                  (edmacs-sidebar-activate)
+                  (edmacs-sidebar-close-worktree))))))))
 
     ;; ==========================================================================
     ;; AC2 -- per-frame buffers; delete-frame kills only that frame's buffer
@@ -1061,33 +1117,29 @@ frame; deleting the LAST frame showing it kills the buffer."
 
     (ert-deftest edmacs-sidebar-test-post-open-shows-sidebar-in-new-tab ()
       (edmacs-sidebar-test--with-extra-tab
-        (unwind-protect
-            (progn
-              (edmacs-sidebar--on-tab-open nil)
-              (should (edmacs-sidebar--window (selected-frame))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+        (edmacs-sidebar-test--with-frame ()
+          (edmacs-sidebar--on-tab-open nil)
+          (should (edmacs-sidebar--window (selected-frame))))))
 
     (ert-deftest edmacs-sidebar-test-pre-close-redraw-removes-closed-tab-row ()
       (edmacs-sidebar-test--with-extra-tab
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show (selected-frame))
-              (should (= 2 (length (tab-bar-tabs))))
-              ;; Closes the current (newly-added) tab.
-              (tab-bar-close-tab)
-              ;; `sit-for' alone does not run pending (`run-at-time')
-              ;; timers under `-Q --batch'; a real sleep is needed to let
-              ;; the deferred `run-at-time 0' callback actually fire. That
-              ;; callback now calls `edmacs-sidebar-invalidate', not
-              ;; `--redraw' directly -- its own idle-0 timer never fires
-              ;; under `sit-for' in `--batch' either, so flush it manually.
-              (sleep-for 0.2)
-              (sit-for 0)
-              (edmacs-sidebar--flush-dirty-frames)
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (should (= 1 (length (tab-bar-tabs))))
-                (should (= 1 (length (split-string (buffer-string) "\n" t))))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+        (edmacs-sidebar-test--with-frame ()
+          (edmacs-sidebar-show (selected-frame))
+          (should (= 2 (length (tab-bar-tabs))))
+          ;; Closes the current (newly-added) tab.
+          (tab-bar-close-tab)
+          ;; `sit-for' alone does not run pending (`run-at-time')
+          ;; timers under `-Q --batch'; a real sleep is needed to let
+          ;; the deferred `run-at-time 0' callback actually fire. That
+          ;; callback now calls `edmacs-sidebar-invalidate', not
+          ;; `--redraw' directly -- its own idle-0 timer never fires
+          ;; under `sit-for' in `--batch' either, so flush it manually.
+          (sleep-for 0.2)
+          (sit-for 0)
+          (edmacs-sidebar--flush-dirty-frames)
+          (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+            (should (= 1 (length (tab-bar-tabs))))
+            (should (= 1 (length (split-string (buffer-string) "\n" t))))))))
 
     (ert-deftest edmacs-sidebar-test-rename-advice-redraws ()
       "Short tab name deliberately: `edmacs-sidebar-max-width-fraction'
@@ -1095,18 +1147,17 @@ frame; deleting the LAST frame showing it kills the buffer."
 test name needs to render untruncated -- this test's own concern is
 that the rename advice triggers a redraw at all, not truncation, which
 has its own dedicated coverage below."
-      (unwind-protect
-          (progn
-            (edmacs-sidebar-show (selected-frame))
-            (tab-bar-rename-tab "renamed-tab")
-            ;; The rename advice now routes through `edmacs-sidebar-
-            ;; invalidate' (deferred idle-0 redraw) rather than calling
-            ;; `--redraw' directly -- flush it manually.
-            (edmacs-sidebar--flush-dirty-frames)
-            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-              (should (string-match-p "renamed-tab" (buffer-string)))))
-        (ignore-errors (tab-bar-rename-tab ""))
-        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-show (selected-frame))
+        (tab-bar-rename-tab "renamed-tab")
+        ;; The rename advice now routes through `edmacs-sidebar-
+        ;; invalidate' (deferred idle-0 redraw) rather than calling
+        ;; `--redraw' directly -- flush it manually.
+        (edmacs-sidebar--flush-dirty-frames)
+        (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+          (should (string-match-p "renamed-tab" (buffer-string))))
+        :cleanup
+        (ignore-errors (tab-bar-rename-tab ""))))
 
     ;; ==========================================================================
     ;; AC4 -- window never selected/deleted; rotate-layout leaves it
@@ -1118,19 +1169,18 @@ Whether they survive a `window-state-get'/`window-state-put' round trip --
 what a daemon restart does to a background tab -- is windows.el's owned
 set, covered by `edmacs-windows-test-layout-parameters-survive-a-state-
 round-trip'."
-      (unwind-protect
-          (let ((win (edmacs-sidebar-show (selected-frame)))
-                (ordinary (selected-window)))
-            (should win)
-            (should (window-parameter win 'no-other-window))
-            (should (window-parameter win 'no-delete-other-windows))
-            (should (window-dedicated-p win))
-            (select-window ordinary)
-            (other-window 1)
-            (should-not (eq (selected-window) win))
-            (delete-other-windows)
-            (should (window-live-p win)))
-        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (let ((win (edmacs-sidebar-show (selected-frame)))
+              (ordinary (selected-window)))
+          (should win)
+          (should (window-parameter win 'no-other-window))
+          (should (window-parameter win 'no-delete-other-windows))
+          (should (window-dedicated-p win))
+          (select-window ordinary)
+          (other-window 1)
+          (should-not (eq (selected-window) win))
+          (delete-other-windows)
+          (should (window-live-p win)))))
 
     (defun edmacs-sidebar-test--locate-real-rotate ()
       "Return the path to the real `rotate.el' straight build, or nil.
@@ -1191,16 +1241,15 @@ worktree in a real Emacs session) to enable this test"))
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-test-toggle-preserves-width ()
-      (unwind-protect
-          (let* ((win (edmacs-sidebar-show (selected-frame)))
-                 (width (window-width win)))
-            (edmacs-sidebar-toggle (selected-frame))
-            (should-not (edmacs-sidebar--window (selected-frame)))
-            (edmacs-sidebar-toggle (selected-frame))
-            (let ((win2 (edmacs-sidebar--window (selected-frame))))
-              (should win2)
-              (should (<= (abs (- (window-width win2) width)) 1))))
-        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (let* ((win (edmacs-sidebar-show (selected-frame)))
+               (width (window-width win)))
+          (edmacs-sidebar-toggle (selected-frame))
+          (should-not (edmacs-sidebar--window (selected-frame)))
+          (edmacs-sidebar-toggle (selected-frame))
+          (let ((win2 (edmacs-sidebar--window (selected-frame))))
+            (should win2)
+            (should (<= (abs (- (window-width win2) width)) 1))))))
 
     ;; ==========================================================================
     ;; AC6 -- top strip gone; SPC T l still works
@@ -1245,11 +1294,10 @@ worktree in a real Emacs session) to enable this test"))
 
     (ert-deftest edmacs-sidebar-test-switch-to-tab-still-works ()
       (edmacs-sidebar-test--with-extra-tab
-        (unwind-protect
-            (let ((first-name (alist-get 'name (car (tab-bar-tabs)))))
-              (tab-bar-switch-to-tab first-name)
-              (should (= 0 (tab-bar--current-tab-index))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+        (edmacs-sidebar-test--with-frame ()
+          (let ((first-name (alist-get 'name (car (tab-bar-tabs)))))
+            (tab-bar-switch-to-tab first-name)
+            (should (= 0 (tab-bar--current-tab-index)))))))
 
     ;; ==========================================================================
     ;; AC7 -- desktop/daemon restore regenerates a live sidebar
@@ -1285,16 +1333,14 @@ live buffer already exists by this point and must be torn down first to
 model \"freshly restored, buffer excluded from the save\" rather than
 \"already showing\"."
       (edmacs-sidebar-test--with-extra-tab
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-test--cleanup-sidebar (selected-frame))
-              (should-not (edmacs-sidebar--buffer (selected-frame)))
-              (edmacs-sidebar--on-desktop-read)
-              (let ((buf (edmacs-sidebar--buffer (selected-frame))))
-                (should (buffer-live-p buf))
-                (with-current-buffer buf
-                  (should (= 2 (length (split-string (buffer-string) "\n" t)))))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+        (edmacs-sidebar-test--with-frame ()
+          (edmacs-sidebar-test--cleanup-sidebar (selected-frame))
+          (should-not (edmacs-sidebar--buffer (selected-frame)))
+          (edmacs-sidebar--on-desktop-read)
+          (let ((buf (edmacs-sidebar--buffer (selected-frame))))
+            (should (buffer-live-p buf))
+            (with-current-buffer buf
+              (should (= 2 (length (split-string (buffer-string) "\n" t)))))))))
 
     (ert-deftest edmacs-sidebar-test-ensure-buffer-is-always-the-singleton-name ()
       "Since edmacs-tab-groups phase 3's buffer collapse, there is no
@@ -1302,17 +1348,14 @@ per-frame title-derived name to drift out of sync any more (the race
 `-ensure-buffer-renames-stale-buffer-name' used to cover) -- FRAME's
 `name' parameter changing has no bearing on the buffer's own name at
 all, which stays the fixed singleton `*sidebar*'."
-      (let ((frame (selected-frame))
-            (original-name (frame-parameter (selected-frame) 'name)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar--ensure-buffer frame)
-              (should (equal (buffer-name (edmacs-sidebar--buffer frame)) "*sidebar*"))
-              (set-frame-parameter frame 'name "real-repo-name")
-              (edmacs-sidebar--ensure-buffer frame)
-              (should (equal (buffer-name (edmacs-sidebar--buffer frame)) "*sidebar*")))
-          (set-frame-parameter frame 'name original-name)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ((original-name (frame-parameter (selected-frame) 'name)))
+        (edmacs-sidebar--ensure-buffer frame)
+        (should (equal (buffer-name (edmacs-sidebar--buffer frame)) "*sidebar*"))
+        (set-frame-parameter frame 'name "real-repo-name")
+        (edmacs-sidebar--ensure-buffer frame)
+        (should (equal (buffer-name (edmacs-sidebar--buffer frame)) "*sidebar*"))
+        :cleanup
+        (set-frame-parameter frame 'name original-name)))
 
     (ert-deftest edmacs-sidebar-test-regenerate-after-frame-shows-sidebar-once-deferred ()
       "Direct regression test for the daemon-restart path's own function
@@ -1321,16 +1364,14 @@ all, which stays the fixed singleton `*sidebar*'."
 frameset-restore hook, this one is not gated on `display-graphic-p' -- it
 must show a fresh sidebar once its `run-at-time 0' fires, even on a
 non-graphical batch frame."
-      (unwind-protect
-          (progn
-            (should-not (edmacs-sidebar--buffer (selected-frame)))
-            (edmacs-sidebar--regenerate-after-frame (selected-frame))
-            ;; Deferred -- must not have run synchronously.
-            (should-not (edmacs-sidebar--buffer (selected-frame)))
-            (sleep-for 0.2)
-            (sit-for 0)
-            (should (buffer-live-p (edmacs-sidebar--buffer (selected-frame)))))
-        (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (should-not (edmacs-sidebar--buffer (selected-frame)))
+        (edmacs-sidebar--regenerate-after-frame (selected-frame))
+        ;; Deferred -- must not have run synchronously.
+        (should-not (edmacs-sidebar--buffer (selected-frame)))
+        (sleep-for 0.2)
+        (sit-for 0)
+        (should (buffer-live-p (edmacs-sidebar--buffer (selected-frame))))))
 
     ;; ==========================================================================
     ;; AC8 -- no subprocess work during redraw/hook activity
@@ -1358,56 +1399,44 @@ never reached here: this loop fires no agent jump. A poisoned
 `--remember-width' and `--on-desktop-read' re-driven through the same
 loop, so the width-clamp path is exercised under the same guarantee."
       (edmacs-sidebar-test--with-extra-tab
-        (let ((violations nil)
-              (guarded '(call-process call-process-region process-file
-                         start-process start-file-process make-process)))
-          (unwind-protect
-              (progn
-                (dolist (fn guarded)
-                  (advice-add fn :before
-                              (lambda (&rest _) (push fn violations))
-                              `((name . ,(intern (format "edmacs-sidebar-test--guard-%s" fn))))))
+        (edmacs-sidebar-test--with-frame ()
+          (edmacs-sidebar-test--with-no-shellout
+            (edmacs-sidebar-show (selected-frame))
+            (set-frame-parameter (selected-frame) 'edmacs-sidebar-remembered-width
+                                 (* 2 (frame-width (selected-frame))))
+            (cl-letf (((symbol-function 'read-from-minibuffer)
+                       (lambda (&rest _) "edmacs-sidebar-test-renamed-tab")))
+              (dotimes (_ 50)
+                (edmacs-sidebar--redraw (selected-frame))
+                (edmacs-sidebar--on-tab-select nil nil)
+                (edmacs-sidebar--on-tab-open nil)
+                (edmacs-sidebar--on-tab-pre-close nil nil)
+                (tab-bar-rename-tab "edmacs-sidebar-test-shellout-check")
+                (edmacs-sidebar-redraw (selected-frame))
                 (edmacs-sidebar-show (selected-frame))
-                (set-frame-parameter (selected-frame) 'edmacs-sidebar-remembered-width
-                                      (* 2 (frame-width (selected-frame))))
-                (cl-letf (((symbol-function 'read-from-minibuffer)
-                           (lambda (&rest _) "edmacs-sidebar-test-renamed-tab")))
-                  (dotimes (_ 50)
-                    (edmacs-sidebar--redraw (selected-frame))
-                    (edmacs-sidebar--on-tab-select nil nil)
-                    (edmacs-sidebar--on-tab-open nil)
-                    (edmacs-sidebar--on-tab-pre-close nil nil)
-                    (tab-bar-rename-tab "edmacs-sidebar-test-shellout-check")
-                    (edmacs-sidebar-redraw (selected-frame))
-                    (edmacs-sidebar-show (selected-frame))
-                    (edmacs-sidebar--remember-width (selected-frame))
-                    (edmacs-sidebar--on-desktop-read)
-                    ;; `describe-keymap' is real Emacs 29+ core, exercised for
-                    ;; real by `edmacs-sidebar-test-help-falls-back-to-describe-keymap-for-real'
-                    ;; below; stubbed here to a no-op -- this loop's only
-                    ;; concern is that `edmacs-sidebar-help's own dispatch
-                    ;; never shells out, not that the real help/which-key UI
-                    ;; can coexist with this frame's dedicated,
-                    ;; `no-other-window' sidebar side window without wedging
-                    ;; `display-buffer'.
-                    (cl-letf (((symbol-function 'describe-keymap) (lambda (&rest _) nil))
-                              ((symbol-function 'which-key-show-full-keymap) (lambda (&rest _) nil)))
-                      (let ((inhibit-message t))
-                        (edmacs-sidebar-help)))
-                    (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                      (goto-char (point-min))
-                      (edmacs-sidebar-move-to-next-worktree)
-                      (edmacs-sidebar-move-to-prev-worktree)
-                      (edmacs-sidebar-rename-at-point))))
-                (sleep-for 0.2)
-                (sit-for 0)
-                (should-not violations))
-            (dolist (fn guarded)
-              (advice-remove fn (intern (format "edmacs-sidebar-test--guard-%s" fn))))
-            (ignore-errors (tab-bar-rename-tab ""))
-            (when (get-buffer "*Help*") (kill-buffer "*Help*"))
-            (set-frame-parameter (selected-frame) 'edmacs-sidebar-remembered-width nil)
-            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
+                (edmacs-sidebar--remember-width (selected-frame))
+                (edmacs-sidebar--on-desktop-read)
+                ;; `describe-keymap' is real Emacs 29+ core, exercised for
+                ;; real by `edmacs-sidebar-test-help-falls-back-to-describe-keymap-for-real'
+                ;; below; stubbed here to a no-op -- this loop's only
+                ;; concern is that `edmacs-sidebar-help's own dispatch
+                ;; never shells out, not that the real help/which-key UI
+                ;; can coexist with this frame's dedicated,
+                ;; `no-other-window' sidebar side window without wedging
+                ;; `display-buffer'.
+                (cl-letf (((symbol-function 'describe-keymap) (lambda (&rest _) nil))
+                          ((symbol-function 'which-key-show-full-keymap) (lambda (&rest _) nil)))
+                  (let ((inhibit-message t))
+                    (edmacs-sidebar-help)))
+                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                  (goto-char (point-min))
+                  (edmacs-sidebar-move-to-next-worktree)
+                  (edmacs-sidebar-move-to-prev-worktree)
+                  (edmacs-sidebar-rename-at-point)))))
+          :cleanup
+          (ignore-errors (tab-bar-rename-tab ""))
+          (when (get-buffer "*Help*") (kill-buffer "*Help*"))
+          (set-frame-parameter (selected-frame) 'edmacs-sidebar-remembered-width nil))))
 
     ;; ==========================================================================
     ;; Frameset restore
@@ -1419,24 +1448,21 @@ placeholder such as `*scratch*' stands in for whatever
 `window-state-put' actually leaves there). `edmacs-sidebar-show' must
 reuse that window -- never open a second side window -- and end up
 showing the frame's live sidebar buffer, never `*scratch*'."
-      (let* ((frame (selected-frame))
-             (placeholder-window
-              (display-buffer (get-buffer-create "*scratch*")
-                               '((display-buffer-in-side-window)
-                                 (side . left) (slot . 0) (window-width . 32)))))
-        (unwind-protect
-            (progn
-              (should (window-live-p placeholder-window))
-              (should (eq (window-buffer placeholder-window) (get-buffer "*scratch*")))
-              (edmacs-sidebar-show frame)
-              (let ((side-windows
-                     (seq-filter (lambda (w) (eq (window-parameter w 'window-side) 'left))
-                                 (window-list frame 'never))))
-                (should (= 1 (length side-windows)))
-                (should (eq (window-buffer (car side-windows))
-                            (edmacs-sidebar--buffer frame)))
-                (should-not (eq (window-buffer (car side-windows)) (get-buffer "*scratch*")))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame
+          ((placeholder-window
+            (display-buffer (get-buffer-create "*scratch*")
+                            '((display-buffer-in-side-window)
+                              (side . left) (slot . 0) (window-width . 32)))))
+        (should (window-live-p placeholder-window))
+        (should (eq (window-buffer placeholder-window) (get-buffer "*scratch*")))
+        (edmacs-sidebar-show frame)
+        (let ((side-windows
+               (seq-filter (lambda (w) (eq (window-parameter w 'window-side) 'left))
+                           (window-list frame 'never))))
+          (should (= 1 (length side-windows)))
+          (should (eq (window-buffer (car side-windows))
+                      (edmacs-sidebar--buffer frame)))
+          (should-not (eq (window-buffer (car side-windows)) (get-buffer "*scratch*"))))))
 
     ;; ==========================================================================
     ;; Phase 8 -- J/K/r/gr/? bindings, RET user-errors, faces, resize, header-line
@@ -1448,16 +1474,8 @@ dual-binding override: `evil-motion-state-map' claims `z' as a prefix
 key (the `zz'/`zt' scrolling family), so only a real key-lookup check
 proves this reaches `edmacs-sidebar-toggle-collapse' rather than
 evil's own prefix map."
-      (edmacs-sidebar-test--ensure-real-evil)
-      (unwind-protect
-          (progn
-            (evil-mode 1)
-            (with-temp-buffer
-              (edmacs-sidebar-mode)
-              (evil-motion-state)
-              (should (eq evil-state 'motion))
-              (should (eq (key-binding (kbd "z")) #'edmacs-sidebar-toggle-collapse))))
-        (evil-mode -1)))
+      (edmacs-sidebar-test--with-real-evil-motion
+        (should (eq (key-binding (kbd "z")) #'edmacs-sidebar-toggle-collapse))))
 
     (ert-deftest edmacs-sidebar-test-j-k-r-gr-help-resolve-through-real-evil-keymaps ()
       "Regression test mirroring `-ret-and-q-resolve-...' above, for this
@@ -1474,21 +1492,13 @@ dual-binding override as RET/q/K/? (see sidebar.el's own comment at
 its `TAB' binding). Resolves to `edmacs-sidebar-toggle-at-point', the
 fold-dispatch wrapper, not bare `magit-section-toggle' -- see the
 dedicated fold-dispatch tests below for its enclosing-group behavior."
-      (edmacs-sidebar-test--ensure-real-evil)
-      (unwind-protect
-          (progn
-            (evil-mode 1)
-            (with-temp-buffer
-              (edmacs-sidebar-mode)
-              (evil-motion-state)
-              (should (eq evil-state 'motion))
-              (should (eq (key-binding (kbd "J")) #'edmacs-sidebar-move-to-next-worktree))
-              (should (eq (key-binding (kbd "K")) #'edmacs-sidebar-move-to-prev-worktree))
-              (should (eq (key-binding (kbd "r")) #'edmacs-sidebar-rename-at-point))
-              (should (eq (key-binding (kbd "g r")) #'edmacs-sidebar-redraw))
-              (should (eq (key-binding (kbd "?")) #'edmacs-sidebar-help))
-              (should (eq (key-binding (kbd "TAB")) #'edmacs-sidebar-toggle-at-point))))
-        (evil-mode -1)))
+      (edmacs-sidebar-test--with-real-evil-motion
+        (should (eq (key-binding (kbd "J")) #'edmacs-sidebar-move-to-next-worktree))
+        (should (eq (key-binding (kbd "K")) #'edmacs-sidebar-move-to-prev-worktree))
+        (should (eq (key-binding (kbd "r")) #'edmacs-sidebar-rename-at-point))
+        (should (eq (key-binding (kbd "g r")) #'edmacs-sidebar-redraw))
+        (should (eq (key-binding (kbd "?")) #'edmacs-sidebar-help))
+        (should (eq (key-binding (kbd "TAB")) #'edmacs-sidebar-toggle-at-point))))
 
     (ert-deftest edmacs-sidebar-test-help-falls-back-to-describe-keymap-for-real ()
       "`edmacs-sidebar-help' actually takes its real `describe-keymap'
@@ -1635,14 +1645,12 @@ change needed for this phase."
       (edmacs-sidebar-test--with-extra-tab
         (let ((closed nil))
           (cl-letf (((symbol-function 'tab-bar-close-tab) (lambda (&optional n) (push n closed))))
-            (unwind-protect
-                (progn
-                  (edmacs-sidebar-show (selected-frame))
-                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                    (goto-char (point-min))
-                    (edmacs-sidebar-kill-at-point (selected-frame)))
-                  (should closed))
-              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+            (edmacs-sidebar-test--with-frame ()
+              (edmacs-sidebar-show (selected-frame))
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                (goto-char (point-min))
+                (edmacs-sidebar-kill-at-point (selected-frame)))
+              (should closed))))))
 
     (ert-deftest edmacs-sidebar-test-kill-at-point-dispatches-to-agents-kill ()
       "`d' on an `edmacs-sidebar-agent' row calls
@@ -1710,20 +1718,19 @@ recognized row at all."
              ("/repoH__worktrees/roadmap-wt/" "roadmap-wt")))
         (cl-letf (((symbol-function 'read-from-minibuffer)
                    (lambda (&rest _) "edmacs-sidebar-test-renamed")))
-          (unwind-protect
-              (progn
-                (edmacs-sidebar-show (selected-frame))
-                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                  ;; First (top-level) row: the project, main tab not open.
-                  (goto-char (point-min))
-                  (should-error (edmacs-sidebar-rename-at-point) :type 'user-error)
-                  ;; Its child row: "wt", open.
-                  (forward-line 1)
-                  (edmacs-sidebar-rename-at-point)
-                  (should (equal "edmacs-sidebar-test-renamed"
-                                  (alist-get 'name (tab-bar--current-tab-find))))))
-            (ignore-errors (tab-bar-rename-tab ""))
-            (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+          (edmacs-sidebar-test--with-frame ()
+            (edmacs-sidebar-show (selected-frame))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              ;; First (top-level) row: the project, main tab not open.
+              (goto-char (point-min))
+              (should-error (edmacs-sidebar-rename-at-point) :type 'user-error)
+              ;; Its child row: "wt", open.
+              (forward-line 1)
+              (edmacs-sidebar-rename-at-point)
+              (should (equal "edmacs-sidebar-test-renamed"
+                             (alist-get 'name (tab-bar--current-tab-find)))))
+            :cleanup
+            (ignore-errors (tab-bar-rename-tab "")))))
       (with-temp-buffer
         (edmacs-sidebar-mode)
         (should-error (edmacs-sidebar-rename-at-point) :type 'user-error)))
@@ -1737,26 +1744,24 @@ triggered the command, so this only passes if
 `edmacs-sidebar-rename-at-point' threads the row's own tab-number
 through explicitly instead of `call-interactively'-ing blind."
       (edmacs-sidebar-test--with-extra-tab
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show (selected-frame))
-              ;; The newly-added tab is current, at index 1; point-min
-              ;; is the original (background) tab's row, at index 0.
-              (should (= 1 (tab-bar--current-tab-index)))
-              (let ((current-name-before (alist-get 'name (tab-bar--current-tab-find))))
-                (cl-letf (((symbol-function 'read-from-minibuffer)
-                           (lambda (&rest _) "edmacs-sidebar-test-bg-renamed")))
-                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                    (goto-char (point-min))
-                    (edmacs-sidebar-rename-at-point)))
-                ;; The background tab (index 0) got the new name...
-                (should (equal "edmacs-sidebar-test-bg-renamed"
-                                (alist-get 'name (nth 0 (tab-bar-tabs)))))
-                ;; ...and the still-current tab (index 1) is untouched.
-                (should (= 1 (tab-bar--current-tab-index)))
-                (should (equal current-name-before
-                                (alist-get 'name (tab-bar--current-tab-find))))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+        (edmacs-sidebar-test--with-frame ()
+          (edmacs-sidebar-show (selected-frame))
+          ;; The newly-added tab is current, at index 1; point-min
+          ;; is the original (background) tab's row, at index 0.
+          (should (= 1 (tab-bar--current-tab-index)))
+          (let ((current-name-before (alist-get 'name (tab-bar--current-tab-find))))
+            (cl-letf (((symbol-function 'read-from-minibuffer)
+                       (lambda (&rest _) "edmacs-sidebar-test-bg-renamed")))
+              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                (goto-char (point-min))
+                (edmacs-sidebar-rename-at-point)))
+            ;; The background tab (index 0) got the new name...
+            (should (equal "edmacs-sidebar-test-bg-renamed"
+                           (alist-get 'name (nth 0 (tab-bar-tabs)))))
+            ;; ...and the still-current tab (index 1) is untouched.
+            (should (= 1 (tab-bar--current-tab-index)))
+            (should (equal current-name-before
+                           (alist-get 'name (tab-bar--current-tab-find))))))))
 
     ;; ==========================================================================
     ;; A stamped worktree root that has been deleted from disk
@@ -1804,18 +1809,15 @@ renders as an ordinary live one, and the probe function is not called."
 `SPC w =' reaches it through `edmacs-windows-rebalance-functions': a side
 window keeps the absolute width it was created at, so a sidebar sized for
 one display stays that width on the next one."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (let ((window (edmacs-sidebar--window frame)))
-                (window-resize window -5 t)
-                (should (/= (window-total-width window)
-                            (edmacs-sidebar--target-width frame)))
-                (edmacs-sidebar-reapply-width frame)
-                (should (= (window-total-width window)
-                           (edmacs-sidebar--target-width frame)))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-show frame)
+        (let ((window (edmacs-sidebar--window frame)))
+          (window-resize window -5 t)
+          (should (/= (window-total-width window)
+                      (edmacs-sidebar--target-width frame)))
+          (edmacs-sidebar-reapply-width frame)
+          (should (= (window-total-width window)
+                     (edmacs-sidebar--target-width frame))))))
 
     (ert-deftest edmacs-sidebar-test-reapply-width-never-shows-a-hidden-sidebar ()
       "A frame with no sidebar window is left without one."
@@ -1839,23 +1841,21 @@ automatic `window-size-change-functions' firing during the wait would
 keep re-arming the debounce timer out from under a fixed `sleep-for',
 and this test's own concern is the stash-and-restore behavior, not the
 debounce timing (which has no dedicated assertion here)."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (let ((window (edmacs-sidebar--window frame)))
-                (window-resize window -5 t)
-                (edmacs-sidebar--remember-width frame t))
-              (let ((resized (window-width (edmacs-sidebar--window frame))))
-                (should (/= resized edmacs-sidebar-width))
-                (edmacs-sidebar-toggle (selected-frame))
-                (edmacs-sidebar-toggle (selected-frame))
-                (should (= resized (window-width (edmacs-sidebar--window frame))))))
-          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
-            (when (timerp timer) (cancel-timer timer)))
-          (remhash frame edmacs-sidebar--resize-debounce-timers)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-show frame)
+        (let ((window (edmacs-sidebar--window frame)))
+          (window-resize window -5 t)
+          (edmacs-sidebar--remember-width frame t))
+        (let ((resized (window-width (edmacs-sidebar--window frame))))
+          (should (/= resized edmacs-sidebar-width))
+          (edmacs-sidebar-toggle (selected-frame))
+          (edmacs-sidebar-toggle (selected-frame))
+          (should (= resized (window-width (edmacs-sidebar--window frame)))))
+        :cleanup
+        (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+          (when (timerp timer) (cancel-timer timer)))
+        (remhash frame edmacs-sidebar--resize-debounce-timers)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-on-window-size-change-debounces-and-stashes ()
       "`--on-window-size-change' schedules a debounced call to
@@ -1865,29 +1865,26 @@ fires; a no-op for a frame with no live sidebar window shown. `this-command' is
 bound to an allowlisted `edmacs-sidebar--interactive-resize-commands'
 member throughout, modeling a genuine user-driven resize -- the
 allowlist gate itself is covered by the two tests below."
-      (let ((frame (selected-frame))
-            (edmacs-sidebar-resize-debounce-seconds 0.05)
-            (this-command 'evil-window-decrease-width))
-        (unwind-protect
-            (progn
-              (should-not (edmacs-sidebar--window frame))
-              (edmacs-sidebar--on-window-size-change frame)
-              (should-not (gethash frame edmacs-sidebar--resize-debounce-timers))
-              (edmacs-sidebar-show frame)
-              (window-resize (edmacs-sidebar--window frame) -3 t)
-              (edmacs-sidebar--on-window-size-change frame)
-              (should (timerp (gethash frame edmacs-sidebar--resize-debounce-timers)))
-              (let ((deadline (+ (float-time) 2)))
-                (while (and (< (float-time) deadline)
-                            (not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
-                  (sit-for 0.1)))
-              (should (= (window-total-width (edmacs-sidebar--window frame))
-                          (frame-parameter frame 'edmacs-sidebar-remembered-width))))
-          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
-            (when (timerp timer) (cancel-timer timer)))
-          (remhash frame edmacs-sidebar--resize-debounce-timers)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ((edmacs-sidebar-resize-debounce-seconds 0.05)
+                                        (this-command 'evil-window-decrease-width))
+        (should-not (edmacs-sidebar--window frame))
+        (edmacs-sidebar--on-window-size-change frame)
+        (should-not (gethash frame edmacs-sidebar--resize-debounce-timers))
+        (edmacs-sidebar-show frame)
+        (window-resize (edmacs-sidebar--window frame) -3 t)
+        (edmacs-sidebar--on-window-size-change frame)
+        (should (timerp (gethash frame edmacs-sidebar--resize-debounce-timers)))
+        (let ((deadline (+ (float-time) 2)))
+          (while (and (< (float-time) deadline)
+                      (not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
+            (sit-for 0.1)))
+        (should (= (window-total-width (edmacs-sidebar--window frame))
+                   (frame-parameter frame 'edmacs-sidebar-remembered-width)))
+        :cleanup
+        (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+          (when (timerp timer) (cancel-timer timer)))
+        (remhash frame edmacs-sidebar--resize-debounce-timers)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     ;; ==========================================================================
     ;; edmacs-sidebar-polish -- only a deliberate, interactive resize is
@@ -1902,95 +1899,85 @@ another window's layout change pushing the sidebar wide), and
 `--on-window-size-change' fires with a `this-command' that is not in
 `edmacs-sidebar--interactive-resize-commands'. The width must not be
 stashed, even after the debounce fires."
-      (let ((frame (selected-frame))
-            (edmacs-sidebar-resize-debounce-seconds 0.05)
-            (this-command 'tab-bar-new-tab))
+      (edmacs-sidebar-test--with-frame ((edmacs-sidebar-resize-debounce-seconds 0.05)
+                                        (this-command 'tab-bar-new-tab))
         ;; Keep the test honest: the command used to model a non-deliberate
         ;; resize must not itself be on the allowlist.
         (should-not (memq this-command edmacs-sidebar--interactive-resize-commands))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-              (window-resize (edmacs-sidebar--window frame) 10 t)
-              (edmacs-sidebar--on-window-size-change frame)
-              (let ((deadline (+ (float-time) 2)))
-                (while (and (< (float-time) deadline)
-                            (gethash frame edmacs-sidebar--resize-debounce-timers))
-                  (sit-for 0.1)))
-              (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
-          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
-            (when (timerp timer) (cancel-timer timer)))
-          (remhash frame edmacs-sidebar--resize-debounce-timers)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+        (edmacs-sidebar-show frame)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+        (window-resize (edmacs-sidebar--window frame) 10 t)
+        (edmacs-sidebar--on-window-size-change frame)
+        (let ((deadline (+ (float-time) 2)))
+          (while (and (< (float-time) deadline)
+                      (gethash frame edmacs-sidebar--resize-debounce-timers))
+            (sit-for 0.1)))
+        (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width))
+        :cleanup
+        (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+          (when (timerp timer) (cancel-timer timer)))
+        (remhash frame edmacs-sidebar--resize-debounce-timers)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-on-window-size-change-still-stashes-interactive-resize ()
       "Positive counterpart to the refusal test above: a `this-command'
 that IS in `edmacs-sidebar--interactive-resize-commands' still gets its
 width stashed once the debounce fires -- guards against the gate
 becoming so broad it silently breaks genuine manual resizes."
-      (let ((frame (selected-frame))
-            (edmacs-sidebar-resize-debounce-seconds 0.05)
-            (this-command 'evil-window-increase-width))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-              (window-resize (edmacs-sidebar--window frame) -3 t)
-              (edmacs-sidebar--on-window-size-change frame)
-              (let ((deadline (+ (float-time) 2)))
-                (while (and (< (float-time) deadline)
-                            (not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
-                  (sit-for 0.1)))
-              (should (= (window-total-width (edmacs-sidebar--window frame))
-                          (frame-parameter frame 'edmacs-sidebar-remembered-width))))
-          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
-            (when (timerp timer) (cancel-timer timer)))
-          (remhash frame edmacs-sidebar--resize-debounce-timers)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ((edmacs-sidebar-resize-debounce-seconds 0.05)
+                                        (this-command 'evil-window-increase-width))
+        (edmacs-sidebar-show frame)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+        (window-resize (edmacs-sidebar--window frame) -3 t)
+        (edmacs-sidebar--on-window-size-change frame)
+        (let ((deadline (+ (float-time) 2)))
+          (while (and (< (float-time) deadline)
+                      (not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
+            (sit-for 0.1)))
+        (should (= (window-total-width (edmacs-sidebar--window frame))
+                   (frame-parameter frame 'edmacs-sidebar-remembered-width)))
+        :cleanup
+        (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+          (when (timerp timer) (cancel-timer timer)))
+        (remhash frame edmacs-sidebar--resize-debounce-timers)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-reset-width-clears-parameter ()
       "`edmacs-sidebar-reset-width' clears an already-poisoned remembered
 width and, since the sidebar is shown, immediately reflows the live
 window back near `edmacs-sidebar-width' rather than waiting for the
 next hide/show cycle."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width
-                                    (+ edmacs-sidebar-width 50))
-              (edmacs-sidebar-reset-width frame)
-              (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width))
-              ;; `edmacs-sidebar-width', like `edmacs-sidebar-remembered-width',
-              ;; is a TOTAL-width target: `edmacs-sidebar-show' hands it to
-              ;; `edmacs-sidebar--enforce-width', which resizes the live
-              ;; window's `window-total-width' to match exactly, regardless
-              ;; of how many columns of that total the window's own chrome
-              ;; (a vertical border here in batch; fringes/scroll bar on a
-              ;; real GUI frame) then costs `window-body-width'.
-              (should (= (edmacs-sidebar--clamp-width edmacs-sidebar-width frame)
-                          (window-total-width (edmacs-sidebar--window frame)))))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-show frame)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width
+                             (+ edmacs-sidebar-width 50))
+        (edmacs-sidebar-reset-width frame)
+        (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width))
+        ;; `edmacs-sidebar-width', like `edmacs-sidebar-remembered-width',
+        ;; is a TOTAL-width target: `edmacs-sidebar-show' hands it to
+        ;; `edmacs-sidebar--enforce-width', which resizes the live
+        ;; window's `window-total-width' to match exactly, regardless
+        ;; of how many columns of that total the window's own chrome
+        ;; (a vertical border here in batch; fringes/scroll bar on a
+        ;; real GUI frame) then costs `window-body-width'.
+        (should (= (edmacs-sidebar--clamp-width edmacs-sidebar-width frame)
+                   (window-total-width (edmacs-sidebar--window frame))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-reset-width-when-not-shown-only-clears-parameter ()
       "Calling `edmacs-sidebar-reset-width' when the sidebar has no live
 window on FRAME must not error trying to hide/show a nonexistent
 window -- it only clears the frame parameter."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (should-not (edmacs-sidebar--window frame))
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width
-                                    (+ edmacs-sidebar-width 50))
-              (edmacs-sidebar-reset-width frame)
-              (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width))
-              (should-not (edmacs-sidebar--window frame)))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (should-not (edmacs-sidebar--window frame))
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width
+                             (+ edmacs-sidebar-width 50))
+        (edmacs-sidebar-reset-width frame)
+        (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width))
+        (should-not (edmacs-sidebar--window frame))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     ;; ==========================================================================
     ;; AC4 -- the sidebar never exceeds `edmacs-sidebar-max-width-fraction'
@@ -2021,81 +2008,73 @@ unchanged."
 `edmacs-sidebar--collapsed-width'; expanding restores exactly the
 pre-collapse remembered width -- possible only because
 `--remember-width' (below) refuses to stash anything while collapsed."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (let ((window (edmacs-sidebar--window frame)))
-                (window-resize window -5 t)
-                (edmacs-sidebar--remember-width frame t))
-              (let ((pre-collapse (window-width (edmacs-sidebar--window frame))))
-                (should (/= pre-collapse edmacs-sidebar--collapsed-width))
-                (edmacs-sidebar-collapse frame)
-                ;; `display-buffer-in-side-window' yields an actual window one
-                ;; column narrower than requested on a re-ask, exactly like
-                ;; `edmacs-sidebar-reset-width's own live-width assertion --
-                ;; see `edmacs-sidebar--remember-width's docstring.
-                (should (= edmacs-sidebar--collapsed-width
-                           (window-width (edmacs-sidebar--window frame))))
-                (edmacs-sidebar-expand frame)
-                (should (= pre-collapse (window-width (edmacs-sidebar--window frame))))))
-          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
-            (when (timerp timer) (cancel-timer timer)))
-          (remhash frame edmacs-sidebar--resize-debounce-timers)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-show frame)
+        (let ((window (edmacs-sidebar--window frame)))
+          (window-resize window -5 t)
+          (edmacs-sidebar--remember-width frame t))
+        (let ((pre-collapse (window-width (edmacs-sidebar--window frame))))
+          (should (/= pre-collapse edmacs-sidebar--collapsed-width))
+          (edmacs-sidebar-collapse frame)
+          ;; `display-buffer-in-side-window' yields an actual window one
+          ;; column narrower than requested on a re-ask, exactly like
+          ;; `edmacs-sidebar-reset-width's own live-width assertion --
+          ;; see `edmacs-sidebar--remember-width's docstring.
+          (should (= edmacs-sidebar--collapsed-width
+                     (window-width (edmacs-sidebar--window frame))))
+          (edmacs-sidebar-expand frame)
+          (should (= pre-collapse (window-width (edmacs-sidebar--window frame)))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+        (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+          (when (timerp timer) (cancel-timer timer)))
+        (remhash frame edmacs-sidebar--resize-debounce-timers)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-collapse-when-not-shown-only-sets-parameter ()
       "Collapsing a frame with no live sidebar window at all must not
 error, and must still flag the frame so the next real
 `edmacs-sidebar-show' (e.g. a tab-open hook) opens directly at the
 collapsed width instead of full width followed by a flash-resize."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (should-not (edmacs-sidebar--window frame))
-              (edmacs-sidebar-collapse frame)
-              (should (frame-parameter frame 'edmacs-sidebar-collapsed))
-              (should (= edmacs-sidebar--collapsed-width
-                         (window-width (edmacs-sidebar--window frame)))))
-          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (should-not (edmacs-sidebar--window frame))
+        (edmacs-sidebar-collapse frame)
+        (should (frame-parameter frame 'edmacs-sidebar-collapsed))
+        (should (= edmacs-sidebar--collapsed-width
+                   (window-width (edmacs-sidebar--window frame))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-toggle-collapse-flips-both-ways ()
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (should-not (frame-parameter frame 'edmacs-sidebar-collapsed))
-              (edmacs-sidebar-toggle-collapse frame)
-              (should (frame-parameter frame 'edmacs-sidebar-collapsed))
-              (edmacs-sidebar-toggle-collapse frame)
-              (should-not (frame-parameter frame 'edmacs-sidebar-collapsed)))
-          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-show frame)
+        (should-not (frame-parameter frame 'edmacs-sidebar-collapsed))
+        (edmacs-sidebar-toggle-collapse frame)
+        (should (frame-parameter frame 'edmacs-sidebar-collapsed))
+        (edmacs-sidebar-toggle-collapse frame)
+        (should-not (frame-parameter frame 'edmacs-sidebar-collapsed))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-remember-width-noops-while-collapsed ()
       "A resize event firing while the sidebar is collapsed (the live
 window is at `edmacs-sidebar--collapsed-width', not a value the user
 chose) must not clobber the real remembered width stashed before the
 collapse."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (let ((window (edmacs-sidebar--window frame)))
-                (window-resize window -5 t)
-                (edmacs-sidebar--remember-width frame t))
-              (let ((remembered (frame-parameter frame 'edmacs-sidebar-remembered-width)))
-                (edmacs-sidebar-collapse frame)
-                (edmacs-sidebar--remember-width frame t)
-                (should (equal remembered (frame-parameter frame 'edmacs-sidebar-remembered-width)))))
-          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-show frame)
+        (let ((window (edmacs-sidebar--window frame)))
+          (window-resize window -5 t)
+          (edmacs-sidebar--remember-width frame t))
+        (let ((remembered (frame-parameter frame 'edmacs-sidebar-remembered-width)))
+          (edmacs-sidebar-collapse frame)
+          (edmacs-sidebar--remember-width frame t)
+          (should (equal remembered (frame-parameter frame 'edmacs-sidebar-remembered-width))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-fit-uses-string-width-not-length ()
       "A double-width glyph counts as two columns, so a label carrying one
@@ -2118,39 +2097,35 @@ WIDTH would -- `length' alone would never notice the difference."
 `edmacs-sidebar-show', and `edmacs-sidebar--redraw' -- no new timer is
 armed as a direct result; the pre-existing debounce table is
 unmodified by this feature."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
-                (when (timerp timer) (cancel-timer timer)))
-              (remhash frame edmacs-sidebar--resize-debounce-timers)
-              (edmacs-sidebar-collapse frame)
-              (should-not (gethash frame edmacs-sidebar--resize-debounce-timers))
-              (edmacs-sidebar-expand frame)
-              (should-not (gethash frame edmacs-sidebar--resize-debounce-timers)))
-          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-          (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
-            (when (timerp timer) (cancel-timer timer)))
-          (remhash frame edmacs-sidebar--resize-debounce-timers)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-show frame)
+        (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+          (when (timerp timer) (cancel-timer timer)))
+        (remhash frame edmacs-sidebar--resize-debounce-timers)
+        (edmacs-sidebar-collapse frame)
+        (should-not (gethash frame edmacs-sidebar--resize-debounce-timers))
+        (edmacs-sidebar-expand frame)
+        (should-not (gethash frame edmacs-sidebar--resize-debounce-timers))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+        (let ((timer (gethash frame edmacs-sidebar--resize-debounce-timers)))
+          (when (timerp timer) (cancel-timer timer)))
+        (remhash frame edmacs-sidebar--resize-debounce-timers)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-toggle-at-point-expands-when-collapsed ()
       "TAB on a collapsed sidebar expands it instead of folding a section
 -- there is nothing meaningful to fold in the collapsed strip's render."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-collapse frame)
-              (with-current-buffer (edmacs-sidebar--buffer frame)
-                (edmacs-sidebar-toggle-at-point (selected-frame)))
-              (should-not (frame-parameter frame 'edmacs-sidebar-collapsed))
-              (should (> (window-width (edmacs-sidebar--window frame))
-                          edmacs-sidebar--collapsed-width)))
-          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-collapse frame)
+        (with-current-buffer (edmacs-sidebar--buffer frame)
+          (edmacs-sidebar-toggle-at-point (selected-frame)))
+        (should-not (frame-parameter frame 'edmacs-sidebar-collapsed))
+        (should (> (window-width (edmacs-sidebar--window frame))
+                   edmacs-sidebar--collapsed-width))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-remember-width-refuses-as-sole-window ()
       "Measuring the sidebar while it is the frame's only live window must
@@ -2160,19 +2135,17 @@ only window rather than literally deleting every sibling: Emacs's own
 side-window invariant (a frame keeps at least one main window whenever
 a side window exists) makes that real layout unreachable by deletion,
 so the guard is exercised by controlling exactly what it inspects."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-              (let ((sidebar-window (edmacs-sidebar--window frame)))
-                (should (window-live-p sidebar-window))
-                (cl-letf (((symbol-function 'window-list)
-                           (lambda (&rest _) (list sidebar-window))))
-                  (edmacs-sidebar--remember-width frame t)))
-              (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width)))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (edmacs-sidebar-show frame)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+        (let ((sidebar-window (edmacs-sidebar--window frame)))
+          (should (window-live-p sidebar-window))
+          (cl-letf (((symbol-function 'window-list)
+                     (lambda (&rest _) (list sidebar-window))))
+            (edmacs-sidebar--remember-width frame t)))
+        (should-not (frame-parameter frame 'edmacs-sidebar-remembered-width))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-remember-width-refuses-non-side-window ()
       "A sidebar buffer displayed in an ordinary (non-side) window must not
@@ -2201,58 +2174,50 @@ identity, but `window-parameter ... window-side' is nil there."
     (ert-deftest edmacs-sidebar-test-remember-width-clamps-stash ()
       "A genuinely live side window measuring wider than the fraction cap
 gets the CLAMPED value stashed, not the raw `window-total-width'."
-      (let* ((frame (selected-frame))
-             (fw (frame-width frame))
-             (oversized (max 40 (- fw 10))))
-        (unwind-protect
-            (let ((edmacs-sidebar-max-width-fraction 1.0)
-                  (edmacs-sidebar-width oversized))
-              (edmacs-sidebar-show frame)
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-              (let* ((edmacs-sidebar-max-width-fraction 0.2)
-                     (edmacs-sidebar--min-width 5)
-                     (window (edmacs-sidebar--window frame))
-                     (measured (window-total-width window))
-                     (expected (edmacs-sidebar--clamp-width measured frame)))
-                ;; The scenario is only meaningful if the live window is
-                ;; actually wider than the shrunk cap.
-                (should (> measured expected))
-                (edmacs-sidebar--remember-width frame t)
-                (should (= expected (frame-parameter frame 'edmacs-sidebar-remembered-width)))))
+      (edmacs-sidebar-test--with-frame ((fw (frame-width frame))
+                                        (oversized (max 40 (- fw 10))))
+        (let ((edmacs-sidebar-max-width-fraction 1.0)
+              (edmacs-sidebar-width oversized))
+          (edmacs-sidebar-show frame)
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+          (let* ((edmacs-sidebar-max-width-fraction 0.2)
+                 (edmacs-sidebar--min-width 5)
+                 (window (edmacs-sidebar--window frame))
+                 (measured (window-total-width window))
+                 (expected (edmacs-sidebar--clamp-width measured frame)))
+            ;; The scenario is only meaningful if the live window is
+            ;; actually wider than the shrunk cap.
+            (should (> measured expected))
+            (edmacs-sidebar--remember-width frame t)
+            (should (= expected (frame-parameter frame 'edmacs-sidebar-remembered-width)))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-show-clamps-poisoned-remembered-width ()
       "A frame parameter already poisoned to (at or above) the frame's full
 width still yields a clamped window from `edmacs-sidebar-show' -- the
 reported bug of the sidebar coming back at ~50% of the frame."
-      (let* ((frame (selected-frame))
-             (fw (frame-width frame)))
-        (unwind-protect
-            (progn
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width (+ fw 50))
-              (edmacs-sidebar-show frame)
-              (let ((window (edmacs-sidebar--window frame)))
-                (should (<= (window-width window)
-                             (floor (* fw edmacs-sidebar-max-width-fraction))))))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ((fw (frame-width frame)))
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width (+ fw 50))
+        (edmacs-sidebar-show frame)
+        (let ((window (edmacs-sidebar--window frame)))
+          (should (<= (window-width window)
+                      (floor (* fw edmacs-sidebar-max-width-fraction)))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-desktop-restore-clamps-poisoned-width ()
       "`--on-desktop-read' (this file's documented stand-in for a real
 `desktop-read' round trip under `-Q --batch') brings a frame carrying a
 poisoned remembered-width back clamped, not full-frame-wide."
-      (let* ((frame (selected-frame))
-             (fw (frame-width frame)))
-        (unwind-protect
-            (progn
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width (* fw 2))
-              (edmacs-sidebar--on-desktop-read)
-              (let ((window (edmacs-sidebar--window frame)))
-                (should (<= (window-width window)
-                             (floor (* fw edmacs-sidebar-max-width-fraction))))))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ((fw (frame-width frame)))
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width (* fw 2))
+        (edmacs-sidebar--on-desktop-read)
+        (let ((window (edmacs-sidebar--window frame)))
+          (should (<= (window-width window)
+                      (floor (* fw edmacs-sidebar-max-width-fraction)))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     ;; ==========================================================================
     ;; AC4 -- the sidebar is always a left side window, never a wrong-edge
@@ -2271,20 +2236,18 @@ leave the frame's window layout (count and buffer identities) exactly
 as it found it -- never falling back to a wrong-edge or split window
 the way a plain `display-buffer' call with a one-function action list
 would."
-      (let* ((frame (selected-frame))
-             (before-buffers (mapcar #'window-buffer (window-list frame 'never)))
-             (before-count (length before-buffers)))
-        (unwind-protect
-            (let ((window-sides-slots (list 0 (nth 1 window-sides-slots)
-                                             (nth 2 window-sides-slots)
-                                             (nth 3 window-sides-slots))))
-              (should (null (edmacs-sidebar-show frame)))
-              (should-not (seq-find (lambda (w) (window-parameter w 'window-side))
-                                     (window-list frame 'never)))
-              (should-not (seq-find #'window-dedicated-p (window-list frame 'never)))
-              (should (= before-count (length (window-list frame 'never))))
-              (should (equal before-buffers (mapcar #'window-buffer (window-list frame 'never)))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame
+          ((before-buffers (mapcar #'window-buffer (window-list frame 'never)))
+           (before-count (length before-buffers)))
+        (let ((window-sides-slots (list 0 (nth 1 window-sides-slots)
+                                        (nth 2 window-sides-slots)
+                                        (nth 3 window-sides-slots))))
+          (should (null (edmacs-sidebar-show frame)))
+          (should-not (seq-find (lambda (w) (window-parameter w 'window-side))
+                                (window-list frame 'never)))
+          (should-not (seq-find #'window-dedicated-p (window-list frame 'never)))
+          (should (= before-count (length (window-list frame 'never))))
+          (should (equal before-buffers (mapcar #'window-buffer (window-list frame 'never)))))))
 
     (ert-deftest edmacs-sidebar-test-show-cleans-up-non-left-window-from-placement ()
       "Belt-and-suspenders branch: even if `display-buffer-in-side-window'
@@ -2293,23 +2256,21 @@ here via `cl-letf' to fabricate an ordinary split, independent of
 whatever real side-window semantics the exhausted-slot test above
 relies on), `edmacs-sidebar-show' must delete that window and return
 nil rather than dedicating and keeping it."
-      (let* ((frame (selected-frame))
-             (before-buffers (mapcar #'window-buffer (window-list frame 'never)))
-             (before-count (length before-buffers))
-             (stub-window nil))
-        (unwind-protect
-            (progn
-              (cl-letf (((symbol-function 'display-buffer-in-side-window)
-                         (lambda (buffer _alist)
-                           (setq stub-window (split-window (selected-window)))
-                           (set-window-buffer stub-window buffer)
-                           stub-window)))
-                (should (null (edmacs-sidebar-show frame))))
-              (should-not (window-live-p stub-window))
-              (should (= before-count (length (window-list frame 'never))))
-              (should (equal before-buffers (mapcar #'window-buffer (window-list frame 'never)))))
-          (when (window-live-p stub-window) (delete-window stub-window))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame
+          ((before-buffers (mapcar #'window-buffer (window-list frame 'never)))
+           (before-count (length before-buffers))
+           (stub-window nil))
+        (cl-letf (((symbol-function 'display-buffer-in-side-window)
+                   (lambda (buffer _alist)
+                     (setq stub-window (split-window (selected-window)))
+                     (set-window-buffer stub-window buffer)
+                     stub-window)))
+          (should (null (edmacs-sidebar-show frame))))
+        (should-not (window-live-p stub-window))
+        (should (= before-count (length (window-list frame 'never))))
+        (should (equal before-buffers (mapcar #'window-buffer (window-list frame 'never))))
+        :cleanup
+        (when (window-live-p stub-window) (delete-window stub-window))))
 
     (ert-deftest edmacs-sidebar-test-header-line-name-prefers-the-active-group ()
       "The header line names the ACTIVE PROJECT -- the current tab's own
@@ -2399,28 +2360,26 @@ through `edmacs-sidebar--clamp-width' exactly like `edmacs-sidebar-show'
 and `--remember-width' already do for the same frame parameter: without
 that clamp a poisoned remembered width (the reported ~50%-of-frame bug)
 renders a full, untruncated label on the very first pre-window redraw."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (should-not (edmacs-sidebar--window frame))
-              (let ((edmacs-sidebar--min-width 1)
-                    (edmacs-sidebar-width 10))
-                (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-                (should (= 10 (edmacs-sidebar--render-width frame)))
-                (set-frame-parameter frame 'edmacs-sidebar-remembered-width 5)
-                (should (= 5 (edmacs-sidebar--render-width frame))))
-              (let* ((edmacs-sidebar--min-width 5)
-                     (edmacs-sidebar-max-width-fraction 0.33)
-                     (clamped (edmacs-sidebar--clamp-width most-positive-fixnum frame)))
-                (set-frame-parameter frame 'edmacs-sidebar-remembered-width most-positive-fixnum)
-                (should (= clamped (edmacs-sidebar--render-width frame))))
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-              (edmacs-sidebar-show frame)
-              (let ((window (edmacs-sidebar--window frame)))
-                (should (window-live-p window))
-                (should (= (window-width window) (edmacs-sidebar--render-width frame)))))
+      (edmacs-sidebar-test--with-frame ()
+        (should-not (edmacs-sidebar--window frame))
+        (let ((edmacs-sidebar--min-width 1)
+              (edmacs-sidebar-width 10))
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+          (should (= 10 (edmacs-sidebar--render-width frame)))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width 5)
+          (should (= 5 (edmacs-sidebar--render-width frame))))
+        (let* ((edmacs-sidebar--min-width 5)
+               (edmacs-sidebar-max-width-fraction 0.33)
+               (clamped (edmacs-sidebar--clamp-width most-positive-fixnum frame)))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width most-positive-fixnum)
+          (should (= clamped (edmacs-sidebar--render-width frame))))
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+        (edmacs-sidebar-show frame)
+        (let ((window (edmacs-sidebar--window frame)))
+          (should (window-live-p window))
+          (should (= (window-width window) (edmacs-sidebar--render-width frame))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     ;; ==========================================================================
     ;; The sidebar is never a frame's sole or root window
@@ -2448,160 +2407,142 @@ now repairs it."
       "`edmacs-sidebar-hide' used to call `delete-window' unconditionally, so
 the frame's sole window signalled. It now releases the window in place,
 leaving the frame with a real main window rather than a wedged one."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (let ((window (edmacs-sidebar-test--make-sole-sidebar-window frame)))
-                (should (edmacs-windows-frame-wedged-p frame))
-                (should-not (edmacs-main-window))
-                (should (eq (edmacs-sidebar-hide frame) window))
-                (should (window-live-p window))
-                (should-not (eq (window-buffer window)
-                                (edmacs-sidebar--buffer frame)))
-                (should-not (window-dedicated-p window))
-                (dolist (parameter '(window-side window-slot
-                                     no-other-window no-delete-other-windows
-                                     mode-line-format))
-                  (should-not (window-parameter window parameter)))
-                (should-not (edmacs-sidebar--window frame))
-                (should-not (edmacs-windows-frame-wedged-p frame))
-                (should (eq (edmacs-windows-designate-main frame) window))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (let ((window (edmacs-sidebar-test--make-sole-sidebar-window frame)))
+            (should (edmacs-windows-frame-wedged-p frame))
+            (should-not (edmacs-main-window))
+            (should (eq (edmacs-sidebar-hide frame) window))
+            (should (window-live-p window))
+            (should-not (eq (window-buffer window)
+                            (edmacs-sidebar--buffer frame)))
+            (should-not (window-dedicated-p window))
+            (dolist (parameter '(window-side window-slot
+                                 no-other-window no-delete-other-windows
+                                 mode-line-format))
+              (should-not (window-parameter window parameter)))
+            (should-not (edmacs-sidebar--window frame))
+            (should-not (edmacs-windows-frame-wedged-p frame))
+            (should (eq (edmacs-windows-designate-main frame) window))))))
 
     (ert-deftest edmacs-sidebar-test-hide-in-ordinary-window-keeps-the-window ()
       "`edmacs-sidebar--window' matches on buffer identity, so it also finds
 the sidebar buffer in an ordinary window -- a window the sidebar does not
 own and must not delete."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (delete-other-windows)
-              (let* ((main (selected-window))
-                     (other (split-window main nil 'below)))
-                (set-window-buffer other (edmacs-sidebar--ensure-buffer frame))
-                (should (eq (edmacs-sidebar-hide frame) other))
-                (should (window-live-p other))
-                (should (window-live-p main))
-                (should-not (eq (window-buffer other)
-                                (edmacs-sidebar--buffer frame)))
-                (should-not (edmacs-windows-frame-wedged-p frame))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((main (selected-window))
+                 (other (split-window main nil 'below)))
+            (set-window-buffer other (edmacs-sidebar--ensure-buffer frame))
+            (should (eq (edmacs-sidebar-hide frame) other))
+            (should (window-live-p other))
+            (should (window-live-p main))
+            (should-not (eq (window-buffer other)
+                            (edmacs-sidebar--buffer frame)))
+            (should-not (edmacs-windows-frame-wedged-p frame))))))
 
     (ert-deftest edmacs-sidebar-test-hide-deletes-a-real-side-window ()
       "The normal case is unchanged: a side window with a parent is deleted."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (delete-other-windows)
-              (let ((window (edmacs-sidebar-show frame)))
-                (should (window-live-p window))
-                (should (window-parent window))
-                (should-not (edmacs-sidebar-hide frame))
-                (should-not (window-live-p window))
-                (should-not (edmacs-sidebar--window frame))
-                (should-not (edmacs-windows-frame-wedged-p frame))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((window (edmacs-sidebar-show frame)))
+            (should (window-live-p window))
+            (should (window-parent window))
+            (should-not (edmacs-sidebar-hide frame))
+            (should-not (window-live-p window))
+            (should-not (edmacs-sidebar--window frame))
+            (should-not (edmacs-windows-frame-wedged-p frame))))))
 
     (ert-deftest edmacs-sidebar-test-show-into-mainless-frame-yields-side-window-and-main ()
       "Without the repair, `display-buffer-in-side-window' just reuses the
 existing slot-0 left window and the frame stays wedged. The unchanged
 frame count is what proves repair rebuilt this frame rather than
 escaping to a new one."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (let ((frames (length (frame-list))))
-                (edmacs-sidebar-test--make-sole-sidebar-window frame)
-                (should (edmacs-windows-frame-wedged-p frame))
-                (should-not (edmacs-main-window))
-                (let ((window (edmacs-sidebar-show frame)))
-                  (should (window-live-p window))
-                  (should (eq (window-parameter window 'window-side) 'left))
-                  (should (window-dedicated-p window))
-                  (should-not (edmacs-windows-frame-wedged-p frame))
-                  (should (= (length (frame-list)) frames))
-                  (let ((main (edmacs-main-window)))
-                    (should (window-live-p main))
-                    (should-not (eq main window))
-                    (should-not (window-parameter main 'window-side))))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (let ((frames (length (frame-list))))
+            (edmacs-sidebar-test--make-sole-sidebar-window frame)
+            (should (edmacs-windows-frame-wedged-p frame))
+            (should-not (edmacs-main-window))
+            (let ((window (edmacs-sidebar-show frame)))
+              (should (window-live-p window))
+              (should (eq (window-parameter window 'window-side) 'left))
+              (should (window-dedicated-p window))
+              (should-not (edmacs-windows-frame-wedged-p frame))
+              (should (= (length (frame-list)) frames))
+              (let ((main (edmacs-main-window)))
+                (should (window-live-p main))
+                (should-not (eq main window))
+                (should-not (window-parameter main 'window-side))))))))
 
     (ert-deftest edmacs-sidebar-test-show-returns-nil-when-the-left-slot-is-forbidden ()
       "With no left slot available `display-buffer-in-side-window' returns
 nil, and `edmacs-sidebar-show' must return nil rather than fall through
 to splitting the widest window -- which is what would put the sidebar on
 the right of a wide frame. The frame keeps its main window either way."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (delete-other-windows)
-              (edmacs-window-set-main (selected-window))
-              (let ((window-sides-slots '(0 nil nil nil)))
-                (should-not (edmacs-sidebar-show frame)))
-              (should-not (edmacs-sidebar--side-window frame))
-              (should (window-live-p (edmacs-main-window)))
-              (should-not (edmacs-windows-frame-wedged-p frame)))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (delete-other-windows)
+          (edmacs-window-set-main (selected-window))
+          (let ((window-sides-slots '(0 nil nil nil)))
+            (should-not (edmacs-sidebar-show frame)))
+          (should-not (edmacs-sidebar--side-window frame))
+          (should (window-live-p (edmacs-main-window)))
+          (should-not (edmacs-windows-frame-wedged-p frame)))))
 
     (ert-deftest edmacs-sidebar-test-hide-twice-is-idempotent ()
       "The second call finds no window at all -- `edmacs-sidebar--window'
 matches on buffer identity and the buffer is gone from the frame -- so
 it returns nil without signalling or re-wedging."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (edmacs-sidebar-test--make-sole-sidebar-window frame)
-              (should (edmacs-sidebar-hide frame))
-              (should-not (edmacs-sidebar-hide frame))
-              (should-not (edmacs-windows-frame-wedged-p frame))
-              (should (window-live-p (edmacs-windows-designate-main frame))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (edmacs-sidebar-test--make-sole-sidebar-window frame)
+          (should (edmacs-sidebar-hide frame))
+          (should-not (edmacs-sidebar-hide frame))
+          (should-not (edmacs-windows-frame-wedged-p frame))
+          (should (window-live-p (edmacs-windows-designate-main frame))))))
 
     (ert-deftest edmacs-sidebar-test-release-window-deletes-a-parented-side-window ()
       "The one shape `delete-window' is correct for."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (delete-other-windows)
-              (let ((window (edmacs-sidebar-show frame)))
-                (should (window-parent window))
-                (should-not (edmacs-sidebar--release-window window frame))
-                (should-not (window-live-p window))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((window (edmacs-sidebar-show frame)))
+            (should (window-parent window))
+            (should-not (edmacs-sidebar--release-window window frame))
+            (should-not (window-live-p window))))))
 
     (ert-deftest edmacs-sidebar-test-release-window-releases-an-ordinary-window-in-place ()
       "A window the sidebar does not own is never deleted, only handed back."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (delete-other-windows)
-              (let* ((main (selected-window))
-                     (other (split-window main nil 'below))
-                     (sidebar (edmacs-sidebar--ensure-buffer frame)))
-                (set-window-buffer other sidebar)
-                (set-window-dedicated-p other t)
-                (should (eq (edmacs-sidebar--release-window other frame) other))
-                (should (window-live-p other))
-                (should-not (window-dedicated-p other))
-                (should-not (eq (window-buffer other) sidebar))
-                (dolist (parameter '(window-side window-slot
-                                     no-other-window no-delete-other-windows))
-                  (should-not (window-parameter other parameter)))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((main (selected-window))
+                 (other (split-window main nil 'below))
+                 (sidebar (edmacs-sidebar--ensure-buffer frame)))
+            (set-window-buffer other sidebar)
+            (set-window-dedicated-p other t)
+            (should (eq (edmacs-sidebar--release-window other frame) other))
+            (should (window-live-p other))
+            (should-not (window-dedicated-p other))
+            (should-not (eq (window-buffer other) sidebar))
+            (dolist (parameter '(window-side window-slot
+                                 no-other-window no-delete-other-windows))
+              (should-not (window-parameter other parameter)))))))
 
     (ert-deftest edmacs-sidebar-test-release-window-falls-back-to-scratch ()
       "When `other-buffer' can only offer the sidebar buffer back, the
 released window must not simply re-show it."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (let* ((window (edmacs-sidebar-test--make-sole-sidebar-window frame))
-                     (sidebar (window-buffer window)))
-                (cl-letf (((symbol-function 'other-buffer)
-                           (lambda (&rest _) sidebar)))
-                  (should (eq (edmacs-sidebar--release-window window frame) window)))
-                (should (equal (buffer-name (window-buffer window)) "*scratch*"))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (let* ((window (edmacs-sidebar-test--make-sole-sidebar-window frame))
+                 (sidebar (window-buffer window)))
+            (cl-letf (((symbol-function 'other-buffer)
+                       (lambda (&rest _) sidebar)))
+              (should (eq (edmacs-sidebar--release-window window frame) window)))
+            (should (equal (buffer-name (window-buffer window)) "*scratch*"))))))
 
     (ert-deftest edmacs-sidebar-test-show-is-registered-on-the-repaired-hook ()
       "Repair hands the frame back a main window but no sidebar; this hook
@@ -2609,15 +2550,13 @@ membership is what puts one back."
       (should (memq #'edmacs-sidebar-show edmacs-windows-frame-repaired-functions)))
 
     (ert-deftest edmacs-sidebar-test-side-window-accessor-ignores-ordinary-windows ()
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (delete-other-windows)
-              (let ((other (split-window (selected-window) nil 'below)))
-                (set-window-buffer other (edmacs-sidebar--ensure-buffer frame))
-                (should (eq (edmacs-sidebar--window frame) other))
-                (should-not (edmacs-sidebar--side-window frame))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((other (split-window (selected-window) nil 'below)))
+            (set-window-buffer other (edmacs-sidebar--ensure-buffer frame))
+            (should (eq (edmacs-sidebar--window frame) other))
+            (should-not (edmacs-sidebar--side-window frame))))))
 
     (ert-deftest edmacs-sidebar-test-buffer-remaps-every-surface-face ()
       "The sidebar reads as one surface, so `default', `fringe' AND
@@ -2650,31 +2589,27 @@ re-running the mode does not stack duplicate entries."
       "The shown sidebar window's mode-line-format parameter is set to `none'
 to prevent it from inheriting the default mode-line format and displaying
 its raw buffer name."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              (let ((window (edmacs-sidebar-show frame)))
-                (should (window-live-p window))
-                (should (eq (window-parameter window 'mode-line-format) 'none))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          (let ((window (edmacs-sidebar-show frame)))
+            (should (window-live-p window))
+            (should (eq (window-parameter window 'mode-line-format) 'none))))))
 
     (ert-deftest edmacs-sidebar-test-mode-line-format-clears-on-release ()
       "When the sidebar window is released (as in a sole-window frame),
 the mode-line-format parameter set at sidebar creation is cleared,
 preventing it from leaking onto the buffer that replaces the sidebar."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (save-window-excursion
-              ;; Create a sole sidebar window manually with mode-line-format set
-              (let ((window (edmacs-sidebar-test--make-sole-sidebar-window frame)))
-                (should (edmacs-windows-frame-wedged-p frame))
-                (should (eq (window-parameter window 'mode-line-format) 'none))
-                ;; Hide/release the window, which should clear mode-line-format
-                (let ((released (edmacs-sidebar-hide frame)))
-                  (should (window-live-p released))
-                  ;; Verify mode-line-format was cleared
-                  (should-not (window-parameter released 'mode-line-format)))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (save-window-excursion
+          ;; Create a sole sidebar window manually with mode-line-format set
+          (let ((window (edmacs-sidebar-test--make-sole-sidebar-window frame)))
+            (should (edmacs-windows-frame-wedged-p frame))
+            (should (eq (window-parameter window 'mode-line-format) 'none))
+            ;; Hide/release the window, which should clear mode-line-format
+            (let ((released (edmacs-sidebar-hide frame)))
+              (should (window-live-p released))
+              ;; Verify mode-line-format was cleared
+              (should-not (window-parameter released 'mode-line-format)))))))
 
     ;; ==========================================================================
     ;; AC1 -- worktree-section-functions body-inserts inside the row's own
@@ -2765,37 +2700,35 @@ since the label itself is what changed."
       (edmacs-sidebar-test--with-project
           '(("repoL" "/repoL/main/" "/repoL/main/.git" ("/repoL/main/" "main"))
             ("repoM" "/repoM/main/" "/repoM/main/.git" ("/repoM/main/" "main")))
-        (unwind-protect
-            (progn
-              ;; This fixture leaves "repoM" current -- point-min is
-              ;; "repoL"'s row, the inactive one.
-              (edmacs-sidebar-show (selected-frame))
-              (let (section-before)
-                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                  (goto-char (point-min))
-                  ;; `--capture-positions' reads each window's own
-                  ;; `window-point', which redisplay (never run under `-Q
-                  ;; --batch') would otherwise sync from the buffer's actual
-                  ;; point on its own.
-                  (set-window-point (edmacs-sidebar--window (selected-frame)) (point))
-                  (should (equal (oref (magit-current-section) value) (cons "repoL" "/repoL/main/")))
-                  (should (eq (get-text-property (point) 'face) nil))
-                  (setq section-before (magit-current-section)))
-                ;; "repoL" is now the frame's active group -- a differently
-                ;; shaped label, filled glyph, current-tab-face. Outside the
-                ;; `with-current-buffer' above: the real `tab-bar-select-tab'
-                ;; this calls changes the frame's own selected window/buffer
-                ;; as a side effect, which would otherwise hijack "current
-                ;; buffer" away from the sidebar buffer for the rest of that
-                ;; form.
-                (edmacs-workspaces-select-tab "repoL" "/repoL/main/")
-                (edmacs-sidebar--redraw (selected-frame))
-                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                  (should (equal (oref (magit-current-section) value) (cons "repoL" "/repoL/main/")))
-                  (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-current-tab-face))
-                  (should (equal (magit-section-ident (magit-current-section))
-                                  (magit-section-ident section-before))))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+        (edmacs-sidebar-test--with-frame ()
+          ;; This fixture leaves "repoM" current -- point-min is
+          ;; "repoL"'s row, the inactive one.
+          (edmacs-sidebar-show (selected-frame))
+          (let (section-before)
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (goto-char (point-min))
+              ;; `--capture-positions' reads each window's own
+              ;; `window-point', which redisplay (never run under `-Q
+              ;; --batch') would otherwise sync from the buffer's actual
+              ;; point on its own.
+              (set-window-point (edmacs-sidebar--window (selected-frame)) (point))
+              (should (equal (oref (magit-current-section) value) (cons "repoL" "/repoL/main/")))
+              (should (eq (get-text-property (point) 'face) nil))
+              (setq section-before (magit-current-section)))
+            ;; "repoL" is now the frame's active group -- a differently
+            ;; shaped label, filled glyph, current-tab-face. Outside the
+            ;; `with-current-buffer' above: the real `tab-bar-select-tab'
+            ;; this calls changes the frame's own selected window/buffer
+            ;; as a side effect, which would otherwise hijack "current
+            ;; buffer" away from the sidebar buffer for the rest of that
+            ;; form.
+            (edmacs-workspaces-select-tab "repoL" "/repoL/main/")
+            (edmacs-sidebar--redraw (selected-frame))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (should (equal (oref (magit-current-section) value) (cons "repoL" "/repoL/main/")))
+              (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-current-tab-face))
+              (should (equal (magit-section-ident (magit-current-section))
+                             (magit-section-ident section-before))))))))
 
     ;; ==========================================================================
     ;; AC2 -- fold state survives a redraw, via magit-section's own
@@ -2823,36 +2756,34 @@ Step-1 data-shape fix."
                          (magit-insert-section (edmacs-sidebar-test-child nil)
                            (magit-insert-heading "  test child")
                            (insert "  test child body\n")))))))
-          (unwind-protect
-              (progn
-                (edmacs-sidebar-show (selected-frame))
-                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                  (let (child)
-                    (edmacs-sidebar--map-sections
-                     magit-root-section
-                     (lambda (s) (when (eq (oref s type) 'edmacs-sidebar-test-child)
-                                   (setq child s))))
-                    (should child)
-                    (should (eq nil (oref child hidden)))
-                    (magit-section-hide child)))
-                ;; "repoL" is now the frame's active group -- a differently
-                ;; shaped label, filled glyph, current-tab-face. Outside the
-                ;; `with-current-buffer' above: the real `tab-bar-select-tab'
-                ;; this calls changes the frame's own selected window/buffer
-                ;; as a side effect, which would otherwise hijack "current
-                ;; buffer" away from the sidebar buffer for the rest of that
-                ;; form.
-                (edmacs-workspaces-select-tab "repoL" "/repoL/main/")
-                (edmacs-sidebar--redraw (selected-frame))
-                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                  (let (child)
-                    (edmacs-sidebar--map-sections
-                     magit-root-section
-                     (lambda (s) (when (eq (oref s type) 'edmacs-sidebar-test-child)
-                                   (setq child s))))
-                    (should child)
-                    (should (eq t (oref child hidden))))))
-            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
+          (edmacs-sidebar-test--with-frame ()
+            (edmacs-sidebar-show (selected-frame))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (let (child)
+                (edmacs-sidebar--map-sections
+                 magit-root-section
+                 (lambda (s) (when (eq (oref s type) 'edmacs-sidebar-test-child)
+                               (setq child s))))
+                (should child)
+                (should (eq nil (oref child hidden)))
+                (magit-section-hide child)))
+            ;; "repoL" is now the frame's active group -- a differently
+            ;; shaped label, filled glyph, current-tab-face. Outside the
+            ;; `with-current-buffer' above: the real `tab-bar-select-tab'
+            ;; this calls changes the frame's own selected window/buffer
+            ;; as a side effect, which would otherwise hijack "current
+            ;; buffer" away from the sidebar buffer for the rest of that
+            ;; form.
+            (edmacs-workspaces-select-tab "repoL" "/repoL/main/")
+            (edmacs-sidebar--redraw (selected-frame))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              (let (child)
+                (edmacs-sidebar--map-sections
+                 magit-root-section
+                 (lambda (s) (when (eq (oref s type) 'edmacs-sidebar-test-child)
+                               (setq child s))))
+                (should child)
+                (should (eq t (oref child hidden)))))))))
 
     ;; ==========================================================================
     ;; Window-start half of `edmacs-sidebar--capture-positions'/
@@ -2875,34 +2806,33 @@ silently keeping a wrong-looking-but-live window-start."
                         (cl-loop for i from 0 below 8
                                  collect (list (format "/repoP__worktrees/roadmap-%d/" i)
                                                (format "roadmap-%d" i)))))
-        (unwind-protect
-            (let ((window nil))
-              (edmacs-sidebar-show (selected-frame))
-              (setq window (edmacs-sidebar--window (selected-frame)))
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                ;; Line 0: the project row. Lines 1-8: children 0-7.
-                (goto-char (point-min))
-                (forward-line 3)
-                (should (equal (oref (magit-current-section) value)
-                                (cons "repoP" "/repoP__worktrees/roadmap-2/")))
-                (set-window-start window (point) t)
-                (goto-char (point-min))
-                (forward-line 7)
-                (should (equal (oref (magit-current-section) value)
-                                (cons "repoP" "/repoP__worktrees/roadmap-6/")))
-                (set-window-point window (point)))
-              ;; An extra line inside roadmap-0's own row shifts every row
-              ;; below it down, so the old raw `window-start' integer no
-              ;; longer names roadmap-2's row.
-              (let ((edmacs-sidebar-worktree-section-functions
-                     (list (lambda (root &rest _)
-                             (when (string-suffix-p "roadmap-0/" root)
-                               (insert "    shifted\n"))))))
-                (edmacs-sidebar--redraw (selected-frame)))
-              (with-selected-window window
-                (should (equal (oref (magit-section-at (window-start)) value)
-                               (cons "repoP" "/repoP__worktrees/roadmap-2/")))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+        (edmacs-sidebar-test--with-frame ()
+          (let ((window nil))
+            (edmacs-sidebar-show (selected-frame))
+            (setq window (edmacs-sidebar--window (selected-frame)))
+            (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+              ;; Line 0: the project row. Lines 1-8: children 0-7.
+              (goto-char (point-min))
+              (forward-line 3)
+              (should (equal (oref (magit-current-section) value)
+                             (cons "repoP" "/repoP__worktrees/roadmap-2/")))
+              (set-window-start window (point) t)
+              (goto-char (point-min))
+              (forward-line 7)
+              (should (equal (oref (magit-current-section) value)
+                             (cons "repoP" "/repoP__worktrees/roadmap-6/")))
+              (set-window-point window (point)))
+            ;; An extra line inside roadmap-0's own row shifts every row
+            ;; below it down, so the old raw `window-start' integer no
+            ;; longer names roadmap-2's row.
+            (let ((edmacs-sidebar-worktree-section-functions
+                   (list (lambda (root &rest _)
+                           (when (string-suffix-p "roadmap-0/" root)
+                             (insert "    shifted\n"))))))
+              (edmacs-sidebar--redraw (selected-frame)))
+            (with-selected-window window
+              (should (equal (oref (magit-section-at (window-start)) value)
+                             (cons "repoP" "/repoP__worktrees/roadmap-2/"))))))))
 
     ;; ==========================================================================
     ;; Sanitiser and collision prevention for repo-less frames
@@ -3088,28 +3018,27 @@ dead space beneath it -- and stays visible, via a forced `window-start',
 once it inserts more than the window can hold, instead of scrolling off
 the bottom unseen. The window's height is measured, not stubbed, and
 the overflow case is driven by inserting past that measured height."
-      (let ((frame (selected-frame)))
-        (unwind-protect
+      (edmacs-sidebar-test--with-frame ()
+        (let ((edmacs-sidebar-bottom-anchor-section-functions
+               (list (lambda (_frame) (insert "ZZBOTTOMMARKERZZ\n")))))
+          (edmacs-sidebar-show frame)
+          (let* ((window (edmacs-sidebar--window frame))
+                 (height (window-body-size window)))
+            (with-current-buffer (edmacs-sidebar--buffer frame)
+              (should (string-suffix-p "ZZBOTTOMMARKERZZ\n" (buffer-string)))
+              (should (= height (count-screen-lines
+                                 (point-min) (point-max) nil window))))
             (let ((edmacs-sidebar-bottom-anchor-section-functions
-                   (list (lambda (_frame) (insert "ZZBOTTOMMARKERZZ\n")))))
-              (edmacs-sidebar-show frame)
-              (let* ((window (edmacs-sidebar--window frame))
-                     (height (window-body-size window)))
-                (with-current-buffer (edmacs-sidebar--buffer frame)
-                  (should (string-suffix-p "ZZBOTTOMMARKERZZ\n" (buffer-string)))
-                  (should (= height (count-screen-lines
-                                     (point-min) (point-max) nil window))))
-                (let ((edmacs-sidebar-bottom-anchor-section-functions
-                       (list (lambda (_frame)
-                               (dotimes (i (+ height 10)) (insert (format "fill %d\n" i)))
-                               (insert "ZZBOTTOMMARKERZZ\n")))))
-                  (edmacs-sidebar--redraw frame)
-                  (with-current-buffer (edmacs-sidebar--buffer frame)
-                    (should (string-suffix-p "ZZBOTTOMMARKERZZ\n" (buffer-string)))
-                    (should (= height (count-screen-lines
-                                       (window-start window) (point-max) nil window)))))))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+                   (list (lambda (_frame)
+                           (dotimes (i (+ height 10)) (insert (format "fill %d\n" i)))
+                           (insert "ZZBOTTOMMARKERZZ\n")))))
+              (edmacs-sidebar--redraw frame)
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (should (string-suffix-p "ZZBOTTOMMARKERZZ\n" (buffer-string)))
+                (should (= height (count-screen-lines
+                                   (window-start window) (point-max) nil window)))))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-collapsed-bottom-anchor-section-visible-through-show ()
       "The collapsed strip's own bottom-anchor hook
@@ -3118,37 +3047,36 @@ same padding and the same forced `window-start' as the expanded one --
 AC4's \"yes, anchor there too\" decision. The collapsed branch nils the
 header line rather than rendering one, and hands its section hooks the
 window's real usable width."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (let* ((widths nil)
-                   (edmacs-sidebar-collapsed-section-functions
-                    (list (lambda (_frame width) (push width widths))))
-                   (edmacs-sidebar-collapsed-bottom-anchor-section-functions
-                    (list (lambda (_frame _width) (insert "ZZC\n")))))
-              (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
-              (edmacs-sidebar-show frame)
-              (let* ((window (edmacs-sidebar--window frame))
-                     (height (window-body-size window)))
-                ;; The strip hook is handed the window's real usable width,
-                ;; not the `--collapsed-width' constant it was asked for.
-                (should (equal (list (edmacs-sidebar--strip-width frame)) widths))
-                (with-current-buffer (edmacs-sidebar--buffer frame)
-                  (should-not header-line-format)
-                  (should (string-suffix-p "ZZC\n" (buffer-string)))
-                  (should (= height (count-screen-lines
-                                     (point-min) (point-max) nil window))))
-                (let ((edmacs-sidebar-collapsed-bottom-anchor-section-functions
-                       (list (lambda (_frame _width)
-                               (dotimes (i (+ height 10)) (insert (format "f%d\n" i)))
-                               (insert "ZZC\n")))))
-                  (edmacs-sidebar--redraw frame)
-                  (with-current-buffer (edmacs-sidebar--buffer frame)
-                    (should (string-suffix-p "ZZC\n" (buffer-string)))
-                    (should (= height (count-screen-lines
-                                       (window-start window) (point-max) nil window)))))))
-          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ()
+        (let* ((widths nil)
+               (edmacs-sidebar-collapsed-section-functions
+                (list (lambda (_frame width) (push width widths))))
+               (edmacs-sidebar-collapsed-bottom-anchor-section-functions
+                (list (lambda (_frame _width) (insert "ZZC\n")))))
+          (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
+          (edmacs-sidebar-show frame)
+          (let* ((window (edmacs-sidebar--window frame))
+                 (height (window-body-size window)))
+            ;; The strip hook is handed the window's real usable width,
+            ;; not the `--collapsed-width' constant it was asked for.
+            (should (equal (list (edmacs-sidebar--strip-width frame)) widths))
+            (with-current-buffer (edmacs-sidebar--buffer frame)
+              (should-not header-line-format)
+              (should (string-suffix-p "ZZC\n" (buffer-string)))
+              (should (= height (count-screen-lines
+                                 (point-min) (point-max) nil window))))
+            (let ((edmacs-sidebar-collapsed-bottom-anchor-section-functions
+                   (list (lambda (_frame _width)
+                           (dotimes (i (+ height 10)) (insert (format "f%d\n" i)))
+                           (insert "ZZC\n")))))
+              (edmacs-sidebar--redraw frame)
+              (with-current-buffer (edmacs-sidebar--buffer frame)
+                (should (string-suffix-p "ZZC\n" (buffer-string)))
+                (should (= height (count-screen-lines
+                                   (window-start window) (point-max) nil window)))))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-on-window-size-change-anchor-registered ()
       "`--on-window-size-change-anchor' is registered on
@@ -3158,19 +3086,17 @@ sidebar window, including one whose sidebar was never shown -- calling
 neither `--reapply-bottom-anchor' nor `--redraw'."
       (should (memq #'edmacs-sidebar--on-window-size-change-anchor
                      window-size-change-functions))
-      (let ((frame (selected-frame)) (reapplied nil) (redrawn nil))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-test--cleanup-sidebar frame)
-              (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
-                         (lambda (_frame) (setq reapplied t)))
-                        ((symbol-function 'edmacs-sidebar--redraw)
-                         (lambda (_frame) (setq redrawn t))))
-                (edmacs-sidebar--on-window-size-change-anchor frame))
-              (should-not reapplied)
-              (should-not redrawn))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ((reapplied nil) (redrawn nil))
+        (edmacs-sidebar-test--cleanup-sidebar frame)
+        (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
+                   (lambda (_frame) (setq reapplied t)))
+                  ((symbol-function 'edmacs-sidebar--redraw)
+                   (lambda (_frame) (setq redrawn t))))
+          (edmacs-sidebar--on-window-size-change-anchor frame))
+        (should-not reapplied)
+        (should-not redrawn)
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-on-window-size-change-anchor-gates-on-own-geometry ()
       "Regression for the bug the phase context names: this hook fires for
@@ -3181,52 +3107,48 @@ moved. Comparing against `window-old-pixel-height'/
 `window-old-body-pixel-height' narrows this to a real change in the
 sidebar window's own geometry, and reapplies the bottom anchor
 (`--reapply-bottom-anchor'), never a full `--redraw', when it does."
-      (let ((frame (selected-frame)) (reapplied nil) (redrawn nil))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show frame)
-              (let ((window (edmacs-sidebar--window frame)))
-                ;; Unchanged geometry: neither function runs.
-                (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
-                           (lambda (_frame) (setq reapplied t)))
-                          ((symbol-function 'edmacs-sidebar--redraw)
-                           (lambda (_frame) (setq redrawn t)))
-                          ((symbol-function 'window-old-pixel-height)
-                           (lambda (&optional w) (window-pixel-height (or w window))))
-                          ((symbol-function 'window-old-body-pixel-height)
-                           (lambda (&optional w) (window-body-size (or w window) nil t))))
-                  (edmacs-sidebar--on-window-size-change-anchor frame))
-                (should-not reapplied)
-                (should-not redrawn)
-                ;; A changed total height: reapplies the anchor, never redraws.
-                (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
-                           (lambda (_frame) (setq reapplied t)))
-                          ((symbol-function 'edmacs-sidebar--redraw)
-                           (lambda (_frame) (setq redrawn t)))
-                          ((symbol-function 'window-old-pixel-height)
-                           (lambda (&optional _w) 1)))
-                  (edmacs-sidebar--on-window-size-change-anchor frame))
-                (should reapplied)
-                (should-not redrawn)))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ((reapplied nil) (redrawn nil))
+        (edmacs-sidebar-show frame)
+        (let ((window (edmacs-sidebar--window frame)))
+          ;; Unchanged geometry: neither function runs.
+          (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
+                     (lambda (_frame) (setq reapplied t)))
+                    ((symbol-function 'edmacs-sidebar--redraw)
+                     (lambda (_frame) (setq redrawn t)))
+                    ((symbol-function 'window-old-pixel-height)
+                     (lambda (&optional w) (window-pixel-height (or w window))))
+                    ((symbol-function 'window-old-body-pixel-height)
+                     (lambda (&optional w) (window-body-size (or w window) nil t))))
+            (edmacs-sidebar--on-window-size-change-anchor frame))
+          (should-not reapplied)
+          (should-not redrawn)
+          ;; A changed total height: reapplies the anchor, never redraws.
+          (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
+                     (lambda (_frame) (setq reapplied t)))
+                    ((symbol-function 'edmacs-sidebar--redraw)
+                     (lambda (_frame) (setq redrawn t)))
+                    ((symbol-function 'window-old-pixel-height)
+                     (lambda (&optional _w) 1)))
+            (edmacs-sidebar--on-window-size-change-anchor frame))
+          (should reapplied)
+          (should-not redrawn))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-bottom-anchor-adds-no-new-timer ()
       "Showing a sidebar with a bottom-anchor registrant, and driving a
 resize through `--on-window-size-change-anchor', arms no new timer --
 mirrors `edmacs-sidebar-test-collapse-expand-adds-no-new-timer's own
 timer-list snapshot pattern."
-      (let ((frame (selected-frame))
-            (edmacs-sidebar-bottom-anchor-section-functions
-             (list (lambda (_frame) (insert "ZZTIMERZZ\n")))))
-        (unwind-protect
-            (let ((before (length (append timer-list timer-idle-list))))
-              (edmacs-sidebar-show frame)
-              (edmacs-sidebar--redraw frame)
-              (edmacs-sidebar--on-window-size-change-anchor frame)
-              (should (= before (length (append timer-list timer-idle-list)))))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ((edmacs-sidebar-bottom-anchor-section-functions
+                                         (list (lambda (_frame) (insert "ZZTIMERZZ\n")))))
+        (let ((before (length (append timer-list timer-idle-list))))
+          (edmacs-sidebar-show frame)
+          (edmacs-sidebar--redraw frame)
+          (edmacs-sidebar--on-window-size-change-anchor frame)
+          (should (= before (length (append timer-list timer-idle-list)))))
+        :cleanup
+        (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-no-reference-to-claude-usage ()
       "sidebar.el never mentions claude-usage.el by name -- the
@@ -3300,34 +3222,24 @@ in for N stack pushes, each of which used to call `--redraw' directly --
 schedule exactly one pending idle timer and redraw exactly once when it
 runs, not once per invalidation."
       (let ((frame (selected-frame)) (redraw-count 0))
-        (unwind-protect
-            (progn
-              (setq edmacs-sidebar--dirty-frames nil)
-              (when (timerp edmacs-sidebar--redraw-timer)
-                (cancel-timer edmacs-sidebar--redraw-timer))
-              (setq edmacs-sidebar--redraw-timer nil)
-              (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
-                         (lambda (_frame) (setq redraw-count (1+ redraw-count)))))
-                (dotimes (_ 20) (edmacs-sidebar-invalidate frame))
-                (should (= 0 redraw-count))
-                (should (timerp edmacs-sidebar--redraw-timer))
-                (should (equal (list frame) edmacs-sidebar--dirty-frames))
-                ;; Manually invoking the flush function stands in for its
-                ;; own idle timer's eventual real firing: idle timers
-                ;; never fire under `sit-for' in `--batch' (there is no
-                ;; real idle detection there -- confirmed against a
-                ;; `run-with-idle-timer' that a `sit-for' loop never
-                ;; reaches), unlike the plain `run-at-time' debounces
-                ;; elsewhere in this file, which `sleep-for'+`sit-for' do
-                ;; flush for real.
-                (edmacs-sidebar--flush-dirty-frames)
-                (should (= 1 redraw-count))
-                (should-not edmacs-sidebar--dirty-frames)
-                (should-not edmacs-sidebar--redraw-timer)))
-          (setq edmacs-sidebar--dirty-frames nil)
-          (when (timerp edmacs-sidebar--redraw-timer)
-            (cancel-timer edmacs-sidebar--redraw-timer))
-          (setq edmacs-sidebar--redraw-timer nil))))
+        (edmacs-sidebar-test--with-clean-redraw-queue
+          (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
+                     (lambda (_frame) (setq redraw-count (1+ redraw-count)))))
+            (dotimes (_ 20) (edmacs-sidebar-invalidate frame))
+            (should (= 0 redraw-count))
+            (should (timerp edmacs-sidebar--redraw-timer))
+            (should (equal (list frame) edmacs-sidebar--dirty-frames))
+            ;; Manually invoking the flush function stands in for its own
+            ;; idle timer's eventual real firing: idle timers never fire
+            ;; under `sit-for' in `--batch' (there is no real idle
+            ;; detection there -- confirmed against a
+            ;; `run-with-idle-timer' that a `sit-for' loop never reaches),
+            ;; unlike the plain `run-at-time' debounces elsewhere in this
+            ;; file, which `sleep-for'+`sit-for' do flush for real.
+            (edmacs-sidebar--flush-dirty-frames)
+            (should (= 1 redraw-count))
+            (should-not edmacs-sidebar--dirty-frames)
+            (should-not edmacs-sidebar--redraw-timer)))))
 
     (ert-deftest edmacs-sidebar-test-invalidate-noop-for-unusable-frame ()
       "`edmacs-sidebar-invalidate' marks nothing dirty and schedules no timer
@@ -3335,20 +3247,11 @@ at all for a frame `edmacs-sidebar-redraw-frames' excludes -- checked at
 invalidation time, not merely skipped later at flush time, so an
 unusable frame (the daemon's tty placeholder above all) never causes
 timer churn either."
-      (unwind-protect
-          (progn
-            (setq edmacs-sidebar--dirty-frames nil)
-            (when (timerp edmacs-sidebar--redraw-timer)
-              (cancel-timer edmacs-sidebar--redraw-timer))
-            (setq edmacs-sidebar--redraw-timer nil)
-            (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_f) nil)))
-              (edmacs-sidebar-invalidate (selected-frame)))
-            (should-not edmacs-sidebar--dirty-frames)
-            (should-not edmacs-sidebar--redraw-timer))
-        (setq edmacs-sidebar--dirty-frames nil)
-        (when (timerp edmacs-sidebar--redraw-timer)
-          (cancel-timer edmacs-sidebar--redraw-timer))
-        (setq edmacs-sidebar--redraw-timer nil)))
+      (edmacs-sidebar-test--with-clean-redraw-queue
+        (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_f) nil)))
+          (edmacs-sidebar-invalidate (selected-frame)))
+        (should-not edmacs-sidebar--dirty-frames)
+        (should-not edmacs-sidebar--redraw-timer)))
 
     (ert-deftest edmacs-sidebar-test-flush-dirty-frames-skips-dead-frames ()
       "A frame deleted between invalidation and the flush is skipped, not
@@ -3356,18 +3259,16 @@ redrawn -- every other still-live dirty frame is still redrawn."
       (let* ((frame (selected-frame))
              (real-frame-live-p (symbol-function 'frame-live-p))
              (redrawn nil))
-        (unwind-protect
-            (progn
-              (setq edmacs-sidebar--dirty-frames
-                    (list 'edmacs-sidebar-test--dead-frame frame))
-              (cl-letf (((symbol-function 'frame-live-p)
-                         (lambda (f) (if (eq f 'edmacs-sidebar-test--dead-frame) nil
-                                        (funcall real-frame-live-p f))))
-                        ((symbol-function 'edmacs-sidebar--redraw)
-                         (lambda (f) (push f redrawn))))
-                (edmacs-sidebar--flush-dirty-frames))
-              (should (equal redrawn (list frame))))
-          (setq edmacs-sidebar--dirty-frames nil))))
+        (edmacs-sidebar-test--with-clean-redraw-queue
+          (setq edmacs-sidebar--dirty-frames
+                (list 'edmacs-sidebar-test--dead-frame frame))
+          (cl-letf (((symbol-function 'frame-live-p)
+                     (lambda (f) (if (eq f 'edmacs-sidebar-test--dead-frame) nil
+                                   (funcall real-frame-live-p f))))
+                    ((symbol-function 'edmacs-sidebar--redraw)
+                     (lambda (f) (push f redrawn))))
+            (edmacs-sidebar--flush-dirty-frames))
+          (should (equal redrawn (list frame))))))
 
     (ert-deftest edmacs-sidebar-test-tab-group-change-invalidates-without-buffer-list-event ()
       "A tab-bar group change alone -- via
@@ -3377,23 +3278,14 @@ redrawn -- every other still-live dirty frame is still redrawn."
 with no buffer-list activity involved at all, matching the phase
 context's own \"no trigger exists for `tab-bar-change-tab-group'\" bug."
       (let ((frame (selected-frame)) (redraw-count 0))
-        (unwind-protect
-            (progn
-              (setq edmacs-sidebar--dirty-frames nil)
-              (when (timerp edmacs-sidebar--redraw-timer)
-                (cancel-timer edmacs-sidebar--redraw-timer))
-              (setq edmacs-sidebar--redraw-timer nil)
-              (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
-                         (lambda (_frame) (setq redraw-count (1+ redraw-count)))))
-                (run-hook-with-args 'tab-bar-tab-post-change-group-functions
-                                     (tab-bar--current-tab-find nil frame))
-                (should (equal (list frame) edmacs-sidebar--dirty-frames))
-                (edmacs-sidebar--flush-dirty-frames)
-                (should (= 1 redraw-count))))
-          (setq edmacs-sidebar--dirty-frames nil)
-          (when (timerp edmacs-sidebar--redraw-timer)
-            (cancel-timer edmacs-sidebar--redraw-timer))
-          (setq edmacs-sidebar--redraw-timer nil))))
+        (edmacs-sidebar-test--with-clean-redraw-queue
+          (cl-letf (((symbol-function 'edmacs-sidebar--redraw)
+                     (lambda (_frame) (setq redraw-count (1+ redraw-count)))))
+            (run-hook-with-args 'tab-bar-tab-post-change-group-functions
+                                (tab-bar--current-tab-find nil frame))
+            (should (equal (list frame) edmacs-sidebar--dirty-frames))
+            (edmacs-sidebar--flush-dirty-frames)
+            (should (= 1 redraw-count))))))
 
     (ert-deftest edmacs-sidebar-test-tab-root-set-invalidates ()
       "`edmacs-workspaces-set-tab-root' has no sidebar.el of its own to call
@@ -3403,39 +3295,21 @@ directly (workspaces.el loads first) -- it runs
       (should (memq #'edmacs-sidebar--on-tab-root-set
                      edmacs-workspaces-tab-root-set-functions))
       (let ((frame (selected-frame)))
-        (unwind-protect
-            (progn
-              (setq edmacs-sidebar--dirty-frames nil)
-              (when (timerp edmacs-sidebar--redraw-timer)
-                (cancel-timer edmacs-sidebar--redraw-timer))
-              (setq edmacs-sidebar--redraw-timer nil)
-              (edmacs-sidebar--on-tab-root-set "/some/root/" frame)
-              (should (equal (list frame) edmacs-sidebar--dirty-frames)))
-          (setq edmacs-sidebar--dirty-frames nil)
-          (when (timerp edmacs-sidebar--redraw-timer)
-            (cancel-timer edmacs-sidebar--redraw-timer))
-          (setq edmacs-sidebar--redraw-timer nil))))
+        (edmacs-sidebar-test--with-clean-redraw-queue
+          (edmacs-sidebar--on-tab-root-set "/some/root/" frame)
+          (should (equal (list frame) edmacs-sidebar--dirty-frames)))))
 
     (ert-deftest edmacs-sidebar-test-tab-select-pre-close-rename-honour-redraw-frames ()
       "Regression for the bug the phase context names: `edmacs-sidebar-
 redraw-frames' is honoured by the two `--redraw-all's but was not by
 tab-select, pre-close or rename before they routed through
 `edmacs-sidebar-invalidate', which checks it uniformly."
-      (unwind-protect
-          (progn
-            (setq edmacs-sidebar--dirty-frames nil)
-            (when (timerp edmacs-sidebar--redraw-timer)
-              (cancel-timer edmacs-sidebar--redraw-timer))
-            (setq edmacs-sidebar--redraw-timer nil)
-            (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_f) nil)))
-              (edmacs-sidebar--on-tab-select nil nil)
-              (should-not edmacs-sidebar--dirty-frames)
-              (edmacs-sidebar--after-tab-rename)
-              (should-not edmacs-sidebar--dirty-frames)))
-        (setq edmacs-sidebar--dirty-frames nil)
-        (when (timerp edmacs-sidebar--redraw-timer)
-          (cancel-timer edmacs-sidebar--redraw-timer))
-        (setq edmacs-sidebar--redraw-timer nil)))
+      (edmacs-sidebar-test--with-clean-redraw-queue
+        (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p) (lambda (_f) nil)))
+          (edmacs-sidebar--on-tab-select nil nil)
+          (should-not edmacs-sidebar--dirty-frames)
+          (edmacs-sidebar--after-tab-rename)
+          (should-not edmacs-sidebar--dirty-frames))))
 
     (ert-deftest edmacs-sidebar-test-double-load-leaves-one-advice ()
       "Every `advice-add' in sidebar.el names a symbol, so re-evaluating the
@@ -3460,22 +3334,19 @@ exactly what `tab-bar-rename-tab' carried before this."
       "The seam sidebar-agents.el reacts on, in place of its old advice on
 `edmacs-sidebar-hide'. Runs on every return path of both functions,
 including a show that produced no window."
-      (let* ((frame (selected-frame))
-             (seen nil)
-             (edmacs-sidebar-visibility-functions
-              (list (lambda (f state) (push (cons f state) seen)))))
-        (unwind-protect
-            (save-window-excursion
-              (delete-other-windows)
-              (edmacs-sidebar-show frame)
-              (should (equal (car seen) (cons frame 'shown)))
-              (edmacs-sidebar-hide frame)
-              (should (equal (car seen) (cons frame 'hidden)))
-              ;; A hide with nothing to hide still reports.
-              (edmacs-sidebar-hide frame)
-              (should (equal (car seen) (cons frame 'hidden)))
-              (should (= 3 (length seen))))
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+      (edmacs-sidebar-test--with-frame ((seen nil)
+                                        (edmacs-sidebar-visibility-functions
+                                         (list (lambda (f state) (push (cons f state) seen)))))
+        (save-window-excursion
+          (delete-other-windows)
+          (edmacs-sidebar-show frame)
+          (should (equal (car seen) (cons frame 'shown)))
+          (edmacs-sidebar-hide frame)
+          (should (equal (car seen) (cons frame 'hidden)))
+          ;; A hide with nothing to hide still reports.
+          (edmacs-sidebar-hide frame)
+          (should (equal (car seen) (cons frame 'hidden)))
+          (should (= 3 (length seen))))))
 
     )) ; end of build-root-found branch
 
