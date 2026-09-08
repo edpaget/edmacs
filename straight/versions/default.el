@@ -16,6 +16,7 @@
  ("compat" . "ca3f5273ac3891509f37ebdac04f9cb914fdd1fa")
  ("cond-let" . "bbe1f1c7389b16ad0e6c3bc7b28ba8fb27afb6f5")
  ("consult" . "3a2441ddb08d9897eb266cda4935fa91a767e1d5")
+ ("consult-eglot" . "3e4d9a40911b897c0a2c5d20199d0f7c30bfc1c2")
  ("consult-lsp" . "f41a3946987a3880068f95f3725bbb7b0d4b0b22")
  ("corfu" . "c68f993d2df82bfab8a973c6f1af047dc3543093")
  ("dap-mode" . "7372c429031ad37adb88b42e4a2f4cfff246ce55")

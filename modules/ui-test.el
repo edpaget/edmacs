@@ -8,7 +8,8 @@
 ;; edmacs-windows-test-windmove-* in modules/windows-test.el).
 ;;
 ;; What this file covers is the "Modeline content" section: the buffer-name
-;; filtering and the diagnostics segment. Those are pure string functions,
+;; filtering and the diagnostics segment -- the latter on both of its
+;; backends, flycheck and flymake. Those are pure string functions,
 ;; so they run under plain `-Q --batch' with no display, no theme and no
 ;; nano-modeline. The `edmacs-modeline-*-mode' line CONSTRUCTORS are not
 ;; unit-tested -- they are nano's own lists with elements swapped, and
@@ -185,6 +186,110 @@ stock `error'/`warning' faces, which every theme defines."
     (edmacs-ui-test--with-flycheck '((error . 1) (warning . 2))
       (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
                      "1 err 2 warn ")))))
+
+;; ============================================================================
+;; edmacs-modeline-diagnostics -- flymake side
+;; ============================================================================
+;; flymake and eglot are both built in, so these load under `-Q' with no
+;; skip. `flymake-diagnostics' is a defun, so `cl-letf' on it builds no
+;; subr trampoline.
+
+(require 'flymake)
+(require 'eglot)
+
+(defmacro edmacs-ui-test--with-flymake (diagnostics &rest body)
+  "Run BODY with flymake on and `flymake-diagnostics' returning DIAGNOSTICS.
+DIAGNOSTICS is a list of type symbols; each becomes a real
+`flymake-make-diagnostic' object over the temp buffer."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (insert "one\ntwo\nthree\n")
+     (let ((types ,diagnostics))
+       (cl-letf (((symbol-function 'flymake-diagnostics)
+                  (lambda (&rest _)
+                    (mapcar (lambda (type)
+                              (flymake-make-diagnostic
+                               (current-buffer) (point-min) (1+ (point-min))
+                               type "d"))
+                            types))))
+         (setq-local flymake-mode t)
+         ,@body))))
+
+(ert-deftest edmacs-ui-test-diagnostics-is-silent-when-flymake-is-off ()
+  "With both backends off the segment costs no width."
+  (with-temp-buffer
+    (let ((flycheck-mode nil))
+      (setq-local flymake-mode nil)
+      (should (equal (edmacs-modeline-diagnostics) "")))))
+
+(ert-deftest edmacs-ui-test-diagnostics-is-silent-when-flymake-is-clean ()
+  (edmacs-ui-test--with-flymake nil
+    (should (equal (edmacs-modeline-diagnostics) ""))))
+
+(ert-deftest edmacs-ui-test-diagnostics-shows-flymake-errors-only ()
+  (edmacs-ui-test--with-flymake '(:error :error :error)
+    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "E3 "))))
+
+(ert-deftest edmacs-ui-test-diagnostics-shows-flymake-warnings-only ()
+  (edmacs-ui-test--with-flymake '(:warning :warning)
+    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "W2 "))))
+
+(ert-deftest edmacs-ui-test-diagnostics-shows-flymake-both-errors-first ()
+  (edmacs-ui-test--with-flymake '(:warning :error :warning :error :error)
+    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "E3 W2 "))))
+
+(ert-deftest edmacs-ui-test-diagnostics-ignores-flymake-notes ()
+  "`:note' is the flymake analogue of flycheck's `info': modeline noise."
+  (edmacs-ui-test--with-flymake '(:note :note :note)
+    (should (equal (edmacs-modeline-diagnostics) ""))))
+
+(ert-deftest edmacs-ui-test-diagnostics-counts-eglot-typed-diagnostics ()
+  "eglot's own type symbols carry no `severity' of their own -- it is
+reachable only by following `flymake-category' first. Reading the
+property directly reports zero for every eglot-managed buffer, which is
+the failure this whole segment exists to prevent."
+  (should-not (get 'eglot-warning 'severity))
+  (edmacs-ui-test--with-flymake '(eglot-error eglot-error eglot-error
+                                  eglot-warning eglot-warning eglot-note)
+    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "E3 W2 "))))
+
+(ert-deftest edmacs-ui-test-diagnostics-counts-unknown-flymake-type-as-error ()
+  "An unregistered type resolves to no severity at all; flymake's own
+fallback treats it as an error rather than dropping it."
+  (should-not (get 'edmacs-ui-test--nonsense-type 'severity))
+  (should-not (get 'edmacs-ui-test--nonsense-type 'flymake-category))
+  (edmacs-ui-test--with-flymake '(edmacs-ui-test--nonsense-type)
+    (should (equal (substring-no-properties (edmacs-modeline-diagnostics)) "E1 "))))
+
+(ert-deftest edmacs-ui-test-diagnostics-carries-flymake-severity-faces ()
+  (edmacs-ui-test--with-flymake '(:error :warning)
+    (let ((s (edmacs-modeline-diagnostics)))
+      (should (eq (get-text-property (string-search "E" s) 'face s) 'error))
+      (should (eq (get-text-property (string-search "W" s) 'face s) 'warning)))))
+
+(ert-deftest edmacs-ui-test-diagnostics-honors-the-format-variables-for-flymake ()
+  (let ((edmacs-modeline-diagnostics-format "%d err")
+        (edmacs-modeline-diagnostics-warning-format "%d warn"))
+    (edmacs-ui-test--with-flymake '(:error :warning :warning)
+      (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
+                     "1 err 2 warn ")))))
+
+(ert-deftest edmacs-ui-test-diagnostics-prefers-flymake-when-both-are-on ()
+  "Summing two backends would report the same LSP problem twice, so the
+precedence is stated rather than additive: flymake first."
+  (cl-letf (((symbol-function 'flycheck-count-errors)
+             (lambda (&rest _) '((error . 9) (warning . 9)))))
+    (let ((flycheck-mode t) (flycheck-current-errors nil))
+      (edmacs-ui-test--with-flymake '(:error)
+        (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
+                       "E1 "))))))
+
+(ert-deftest edmacs-ui-test-diagnostics-falls-back-to-flycheck-when-flymake-is-off ()
+  (with-temp-buffer
+    (setq-local flymake-mode nil)
+    (edmacs-ui-test--with-flycheck '((error . 3) (warning . 2))
+      (should (equal (substring-no-properties (edmacs-modeline-diagnostics))
+                     "E3 W2 ")))))
 
 ;; nano-modeline is not loadable under `-Q', and a bare `defvar' in ui.el
 ;; marks the symbol special only within ui.el itself -- so without this the

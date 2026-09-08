@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025
 
 ;;; Commentary:
-;; Go development setup with LSP, tree-sitter support, and go.mod integration.
+;; Go development setup with eglot, tree-sitter support, and go.mod integration.
 ;; This file is loaded on-demand when opening Go files.
 
 ;;; Code:
@@ -14,9 +14,27 @@
 
 ;; treesit-auto maps .go to go-ts-mode.
 
+(defvar eglot-workspace-configuration)
+
+;; gopls' own settings keys, not lsp-mode's `lsp-go-*' wrapper names.
+;; Global rather than buffer-local, and merged rather than assigned: eglot
+;; resolves this in a temp buffer of its own, where no buffer-local value is
+;; visible, and every language shares the one plist -- a section each.
+(with-eval-after-load 'eglot
+  (setq-default eglot-workspace-configuration
+                (plist-put (default-value 'eglot-workspace-configuration)
+                           :gopls
+                           '(:analyses (:fieldalignment t
+                                        :nilness t
+                                        :shadow t
+                                        :unusedparams t
+                                        :unusedwrite t
+                                        :unusedvariable t)
+                             :usePlaceholders t))))
+
 (with-eval-after-load 'go-ts-mode
   ;; Requires gopls: go install golang.org/x/tools/gopls@latest
-  (add-hook 'go-ts-mode-hook #'lsp-deferred)
+  (add-hook 'go-ts-mode-hook #'eglot-ensure)
 
   (add-hook 'go-ts-mode-hook #'smartparens-mode)
 
@@ -69,29 +87,11 @@
 
    ;; Documentation
    "d" '(:ignore t :which-key "doc")
-   "dd" '(lsp-describe-thing-at-point :which-key "describe")
+   "dd" '(eldoc-doc-buffer :which-key "describe")
    "dg" '(godoc-at-point :which-key "godoc")
 
    ;; Fill struct
    "s" '(go-fill-struct :which-key "fill struct")))
-
-;; ============================================================================
-;; LSP gopls Configuration
-;; ============================================================================
-
-(with-eval-after-load 'lsp-mode
-  (setq lsp-go-analyses '((fieldalignment . t)
-                          (nilness . t)
-                          (shadow . t)
-                          (unusedparams . t)
-                          (unusedwrite . t)
-                          (useany . t)
-                          (unusedvariable . t)))
-
-  (setq lsp-go-use-placeholders t
-        lsp-go-hover-kind "FullDocumentation")
-
-  (setq lsp-go-build-flags []))
 
 ;; ============================================================================
 ;; go-tag - Struct tag management
@@ -167,11 +167,16 @@
 ;; go.mod support
 ;; ============================================================================
 
+;; eglot ships gopls entries for the go-*-mode family but not for zkry's
+;; third-party `go-mod-mode', so `eglot-ensure' below would error without this.
+(with-eval-after-load 'eglot
+  (add-to-list 'eglot-server-programs '(go-mod-mode . ("gopls"))))
+
 (use-package go-mod-mode
   :straight (go-mod-mode :type git :host github :repo "zkry/go-mod-mode")
   :mode "go\\.mod\\'"
   :config
-  (add-hook 'go-mod-mode-hook #'lsp-deferred))
+  (add-hook 'go-mod-mode-hook #'eglot-ensure))
 
 (provide 'go)
 ;;; go.el ends here

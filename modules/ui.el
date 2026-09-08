@@ -200,7 +200,9 @@ so an unfocused window keeps the same badge."
 ;;     `lsp-modeline-diagnostics-enable' (modules/programming.el) pushes
 ;;     onto exactly that, so its counts were being computed and rendered
 ;;     nowhere; `edmacs-modeline-diagnostics' below puts them back in view,
-;;     reading flycheck directly rather than through that dead channel.
+;;     reading whichever checker is live in the buffer -- flymake for
+;;     eglot-managed buffers, flycheck for the rest -- rather than through
+;;     that dead channel.
 ;;   - Every line is a plain list of (FUNCTION ARGS...) forms, so replacing
 ;;     one element means replacing the line. The `edmacs-modeline-*-mode'
 ;;     constructors below are nano's own with two elements swapped, not a
@@ -275,30 +277,68 @@ and losing the narrowing indicator is not part of the trade."
 
 (defvar flycheck-mode)
 (defvar flycheck-current-errors)
+(defvar flymake-mode)
 (declare-function flycheck-count-errors "flycheck")
+(declare-function flymake-diagnostics "flymake")
+(declare-function flymake-diagnostic-type "flymake")
+
+(defun edmacs-modeline--flycheck-counts ()
+  "Flycheck's (ERRORS . WARNINGS) for this buffer, or nil when it is not live.
+`info'-level results are noise in a modeline and are dropped."
+  (when (and (bound-and-true-p flycheck-mode)
+             (fboundp 'flycheck-count-errors))
+    (let ((counts (flycheck-count-errors flycheck-current-errors)))
+      (cons (or (alist-get 'error counts) 0)
+            (or (alist-get 'warning counts) 0)))))
+
+(defun edmacs-modeline--flymake-severity (type)
+  "Numeric flymake severity for diagnostic TYPE.
+Follows `flymake-category' before reading `severity': eglot's own
+`eglot-error'/`eglot-warning'/`eglot-note' symbols -- and flymake's
+`:error'/`:warning'/`:note' -- carry the property only on the category
+they point at. An unregistered TYPE counts as an error, matching
+flymake's own fallback."
+  (or (get type 'severity)
+      (let ((category (get type 'flymake-category)))
+        (and category (get category 'severity)))
+      3))
+
+(defun edmacs-modeline--flymake-counts ()
+  "Flymake's (ERRORS . WARNINGS) for this buffer, or nil when it is not live.
+Notes are dropped, mirroring the flycheck side's treatment of `info'."
+  (when (and (bound-and-true-p flymake-mode)
+             (fboundp 'flymake-diagnostics))
+    (let ((errors 0) (warnings 0))
+      (dolist (d (flymake-diagnostics))
+        (pcase (edmacs-modeline--flymake-severity (flymake-diagnostic-type d))
+          ((pred (<= 3)) (setq errors (1+ errors)))
+          (2 (setq warnings (1+ warnings)))))
+      (cons errors warnings))))
 
 (defun edmacs-modeline-diagnostics ()
-  "Flycheck error and warning counts, or \"\" when there is nothing to say.
-Silent -- not zero -- when flycheck is off, still checking, or clean, so
+  "Error and warning counts, or \"\" when there is nothing to say.
+Reports from flymake when it is on and from flycheck otherwise -- an
+eglot-managed buffer carries the LSP diagnostics on flymake, and summing
+both backends would report the same problem twice.
+
+Silent -- not zero -- when no checker is on, still checking, or clean, so
 the segment costs no width in the overwhelmingly common case. Uses the
 stock `error'/`warning' faces rather than a `nano-modeline-face', which
 carries no severity distinction; those two are defined by every theme."
-  (if (and (bound-and-true-p flycheck-mode)
-           (fboundp 'flycheck-count-errors))
-      (let* ((counts (flycheck-count-errors flycheck-current-errors))
-             (errors (or (alist-get 'error counts) 0))
-             (warnings (or (alist-get 'warning counts) 0))
-             (parts (delq nil
-                          (list (when (> errors 0)
-                                  (propertize (format edmacs-modeline-diagnostics-format
-                                                      errors)
-                                              'face 'error))
-                                (when (> warnings 0)
-                                  (propertize (format edmacs-modeline-diagnostics-warning-format
-                                                      warnings)
-                                              'face 'warning))))))
-        (if parts (concat (string-join parts " ") " ") ""))
-    ""))
+  (let ((counts (or (edmacs-modeline--flymake-counts)
+                    (edmacs-modeline--flycheck-counts))))
+    (if (null counts)
+        ""
+      (let ((parts (delq nil
+                         (list (when (> (car counts) 0)
+                                 (propertize (format edmacs-modeline-diagnostics-format
+                                                     (car counts))
+                                             'face 'error))
+                               (when (> (cdr counts) 0)
+                                 (propertize (format edmacs-modeline-diagnostics-warning-format
+                                                     (cdr counts))
+                                             'face 'warning))))))
+        (if parts (concat (string-join parts " ") " ") "")))))
 
 (defcustom edmacs-modeline-force-text-glyphs nil
   "Non-nil forces the plain text status glyphs everywhere in the modeline

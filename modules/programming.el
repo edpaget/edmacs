@@ -90,6 +90,73 @@
   :commands lsp-treemacs-errors-list)
 
 ;; ============================================================================
+;; Eglot - built-in Language Server Protocol client
+;; ============================================================================
+;; Coexists with lsp-mode: both are just major-mode hooks, so they conflict
+;; only where both attach. Go is on eglot; every other language is still on
+;; lsp-mode.
+
+(declare-function eglot-managed-p "eglot")
+(declare-function flycheck-mode "flycheck")
+
+(defun edmacs--eglot-disable-flycheck ()
+  "Turn flycheck off in an eglot-managed buffer; flymake owns diagnostics there."
+  (when (and (eglot-managed-p) (bound-and-true-p flycheck-mode))
+    (flycheck-mode -1)))
+
+(use-package eglot
+  :straight nil
+  :commands (eglot eglot-ensure)
+  :config
+  (setq eglot-autoshutdown t
+        ;; Default 3s blocks the frame that long per `eglot-ensure'; with a
+        ;; desktop restore full of Go buffers that adds up. Finish connecting
+        ;; asynchronously instead.
+        eglot-sync-connect 1
+        ;; Default retains 2M characters of JSON per server for nothing.
+        eglot-events-buffer-config '(:size 0 :format full)
+        eglot-extend-to-xref t)
+
+  ;; flycheck registers real go-build/go-vet/go-staticcheck checkers for
+  ;; `go-ts-mode'; with the lsp checker gone they would fire on save and
+  ;; annotate over flymake's own diagnostics.
+  (add-hook 'eglot-managed-mode-hook #'edmacs--eglot-disable-flycheck)
+
+  ;; A parallel binding set rather than client-agnostic commands: both
+  ;; clients stay live while the languages migrate, and a per-client
+  ;; keymap resolves each verb to the client actually managing the buffer.
+  (general-define-key
+   :states 'normal
+   :keymaps 'eglot-mode-map
+   :prefix "SPC c"
+   "a" '(eglot-code-actions :which-key "code action")
+   "r" '(eglot-rename :which-key "rename")
+   "f" '(eglot-format-buffer :which-key "format")
+   "d" '(xref-find-definitions :which-key "definition")
+   "D" '(eglot-find-declaration :which-key "declaration")
+   "i" '(eglot-find-implementation :which-key "implementation")
+   "t" '(eglot-find-typeDefinition :which-key "type definition")
+   "R" '(xref-find-references :which-key "references")
+   "S" '(consult-imenu :which-key "file symbols")
+   "h" '(eldoc-doc-buffer :which-key "hover doc")
+   "w" '(consult-flymake :which-key "workspace diagnostics")
+   "W" '(flymake-show-project-diagnostics :which-key "workspace diagnostics tree")
+   ;; The global `SPC c x' set below is flycheck's and is dead here.
+   "xl" '(flymake-show-buffer-diagnostics :which-key "list errors")
+   "xn" '(flymake-goto-next-error :which-key "next error")
+   "xp" '(flymake-goto-prev-error :which-key "previous error")))
+
+;; Consult-Eglot - Consult integration for eglot
+(use-package consult-eglot
+  :after (consult eglot)
+  :config
+  (general-define-key
+   :states 'normal
+   :keymaps 'eglot-mode-map
+   :prefix "SPC c"
+   "s" '(consult-eglot-symbols :which-key "symbols")))
+
+;; ============================================================================
 ;; Flycheck - Syntax checking
 ;; ============================================================================
 
