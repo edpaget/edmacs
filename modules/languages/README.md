@@ -6,7 +6,7 @@ Language-specific configurations for edmacs. Each module provides optimized sett
 
 | Language | File | Indentation | Language Server | REPL |
 |----------|------|-------------|-------------|------|
-| JavaScript/TypeScript | `javascript.el` | 2 spaces | ✅ typescript-language-server | ❌ |
+| JavaScript/TypeScript | `javascript.el` | 2 spaces | ✅ TypeScript 7 `tsc --lsp`, else typescript-language-server | ❌ |
 | Clojure/ClojureScript | `clojure.el` | Lisp-style | ✅ clojure-lsp | ✅ CIDER |
 | Java | `java.el` | 4 spaces | ✅ eglot + jdtls (navigation-only) | ❌ |
 
@@ -23,9 +23,9 @@ Language-specific configurations for edmacs. Each module provides optimized sett
 - **JSX/TSX Support**: `.jsx` and `.tsx` files
 - **JSON Support**: `.json` files with formatting
 - **2-Space Indentation**: Default for all JS/TS files
-- **Language Server**: Automatic TypeScript language server via eglot
+- **Language Server**: eglot, contacting TypeScript 7's own `tsc --lsp` when
+  the project's `tsc` is 7 or newer and `typescript-language-server` otherwise
 - **Prettier Formatting**: Automatic formatting on save via Apheleia
-- **ESLint Support**: Auto-fix on save
 
 ### Indentation
 
@@ -52,20 +52,18 @@ The module configures the TypeScript language server with:
 - Auto-imports enabled
 - Relative import paths
 - Single quotes preference
-- ESLint auto-fix on save
+
+ESLint is not wired in: eglot runs one server per project and mode, and the
+TypeScript server owns that slot. Tracked as task
+`eslint-diagnostics-under-flymake`.
 
 ### Prerequisites
 
-Install the TypeScript language server:
+Install TypeScript; 7 or newer serves LSP itself, older versions also need
+the separate server:
 
 ```bash
 npm install -g typescript typescript-language-server
-```
-
-Optionally install ESLint:
-
-```bash
-npm install -g eslint
 ```
 
 For formatting, ensure Prettier is available:
@@ -177,7 +175,7 @@ are gone, not ported -- see that phase's landing commit for the full list.
 - **Language Server**: eglot talking to jdtls (Eclipse JDT Language Server)
 - **4-Space Indentation**: Standard Java formatting
 - **Build Tool Integration**: Maven and Gradle support (`mvn.el` / `gradle-mode`, unrelated to jdtls)
-- **Semantic Tokens**: jdtls' semantic highlighting via `eglot-semantic-tokens-mode`
+- **Semantic Tokens**: jdtls' semantic highlighting via `eglot-semantic-tokens-mode` (wired for every eglot-managed buffer in `programming.el`)
 
 ### Indentation
 

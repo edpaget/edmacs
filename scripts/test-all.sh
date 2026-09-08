@@ -48,9 +48,10 @@ if [ "${#MANIFEST[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# Sanity floor: the manifest must cover at least the 24 modules/*-test.el
-# files known at the time this gate was built (several appear under more
-# than one tier, so the array itself is longer than 24). A manifest that
+# Sanity floor: the manifest must cover at least the 29 modules/*-test.el
+# and modules/languages/*-test.el files known at the time this gate was
+# last extended (several appear under more than one tier, so the array
+# itself is longer than 29). A manifest that
 # quietly lost rows -- a bad merge, a stray edit -- must fail loud here
 # rather than silently running fewer suites and still exiting 0.
 declare -A MANIFEST_SUITE_NAMES=()
@@ -58,8 +59,8 @@ for row in "${MANIFEST[@]}"; do
   IFS='|' read -r manifest_name _ _ _ _ _ <<<"$row"
   MANIFEST_SUITE_NAMES["$manifest_name"]=1
 done
-if [ "${#MANIFEST_SUITE_NAMES[@]}" -lt 24 ]; then
-  echo "FATAL: manifest names only ${#MANIFEST_SUITE_NAMES[@]} distinct suites, expected at least 24 -- refusing to report a false green" >&2
+if [ "${#MANIFEST_SUITE_NAMES[@]}" -lt 29 ]; then
+  echo "FATAL: manifest names only ${#MANIFEST_SUITE_NAMES[@]} distinct suites, expected at least 29 -- refusing to report a false green" >&2
   exit 1
 fi
 

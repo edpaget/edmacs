@@ -72,6 +72,12 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
 - `modules/programming-test.el` -- the `SPC c` keymap programming.el owns,
   resolved end to end through real evil/general loaded from the straight
   repos tree (this checkout's, falling back to the sibling main checkout's)
+- `modules/completion-test.el` -- minibuffer knobs, the vertico extensions
+  and the orderless file-category override, against the real packages in
+  the straight build tree (same sibling-main fallback)
+- `modules/languages/java-test.el`, `javascript-test.el`, `rust-test.el` --
+  per-language eglot wiring: hooks, workspace configuration, the TypeScript
+  contact resolver, and the keymap deletions java.el made
 - `modules/ui-live-test.el` -- term-mode nano-modeline rendering, real
   `nano-modeline` package loaded from the straight build tree; two-tier
   (process-less buffer, then a live `make-term` subprocess via
@@ -450,7 +456,7 @@ So: any command that loads the real config -- the bare startup check above,
 and every script under `scripts/` except `startup-check.sh` -- runs from the
 main checkout, even when the change under test lives in a worktree. Each
 `scripts/*.sh` defaults `REPO_ROOT` to its own location, so running a
-worktree's copy points it at the worktree. The `verify-*.sh` four take an
+worktree's copy points it at the worktree. The `verify-*.sh` three take an
 explicit root as `$1`; pass the main checkout. `startup-bench.sh` and
 `gc-session-bench.sh` do not, so run those from the main checkout after
 copying the change over.

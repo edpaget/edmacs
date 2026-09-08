@@ -49,7 +49,8 @@
 # batch frame cannot answer for. Its gui row runs all three and must show 0.
 #
 # Keep this the single source of truth for "what suites exist and how to
-# run them": a 25th modules/*-test.el file, or a new tier for an existing
+# run them": a new modules/*-test.el file (under modules/ or
+# modules/languages/), or a new tier for an existing
 # suite, is added here, not hand-rolled elsewhere.
 
 MANIFEST=(
@@ -77,6 +78,11 @@ MANIFEST=(
   "windows-test|batch|30|1|modules/test-support.el,modules/git-common-dir.el,modules/claude-term.el,modules/workspaces.el,modules/windows.el,modules/windows-test.el|edmacs-test-support-run-and-exit"
   "workspaces-live-test|batch|15|3|modules/test-support.el,modules/git-common-dir.el,modules/windows.el,modules/workspaces.el,modules/workspaces-live-test.el|ert-run-tests-batch-and-exit"
   "workspaces-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/windows.el,modules/workspaces.el,modules/workspaces-test.el|edmacs-test-support-run-and-exit"
+  "completion-test|batch|15|0|modules/git-common-dir.el,modules/completion-test.el|ert-run-tests-batch-and-exit"
+  "programming-test|batch|15|0|modules/programming-test.el|ert-run-tests-batch-and-exit"
+  "java-test|batch|15|0|modules/git-common-dir.el,modules/languages/java-test.el|ert-run-tests-batch-and-exit"
+  "javascript-test|batch|15|0|modules/languages/javascript-test.el|ert-run-tests-batch-and-exit"
+  "rust-test|batch|15|0|modules/languages/rust-test.el|ert-run-tests-batch-and-exit"
 
   "sidebar-test|pty|30|0|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-test.el|edmacs-test-support-run-and-exit"
   "sidebar-buffers-live-test|pty|30|0|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-buffers-live-test.el|edmacs-test-support-run-and-exit"
