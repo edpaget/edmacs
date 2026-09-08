@@ -14,6 +14,7 @@
 #   - gopls' `unusedparams' analyzer fires, so the `analyses' setting is
 #     in effect rather than merely echoed back
 #   - `edmacs-modeline-diagnostics' renders flymake's counts
+#   - Java, the last lsp-mode language, is untouched
 #
 # TWO TRAPS THIS SCRIPT EXISTS TO NAVIGATE
 #
@@ -201,10 +202,15 @@ perfectly fine interactively."
           (string-match-p "\"unusedparams\": true" configuration)
           (string-match-p "\"usePlaceholders\": true" configuration))
      "workspace-config" "%s" configuration)
-    ;; Phase decision: hints stay off, exact parity with the lsp-mode setup.
-    (edmacs-go-check--report (not (string-match-p "hints" (or configuration "")))
-                             "no-inlay-hints-section" "eglot-inlay-hints-mode=%S"
-                             (bound-and-true-p eglot-inlay-hints-mode)))
+    ;; Phase decision: hints stay off for Go, exact parity with the lsp-mode
+    ;; setup. Asserted against the `:gopls' section, not the rendered whole:
+    ;; other languages share the one plist and Rust's section does send hints.
+    (edmacs-go-check--report
+     (not (plist-member (plist-get (default-value 'eglot-workspace-configuration)
+                                   :gopls)
+                        :hints))
+     "no-inlay-hints-section" "eglot-inlay-hints-mode=%S"
+     (bound-and-true-p eglot-inlay-hints-mode)))
 
   (let ((diagnostics (edmacs-go-check--wait
                       (lambda ()
@@ -236,18 +242,14 @@ perfectly fine interactively."
                          (bound-and-true-p flymake-mode)
                          (bound-and-true-p flycheck-mode))
 
-;; Every other language is still lsp-mode's, still reporting through flycheck.
-;; Their `lsp-deferred' hooks are registered from `with-eval-after-load' and
-;; `use-package' `:config' forms, so the mode libraries have to be loaded
-;; before the hook lists say anything at all.
-(dolist (library '(rust-ts-mode typescript-ts-mode js clojure-ts-mode java-ts-mode))
-  (require library nil t))
-(dolist (mode '(rust-ts-mode typescript-ts-mode tsx-ts-mode js-ts-mode
-                clojure-ts-mode java-ts-mode))
-  (let ((hook (intern (format "%s-hook" mode))))
-    (edmacs-go-check--report (and (memq 'lsp-deferred (symbol-value hook))
-                                  (not (memq 'eglot-ensure (symbol-value hook))))
-                             (format "%s" mode) "still on lsp-deferred")))
+;; Java is the one language still on lsp-mode, still reporting through
+;; flycheck. Its `lsp-deferred' hook is registered from a `use-package'
+;; `:config' form, so the mode library has to be loaded before the hook list
+;; says anything at all.
+(require 'java-ts-mode nil t)
+(edmacs-go-check--report (and (memq 'lsp-deferred java-ts-mode-hook)
+                              (not (memq 'eglot-ensure java-ts-mode-hook)))
+                         "java-ts-mode" "still on lsp-deferred")
 (edmacs-go-check--report (bound-and-true-p global-flycheck-mode) "global-flycheck-mode" "on")
 
 (princ (format "assert: go-eglot-check: %d checks, %d failed\n"

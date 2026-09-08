@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025
 
 ;;; Commentary:
-;; Rust development setup with LSP, cargo integration, and tree-sitter support.
+;; Rust development setup with eglot, cargo integration, and tree-sitter support.
 ;; This file is loaded on-demand when opening Rust files.
 
 ;;; Code:
@@ -14,13 +14,10 @@
 
 ;; treesit-auto maps .rs to rust-ts-mode.
 
-(with-eval-after-load 'rust-ts-mode
-  ;; Requires rust-analyzer: rustup component add rust-analyzer
-  (add-hook 'rust-ts-mode-hook #'lsp-deferred)
-
-  (add-hook 'rust-ts-mode-hook #'smartparens-mode)
-
-  (setq rust-indent-offset 4))
+;; rustic's own top-level code removes `.rs' from rust-ts-mode's
+;; auto-mode-alist entry, so rust-ts-mode never activates and any
+;; configuration hung off it is dead. See the `rust-ts-mode-never-activates'
+;; task; eglot attaches to `rustic-mode' regardless.
 
 ;; ============================================================================
 ;; Rustic - Enhanced Rust mode with Cargo integration
@@ -32,7 +29,13 @@
   ;; to treesit-auto/rust-mode and rustic would never load.
   :mode ("\\.rs\\'" . rustic-mode)
   :config
-  (setq rustic-lsp-client 'lsp-mode)
+  ;; `rustic-setup-lsp' dispatches on this and calls `eglot-ensure' directly;
+  ;; `rustic-setup-eglot' has already registered rustic-mode with eglot.
+  (setq rustic-lsp-client 'eglot)
+
+  ;; rustic's eglot class sends this as an initializationOption; keep it in
+  ;; step with the check.command below or the two disagree.
+  (setq rustic-lsp-check-command "clippy")
 
   (setq rustic-flycheck-setup-mode-line-p nil)
 
@@ -69,25 +72,42 @@
 
    ;; Documentation
    "d" '(:ignore t :which-key "doc")
-   "dd" '(lsp-describe-thing-at-point :which-key "describe")
+   "dd" '(eldoc-doc-buffer :which-key "describe")
    "do" '(rustic-cargo-doc :which-key "open docs")
 
    ;; Repl/Playground
    "p" '(rustic-playground :which-key "playground")))
 
 ;; ============================================================================
-;; LSP Rust-Analyzer Configuration
+;; rust-analyzer Configuration
 ;; ============================================================================
 
-(with-eval-after-load 'lsp-mode
-  (setq lsp-rust-analyzer-cargo-watch-command "clippy"
-        lsp-rust-analyzer-server-display-inlay-hints t
-        lsp-rust-analyzer-display-lifetime-elision-hints-enable "skip_trivial"
-        lsp-rust-analyzer-display-chaining-hints t
-        lsp-rust-analyzer-display-lifetime-elision-hints-use-parameter-names nil
-        lsp-rust-analyzer-display-closure-return-type-hints t
-        lsp-rust-analyzer-display-parameter-hints nil
-        lsp-rust-analyzer-display-reborrow-hints nil))
+(defvar eglot-workspace-configuration)
+
+;; rust-analyzer's own settings keys, not the `lsp-rust-analyzer-*' wrapper
+;; names this replaced. Global rather than buffer-local, and merged rather than
+;; assigned: eglot resolves this in a temp buffer of its own, and every
+;; language shares the one plist.
+;;
+;; Only the settings that differ from rust-analyzer's own defaults are sent.
+;; `parameterHints.enable' defaults to t, so switching it off needs
+;; `:json-false' -- nil would serialize as null, not false.
+(with-eval-after-load 'eglot
+  (setq-default eglot-workspace-configuration
+                (plist-put (default-value 'eglot-workspace-configuration)
+                           :rust-analyzer
+                           '(:check (:command "clippy")
+                             :inlayHints
+                             (:lifetimeElisionHints (:enable "skip_trivial")
+                              :closureReturnTypeHints (:enable "always")
+                              :parameterHints (:enable :json-false))))))
+
+;; rustic-flycheck.el adds both of these to `rustic-mode-hook' when flycheck
+;; loads. eglot switches flymake back on at connect, but until then flycheck
+;; runs cargo check and annotates over what flymake is about to report.
+(with-eval-after-load 'rustic-flycheck
+  (remove-hook 'rustic-mode-hook 'flymake-mode-off)
+  (remove-hook 'rustic-mode-hook 'flycheck-mode))
 
 ;; ============================================================================
 ;; Cargo Mode - Additional cargo integration

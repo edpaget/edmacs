@@ -22,7 +22,7 @@
   (setq js-indent-level 2
         js-switch-indent-offset 2)
 
-  (add-hook 'js-ts-mode-hook #'lsp-deferred)
+  (add-hook 'js-ts-mode-hook #'eglot-ensure)
 
   (add-hook 'js-ts-mode-hook #'smartparens-mode))
 
@@ -37,8 +37,8 @@
   :config
   (setq typescript-ts-mode-indent-offset 2)
 
-  (add-hook 'typescript-ts-mode-hook #'lsp-deferred)
-  (add-hook 'tsx-ts-mode-hook #'lsp-deferred)
+  (add-hook 'typescript-ts-mode-hook #'eglot-ensure)
+  (add-hook 'tsx-ts-mode-hook #'eglot-ensure)
 
   (add-hook 'typescript-ts-mode-hook #'smartparens-mode)
   (add-hook 'tsx-ts-mode-hook #'smartparens-mode))
@@ -51,7 +51,7 @@
   :straight nil
   :mode ("\\.json\\'" . json-ts-mode)
   :config
-  (add-hook 'json-ts-mode-hook #'lsp-deferred))
+  (add-hook 'json-ts-mode-hook #'eglot-ensure))
 
 ;; ============================================================================
 ;; Project.el helpers (projectile replacements)
@@ -92,12 +92,12 @@
 
  ;; Refactoring
  "=" '(:ignore t :which-key "refactor")
- "=i" '(lsp-organize-imports :which-key "organize imports")
- "=r" '(lsp-rename :which-key "rename")
+ "=i" '(eglot-code-action-organize-imports :which-key "organize imports")
+ "=r" '(eglot-rename :which-key "rename")
 
  ;; Documentation
  "d" '(:ignore t :which-key "doc")
- "dd" '(lsp-describe-thing-at-point :which-key "describe"))
+ "dd" '(eldoc-doc-buffer :which-key "describe"))
 
 (general-define-key
  :states 'normal
@@ -119,38 +119,86 @@
 
  ;; Refactoring
  "=" '(:ignore t :which-key "refactor")
- "=i" '(lsp-organize-imports :which-key "organize imports")
- "=r" '(lsp-rename :which-key "rename")
- "=a" '(lsp-execute-code-action :which-key "code action")
+ "=i" '(eglot-code-action-organize-imports :which-key "organize imports")
+ "=r" '(eglot-rename :which-key "rename")
+ "=a" '(eglot-code-actions :which-key "code action")
 
  ;; Documentation
  "d" '(:ignore t :which-key "doc")
- "dd" '(lsp-describe-thing-at-point :which-key "describe"))
+ "dd" '(eldoc-doc-buffer :which-key "describe"))
 
 ;; ============================================================================
-;; LSP Configuration
+;; eglot Configuration
 ;; ============================================================================
 
-(with-eval-after-load 'lsp-mode
-  (setq lsp-typescript-suggest-auto-imports t
-        lsp-typescript-preferences-import-module-specifier "relative"
-        lsp-typescript-preferences-quote-style "single"
-        lsp-javascript-suggest-auto-imports t)
+(defvar eglot-server-programs)
+(defvar eglot-workspace-configuration)
 
-  (setq lsp-eslint-auto-fix-on-save t
-        lsp-eslint-enable t))
+(defvar edmacs-js--typescript-lsp-cache (make-hash-table :test #'equal)
+  "Cache of resolved tsc path -> non-nil when that tsc supports `--lsp'.")
 
-;; ============================================================================
-;; Consult-LSP Integration
-;; ============================================================================
+(defun edmacs-js--tsc-supports-lsp-p (tsc)
+  "Return non-nil when TSC is a TypeScript 7+ compiler, which serves `--lsp'.
+TypeScript 7's Go compiler is itself the language server; 5 and 6 ship a
+separate tsserver and answer `--lsp' with error TS5023."
+  (let ((cached (gethash tsc edmacs-js--typescript-lsp-cache 'missing)))
+    (if (not (eq cached 'missing))
+        cached
+      (puthash tsc
+               (with-temp-buffer
+                 (and (eq 0 (ignore-errors
+                              (call-process tsc nil t nil "--version")))
+                      (progn (goto-char (point-min))
+                             (re-search-forward "\\([0-9]+\\)\\." nil t))
+                      (>= (string-to-number (match-string 1)) 7)))
+               edmacs-js--typescript-lsp-cache))))
 
-(with-eval-after-load 'consult-lsp
-  (general-define-key
-   :states 'normal
-   :keymaps '(js-ts-mode-map typescript-ts-mode-map tsx-ts-mode-map)
-   :prefix "SPC c"
-   "s" '(consult-lsp-symbols :which-key "workspace symbols")
-   "S" '(consult-lsp-file-symbols :which-key "file symbols")))
+(defun edmacs-js--typescript-server (&optional _interactive _project)
+  "Return the language server command for a JavaScript or TypeScript buffer.
+eglot funcalls a contact function with one or two arguments -- never zero --
+so the two ignored parameters are load-bearing.
+
+`tsc' is resolved against the buffer-local `exec-path' mise has already set
+from the project's own config chain, so a project pinning TypeScript 5 or 6
+gets `typescript-language-server' while everything else gets TS 7's native
+server."
+  (let ((tsc (executable-find "tsc")))
+    (if (and tsc (edmacs-js--tsc-supports-lsp-p tsc))
+        (list tsc "--lsp" "--stdio")
+      (list "typescript-language-server" "--stdio"))))
+
+;; Ahead of eglot 31.1's own entry, whose first alternative ("rass ts") is an
+;; upstream typo that resolves to nothing and falls through to a server we do
+;; not install. `add-to-list' prepends and `eglot--lookup-mode' takes the
+;; first match, so this wins.
+(with-eval-after-load 'eglot
+  (add-to-list 'eglot-server-programs
+               '(((js-mode :language-id "javascript")
+                  (js-ts-mode :language-id "javascript")
+                  (tsx-ts-mode :language-id "typescriptreact")
+                  (typescript-ts-mode :language-id "typescript"))
+                 . edmacs-js--typescript-server))
+
+  ;; The servers' own settings keys, not the `lsp-typescript-*' /
+  ;; `lsp-javascript-*' wrappers this replaced. Merged into the one shared
+  ;; plist; see go.el for why it is a global default rather than buffer-local.
+  (setq-default eglot-workspace-configuration
+                (plist-put
+                 (plist-put (default-value 'eglot-workspace-configuration)
+                            :typescript
+                            '(:suggest (:autoImports t)
+                              :preferences (:importModuleSpecifier "relative"
+                                            :quoteStyle "single")))
+                 :javascript
+                 '(:suggest (:autoImports t)))))
+
+;; The eslint integration is dropped with no replacement: eglot runs one
+;; server per project and mode, and the TypeScript server owns that slot, so
+;; eslint cannot ride along as a second client the way it did here.
+;; Tracked as task `eslint-diagnostics-under-flymake'.
+
+;; Symbol search lives in the client-agnostic `eglot-mode-map' set in
+;; programming.el (`SPC c s' / `SPC c S'), so no per-major-mode duplicate here.
 
 ;; ============================================================================
 ;; Apheleia - Format on save with Prettier

@@ -22,7 +22,10 @@
   :config
   (setq clojure-ts-indent-style 'fixed)
 
-  (add-hook 'clojure-ts-mode-hook #'lsp-deferred)
+  ;; eglot already maps clojure-ts-mode to clojure-lsp, which reads its own
+  ;; .lsp/config.edn -- no server entry and no workspace configuration needed.
+  ;; `.edn' is mapped here too, so eglot manages those buffers as well.
+  (add-hook 'clojure-ts-mode-hook #'eglot-ensure)
 
   (add-hook 'clojure-ts-mode-hook #'smartparens-strict-mode))
 

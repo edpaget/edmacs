@@ -79,7 +79,7 @@ npm install -g prettier
 - **typescript-mode**: TypeScript and TSX support
 - **rjsx-mode**: Enhanced JSX editing
 - **json-mode**: JSON file support
-- **lsp-mode**: Language server integration
+- **eglot**: Language server integration
 - **apheleia**: Async formatting with Prettier
 
 ---
@@ -157,7 +157,7 @@ CIDER provides extensive keybindings under `,` (local leader) in Clojure files:
 - **cider**: Interactive development environment
 - **clj-refactor**: Automated refactoring
 - **flycheck-clj-kondo**: Linting with clj-kondo
-- **lsp-mode**: Language server integration
+- **eglot**: Language server integration
 
 ---
 
@@ -257,7 +257,7 @@ Example structure:
 
 (use-package python-mode
   :mode "\\.py\\'"
-  :hook (python-mode . lsp-deferred)
+  :hook (python-mode . eglot-ensure)
   :config
   (setq python-indent-offset 4))
 

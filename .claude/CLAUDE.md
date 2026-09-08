@@ -286,7 +286,30 @@ scripts/go-eglot-check.sh
 It re-execs itself through a login shell when `gopls` is missing, because
 the toolchain resolves through mise exactly as it does for the daemon via
 `exec-path-from-shell`. Copy its shape for the next language moved to
-eglot.
+eglot. `scripts/eglot-languages-check.sh` is that copy, for Rust,
+TypeScript, JSX, JavaScript, JSON and Clojure, and it adds three more traps
+of the same family:
+
+- An eglot `eglot-server-programs` entry may be a **function**, and eglot
+  funcalls it with one or two arguments (`eglot--guess-contact` dispatches
+  on `func-arity`) -- never zero. A zero-argument `defun` raises
+  `wrong-number-of-arguments`, which eglot swallows into a warning: the
+  buffer simply never connects.
+- A server advertising `diagnosticProvider` delivers diagnostics only on a
+  **pull** and never pushes `publishDiagnostics` (TypeScript 7 is one). A
+  missing `(flymake-start t t)` is indistinguishable from "the server found
+  no problems".
+- `global-mise-mode` is wired to `after-init`, and `emacs --batch -l
+  init.el` processes `-l` *after* `after-init-hook` has already run -- so
+  mise is off in every batch check, and every buffer-local `exec-path` with
+  it. Enable it explicitly when the thing under test depends on it.
+
+A fourth trap is not eglot's at all: `treesit-auto-install` is `prompt`, and
+a `y-or-n-p` in batch reads EOF from stdin. A missing grammar therefore
+surfaces as `File mode specification error: (end-of-file "Error reading from
+stdin")`, and the major-mode body aborts *before* running its hooks -- so
+`<mode>-hook` still lists `eglot-ensure` while nothing ever connects. Assert
+`treesit-language-available-p` up front rather than debugging the client.
 
 ### Compilation
 
