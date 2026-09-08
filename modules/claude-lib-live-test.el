@@ -34,6 +34,13 @@
 ;; image. That check needs a real forked `emacs' but no daemon or
 ;; `emacsclient' at all, so it drives `call-process' directly rather
 ;; than going through the daemon helpers above.
+;;
+;; Phase 3's AC5 boot-safety regressions live here for the same reason:
+;; "the file still loads at the next daemon start" is only provable by
+;; actually starting another Emacs on it. One drives the reproduced
+;; docstring-anchor corruption end to end and requires the result to
+;; load; the other proves `claude-lib-verify-load-in-subprocess' refuses
+;; a library that parses but no longer boots, and rolls the file back.
 
 ;;; Code:
 
@@ -249,6 +256,96 @@ freshly loads the same (temp-copied) library file afterward."
                     (kill-emacs (if (fboundp 'claude-lib-live-test-promoted) 0 1)))))
             (should (zerop (call-process "emacs" nil nil nil "-Q" "--batch"
                                           "--eval" (prin1-to-string check-form))))))
+      (ignore-errors (delete-file tmp-lib)))))
+
+
+;; ============================================================================
+;; Phase 3 AC5 -- the promoted library still boots in a fresh Emacs
+;; ============================================================================
+
+(defun claude-lib-live-test--batch-eval (form)
+  "Run FORM in a fresh \"emacs -Q --batch\", returning (EXIT-CODE OUTPUT)."
+  (with-temp-buffer
+    (let ((exit (call-process "emacs" nil t nil "-Q" "--batch"
+                              "--eval" (prin1-to-string form))))
+      (list exit (buffer-string)))))
+
+(ert-deftest claude-lib-live-test-promoted-library-still-loads-in-fresh-emacs ()
+  "The direct regression for \"leaves the daemon unbootable across
+restarts\": promote a function whose docstring carries the library's own
+`(provide ...)' tail at column 0, promote a second function behind it
+with a `\"' in PROBLEM, then require the resulting file to load cleanly
+in a wholly separate Emacs. Before the structural anchor landed this
+step failed with `End of file during parsing'."
+  (let* ((tmp-lib (make-temp-file "claude-lib-live-test-boot" nil ".el"))
+         (source-lib (expand-file-name "modules/claude-lib.el" claude-lib-live-test--repo-root))
+         (process-environment (cons "TERM=dumb" process-environment)))
+    (unwind-protect
+        (progn
+          (copy-file source-lib tmp-lib t)
+          (cl-destructuring-bind (exit output)
+              (claude-lib-live-test--batch-eval
+               `(progn
+                  (load ,tmp-lib nil t)
+                  (claude-lib-promote
+                   ,(concat "(defun claude-lib-live-test-anchor-trap (x)\n"
+                            "  \"Return X unchanged.\n"
+                            "Illustrative library tail, as plain docstring text:\n"
+                            "(provide 'claude-lib)\n"
+                            ";;; claude-lib.el ends here\"\n"
+                            "  x)")
+                   "edmacs" "seed a docstring carrying the library tail")
+                  (claude-lib-promote
+                   "(defun claude-lib-live-test-behind-trap (y)\n  \"Return Y unchanged.\"\n  y)"
+                   "edmacs" "a problem mentioning a \" character")
+                  (kill-emacs 0)))
+            (unless (zerop exit)
+              (error "claude-lib-live-test: trap promotions failed (exit %d): %s" exit output)))
+          (cl-destructuring-bind (exit output)
+              (claude-lib-live-test--batch-eval
+               `(progn (load ,tmp-lib nil t)
+                       (kill-emacs (if (fboundp 'claude-lib-live-test-behind-trap) 0 1))))
+            (should (equal (list exit output) (list 0 "")))))
+      (ignore-errors (delete-file tmp-lib)))))
+
+(ert-deftest claude-lib-live-test-subprocess-gate-rejects-corrupt-library ()
+  "With the boot-safety gate at its production default, a library that
+still parses but no longer LOADS must be refused, and the file left
+byte-identical to how the promotion found it."
+  (let* ((tmp-lib (make-temp-file "claude-lib-live-test-corrupt" nil ".el"))
+         (source-lib (expand-file-name "modules/claude-lib.el" claude-lib-live-test--repo-root))
+         (process-environment (cons "TERM=dumb" process-environment)))
+    (unwind-protect
+        (progn
+          (copy-file source-lib tmp-lib t)
+          ;; Parses, ends with the provide form, and dies on `load'.
+          (with-temp-buffer
+            (insert-file-contents tmp-lib)
+            (goto-char (point-min))
+            (should (re-search-forward "^(provide 'claude-lib)$" nil t))
+            (goto-char (match-beginning 0))
+            (insert "(error \"deliberate boot failure\")\n\n")
+            (write-region (point-min) (point-max) tmp-lib nil 'quiet))
+          (let ((before (claude-lib-live-test--read-file tmp-lib)))
+            (cl-destructuring-bind (exit output)
+                (claude-lib-live-test--batch-eval
+                 `(progn
+                    (load ,(expand-file-name "modules/claude-lib.el"
+                                             claude-lib-live-test--repo-root)
+                          nil t)
+                    (setq claude-lib-file ,tmp-lib)
+                    (princ (condition-case err
+                               (progn (claude-lib-promote
+                                       "(defun claude-lib-live-test-corrupt (x)\n  \"Return X unchanged.\"\n  x)"
+                                       "edmacs" "the library no longer boots")
+                                      "PROMOTE UNEXPECTEDLY SUCCEEDED")
+                             (user-error (error-message-string err))))
+                    (kill-emacs 0)))
+              (should (zerop exit))
+              ;; Specifically the boot-safety gate, not some earlier check
+              ;; that happens to reject the same input.
+              (should (string-match-p "no longer loads in a fresh Emacs" output)))
+            (should (equal before (claude-lib-live-test--read-file tmp-lib)))))
       (ignore-errors (delete-file tmp-lib)))))
 
 (provide 'claude-lib-live-test)

@@ -100,7 +100,12 @@ LANGUAGE should be the name without the .el extension."
 (load-module "workspaces")
 ;; The `emacsclient -e' eval channel Claude drives from the Bash tool --
 ;; resident at boot so every daemon, including the real one, has it.
-(load-module "claude-lib")
+;; Guarded because this is the one module that rewrites its own source
+;; at runtime (`claude-lib-promote'); the eval channel is defined near
+;; the top of the file, so a corrupt tail still leaves Claude a way in
+;; to repair it.
+(with-demoted-errors "claude-lib failed to load: %S"
+  (load-module "claude-lib"))
 (load-module "claude-term")
 (load-module "claude-term-registry")
 ;; (load-module "org-config")

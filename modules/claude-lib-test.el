@@ -13,19 +13,35 @@
 ;;
 ;; Also covers the phase-3 promotion library built on top of that same
 ;; file: discovery-form regression tests against the seeded
-;; `claude-lib-demo' (its own AC2), `claude-lib-promote's validation
-;; gates and provenance formatting (AC3/AC4), the no-gptel/no-registry
-;; scope guard (AC5), and the `claude-lib-relevant-functions'
-;; safe-local-variable predicate plus behavioral proof that the
-;; documented interactive-driving primitives (`completing-read-function',
-;; `unread-command-events', `select-window' pinning) actually work the
-;; way the convention describes (AC6). Every `claude-lib-promote' test
-;; operates on a temp-directory copy of the real file (see
-;; `claude-lib-test--with-temp-library') and never mutates the
-;; checked-in modules/claude-lib.el. The cross-process persistence
-;; check for phase-3's AC1 (a promoted function surviving into a
-;; second, separate Emacs process) lives in claude-lib-live-test.el
-;; instead, since it needs a real forked `emacs' subprocess.
+;; `claude-lib-demo', the documented `describe-function' trap and the
+;; entry-point-only regexp (AC2); `claude-lib-promote's validation
+;; gates, including that a name occurring only inside an earlier
+;; promotion's docstring does NOT burn that name (AC3); provenance
+;; formatting, its cross-repo DESTINATION and its position as a genuine
+;; top-level comment (AC4); the corruption regressions (AC5, below); the
+;; no-gptel/no-registry scope guard (AC7); and the
+;; `claude-lib-relevant-functions' safe-local-variable predicate plus
+;; behavioral proof that the documented interactive-driving primitives
+;; (`completing-read-function', `unread-command-events', `select-window'
+;; pinning) actually work the way the convention describes (AC6).
+;;
+;; The AC5 block reproduces the defect that blocked this phase: a
+;; promoted docstring containing `(provide \'claude-lib)' at column 0
+;; hijacked the text-searched insertion anchor, so the next promotion
+;; was spliced inside that string -- and a `"' in PROBLEM then took the
+;; file's quote count odd, leaving it unparseable and the daemon
+;; unbootable. Alongside it: pre-save and post-save verification
+;; failures rolling the bytes back, a save failure leaving NAME
+;; unbound (pinning save-then-eval), a missing anchor erroring without
+;; mutating, and the boot-safety subprocess gate.
+;;
+;; Every `claude-lib-promote' test operates on a temp-directory copy of
+;; the real file (see `claude-lib-test--with-temp-library') and never
+;; mutates the checked-in modules/claude-lib.el. The cross-process
+;; persistence check for phase-3's AC1 (a promoted function surviving
+;; into a second, separate Emacs process) lives in
+;; claude-lib-live-test.el instead, since it needs a real forked
+;; `emacs' subprocess.
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/claude-lib.el \
@@ -43,9 +59,22 @@
 (defvar edmacs-claude-lib-max-output-bytes)
 (defvar claude-lib-file)
 (defvar claude-lib-relevant-functions)
+(defvar claude-lib-verify-load-in-subprocess)
 (declare-function edmacs-claude-lib-eval-file "claude-lib" (form-file output-file root))
 (declare-function claude-lib-demo "claude-lib" (root &optional depth))
 (declare-function claude-lib-promote "claude-lib" (source destination problem))
+(declare-function claude-lib--scan-top-level "claude-lib" (context))
+(declare-function claude-lib--name-defined-in-file-p "claude-lib" (name scan))
+(declare-function claude-lib--verify-library "claude-lib" (name context))
+(declare-function claude-lib--verify-file "claude-lib" (file name))
+
+;; `cl-letf' below stubs `save-buffer', `claude-lib--verify-library' and
+;; `claude-lib--verify-file' -- all plain Lisp functions, so no native
+;; trampoline is needed. The guard is here so a later test that reaches
+;; for a C subr does not silently reintroduce the ~28s-per-target
+;; trampoline build this repo's CLAUDE.md documents.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
 
 (defvar claude-lib-test--repo-root
   (file-name-directory (or load-file-name buffer-file-name))
@@ -55,10 +84,16 @@ regardless of the caller's `default-directory'.")
 (defmacro claude-lib-test--with-temp-library (var &rest body)
   "Bind VAR and the dynamic `claude-lib-file' to a temp copy of the
 real library, run BODY, then kill any buffer left visiting it and
-delete the temp file. Never touches the checked-in modules/claude-lib.el."
+delete the temp file. Never touches the checked-in modules/claude-lib.el.
+
+`claude-lib-verify-load-in-subprocess' is bound off: it forks a real
+Emacs per promotion, which these pure tests do not need. The tests that
+DO exercise that gate rebind it to t themselves, and the live suite
+runs with it at its production default."
   (declare (indent 1))
   `(let* ((,var (make-temp-file "claude-lib-test-promote-lib" nil ".el"))
-          (claude-lib-file ,var))
+          (claude-lib-file ,var)
+          (claude-lib-verify-load-in-subprocess nil))
      (unwind-protect
          (progn
            (copy-file (expand-file-name "claude-lib.el" claude-lib-test--repo-root)
@@ -266,16 +301,39 @@ what propagates: it is the one that actually explains the failure."
 ;; Phase 3 AC3/AC4 -- claude-lib-promote: provenance and validation
 ;; ============================================================================
 
+(defun claude-lib-test--file-text (file)
+  "Return FILE's contents as a string."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (buffer-string)))
+
+(defun claude-lib-test--scan (file)
+  "Return `claude-lib--scan-top-level' over FILE's on-disk contents."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (claude-lib--scan-top-level file)))
+
+(defun claude-lib-test--definition-start (file name)
+  "Return the buffer position at which FILE defines NAME at top level, or nil."
+  (cdr (seq-find (lambda (entry)
+                   (let ((datum (car entry)))
+                     (and (memq (car-safe datum) '(defun cl-defun defmacro))
+                          (eq (nth 1 datum) name))))
+                 (claude-lib-test--scan file))))
+
 (ert-deftest claude-lib-test-promote-writes-provenance-comment-above-form ()
+  "The provenance line must record the date, the problem and a
+DESTINATION verbatim -- including a cross-repo one -- and must sit
+immediately above the promoted form as a genuine top-level comment,
+not inside any form."
   (claude-lib-test--with-temp-library lib
     (unwind-protect
         (progn
           (claude-lib-promote
            "(defun claude-lib-test-promoted-fn (x)\n  \"Return X unchanged.\"\n  x)"
            "rdm/editors/emacs" "needed a trivial passthrough for a live test")
-          (let ((text (with-temp-buffer
-                        (insert-file-contents lib)
-                        (buffer-string))))
+          (let ((text (claude-lib-test--file-text lib))
+                (start (claude-lib-test--definition-start lib 'claude-lib-test-promoted-fn)))
             (should (string-match-p "needed a trivial passthrough for a live test" text))
             (should (string-match-p "Destination: rdm/editors/emacs\\." text))
             (should (string-match-p
@@ -283,7 +341,17 @@ what propagates: it is the one that actually explains the failure."
                          "needed a trivial passthrough for a live test "
                          "Destination: rdm/editors/emacs.\n"
                          "(defun claude-lib-test-promoted-fn")
-                     text))))
+                     text))
+            ;; The comment is genuinely OUTSIDE every top-level form: the
+            ;; promoted definition's own scan position is the line after it.
+            (should start)
+            (with-temp-buffer
+              (insert-file-contents lib)
+              (goto-char start)
+              (forward-line -1)
+              (should (looking-at
+                       (rx ";; Promoted " (= 4 digit) "-" (= 2 digit) "-" (= 2 digit) ": "
+                           (+ nonl) " Destination: rdm/editors/emacs." eol))))))
       (when (fboundp 'claude-lib-test-promoted-fn) (fmakunbound 'claude-lib-test-promoted-fn)))))
 
 (ert-deftest claude-lib-test-promote-eval-failure-does-not-wedge-later-promotions ()
@@ -419,8 +487,8 @@ a multi-line PROBLEM is."
                                     (buffer-string)))))
       (when (fboundp 'claude-lib-test-default-dest) (fmakunbound 'claude-lib-test-default-dest)))))
 
-(ert-deftest claude-lib-test-promote-duplicate-name-in-file-text-rejected ()
-  "A name already present as `(defun NAME ...)' text in the target file
+(ert-deftest claude-lib-test-promote-duplicate-name-at-top-level-rejected ()
+  "A name already carried by a top-level definition in the target file
 must be rejected outright -- there is no override; a genuine
 replacement needs a new name and its own provenance comment."
   (claude-lib-test--with-temp-library lib
@@ -597,6 +665,242 @@ with `select-window' before feeding keys, rather than trusting
           (should (equal (with-current-buffer decoy (buffer-string)) "")))
       (kill-buffer decoy)
       (kill-buffer target))))
+
+
+;; ============================================================================
+;; Phase 3 AC5 -- a promote can never corrupt the library or break boot
+;; ============================================================================
+
+;; The reproduced defect: `claude-lib-promote' once located its insertion
+;; point with a raw `re-search-forward "^(provide \'claude-lib)"' from
+;; `point-min', so a promoted function whose DOCSTRING carries that line
+;; at column 0 hijacked the anchor and the next promotion was spliced
+;; inside that string. With a `"' in PROBLEM the quote count went odd and
+;; the file stopped parsing entirely -- `init.el' then aborted config
+;; loading, and stayed broken across restarts.
+
+(defconst claude-lib-test--anchor-trap-source
+  (concat "(defun claude-lib-test-anchor-trap (x)\n"
+          "  \"Return X unchanged.\n"
+          "Illustrative library tail, as plain docstring text:\n"
+          "(provide 'claude-lib)\n"
+          ";;; claude-lib.el ends here\"\n"
+          "  x)")
+  "A promotable function whose docstring contains the library's own tail.
+Every line of it is only text inside a string, so a structural anchor
+must ignore it and a text search must not.")
+
+(ert-deftest claude-lib-test-promote-anchor-ignores-provide-inside-docstring ()
+  "A second promotion after the anchor trap must land as a real
+top-level form, and `(provide \\='claude-lib)' must still be the file's
+LAST top-level form rather than swallowed into a string."
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (claude-lib-promote claude-lib-test--anchor-trap-source
+                              "edmacs" "seed a docstring carrying the library tail")
+          (claude-lib-promote
+           "(defun claude-lib-test-after-trap (y)\n  \"Return Y unchanged.\"\n  y)"
+           "edmacs" "promote again behind the trap")
+          (let ((scan (claude-lib-test--scan lib)))
+            (should (claude-lib--name-defined-in-file-p 'claude-lib-test-anchor-trap scan))
+            (should (claude-lib--name-defined-in-file-p 'claude-lib-test-after-trap scan))
+            (should (equal (car (car (last scan))) '(provide 'claude-lib)))))
+      (dolist (sym '(claude-lib-test-anchor-trap claude-lib-test-after-trap))
+        (when (fboundp sym) (fmakunbound sym))))))
+
+(ert-deftest claude-lib-test-promote-quote-in-problem-keeps-file-parseable ()
+  "The escalation input: a `\"' in PROBLEM behind the anchor trap once
+took the file's quote count odd, so it no longer read to EOF at all."
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (claude-lib-promote claude-lib-test--anchor-trap-source
+                              "edmacs" "seed a docstring carrying the library tail")
+          (claude-lib-promote
+           "(defun claude-lib-test-quoted-problem (y)\n  \"Return Y unchanged.\"\n  y)"
+           "edmacs" "a problem mentioning a \" character")
+          ;; Reads to EOF, which is exactly what `(load FILE)' needs.
+          (should (claude-lib-test--scan lib))
+          (should (claude-lib--name-defined-in-file-p
+                   'claude-lib-test-quoted-problem (claude-lib-test--scan lib))))
+      (dolist (sym '(claude-lib-test-anchor-trap claude-lib-test-quoted-problem))
+        (when (fboundp sym) (fmakunbound sym))))))
+
+(ert-deftest claude-lib-test-promote-presave-verification-failure-restores-bytes ()
+  "A pre-save verification failure must leave the file byte-identical
+and the buffer unmodified, so the very next well-formed promotion
+still succeeds rather than tripping the modified-buffer guard."
+  (claude-lib-test--with-temp-library lib
+    (let ((before (claude-lib-test--file-text lib)))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'claude-lib--verify-library)
+                       (lambda (&rest _) (user-error "simulated verification failure"))))
+              (should-error
+               (claude-lib-promote
+                "(defun claude-lib-test-presave-fail (x)\n  \"Return X unchanged.\"\n  x)"
+                "edmacs" "force the pre-save check to fail")
+               :type 'user-error))
+            (should (equal before (claude-lib-test--file-text lib)))
+            (should-not (fboundp 'claude-lib-test-presave-fail))
+            (let ((buf (get-file-buffer lib)))
+              (should buf)
+              (should-not (buffer-modified-p buf)))
+            (should (eq 'claude-lib-test-presave-ok
+                        (claude-lib-promote
+                         "(defun claude-lib-test-presave-ok ()\n  \"Return t.\"\n  t)"
+                         "edmacs" "prove a later promotion is unaffected"))))
+        (dolist (sym '(claude-lib-test-presave-fail claude-lib-test-presave-ok))
+          (when (fboundp sym) (fmakunbound sym)))))))
+
+(ert-deftest claude-lib-test-promote-postsave-verification-failure-restores-bytes ()
+  "A failure AFTER the save must roll the file back on disk too, not
+just in the buffer -- the mutation is already durable at that point."
+  (claude-lib-test--with-temp-library lib
+    (let ((before (claude-lib-test--file-text lib)))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'claude-lib--verify-file)
+                       (lambda (&rest _) (user-error "simulated on-disk verification failure"))))
+              (should-error
+               (claude-lib-promote
+                "(defun claude-lib-test-postsave-fail (x)\n  \"Return X unchanged.\"\n  x)"
+                "edmacs" "force the on-disk check to fail")
+               :type 'user-error))
+            (should (equal before (claude-lib-test--file-text lib)))
+            (should-not (fboundp 'claude-lib-test-postsave-fail))
+            (should-not (buffer-modified-p (get-file-buffer lib))))
+        (when (fboundp 'claude-lib-test-postsave-fail)
+          (fmakunbound 'claude-lib-test-postsave-fail))))))
+
+(ert-deftest claude-lib-test-promote-missing-anchor-errors-without-mutating ()
+  "A library with no trailing `(provide \\='claude-lib)' has no anchor to
+insert against; that must error before anything is written."
+  (claude-lib-test--with-temp-library lib
+    (with-temp-buffer
+      (insert-file-contents lib)
+      (goto-char (point-min))
+      (should (re-search-forward "^(provide 'claude-lib)$" nil t))
+      (replace-match ";; provide removed for this test")
+      (write-region (point-min) (point-max) lib nil 'quiet))
+    (let ((before (claude-lib-test--file-text lib)))
+      (unwind-protect
+          (progn
+            (should-error
+             (claude-lib-promote
+              "(defun claude-lib-test-no-anchor (x)\n  \"Return X unchanged.\"\n  x)"
+              "edmacs" "no anchor to insert against")
+             :type 'user-error)
+            (should (equal before (claude-lib-test--file-text lib)))
+            (should-not (fboundp 'claude-lib-test-no-anchor)))
+        (when (fboundp 'claude-lib-test-no-anchor)
+          (fmakunbound 'claude-lib-test-no-anchor))))))
+
+(ert-deftest claude-lib-test-promote-save-failure-leaves-name-unbound ()
+  "Pins save-then-eval: when the write fails, the running image must not
+claim a name the file lacks. The reverse order left NAME `fboundp'
+here, absent from disk, lost at the next restart -- and permanently
+un-repromotable, since the `fboundp' gate would refuse the retry."
+  (claude-lib-test--with-temp-library lib
+    (let ((before (claude-lib-test--file-text lib)))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'save-buffer)
+                       (lambda (&rest _) (error "simulated write failure"))))
+              (should-error
+               (claude-lib-promote
+                "(defun claude-lib-test-save-fail (x)\n  \"Return X unchanged.\"\n  x)"
+                "edmacs" "force the save to fail")))
+            (should-not (fboundp 'claude-lib-test-save-fail))
+            (should (equal before (claude-lib-test--file-text lib))))
+        (when (fboundp 'claude-lib-test-save-fail)
+          (fmakunbound 'claude-lib-test-save-fail))))))
+
+(ert-deftest claude-lib-test-promote-subprocess-gate-rejects-unloadable-library ()
+  "With the boot-safety gate on, a library that parses but signals at
+load time must be rejected and rolled back -- this is the only check
+that tests what `init.el' does at the next daemon start."
+  (claude-lib-test--with-temp-library lib
+    (with-temp-buffer
+      (insert-file-contents lib)
+      (goto-char (point-min))
+      (should (re-search-forward "^(provide 'claude-lib)$" nil t))
+      (goto-char (match-beginning 0))
+      (insert "(error \"deliberate boot failure\")\n\n")
+      (write-region (point-min) (point-max) lib nil 'quiet))
+    (let ((before (claude-lib-test--file-text lib))
+          (claude-lib-verify-load-in-subprocess t))
+      (unwind-protect
+          (progn
+            (should (string-match-p
+                     "no longer loads in a fresh Emacs"
+                     (error-message-string
+                      (should-error
+                       (claude-lib-promote
+                        "(defun claude-lib-test-unloadable (x)\n  \"Return X unchanged.\"\n  x)"
+                        "edmacs" "the library no longer boots")
+                       :type 'user-error))))
+            (should (equal before (claude-lib-test--file-text lib)))
+            (should-not (fboundp 'claude-lib-test-unloadable)))
+        (when (fboundp 'claude-lib-test-unloadable)
+          (fmakunbound 'claude-lib-test-unloadable))))))
+
+(ert-deftest claude-lib-test-promote-duplicate-name-inside-docstring-not-rejected ()
+  "A name occurring only inside an earlier promotion's docstring must
+NOT block a genuine promotion of that name: the old text regex matched
+`(defun NAME' at column 0 wherever it appeared, burning the name for
+good."
+  (claude-lib-test--with-temp-library lib
+    (unwind-protect
+        (progn
+          (claude-lib-promote
+           (concat "(defun claude-lib-test-ghost-holder (x)\n"
+                   "  \"Return X unchanged.\n"
+                   "Sketch of a helper this one will eventually replace:\n"
+                   "(defun claude-lib-test-ghost (y)\n"
+                   "  (identity y))\"\n"
+                   "  x)")
+           "edmacs" "seed a docstring naming a not-yet-written function")
+          (should (eq 'claude-lib-test-ghost
+                      (claude-lib-promote
+                       "(defun claude-lib-test-ghost (y)\n  \"Return Y unchanged.\"\n  y)"
+                       "edmacs" "actually write the sketched helper")))
+          (should (claude-lib--name-defined-in-file-p
+                   'claude-lib-test-ghost (claude-lib-test--scan lib))))
+      (dolist (sym '(claude-lib-test-ghost-holder claude-lib-test-ghost))
+        (when (fboundp sym) (fmakunbound sym))))))
+
+;; ============================================================================
+;; Phase 3 AC2 -- the documented discovery trap, and the entry-point regexp
+;; ============================================================================
+
+(ert-deftest claude-lib-test-describe-function-capture-is-empty ()
+  "`describe-function' renders into a *Help* buffer, not
+`standard-output', so capturing it yields the empty string. Pinned so
+nobody rebuilds discovery on it instead of on `documentation' plus
+`help-function-arglist'."
+  (should (equal (with-output-to-string (describe-function 'claude-lib-demo)) "")))
+
+(ert-deftest claude-lib-test-entry-point-regexp-excludes-internals ()
+  "The Commentary's tightened regexp must list entry points only --
+`claude-lib--' internals are not part of the callable surface."
+  (let ((entry-points (apropos-internal "\\`claude-lib-[^-]" #'fboundp)))
+    (should (memq 'claude-lib-demo entry-points))
+    (should (memq 'claude-lib-promote entry-points))
+    (should-not (memq 'claude-lib--demo-walk entry-points))
+    (should-not (memq 'claude-lib--scan-top-level entry-points)))
+  ;; ...while the broad form documented alongside it still sees both.
+  (should (memq 'claude-lib--demo-walk (apropos-internal "^claude-lib-" #'fboundp))))
+
+(ert-deftest claude-lib-test-no-input-helper-symbol-claimed ()
+  "Phase 6 owns the reusable input-feeding helpers; this phase documents
+the raw primitives and must leave that namespace unclaimed."
+  (should-not (fboundp 'claude-lib-with-input))
+  (let ((text (with-temp-buffer
+                (insert-file-contents (expand-file-name "claude-lib.el" claude-lib-test--repo-root))
+                (buffer-string))))
+    (should-not (string-match-p "claude-lib-with-input" text))))
 
 (provide 'claude-lib-test)
 ;;; claude-lib-test.el ends here

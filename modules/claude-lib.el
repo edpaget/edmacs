@@ -51,10 +51,22 @@
 ;; Anything Claude writes and tests in a session evaporates when the
 ;; session ends unless it is promoted here via `claude-lib-promote',
 ;; which appends the tested form (with a dated provenance comment) to
-;; THIS file, evals it into the running daemon, and saves -- so the
+;; THIS file, saves it, and evals it into the running daemon -- so the
 ;; next session's fresh load (this file is loaded from init.el on
 ;; every daemon start) finds it too, not just the promoting session's
 ;; own live image.
+;;
+;; This is the one module that rewrites its own source at runtime, and
+;; init.el loads it at boot, so a corrupt write would take the whole
+;; config down and stay down. `claude-lib-promote' therefore locates
+;; its insertion point structurally (the position of the trailing
+;; `(provide \\='claude-lib)' DATUM, never a text search that a promoted
+;; docstring could hijack), re-reads the mutated buffer and then the
+;; saved bytes, and finally proves the result still loads in a real
+;; `emacs -Q --batch' before defining anything. init.el additionally
+;; wraps this one module's load in `with-demoted-errors': the eval
+;; channel above is defined near the top of the file, so even a
+;; hostile tail leaves Claude the means to repair the damage.
 ;;
 ;; THERE IS NO PER-WORKTREE ISOLATION FOR THIS FILE. `claude-lib-file'
 ;; (see its own docstring) resolves once, at daemon boot, to the main
@@ -78,6 +90,19 @@
 ;;   (documentation 'claude-lib-demo)                ; full docstring
 ;;   (help-function-arglist 'claude-lib-demo)        ; signature
 ;;   (elisp-get-fnsym-args-string 'claude-lib-demo)   ; eldoc's own helper
+;;
+;; The cheap index -- name plus first docstring line, for the whole
+;; library -- is one form, and this is the shape to paste:
+;;
+;;   (mapcar (lambda (s) (cons s (car (split-string (or (documentation s) "") "\n"))))
+;;           (apropos-internal "^claude-lib-" #'fboundp))
+;;
+;; The promotion library follows the usual Emacs single-/double-dash
+;; convention: `claude-lib-NAME' is an entry point, `claude-lib--NAME'
+;; an internal helper. To list entry points only, tighten the regexp to
+;; "\\`claude-lib-[^-]" -- the broad "^claude-lib-" above also matches
+;; the internals, which is right when auditing the file and noise when
+;; asking what is callable.
 ;;
 ;; VERIFIED TRAP: `(with-output-to-string (describe-function 'foo))'
 ;; returns the EMPTY STRING. `describe-function' renders into a *Help*
@@ -143,8 +168,8 @@ rather than silently writing a truncated file that looks complete.")
     (skip-chars-forward "^\n")
     (skip-chars-forward " \t\n\r\f")))
 
-(defun edmacs-claude-lib--read-forms-in-current-buffer (context)
-  "Read every top-level form in the current buffer, in order, as a list.
+(defun edmacs-claude-lib--scan-forms-in-current-buffer (context)
+  "Scan the current buffer's top-level forms as a list of (DATUM . START-POS).
 Deliberately does not rely on `read' signaling `end-of-file' to mean
 \"nothing left\": that same signal is what a genuinely truncated
 trailing form (an unbalanced paren at EOF) raises too, so catching it
@@ -155,13 +180,21 @@ that itself hits EOF is a real error and is left to propagate. CONTEXT
 names the input in the error signaled when no forms are found at all."
   (goto-char (point-min))
   (edmacs-claude-lib--skip-form-whitespace)
-  (let (forms)
+  (let (scan)
     (while (not (eobp))
-      (push (read (current-buffer)) forms)
+      (let ((start (point)))
+        (push (cons (read (current-buffer)) start) scan))
       (edmacs-claude-lib--skip-form-whitespace))
-    (unless forms
+    (unless scan
       (error "edmacs-claude-lib: no forms in %s" context))
-    (nreverse forms)))
+    (nreverse scan)))
+
+(defun edmacs-claude-lib--read-forms-in-current-buffer (context)
+  "Read every top-level form in the current buffer, in order, as a list.
+Drops the start positions `edmacs-claude-lib--scan-forms-in-current-buffer'
+records, so the eval channel and the promotion library share one reader
+loop rather than each carrying its own. CONTEXT is passed through."
+  (mapcar #'car (edmacs-claude-lib--scan-forms-in-current-buffer context)))
 
 (defun edmacs-claude-lib--read-all-forms (form-file)
   "Read every top-level form in FORM-FILE, in order, as a list.
@@ -363,21 +396,128 @@ is `claude-lib-promote's job, not this formatter's."
           (format-time-string "%Y-%m-%d")
           problem destination))
 
-(defun claude-lib--name-defined-in-file-p (name)
-  "Return non-nil if NAME is already defined as a top-level form in BUFFER.
-Meant to be called with `claude-lib-file's buffer current. Checks the
-buffer's TEXT directly, not `fboundp': a previous promotion may already
-be on disk without yet being loaded into this image (a fresh daemon
-that has not reloaded claude-lib.el since), and a text search still
-catches that case. `claude-lib-promote' also checks `fboundp'
-separately -- neither check subsumes the other, since the shared file
-and the shared running process can diverge (see its docstring)."
+(defconst claude-lib--provide-form '(provide 'claude-lib)
+  "The trailing top-level form every promotion is inserted ahead of.")
+
+(defun claude-lib--scan-top-level (context)
+  "Return (DATUM . START-POS) for every top-level form in the current buffer.
+CONTEXT names the buffer's source in any error signaled; point is left
+where it was. Both the insertion anchor and the duplicate-name check
+work from this scan rather than from a text search, because a promoted
+docstring can contain the literal line `(provide \\='claude-lib)' or
+`(defun claude-lib-foo' at column 0 and no regex can tell that text
+apart from the real form."
   (save-excursion
-    (goto-char (point-min))
-    (re-search-forward
-     (format "^(\\(?:defun\\|cl-defun\\|defmacro\\)[ \t\n]+%s[ \t\n(]"
-             (regexp-quote (symbol-name name)))
-     nil t)))
+    (edmacs-claude-lib--scan-forms-in-current-buffer context)))
+
+(defun claude-lib--anchor-position (scan context)
+  "Return the start position of SCAN's trailing `(provide \\='claude-lib)'.
+Signals a `user-error' unless that form is SCAN's LAST entry: anything
+else means the buffer is not the library this function thinks it is,
+and inserting into it would be a guess."
+  (let ((last-entry (car (last scan))))
+    (unless (equal (car last-entry) claude-lib--provide-form)
+      (user-error "claude-lib-promote: %s does not end with a top-level (provide 'claude-lib) form"
+                  context))
+    (cdr last-entry)))
+
+(defun claude-lib--name-defined-in-file-p (name scan)
+  "Return non-nil if SCAN carries a top-level definition of NAME.
+SCAN is a `claude-lib--scan-top-level' result over `claude-lib-file's
+contents. Checked as DATA, not `fboundp': a previous promotion may
+already be on disk without yet being loaded into this image (a fresh
+daemon that has not reloaded claude-lib.el since). `claude-lib-promote'
+checks `fboundp' separately -- neither check subsumes the other, since
+the shared file and the shared running process can diverge (see its
+docstring)."
+  (seq-some (lambda (entry)
+              (let ((datum (car entry)))
+                (and (memq (car-safe datum) '(defun cl-defun defmacro))
+                     (eq (nth 1 datum) name))))
+            scan))
+
+(defun claude-lib--verify-library (name context)
+  "Signal a `user-error' unless the current buffer is a library defining NAME.
+Requires all three properties a corrupt promotion breaks: the buffer
+reads to EOF as Lisp, NAME is a genuine top-level definition in it, and
+`(provide \\='claude-lib)' is still the last top-level form rather than
+swallowed into a string. CONTEXT names the buffer in any error."
+  (let ((scan (condition-case err
+                  (claude-lib--scan-top-level context)
+                (error
+                 (user-error "claude-lib-promote: %s no longer parses as elisp: %s"
+                             context (error-message-string err))))))
+    (unless (claude-lib--name-defined-in-file-p name scan)
+      (user-error "claude-lib-promote: %s is not a top-level definition in %s"
+                  name context))
+    (claude-lib--anchor-position scan context)
+    t))
+
+(defun claude-lib--verify-file (file name)
+  "Signal a `user-error' unless FILE's bytes on disk define NAME as a library.
+Re-reads FILE rather than trusting the buffer that was just saved, so
+an `after-save' hook or a formatter rewriting the file cannot slip past
+the pre-save check."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (claude-lib--verify-library name (format "%s (on disk)" file))))
+
+(defvar claude-lib-verify-load-in-subprocess t
+  "Whether `claude-lib-promote' proves the written library still boots.
+This is the only check that tests the exact property a bad promotion
+breaks -- `init.el' loading the file at daemon start -- rather than
+approximating it, so leave it on outside tests. Degrades to a skip when
+no `emacs' is on `exec-path'.")
+
+(defvar claude-lib-verify-load-timeout 30
+  "Seconds `claude-lib--verify-file-loads' waits for its batch Emacs.
+A hung child is treated as a failed check, not as a pass.")
+
+(defun claude-lib--verify-file-loads (file)
+  "Signal a `user-error' unless FILE loads cleanly in a fresh batch Emacs.
+Runs \"emacs -Q --batch --eval (load FILE nil t)\" and requires exit 0."
+  (let ((emacs (executable-find "emacs")))
+    (if (not emacs)
+        (message "claude-lib-promote: no `emacs' on exec-path; skipping the boot-safety load check")
+      (with-temp-buffer
+        (let ((proc (make-process
+                     :name "claude-lib-verify-load"
+                     :buffer (current-buffer)
+                     :noquery t
+                     ;; A failing check is this function's normal path, so
+                     ;; the default sentinel's "exited abnormally" report
+                     ;; would be noise on top of the error we raise.
+                     :sentinel #'ignore
+                     :connection-type 'pipe
+                     :command (list emacs "-Q" "--batch" "--eval"
+                                    (format "(load %S nil t)" file))))
+              (deadline (+ (float-time) claude-lib-verify-load-timeout)))
+          (while (and (process-live-p proc) (< (float-time) deadline))
+            (accept-process-output proc 0.05))
+          (when (process-live-p proc)
+            (delete-process proc)
+            (user-error "claude-lib-promote: boot-safety load check timed out after %ss on %s"
+                        claude-lib-verify-load-timeout file))
+          (while (accept-process-output proc 0.05))
+          (unless (eq (process-exit-status proc) 0)
+            (user-error "claude-lib-promote: %s no longer loads in a fresh Emacs (exit %s): %s"
+                        file (process-exit-status proc)
+                        (string-trim (buffer-string)))))))))
+
+(defun claude-lib--restore-library (buffer text saved)
+  "Restore BUFFER's library to TEXT, writing it back when SAVED is non-nil.
+Restores from the text captured before the promotion rather than via
+`revert-buffer', so the restore does not depend on a reread succeeding;
+leaving the buffer modified would wedge every later promotion behind
+`claude-lib--ensure-fresh-buffer's guard."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert text))
+    (if saved
+        (with-demoted-errors "claude-lib-promote: on-disk restore failed: %S"
+          (save-buffer))
+      (set-buffer-modified-p nil))))
 
 (defun claude-lib--ensure-fresh-buffer (file)
   "Return a buffer visiting FILE with contents matching disk, or error.
@@ -426,10 +566,12 @@ provenance comment is a single `;;'-prefixed line, and a raw embedded
 newline would splice uncommented text straight into this file's Lisp
 source.
 
-NAME must not already exist -- checked BOTH as literal `(defun NAME
-...)'/`(cl-defun NAME ...)'/`(defmacro NAME ...)' text in
-`claude-lib-file's current on-disk contents AND as `(fboundp NAME)' in
-this running Emacs. Neither check alone is enough: because every
+NAME must not already exist -- checked BOTH as a top-level `defun',
+`cl-defun' or `defmacro' datum in `claude-lib-file's current on-disk
+contents AND as `(fboundp NAME)' in this running Emacs. The on-disk
+half reads the file as Lisp rather than grepping it, so a name that
+merely appears inside an earlier promotion's docstring does not burn
+that name forever. Neither check alone is enough: because every
 worktree's claude-term session shares this one main-checkout file and
 this one running daemon (see `claude-lib-file'), a name can be
 `fboundp' here from an earlier ad hoc `eval' or a concurrent promotion
@@ -439,9 +581,26 @@ reloaded -- either signal alone means NAME is taken, so both are hard
 errors with no override. A genuine replacement is a new name plus a
 provenance comment noting what it supersedes, not a silent redefine.
 
-On success: evaluates the parsed form into this Emacs, appends the
-provenance comment and SOURCE to the file (ahead of the trailing
-`(provide \\='claude-lib)' form), saves it, and returns the defined
+The write order is insert, verify, save, verify again, prove the file
+still boots, and only then evaluate -- never eval-then-save. Each step
+guards a distinct failure: the insertion point is the position of the
+trailing `(provide \\='claude-lib)' DATUM, so a promoted docstring
+containing that same line as text cannot hijack it; the pre-save check
+requires the mutated buffer to read to EOF with NAME at top level and
+that provide form still last; the post-save check repeats it against
+the bytes actually on disk; and `claude-lib--verify-file-loads' runs a
+real `emacs -Q --batch' load of the result, which is the only check
+that tests what `init.el' will do at the next daemon start. Any failure
+up to that point restores the pre-promotion text and signals.
+
+Evaluating last means a failed write can never leave NAME `fboundp'
+here but absent from the file -- which would both lose the function at
+the next restart and permanently block re-promoting that name. The
+residual failure runs the other way, harmlessly: the file has NAME,
+this image does not, and the definition arrives at the next boot.
+
+On success: appends the provenance comment and SOURCE ahead of the
+trailing provide form, saves, evaluates, and returns the defined
 symbol. Both the file write and the eval land in the one shared
 main-checkout file/process regardless of which worktree's session
 called this -- see `claude-lib-file'."
@@ -494,39 +653,41 @@ called this -- see `claude-lib-file'."
                          name (error-message-string err))))
           (let ((buf (claude-lib--ensure-fresh-buffer claude-lib-file)))
             (with-current-buffer buf
-              (when (claude-lib--name-defined-in-file-p name)
-                (user-error
-                 "claude-lib-promote: %s is already defined in %s"
-                 name claude-lib-file))
-              (goto-char (point-min))
-              (unless (re-search-forward "^(provide 'claude-lib)" nil t)
-                (user-error "claude-lib-promote: could not find the trailing (provide 'claude-lib) form in %s"
-                            claude-lib-file))
-              (goto-char (match-beginning 0))
-              ;; Collapse whatever blank run already precedes (provide ...)
-              ;; so successive promotions never accumulate extra blank
-              ;; lines here -- exactly one separates each entry.
-              (let ((provide-start (point)))
-                (skip-chars-backward "\n\t ")
-                (delete-region (point) provide-start))
-              ;; Everything from here on mutates the library buffer, so any
-              ;; failure must leave it exactly as found. `claude-lib--ensure-fresh-buffer'
-              ;; guarantees it was unmodified on entry, so reverting from disk
-              ;; is a complete restore -- and it is what keeps a failed
-              ;; promotion from wedging every LATER promotion behind that
-              ;; helper's own modified-buffer guard, which cannot tell a
-              ;; half-finished promotion from a human mid-edit.
-              (let ((done nil))
-                (unwind-protect
-                    (progn
-                      (insert "\n\n" (claude-lib--provenance-comment destination problem)
-                              (string-trim-right source) "\n\n")
-                      (eval form t)
-                      (save-buffer)
-                      (setq done t))
-                  (unless done
-                    (with-demoted-errors "claude-lib-promote: buffer restore failed: %S"
-                      (revert-buffer t t t))))))
+              (let ((scan (claude-lib--scan-top-level claude-lib-file)))
+                (when (claude-lib--name-defined-in-file-p name scan)
+                  (user-error
+                   "claude-lib-promote: %s is already defined in %s"
+                   name claude-lib-file))
+                ;; Everything below mutates the library, so any failure must
+                ;; restore it -- in the buffer, and on disk once the save has
+                ;; happened. A half-finished promotion would otherwise wedge
+                ;; every later one behind the modified-buffer guard.
+                (let ((before-text (buffer-string))
+                      (anchor (claude-lib--anchor-position scan claude-lib-file))
+                      (saved nil)
+                      (done nil))
+                  (unwind-protect
+                      (progn
+                        (goto-char anchor)
+                        ;; Collapse the blank run before the provide form so
+                        ;; successive promotions do not accumulate blank lines.
+                        (skip-chars-backward "\n\t ")
+                        (delete-region (point) anchor)
+                        (insert "\n\n" (claude-lib--provenance-comment destination problem)
+                                (string-trim-right source) "\n\n")
+                        (claude-lib--verify-library name claude-lib-file)
+                        (save-buffer)
+                        (setq saved t)
+                        (claude-lib--verify-file claude-lib-file name)
+                        (when claude-lib-verify-load-in-subprocess
+                          (claude-lib--verify-file-loads claude-lib-file))
+                        ;; The file is proven good from here on, so a failure in
+                        ;; the eval below must NOT roll it back: the definition
+                        ;; simply arrives at the next boot instead.
+                        (setq done t)
+                        (eval form t))
+                    (unless done
+                      (claude-lib--restore-library buf before-text saved))))))
             name))))))
 
 (provide 'claude-lib)
