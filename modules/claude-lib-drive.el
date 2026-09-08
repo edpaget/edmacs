@@ -243,8 +243,10 @@ and their docstrings describe it.  Returns their result plist."
                            ((stringp choice) (lambda (&rest _) choice))
                            (t completing-read-function)))
                     (standard-output capture))
-                (select-window window)
+                ;; Before `select-window', whose implicit buffer-sync would
+                ;; otherwise make the window's OLD buffer current.
                 (when buffer (set-window-buffer window (get-buffer-create buffer)))
+                (select-window window)
                 (condition-case signalled
                     (setq value (with-timeout (timeout (setq err 'timeout) nil)
                                   (funcall thunk)))
@@ -298,7 +300,8 @@ KEYS is a plist:
   :window   the window to select before feeding input, defaulting to the
             selected one.  Simulated keys follow the SELECTED WINDOW, not
             the current buffer, so this is what decides where they land.
-  :buffer   a buffer (or name) to show in that window first.
+  :buffer   a buffer (or name) to show in that window before the pin, so
+            it is what THUNK sees as `current-buffer' too.
   :timeout  seconds for the backstop, defaulting to
             `claude-lib-drive-default-timeout'.
 
@@ -353,8 +356,11 @@ is counted too; it cannot tell code from quoted data, which is why
   (when (consp form)
     (let ((head (car form)))
       (when (symbolp head)
+        ;; `(defvar foo)' is a forward declaration with no value to keep
+        ;; stale -- reporting it would be a systematic false positive.
         (when (and (memq head claude-lib--drive-stale-definers)
-                   (symbolp (nth 1 form)) (nth 1 form))
+                   (symbolp (nth 1 form)) (nth 1 form)
+                   (nthcdr 2 form))
           (push (nth 1 form) (car definers)))
         (let ((key (cdr (assq head claude-lib--drive-stacking-forms))))
           (when key
@@ -370,8 +376,10 @@ The return value is
 
 `load-file' re-evaluates `defun's, which covers most iteration.  It does
 NOT do the rest, and this is the honest accounting of that:
-:not-reset names every `defvar'/`defcustom'/`defface' in FILE, all of
-which keep their stale values because they only initialise when unbound;
+:not-reset names every `defvar'/`defcustom'/`defface' in FILE that
+supplies a value, all of which keep their stale one because they only
+initialise when unbound (a value-less `(defvar foo)' forward declaration
+has nothing to keep and is not reported);
 the counts are forms that STACK on a second load -- `add-hook'
 double-adds, `advice-add'/`define-advice' pile up, `define-key' and
 `keymap-set' leave an already-installed keymap holding the bindings it

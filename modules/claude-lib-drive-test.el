@@ -160,6 +160,36 @@ window's buffer and `current-buffer' was left pointing there."
             (should (equal (plist-get result :current-buffer) "*cldt-target*"))))
       (when (window-live-p target-window) (delete-window target-window)))))
 
+(ert-deftest claude-lib-drive-test-buffer-is-current-inside-the-thunk ()
+  "`:buffer' must be current for the THUNK, not merely displayed.
+`select-window' syncs `current-buffer' from the window's buffer, so
+showing `:buffer' AFTER selecting leaves the window's old buffer current
+and the thunk edits that one instead -- the ambient `(current-buffer)'
+every ordinary command works through."
+  (let ((decoy (claude-lib-drive-test--fresh-buffer "*cldt-buf-decoy*"))
+        (target (claude-lib-drive-test--fresh-buffer "*cldt-buf-target*"))
+        (window (selected-window)))
+    (set-window-buffer window decoy)
+    (let ((result (claude-lib-drive
+                   (lambda () (insert "HELLO") (buffer-name))
+                   :buffer "*cldt-buf-target*" :window window)))
+      (should (equal (plist-get result :value) "*cldt-buf-target*"))
+      (should (equal (plist-get result :current-buffer) "*cldt-buf-target*"))
+      (should (equal (plist-get result :window-buffer) "*cldt-buf-target*"))
+      (should (equal (with-current-buffer target (buffer-string)) "HELLO"))
+      (should (equal (with-current-buffer decoy (buffer-string)) "")))))
+
+(ert-deftest claude-lib-drive-test-buffer-is-shown-before-input-is-fed ()
+  "`:buffer' is in place before simulated keys land, so they type into it."
+  (let ((decoy (claude-lib-drive-test--fresh-buffer "*cldt-keys-decoy*"))
+        (target (claude-lib-drive-test--fresh-buffer "*cldt-keys-target*"))
+        (window (selected-window)))
+    (set-window-buffer window decoy)
+    (claude-lib-drive (lambda () (execute-kbd-macro (kbd "h i")))
+                      :buffer "*cldt-keys-target*" :window window)
+    (should (equal (with-current-buffer target (buffer-string)) "hi"))
+    (should (equal (with-current-buffer decoy (buffer-string)) ""))))
+
 (ert-deftest claude-lib-drive-test-restores-the-layout-and-the-selected-window ()
   "The caller's selected window and the frame's layout come back unchanged."
   (let* ((resident (claude-lib-drive-test--fresh-buffer "*cldt-resident*"))
@@ -190,6 +220,15 @@ neither can silently mask the other."
          (result (claude-lib-drive (lambda () (sit-for 30)) :timeout 1)))
     (should (eq (plist-get result :error) 'timeout))
     (should (< (- (float-time) start) 15))))
+
+(ert-deftest claude-lib-drive-test-quit-comes-back-as-data ()
+  "A genuine `quit' is reported as `quit', distinct from an aborted prompt.
+The other half of the driver's two-way quit branch: nothing here goes
+near a minibuffer, so this runs in batch alongside the timeout backstop
+rather than in the live suite."
+  (let ((result (claude-lib-drive (lambda () (signal 'quit nil)))))
+    (should (eq (plist-get result :error) 'quit))
+    (should-not (plist-get result :prompts))))
 
 ;; ============================================================================
 ;; AC3 -- reload, and what it does not undo
@@ -234,6 +273,21 @@ neither can silently mask the other."
       (should-not (plist-get report :restart-recommended))
       (should-not (plist-get report :not-reset))
       (should (= (plist-get report :add-hook) 0)))))
+
+(ert-deftest claude-lib-drive-test-reload-ignores-a-value-less-defvar ()
+  "A `(defvar foo)' forward declaration has no value to keep stale.
+This repo uses that idiom to byte-compile clean against a sibling
+module, so reporting it would make `:not-reset' a systematic false
+positive and train a reader to ignore the real entries."
+  (claude-lib-drive-test--with-fixture file
+      (concat ";;; -*- lexical-binding: t -*-\n"
+              "(defvar claude-lib-drive-test--bare)\n"
+              "(defvar claude-lib-drive-test--valued 1 \"doc\")\n"
+              "(defun claude-lib-drive-test--j () 1)\n")
+    (let ((report (claude-lib-reload file)))
+      (should-not (memq 'claude-lib-drive-test--bare (plist-get report :not-reset)))
+      (should (memq 'claude-lib-drive-test--valued (plist-get report :not-reset)))
+      (should-not (plist-get report :restart-recommended)))))
 
 (ert-deftest claude-lib-drive-test-reload-counts-nested-stacking-forms ()
   "A hook added inside `with-eval-after-load' stacks just the same, so it counts."
