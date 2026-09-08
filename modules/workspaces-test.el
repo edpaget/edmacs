@@ -285,27 +285,94 @@ three ungrouped tabs and move none of them."
                (t3-pos (seq-position names "t3")))
           (should (= 1 (abs (- t1-pos t3-pos)))))))))
 
-(ert-deftest edmacs-workspaces-test-move-tab-to-group-leaves-a-settled-tab-alone ()
-  "A tab already inside its group's bounds is not moved, and an ungrouped
-one (no root at all) is left where it is rather than shoved to the end."
+(defun edmacs-workspaces-test--tab-names ()
+  "Return the selected frame's tab names, left to right."
+  (mapcar (lambda (tab) (alist-get 'name tab)) (tab-bar-tabs)))
+
+(defun edmacs-workspaces-test--build-tabs (&rest specs)
+  "Build the frame's tab bar from SPECS, a list of (NAME . ROOT) conses.
+The first spec renames and stamps the scratch tab the enclosing
+`edmacs-workspaces-test--with-scratch-tabs' already made; each later one
+adds a tab to its right. A nil ROOT leaves the tab unstamped, i.e.
+ungrouped."
+  (let ((first t))
+    (dolist (spec specs)
+      (unless first (tab-bar-new-tab))
+      (setq first nil)
+      (when (cdr spec) (edmacs-workspaces-set-tab-root (cdr spec)))
+      (tab-bar-rename-tab (car spec)))))
+
+(ert-deftest edmacs-workspaces-test-move-tab-to-group-leaves-an-ungrouped-tab-alone ()
+  "A tab with no root at all derives no group, so there is nothing to move
+it toward and it stays put -- rather than taking the new-group branch and
+being shoved to the end. Batch's own tab and the daemon's boot tab are
+exactly this tab."
   (edmacs-workspaces-test--with-repos
     (edmacs-workspaces-test--with-scratch-tabs
-      (let ((wt-a (edmacs-workspaces-test--dir "repoA__worktrees/a"))
-            (wt-b (edmacs-workspaces-test--dir "repoA__worktrees/b")))
-        (edmacs-workspaces-set-tab-root wt-a)
-        (tab-bar-rename-tab "t1")
-        (tab-bar-new-tab)
-        (edmacs-workspaces-set-tab-root wt-b)
-        (tab-bar-rename-tab "t2")
-        (tab-bar-new-tab)
-        (tab-bar-rename-tab "t3")
-        (let ((before (mapcar (lambda (tab) (alist-get 'name tab)) (tab-bar-tabs))))
-          ;; t3 carries no root, so it has no group to be moved toward.
-          (should-not (edmacs-workspaces-test--group-of
-                       (edmacs-workspaces-test--current-tab)))
-          (edmacs-workspaces-move-tab-to-group)
-          (should (equal before
-                         (mapcar (lambda (tab) (alist-get 'name tab)) (tab-bar-tabs)))))))))
+      (edmacs-workspaces-test--build-tabs
+       (cons "t1" (edmacs-workspaces-test--dir "repoA__worktrees/a"))
+       (cons "t2" (edmacs-workspaces-test--dir "repoA__worktrees/b"))
+       (cons "t3" nil))
+      (let ((before (edmacs-workspaces-test--tab-names)))
+        ;; t3 carries no root, so it has no group to be moved toward.
+        (should-not (edmacs-workspaces-test--group-of
+                     (edmacs-workspaces-test--current-tab)))
+        (edmacs-workspaces-move-tab-to-group)
+        (should (equal before (edmacs-workspaces-test--tab-names)))))))
+
+(ert-deftest edmacs-workspaces-test-move-tab-to-group-leaves-a-settled-tab-alone ()
+  "A tab already inside its own group's contiguous block is not moved.
+The distinct branch from the ungrouped case above: this tab HAS a group,
+that group HAS another tab, and it is the bounds test -- not a missing
+group -- that declines the move. t2 sits at index 1 with repoA's block
+running 0..1, so the whole tab list must come back untouched."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (edmacs-workspaces-test--build-tabs
+       (cons "t1" (edmacs-workspaces-test--dir "repoA__worktrees/a"))
+       (cons "t2" (edmacs-workspaces-test--dir "repoA__worktrees/b"))
+       (cons "t3" (edmacs-workspaces-test--dir "repoB")))
+      (should (equal (mapcar #'edmacs-workspaces-test--group-of (tab-bar-tabs))
+                     '("repoA" "repoA" "repoB")))
+      (let ((before (edmacs-workspaces-test--tab-names)))
+        (edmacs-workspaces-move-tab-to-group (nth 1 (tab-bar-tabs)))
+        (should (equal before (edmacs-workspaces-test--tab-names)))))))
+
+(ert-deftest edmacs-workspaces-test-move-tab-to-group-appends-a-brand-new-group ()
+  "A tab whose group has no other tab on the frame goes to the END of the
+bar, via the -1 sentinel `tab-bar-move-tab-to' reads as \"last\".
+This is the commonest production path of all -- every `SPC p p' or
+`SPC T p' opening the first tab of a project -- and it is the one branch
+whose absence would leave a new project's tab dropped into the middle of
+someone else's group."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (edmacs-workspaces-test--build-tabs
+       (cons "t1" (edmacs-workspaces-test--dir "repoA__worktrees/a"))
+       (cons "new" (edmacs-workspaces-test--dir "repoB"))
+       (cons "t2" (edmacs-workspaces-test--dir "repoA__worktrees/b")))
+      ;; "new" is the only repoB tab, and it currently splits repoA in two.
+      (should (equal (mapcar #'edmacs-workspaces-test--group-of (tab-bar-tabs))
+                     '("repoA" "repoB" "repoA")))
+      (edmacs-workspaces-move-tab-to-group (nth 1 (tab-bar-tabs)))
+      (should (equal (edmacs-workspaces-test--tab-names) '("t1" "t2" "new"))))))
+
+(ert-deftest edmacs-workspaces-test-move-tab-to-group-pulls-a-tab-forward ()
+  "A tab sitting BEFORE its group's block is pulled up against that block.
+The mirror of `-move-tab-to-group-adjacency''s move-backward case: t1 is
+repoA at index 0 while repoA's other tab sits at index 2, so t1 moves
+forward to the group's near edge instead of the group moving to it."
+  (edmacs-workspaces-test--with-repos
+    (edmacs-workspaces-test--with-scratch-tabs
+      (edmacs-workspaces-test--build-tabs
+       (cons "t1" (edmacs-workspaces-test--dir "repoA__worktrees/a"))
+       (cons "t2" (edmacs-workspaces-test--dir "repoB"))
+       (cons "t3" (edmacs-workspaces-test--dir "repoA__worktrees/b"))
+       (cons "t4" (edmacs-workspaces-test--dir "repoB__worktrees/x")))
+      (should (equal (mapcar #'edmacs-workspaces-test--group-of (tab-bar-tabs))
+                     '("repoA" "repoB" "repoA" "repoB")))
+      (edmacs-workspaces-move-tab-to-group (nth 0 (tab-bar-tabs)))
+      (should (equal (edmacs-workspaces-test--tab-names) '("t2" "t1" "t3" "t4"))))))
 
 ;; ============================================================================
 ;; find-tab / select-tab across two (group, root) pairs
