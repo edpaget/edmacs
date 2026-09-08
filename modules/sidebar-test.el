@@ -53,8 +53,6 @@
 (setq native-comp-enable-subr-trampolines nil)
 
 (defvar edmacs-sidebar-test--build-root
-  ;; Formerly this file's own `edmacs-sidebar-test--locate-straight-build-root';
-  ;; consolidated into modules/test-support.el's `edmacs-test-support-straight-build-root'.
   (edmacs-test-support-straight-build-root)
   "This checkout's (or its sibling main checkout's) `straight/build' root.
 Also reused by the rotate.el lookup below -- a second, independent
@@ -3170,41 +3168,94 @@ neither `--reapply-bottom-anchor' nor `--redraw'."
         (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
 
     (ert-deftest edmacs-sidebar-test-on-window-size-change-anchor-gates-on-own-geometry ()
-      "Regression for the bug the phase context names: this hook fires for
-ANY window's resize or buffer change anywhere on the frame -- e.g. every
-window pushed onto windows.el's master-and-stack column used to redraw
-the whole sidebar tree even though the sidebar window's own height never
-moved. Comparing against `window-old-pixel-height'/
-`window-old-body-pixel-height' narrows this to a real change in the
-sidebar window's own geometry, and reapplies the bottom anchor
-(`--reapply-bottom-anchor'), never a full `--redraw', when it does."
-      (edmacs-sidebar-test--with-frame ((reapplied nil) (redrawn nil))
+      "This hook fires for ANY window's resize or buffer change anywhere on
+the frame -- e.g. every window pushed onto windows.el's master-and-stack
+column. Comparing against the `window-old-*' record narrows it to a real
+change in the sidebar window's own geometry: a width change invalidates
+the frame (labels are fitted to the width at render time), a height-only
+change reapplies the bottom anchor, and neither calls `--redraw'
+directly."
+      (edmacs-sidebar-test--with-frame ((reapplied nil) (redrawn nil) (invalidated nil))
         (edmacs-sidebar-show frame)
-        (let ((window (edmacs-sidebar--window frame)))
-          ;; Unchanged geometry: neither function runs.
-          (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
-                     (lambda (_frame) (setq reapplied t)))
-                    ((symbol-function 'edmacs-sidebar--redraw)
-                     (lambda (_frame) (setq redrawn t)))
-                    ((symbol-function 'window-old-pixel-height)
-                     (lambda (&optional w) (window-pixel-height (or w window))))
-                    ((symbol-function 'window-old-body-pixel-height)
-                     (lambda (&optional w) (window-body-size (or w window) nil t))))
-            (edmacs-sidebar--on-window-size-change-anchor frame))
+        (let* ((window (edmacs-sidebar--window frame))
+               (same-width (lambda (&optional w) (window-pixel-width (or w window))))
+               (same-body-width (lambda (&optional w) (window-body-width (or w window) t)))
+               (same-height (lambda (&optional w) (window-pixel-height (or w window))))
+               (same-body-height (lambda (&optional w) (window-body-height (or w window) t)))
+               (changed (lambda (&optional _w) 1))
+               (run (lambda (old-width old-body-width old-height old-body-height)
+                      (setq reapplied nil redrawn nil invalidated nil)
+                      (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
+                                 (lambda (_frame) (setq reapplied t)))
+                                ((symbol-function 'edmacs-sidebar--redraw)
+                                 (lambda (_frame) (setq redrawn t)))
+                                ((symbol-function 'edmacs-sidebar-invalidate)
+                                 (lambda (&optional _frame) (setq invalidated t)))
+                                ((symbol-function 'window-old-pixel-width) old-width)
+                                ((symbol-function 'window-old-body-pixel-width) old-body-width)
+                                ((symbol-function 'window-old-pixel-height) old-height)
+                                ((symbol-function 'window-old-body-pixel-height) old-body-height))
+                        (edmacs-sidebar--on-window-size-change-anchor frame)))))
+          ;; Unchanged geometry: nothing runs.
+          (funcall run same-width same-body-width same-height same-body-height)
           (should-not reapplied)
           (should-not redrawn)
-          ;; A changed total height: reapplies the anchor, never redraws.
-          (cl-letf (((symbol-function 'edmacs-sidebar--reapply-bottom-anchor)
-                     (lambda (_frame) (setq reapplied t)))
-                    ((symbol-function 'edmacs-sidebar--redraw)
-                     (lambda (_frame) (setq redrawn t)))
-                    ((symbol-function 'window-old-pixel-height)
-                     (lambda (&optional _w) 1)))
-            (edmacs-sidebar--on-window-size-change-anchor frame))
+          (should-not invalidated)
+          ;; A changed height only: reapplies the anchor.
+          (funcall run same-width same-body-width changed same-body-height)
           (should reapplied)
-          (should-not redrawn))
+          (should-not redrawn)
+          (should-not invalidated)
+          ;; A changed width: invalidates for a re-fit, never a direct redraw.
+          (funcall run changed same-body-width same-height same-body-height)
+          (should invalidated)
+          (should-not reapplied)
+          (should-not redrawn)
+          ;; Both changed: the re-fit wins; the redraw it schedules reapplies
+          ;; the anchor itself.
+          (funcall run changed same-body-width changed same-body-height)
+          (should invalidated)
+          (should-not reapplied))
         :cleanup
         (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)))
+
+    (ert-deftest edmacs-sidebar-test-width-change-rerenders-at-the-new-width ()
+      "Widening the sidebar window through the size-change hook ends in a
+real redraw fitted to the new width once the coalesced flush runs -- the
+path a divider drag or `C-w >' takes. `window-old-pixel-width' is stubbed
+to the pre-resize value, standing in for redisplay's own before/after
+record, which batch never writes; the heights read as unchanged."
+      (edmacs-sidebar-test--with-clean-redraw-queue
+        (edmacs-sidebar-test--with-frame ((rendered-at nil))
+          (edmacs-sidebar-show frame)
+          (let* ((window (edmacs-sidebar--window frame))
+                 (old-pixel-width (window-pixel-width window))
+                 (old-body-pixel-width (window-body-width window t)))
+            (should (window-live-p window))
+            (window-resize window 6 t)
+            (should (> (window-pixel-width window) old-pixel-width))
+            (cl-letf* ((render (symbol-function 'edmacs-sidebar--render))
+                       ((symbol-function 'edmacs-sidebar--render)
+                        (lambda (rows width &rest rest)
+                          (setq rendered-at width)
+                          (apply render rows width rest)))
+                       ((symbol-function 'window-old-pixel-width)
+                        (lambda (&optional _w) old-pixel-width))
+                       ((symbol-function 'window-old-body-pixel-width)
+                        (lambda (&optional _w) old-body-pixel-width))
+                       ((symbol-function 'window-old-pixel-height)
+                        (lambda (&optional w) (window-pixel-height (or w window))))
+                       ((symbol-function 'window-old-body-pixel-height)
+                        (lambda (&optional w) (window-body-height (or w window) t))))
+              (edmacs-sidebar--on-window-size-change-anchor frame)
+              ;; Nothing is drawn synchronously; the flush does it.
+              (should-not rendered-at)
+              (should (memq frame edmacs-sidebar--dirty-frames))
+              (edmacs-sidebar--flush-dirty-frames))
+            (should rendered-at)
+            (should (= rendered-at (window-width window))))
+          :cleanup
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil))))
 
     (ert-deftest edmacs-sidebar-test-bottom-anchor-adds-no-new-timer ()
       "Showing a sidebar with a bottom-anchor registrant, and driving a

@@ -499,18 +499,12 @@ from being that last writer."
 ;; ============================================================================
 ;; Coalesced invalidation: one dirty flag per frame, one shared idle-0 flush
 ;; ============================================================================
-;; Every trigger that used to call `edmacs-sidebar--redraw' directly --
-;; tab select/pre-close/rename, `g r', a tab-bar group change, a tab-root
-;; stamp -- now marks its frame dirty here instead. A burst of N such
-;; triggers within one command loop (N stack pushes, a rename racing a
-;; tab select, ...) collapses onto the single pending timer below, so the
-;; frame is redrawn once when Emacs next goes idle rather than N times.
-;; The debounced buffer-list hook (sidebar-buffers.el), the agents-changed
-;; hook and 30s tick (sidebar-agents.el), and the tab-open/desktop-read/
-;; frame-creation triggers (which call `edmacs-sidebar-show', not
-;; `--redraw', to create a window synchronously) keep their own existing,
-;; separately-debounced paths rather than routing through this one --
-;; see their own call sites for why.
+;; A burst of N triggers within one command loop (N stack pushes, a rename
+;; racing a tab select, ...) collapses onto the single pending timer below,
+;; so the frame is redrawn once when Emacs next goes idle. The buffer-list
+;; and agents hooks keep their own separately-debounced paths, and the
+;; tab-open/desktop-read/frame-creation triggers call `edmacs-sidebar-show'
+;; because they must create a window synchronously.
 
 (defvar edmacs-sidebar--dirty-frames nil
   "Frames marked dirty by `edmacs-sidebar-invalidate', awaiting one
@@ -939,8 +933,7 @@ A project row's root is its main worktree's, derived through
 itself the main one; a root gone from disk takes
 `edmacs-sidebar-missing-worktree-face' and a \" (missing)\" marker,
 outranking the current-tab face -- a row pointing at a directory that no
-longer exists is the more urgent thing to say about it. See this file's
-Commentary and the roadmap's \"Sidebar presentation\" spec;
+longer exists is the more urgent thing to say about it.
 `edmacs-sidebar-activate' is the matching activation dispatch."
   (let ((active-group (edmacs-workspaces-current-group frame)))
     (mapcar
@@ -1685,26 +1678,31 @@ fires."
 (add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change)
 
 (defun edmacs-sidebar--on-window-size-change-anchor (frame)
-  "Registered on `window-size-change-functions': reapply FRAME's sidebar
-bottom anchor when its OWN window changed size.
+  "Registered on `window-size-change-functions': react to a size change
+of FRAME's OWN sidebar window, ignoring every other window's.
 `window-size-change-functions' fires for ANY window's resize or buffer
-change anywhere on FRAME, not just the sidebar's own -- e.g. every
-window pushed onto windows.el's master-and-stack column used to redraw
-the whole sidebar tree on every firing, even though the sidebar window's
-own geometry never moved. Comparing the live window's current pixel
-height against `window-old-pixel-height'/`window-old-body-pixel-height'
--- redisplay's own before/after record for this hook -- narrows this to
-firings that actually changed the sidebar window's own height. Calls
-`edmacs-sidebar--reapply-bottom-anchor', not a full `--redraw': only the
-anchor's position depends on this window's height, not the section tree
-it decorates, and reapplying is far cheaper than a full rebuild. A
-no-op for a frame with no live sidebar window, or whose sidebar window's
+change anywhere on FRAME; comparing the sidebar window's current pixel
+size against `window-old-pixel-width'/`window-old-pixel-height' (and
+their body variants) -- redisplay's own before/after record for this
+hook -- narrows this to firings that changed the sidebar window itself.
+
+A width change invalidates the frame (`edmacs-sidebar-invalidate'):
+every label is fitted to the window's width at render time, so a wider
+or narrower sidebar needs its rows re-fitted, which only a redraw does.
+A height-only change reapplies the bottom anchor
+(`edmacs-sidebar--reapply-bottom-anchor'): only the anchor's position
+depends on height, and reapplying is far cheaper than a rebuild. A no-op
+for a frame with no live sidebar window, or whose sidebar window's
 geometry did not change."
   (when (frame-live-p frame)
     (when-let* ((window (edmacs-sidebar--window frame)))
-      (when (or (/= (window-pixel-height window) (window-old-pixel-height window))
-                (/= (window-body-height window t) (window-old-body-pixel-height window)))
-        (edmacs-sidebar--reapply-bottom-anchor frame)))))
+      (cond
+       ((or (/= (window-pixel-width window) (window-old-pixel-width window))
+            (/= (window-body-width window t) (window-old-body-pixel-width window)))
+        (edmacs-sidebar-invalidate frame))
+       ((or (/= (window-pixel-height window) (window-old-pixel-height window))
+            (/= (window-body-height window t) (window-old-body-pixel-height window)))
+        (edmacs-sidebar--reapply-bottom-anchor frame))))))
 
 (add-hook 'window-size-change-functions #'edmacs-sidebar--on-window-size-change-anchor)
 
