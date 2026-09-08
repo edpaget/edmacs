@@ -139,6 +139,10 @@ a real Emacs session) to enable this suite"))
 
     ;; windows.el first: sidebar.el `require's it for `edmacs-windows-claim-side'.
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
+    ;; init.el loads workspaces.el before sidebar.el; sidebar.el's
+    ;; `edmacs-sidebar-redraw-frames' and `edmacs-sidebar-show' both call
+    ;; `edmacs-workspaces-frame-usable-p', so the same order is required here.
+    (load (expand-file-name "modules/workspaces.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
     (load (expand-file-name "modules/agents.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar-agents.el" default-directory) nil t)

@@ -3258,6 +3258,22 @@ three-project sidebar rendered as one stale row under an `F1' header."
                          (string-prefix-p "*sidebar" (buffer-name (window-buffer w))))
                        (window-list frame 'never))))))
 
+    (ert-deftest edmacs-sidebar-test-redraw-frames-excludes-unusable-frames ()
+      "`edmacs-sidebar-redraw-frames' is the guard the redraw-all loops use.
+`edmacs-sidebar-agents--redraw-all' and
+`edmacs-sidebar-buffers--redraw-all' write the ONE shared `*sidebar*'
+buffer once per frame they visit, so the last frame in the list is the
+one left on screen. Looping `frame-list' directly therefore let the
+daemon's tty placeholder -- last in `frame-list', in no project group --
+be that last writer, which is how a live sidebar reverted to a stale row
+under an `F1' header a moment after drawing correctly."
+      (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p)
+                 (lambda (_f) nil)))
+        (should (null (edmacs-sidebar-redraw-frames))))
+      (cl-letf (((symbol-function 'edmacs-workspaces-frame-usable-p)
+                 (lambda (_f) t)))
+        (should (equal (edmacs-sidebar-redraw-frames) (frame-list)))))
+
     )) ; end of build-root-found branch
 
 ;;; sidebar-test.el ends here

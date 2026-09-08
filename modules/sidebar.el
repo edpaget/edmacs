@@ -473,6 +473,16 @@ windows, not a per-frame parameter."
 
 (add-hook 'delete-frame-functions #'edmacs-sidebar--cleanup-frame)
 
+(defun edmacs-sidebar-redraw-frames ()
+  "Return the frames whose content may be rendered into the sidebar buffer.
+There is one `*sidebar*' buffer for every frame (see
+`edmacs-sidebar--buffer-name'), so a caller that redraws \"every frame\"
+writes that one buffer once per frame and the LAST frame wins. Excluding
+what `edmacs-workspaces-frame-usable-p' rejects keeps the daemon's tty
+placeholder -- whose identity and tab set no on-screen frame is showing --
+from being that last writer."
+  (seq-filter #'edmacs-workspaces-frame-usable-p (frame-list)))
+
 ;; ============================================================================
 ;; Rendering
 ;; ============================================================================

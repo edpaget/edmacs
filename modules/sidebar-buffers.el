@@ -65,6 +65,7 @@
 (declare-function edmacs-sidebar--buffer "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar--redraw "sidebar")
+(declare-function edmacs-sidebar-redraw-frames "sidebar")
 (declare-function edmacs-sidebar--find-buffer-section "sidebar")
 (declare-function nerd-icons-octicon "nerd-icons")
 (defvar edmacs-sidebar-worktree-section-functions)
@@ -746,9 +747,8 @@ every frame is redrawn even when only one frame's tab actually changed
 -- a deliberate simplicity-over-precision choice; AC4 only constrains
 tab-switch latency and keystroke-quiet debounce, not this hook's total
 redraw count."
-  (dolist (frame (frame-list))
-    (when (frame-live-p frame)
-      (edmacs-sidebar--redraw frame))))
+  (dolist (frame (edmacs-sidebar-redraw-frames))
+    (edmacs-sidebar--redraw frame)))
 
 (defun edmacs-sidebar-buffers--debounced-redraw ()
   (setq edmacs-sidebar-buffers--redraw-timer nil)

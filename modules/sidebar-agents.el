@@ -74,6 +74,7 @@
 
 (declare-function edmacs-workspaces-open-worktree "workspaces")
 (declare-function edmacs-sidebar--redraw "sidebar")
+(declare-function edmacs-sidebar-redraw-frames "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
 (declare-function edmacs-sidebar-hide "sidebar")
 (declare-function claude-term--pop-to-window "claude-term")
@@ -425,10 +426,11 @@ identical on every frame."
 (add-hook 'edmacs-sidebar-extra-section-functions #'edmacs-sidebar-agents--insert-all-section)
 
 (defun edmacs-sidebar-agents--redraw-all ()
-  "Redraw every live frame's sidebar buffer."
-  (dolist (frame (frame-list))
-    (when (frame-live-p frame)
-      (edmacs-sidebar--redraw frame))))
+  "Redraw the singleton sidebar buffer for every frame that may write it.
+`edmacs-sidebar-redraw-frames', not `frame-list': one buffer serves all
+frames, so the last frame redrawn is the one left on screen."
+  (dolist (frame (edmacs-sidebar-redraw-frames))
+    (edmacs-sidebar--redraw frame)))
 
 ;;;###autoload
 (defun edmacs-sidebar-agents-toggle-all ()

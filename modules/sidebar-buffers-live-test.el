@@ -216,6 +216,10 @@ open tab."
     (defun edmacs-workspaces-open-worktree (_dir) nil)
 
     (load (expand-file-name "modules/windows.el" default-directory) nil t)
+    ;; init.el loads workspaces.el before sidebar.el; sidebar.el's
+    ;; `edmacs-sidebar-redraw-frames' and `edmacs-sidebar-show' both call
+    ;; `edmacs-workspaces-frame-usable-p', so the same order is required here.
+    (load (expand-file-name "modules/workspaces.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar.el" default-directory) nil t)
     (load (expand-file-name "modules/sidebar-buffers.el" default-directory) nil t)
     ;; Also loaded here (not just in sidebar-agents-live-test.el) so this
