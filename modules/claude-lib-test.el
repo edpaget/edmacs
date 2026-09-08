@@ -23,7 +23,12 @@
 ;; `claude-lib-relevant-functions' safe-local-variable predicate plus
 ;; behavioral proof that the documented interactive-driving primitives
 ;; (`completing-read-function', `unread-command-events', `select-window'
-;; pinning) actually work the way the convention describes (AC6).
+;; pinning) work the way the convention describes -- both in isolation
+;; and as driven by `claude-lib-window-buffer-after-command', the
+;; promoted library entry that uses all three (AC6). A structural guard
+;; also holds the checked-in library to its own shape: every entry in
+;; the PROMOTED ENTRIES section carries a dated provenance comment
+;; naming a destination (AC4).
 ;;
 ;; The AC5 block reproduces the defect that blocked this phase: a
 ;; promoted docstring containing `(provide \'claude-lib)' at column 0
@@ -62,6 +67,8 @@
 (defvar claude-lib-verify-load-in-subprocess)
 (declare-function edmacs-claude-lib-eval-file "claude-lib" (form-file output-file root))
 (declare-function claude-lib-demo "claude-lib" (root &optional depth))
+(declare-function claude-lib-window-buffer-after-command "claude-lib"
+                  (window command choice keys))
 (declare-function claude-lib-promote "claude-lib" (source destination problem))
 (declare-function claude-lib--scan-top-level "claude-lib" (context))
 (declare-function claude-lib--name-defined-in-file-p "claude-lib" (name scan))
@@ -621,13 +628,12 @@ its own docstring and validation both advertise all three shapes."
     (should (string-match-p "completing-read-function" text))
     (should (string-match-p "unread-command-events" text))))
 
-;; No promoted `claude-lib-' function drives an interactive command yet
-;; (that is phase 6's reusable-helper territory), so there is nothing
-;; real inside claude-lib.el itself for a behavioral test to exercise.
-;; These three tests instead prove the documented primitives actually
-;; behave the way the convention says, against small fixtures local to
-;; this file -- a real regression guard on the mechanism a future
-;; promoted function must use, not just a grep for the words.
+;; The three tests below prove the documented primitives behave the way
+;; the convention says, in isolation. The promoted-entry tests after
+;; them then drive `claude-lib-window-buffer-after-command' -- a real
+;; entry in the library's PROMOTED ENTRIES section -- end to end, so
+;; the convention is exercised by library code and not only asserted
+;; about fixtures local to this file.
 
 (ert-deftest claude-lib-test-interactive-driving-completing-read-function-primitive ()
   "A bound `completing-read-function' must answer `completing-read'
@@ -665,6 +671,105 @@ with `select-window' before feeding keys, rather than trusting
           (should (equal (with-current-buffer decoy (buffer-string)) "")))
       (kill-buffer decoy)
       (kill-buffer target))))
+
+;; `claude-lib-window-buffer-after-command' is the library's own use of
+;; the convention: the two tests below run it against real commands, one
+;; prompting through `completing-read' and one reading its own key.
+
+(defvar claude-lib-test--choice-buffer nil
+  "Buffer name offered to `claude-lib-test--pick-buffer-command'.")
+
+(defun claude-lib-test--pick-buffer-command ()
+  "Switch to a buffer chosen through `completing-read'."
+  (interactive)
+  (switch-to-buffer
+   (completing-read "Buffer: " (list claude-lib-test--choice-buffer))))
+
+(defvar claude-lib-test--key-buffers nil
+  "Cons of the (?a . ?b) buffer names `claude-lib-test--key-command' picks.")
+
+(defun claude-lib-test--key-command ()
+  "Switch to one of two buffers chosen by a single raw key."
+  (interactive)
+  (switch-to-buffer (if (eq (read-char) ?a)
+                        (car claude-lib-test--key-buffers)
+                      (cdr claude-lib-test--key-buffers))))
+
+(ert-deftest claude-lib-test-window-buffer-after-command-answers-completing-read ()
+  "The promoted driver answers a command's `completing-read' from CHOICE,
+reports the buffer the pinned window ends up showing, and leaves the
+caller's window configuration as it found it."
+  (let* ((target (generate-new-buffer " *claude-lib-test-cr-target*"))
+         (before (window-buffer (selected-window)))
+         (claude-lib-test--choice-buffer (buffer-name target)))
+    (unwind-protect
+        (progn
+          (should (equal (claude-lib-window-buffer-after-command
+                          (selected-window) #'claude-lib-test--pick-buffer-command
+                          (buffer-name target) nil)
+                         (buffer-name target)))
+          (should (eq (window-buffer (selected-window)) before)))
+      (kill-buffer target))))
+
+(ert-deftest claude-lib-test-window-buffer-after-command-feeds-unread-keys ()
+  "A command that reads its own key is answered from KEYS via
+`unread-command-events', and input it never consumed is discarded rather
+than leaking back into the caller."
+  (let* ((a (generate-new-buffer " *claude-lib-test-key-a*"))
+         (b (generate-new-buffer " *claude-lib-test-key-b*"))
+         (claude-lib-test--key-buffers (cons (buffer-name a) (buffer-name b))))
+    (unwind-protect
+        (progn
+          (should (equal (claude-lib-window-buffer-after-command
+                          (selected-window) #'claude-lib-test--key-command nil "b")
+                         (buffer-name b)))
+          ;; Two keys fed, one consumed: the leftover must not survive.
+          (should (equal (claude-lib-window-buffer-after-command
+                          (selected-window) #'claude-lib-test--key-command nil "a x")
+                         (buffer-name a)))
+          (should-not unread-command-events))
+      (kill-buffer a)
+      (kill-buffer b))))
+
+(ert-deftest claude-lib-test-window-buffer-after-command-rejects-dead-window ()
+  "A dead WINDOW is a `user-error', never a silent fallback to whatever
+window happens to be selected."
+  (let ((dead (with-temp-buffer (split-window))))
+    (delete-window dead)
+    (should-error (claude-lib-window-buffer-after-command
+                   dead #'ignore nil nil)
+                  :type 'user-error)))
+
+(ert-deftest claude-lib-test-promoted-entries-carry-provenance ()
+  "Every entry point in the library's PROMOTED ENTRIES section must sit
+under a dated provenance comment naming a destination -- the property
+that keeps the section prunable rather than a second config."
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "claude-lib.el" claude-lib-test--repo-root))
+    (let ((banner (save-excursion
+                    (goto-char (point-min))
+                    (should (re-search-forward "^;; PROMOTED ENTRIES\\." nil t))
+                    (point)))
+          (entries nil))
+      (dolist (entry (claude-lib--scan-top-level "claude-lib.el"))
+        (let ((datum (car entry)))
+          (when (and (> (cdr entry) banner)
+                     (memq (car-safe datum) '(defun cl-defun defmacro))
+                     (string-match-p "\\`claude-lib-[^-]" (symbol-name (nth 1 datum))))
+            (push entry entries))))
+      (should (memq 'claude-lib-demo (mapcar (lambda (e) (nth 1 (car e))) entries)))
+      (should (memq 'claude-lib-window-buffer-after-command
+                    (mapcar (lambda (e) (nth 1 (car e))) entries)))
+      (dolist (entry entries)
+        (goto-char (cdr entry))
+        (forward-line -1)
+        (while (and (not (bobp)) (looking-at "^;;"))
+          (forward-line -1))
+        (unless (looking-at "^;;") (forward-line 1))
+        (let ((comment (buffer-substring (point) (cdr entry))))
+          (should (string-match-p
+                   "\\`;; Promoted [0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}: " comment))
+          (should (string-match-p "Destination: [^ \n]" comment)))))))
 
 
 ;; ============================================================================

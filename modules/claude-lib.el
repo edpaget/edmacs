@@ -115,6 +115,13 @@
 ;; `.', `!' or `?') naming what the function returns, because that
 ;; line is what a library listing shows.
 ;;
+;; PROMOTED ENTRIES all live in one contiguous section at the end of
+;; this file, under a banner, because that is where `claude-lib-promote'
+;; appends them -- ahead of the trailing provide form and nowhere else.
+;; The machinery above the banner is the module; everything below it is
+;; staged code, and reading or pruning the library means reading only
+;; that section.
+;;
 ;; GRADUATION does not always mean "stays in edmacs" -- a prototype may
 ;; belong to another repository entirely (e.g. an rdm Emacs package
 ;; graduates to rdm's own `editors/emacs/', under the `rdm-' prefix).
@@ -345,33 +352,6 @@ it with plain `apropos-internal' rather than adding a listing function.")
 
 (put 'claude-lib-relevant-functions 'safe-local-variable
      (lambda (value) (and (listp value) (seq-every-p #'symbolp value))))
-
-;; Promoted 2026-09-06: bootstrap/self-test fixture proving discovery
-;; still works against a real promoted function (its arglist, docstring
-;; and apropos membership match the roadmap phase's own verification
-;; transcript exactly). Destination: edmacs -- this is scaffolding for
-;; the library itself, not a candidate for promotion elsewhere.
-(defun claude-lib-demo (root &optional depth)
-  "Summarise the project at ROOT to DEPTH levels.
-Returns an alist of (FILE . LINES)."
-  (claude-lib--demo-walk root (or depth 1)))
-
-(defun claude-lib--demo-walk (dir depth)
-  "Collect (FILE . LINES) for DIR's regular files, recursing DEPTH levels.
-Internal helper for `claude-lib-demo'; deliberately not itself a
-`claude-lib-' promoted entry point."
-  (let (result)
-    (dolist (entry (directory-files dir t "\\`[^.]" t))
-      (cond
-       ((and (> depth 1) (file-directory-p entry))
-        (setq result (nconc result (claude-lib--demo-walk entry (1- depth)))))
-       ((file-regular-p entry)
-        (push (cons entry
-                    (with-temp-buffer
-                      (insert-file-contents entry)
-                      (count-lines (point-min) (point-max))))
-              result))))
-    (nreverse result)))
 
 (defun claude-lib--read-source-forms (source)
   "Read every top-level Lisp form in the string SOURCE.
@@ -689,6 +669,77 @@ called this -- see `claude-lib-file'."
                     (unless done
                       (claude-lib--restore-library buf before-text saved))))))
             name))))))
+
+;; ---------------------------------------------------------------------
+;; PROMOTED ENTRIES. Everything below this banner was appended by
+;; `claude-lib-promote', oldest first, each under a dated provenance
+;; comment naming the problem it solved and where it is meant to
+;; graduate to. Nothing above the banner is promoted code: the split is
+;; what keeps this a prunable staging area rather than a second config,
+;; since graduating an entry means deleting it from here, not hunting
+;; for it among the machinery.
+;; ---------------------------------------------------------------------
+
+;; Promoted 2026-09-06: bootstrap/self-test fixture proving discovery
+;; still works against a real promoted function (its arglist, docstring
+;; and apropos membership match the roadmap phase's own verification
+;; transcript exactly). Destination: edmacs -- this is scaffolding for
+;; the library itself, not a candidate for promotion elsewhere.
+(defun claude-lib-demo (root &optional depth)
+  "Summarise the project at ROOT to DEPTH levels.
+Returns an alist of (FILE . LINES)."
+  (claude-lib--demo-walk root (or depth 1)))
+
+(defun claude-lib--demo-walk (dir depth)
+  "Collect (FILE . LINES) for DIR's regular files, recursing DEPTH levels.
+Internal helper for `claude-lib-demo'; deliberately not itself a
+`claude-lib-' promoted entry point."
+  (let (result)
+    (dolist (entry (directory-files dir t "\\`[^.]" t))
+      (cond
+       ((and (> depth 1) (file-directory-p entry))
+        (setq result (nconc result (claude-lib--demo-walk entry (1- depth)))))
+       ((file-regular-p entry)
+        (push (cons entry
+                    (with-temp-buffer
+                      (insert-file-contents entry)
+                      (count-lines (point-min) (point-max))))
+              result))))
+    (nreverse result)))
+
+;; Promoted 2026-09-07: checking what a command actually does to the
+;; window layout meant running it the way a keystroke does, which needs
+;; the window pinned and the command's prompts answered without ever
+;; reaching the real minibuffer. Destination: edmacs.
+(defun claude-lib-window-buffer-after-command (window command choice keys)
+  "Return the name of the buffer WINDOW shows after COMMAND has run.
+COMMAND runs through `call-interactively', so its interactive spec and
+whatever window-placement rules apply to it are exercised exactly as a
+keystroke would exercise them. WINDOW is selected first, because
+simulated input follows the selected window rather than the current
+buffer.
+
+CHOICE, when non-nil, is the string every `completing-read' COMMAND
+raises answers with; KEYS, when non-nil, is a `kbd' key-sequence string
+pre-fed to `unread-command-events' for a COMMAND that reads its own
+keys instead of prompting. Both are `let'-bound, so input COMMAND never
+consumed is discarded here instead of leaking into the daemon's command
+loop, and the window configuration is restored afterwards.
+
+Signals a `user-error' if WINDOW is dead on entry, or if COMMAND deleted
+it -- there is then no buffer to report."
+  (unless (window-live-p window)
+    (user-error "claude-lib-window-buffer-after-command: WINDOW is not live"))
+  (let ((completing-read-function
+         (if choice (lambda (&rest _) choice) completing-read-function))
+        (unread-command-events
+         (if keys (listify-key-sequence (kbd keys)) unread-command-events)))
+    (save-window-excursion
+      (select-window window)
+      (call-interactively command)
+      (unless (window-live-p window)
+        (user-error "claude-lib-window-buffer-after-command: COMMAND deleted WINDOW"))
+      (buffer-name (window-buffer window)))))
 
 (provide 'claude-lib)
 ;;; claude-lib.el ends here
