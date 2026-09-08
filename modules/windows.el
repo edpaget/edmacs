@@ -46,9 +46,13 @@
 ;; the shape that matters here: `window-main-window' falls back to
 ;; `frame-root-window', so it never returns nil and `window--sides-check'
 ;; reads a frame whose every window is a side window as a VALID side
-;; configuration.  Normalize goes past core's remedy -- it clears every
-;; window parameter, collapses onto one survivor and re-designates main --
-;; and is driven from one `window-state-change-functions' member.  A
+;; configuration.  Normalize ADDS the missing main window beside whatever
+;; side windows exist and never dismantles them: it runs on every layout
+;; change, including both sides of a tab switch, and `tab-bar-select-tab'
+;; saves the outgoing layout -- a remedy that collapsed the frame would be
+;; written back into the tab being left.  The collapse (clear every window
+;; parameter, keep one survivor) is `edmacs-windows-repair-frame', the
+;; explicit `SPC w r' command for a layout past saving.  A
 ;; side-only layout that reaches a saved frameset is sanitized by
 ;; `edmacs-windows-ws-ensure-main' when the desktop is migrated on boot.
 ;; `tab-bar-new-tab-to' is advised to select main first, but that does not
@@ -1158,33 +1162,86 @@ allocate fresh slots."
             (edmacs-window-set-main survivor))))
       survivor)))
 
+(defun edmacs-windows--ensure-main-split-target (frame)
+  "Return (WINDOW . SIDE) for the split that adds FRAME a main window.
+Core's side-window model wants every side window on one side under a
+single parent and the main area a sibling of those parents, so the new
+main must be inserted as a SIBLING of the side windows that are direct
+children of the root, never as a new parent above them (that nests them,
+and the next `display-buffer-in-side-window' then builds a second major
+side window whose parent differs). A left side window that is a direct
+child of the root is split on its right; else a right one on its left,
+a top one below, a bottom one above. A root that is itself a live side
+window (the sole-window shape) is split on its right. nil when nothing
+fits, in which case the root is split."
+  (let* ((root (frame-root-window frame))
+         (direct (seq-filter (lambda (w) (eq (window-parent w) root))
+                             (window-list frame 'no-minibuf)))
+         (on (lambda (side) (seq-find (lambda (w)
+                                        (eq (window-parameter w 'window-side) side))
+                                      direct))))
+    (cond
+     ((window-live-p root) (cons root 'right))
+     ((funcall on 'left) (cons (funcall on 'left) 'right))
+     ((funcall on 'right) (cons (funcall on 'right) 'left))
+     ((funcall on 'top) (cons (funcall on 'top) 'below))
+     ((funcall on 'bottom) (cons (funcall on 'bottom) 'above)))))
+
+(defun edmacs-windows--ensure-main (frame)
+  "Give FRAME a main window if it has none, and return the window added.
+nil, touching nothing, on any frame that already has a non-side window.
+Otherwise splits with `ignore-window-parameters' bound -- the split core
+would delegate through `window-main-window' back into itself -- at the
+place `edmacs-windows--ensure-main-split-target' names, and makes the
+new window an ordinary `*scratch*' main. Every side window, the sidebar
+included, stays exactly as it was, and the selected window is not
+changed: this runs from a redisplay hook, so a `select-window' here
+would pull point out of an active minibuffer."
+  (when (edmacs-windows-frame-wedged-p frame)
+    (let* ((target (edmacs-windows--ensure-main-split-target frame))
+           (new (let ((ignore-window-parameters t)
+                      (window-combination-limit nil))
+                  (edmacs-windows--with-sides-check-inhibited
+                    (if target
+                        (split-window (car target) nil (cdr target))
+                      (split-window (frame-root-window frame) nil 'right))))))
+      (when (window-live-p new)
+        (dolist (parameter (mapcar #'car (window-parameters new)))
+          (set-window-parameter new parameter nil))
+        (set-window-dedicated-p new nil)
+        (set-window-buffer new (get-buffer-create "*scratch*"))
+        (edmacs-window-set-main new)
+        new))))
+
 (defun edmacs-windows-normalize-frame (frame)
   "Restore FRAME's one-main-window invariant and return its main window.
 The single body every consumer goes through, and the only place the
-invariant is enforced. In order: rebuild the tree when
-`edmacs-windows--repair-plan' says one is needed, designate main (which
-is what covers a healthy tree whose `edmacs-main' parameter did not
-survive a restore), sweep the displaced copies
-`edmacs-windows-dedupe-frame' owns, and -- only when a plan was actually
-applied -- run `edmacs-windows-frame-repaired-functions' with FRAME.
+invariant is enforced. In order: add a main window when FRAME has none
+(`edmacs-windows--ensure-main'), designate main (which is what covers a
+healthy tree whose `edmacs-main' parameter did not survive a restore),
+sweep the displaced copies `edmacs-windows-dedupe-frame' owns, and --
+only when a window was actually added -- run
+`edmacs-windows-frame-repaired-functions' with FRAME.
 
-The hook is gated on a real repair on purpose: normalize now owns the
+Never collapses the frame: this runs on both sides of every tab switch,
+and `tab-bar-select-tab' saves the outgoing layout, so a collapse here
+would be written back into the tab being left. The collapse for a
+layout past saving is `edmacs-windows-repair-frame'.
+
+The hook is gated on a real repair on purpose: normalize owns the
 trigger that used to belong to the dedupe sweep alone, so firing it on
 every pass would re-show the sidebar on every buffer change.
 
 Returns nil on a dead frame, and the frame's existing main window
-unchanged when re-entered (see `edmacs-windows--normalizing').
-`edmacs-windows-repair-frame' is the interactive wrapper over this."
+unchanged when re-entered (see `edmacs-windows--normalizing')."
   (when (frame-live-p frame)
     (if edmacs-windows--normalizing
         (edmacs-main-window frame)
-      (let ((edmacs-windows--normalizing t)
-            (plan (edmacs-windows--repair-plan frame)))
-        (when plan
-          (edmacs-windows--apply-repair-plan frame plan))
+      (let* ((edmacs-windows--normalizing t)
+             (added (edmacs-windows--ensure-main frame)))
         (edmacs-windows-designate-main frame)
         (edmacs-windows-dedupe-frame frame)
-        (when plan
+        (when added
           (run-hook-with-args 'edmacs-windows-frame-repaired-functions frame))
         (edmacs-main-window frame)))))
 
@@ -1243,12 +1300,18 @@ the command that would split -- too late to prevent it."
 (add-hook 'window-state-change-functions #'edmacs-windows-invalidate-frame)
 
 (defun edmacs-windows-repair-frame (frame)
-  "Normalize FRAME and return its main window.
-The `SPC w r' entry point: a thin interactive wrapper over
-`edmacs-windows-normalize-frame', which holds the whole contract.
-Interactively, FRAME is always the selected frame."
+  "Rebuild FRAME's layout from scratch and return its main window.
+The `SPC w r' entry point, for a layout past saving: applies
+`edmacs-windows--repair-plan' -- every window parameter cleared, the
+frame collapsed onto one survivor -- and then normalizes. Nothing calls
+this automatically; `edmacs-windows-normalize-frame' is the hook-driven
+path, and it only ever adds the missing main window. Interactively,
+FRAME is always the selected frame."
   (interactive (list (selected-frame)))
-  (let ((main (edmacs-windows-normalize-frame frame)))
+  (let* ((plan (edmacs-windows--repair-plan frame))
+         (main (progn
+                 (when plan (edmacs-windows--apply-repair-plan frame plan))
+                 (edmacs-windows-normalize-frame frame))))
     (when (called-interactively-p 'interactive)
       (message "edmacs-windows-repair-frame: %s"
                (if (window-live-p main) "main window restored" "no main window")))

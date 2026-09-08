@@ -639,7 +639,9 @@ a repair; with it stubbed back to `identity', at least one does."
                 (let ((side-only (progn
                                    (edmacs-test-support-make-wedged-frame 'sole)
                                    (window-state-get (frame-root-window) t))))
-                  (edmacs-windows-normalize-frame frame)
+                  ;; The collapse, not normalize: the layout below is built
+                  ;; from scratch, and normalize leaves the side window.
+                  (edmacs-windows-repair-frame frame)
                   ;; The fixture really is the poisonous shape.
                   (should (edmacs-windows-ws-side-only-p side-only))
                   (delete-other-windows)

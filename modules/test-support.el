@@ -275,6 +275,9 @@ nil (default) -- [left-side | right-side], zero non-side windows -- the
      (let* ((left (selected-window))
             (right (split-window left nil 'right))
             (right2 (split-window right nil 'below)))
+       ;; Core stamps the internal parent of a side column too
+       ;; (`window--make-minor-side-window'); the sides check relies on it.
+       (set-window-parameter (window-parent right) 'window-side 'right)
        (dolist (w (list left right right2))
          (set-window-parameter w 'edmacs-main nil))
        (set-window-parameter left 'window-side 'left)

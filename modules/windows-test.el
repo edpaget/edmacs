@@ -1553,7 +1553,8 @@ repairs."
               (should (seq-find (lambda (w)
                                   (eq (window-parameter w 'window-side) 'left))
                                 (window-list nil 'no-minibuf)))))
-        (delete-other-windows)
+        (let ((ignore-window-parameters t))
+          (delete-other-windows (or (edmacs-main-window) (frame-first-window))))
         (kill-buffer buf)))))
 
 (ert-deftest edmacs-windows-test-repair-clears-the-split-window-self-delegation ()
@@ -1595,7 +1596,8 @@ here directly rather than through a driver that cannot fail."
               (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
               (should-not (window-parameter (edmacs-main-window) 'window-side))
               (should (window-live-p (split-window (frame-root-window) 2 t)))))
-        (delete-other-windows)
+        (let ((ignore-window-parameters t))
+          (delete-other-windows (or (edmacs-main-window) (frame-first-window))))
         (kill-buffer buf)))))
 
 (ert-deftest edmacs-windows-test-new-tab-from-a-side-window-keeps-a-real-main ()
@@ -2189,15 +2191,15 @@ correctly reports nil."
       (should (edmacs-windows-frame-wedged-p (selected-frame))))))
 
 (ert-deftest edmacs-windows-test-repair-frame-rebuilds-main-from-wedged-tree ()
-  "Both wedged windows lose their side parameters; the survivor becomes an
-ordinary main window. A left side window may legitimately be back
-afterwards -- `edmacs-windows-frame-repaired-functions' re-shows the
+  "`SPC w r' is the collapse: both wedged windows lose their side
+parameters and the survivor becomes an ordinary main window. A left side
+window may legitimately be back afterwards -- `edmacs-windows-frame-repaired-functions' re-shows the
 sidebar whenever `modules/sidebar.el' is loaded into the session -- so
 the assertions are about the repaired main window, not about the frame
 being side-window-free."
   (edmacs-windows-test--with-clean-layout
     (cl-destructuring-bind (_left right) (edmacs-test-support-make-wedged-frame)
-      (let ((main (edmacs-windows-normalize-frame (selected-frame))))
+      (let ((main (edmacs-windows-repair-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
         (should-not (window-live-p right))
@@ -2223,7 +2225,7 @@ buffer is reused into it next."
       (set-window-dedicated-p left t)
       (set-window-parameter right 'mode-line-format 'none)
       (set-window-parameter right 'edmacs-stack-popup t)
-      (let ((main (edmacs-windows-normalize-frame (selected-frame))))
+      (let ((main (edmacs-windows-repair-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
         (should-not (window-parameter main 'mode-line-format))
@@ -2244,7 +2246,7 @@ belongs elsewhere -- the sidebar's -- so main gets *scratch* instead."
               (edmacs-test-support-make-wedged-frame)
             (set-window-buffer left buf)
             (dolist (w (list left right)) (set-window-dedicated-p w t))
-            (let ((main (edmacs-windows-normalize-frame (selected-frame))))
+            (let ((main (edmacs-windows-repair-frame (selected-frame))))
               (should (window-live-p main))
               (should-not (eq (window-buffer main) buf))
               (should (equal (buffer-name (window-buffer main)) "*scratch*"))))
@@ -2365,7 +2367,7 @@ window itself."
       (should-not (edmacs-windows-frame-wedged-p (selected-frame))))))
 
 (ert-deftest edmacs-windows-test-repair-frame-rebuilds-main-from-a-sole-side-window ()
-  "Repair on the parentless shape: there is no sibling to collapse onto,
+  "`SPC w r' on the parentless shape: there is no sibling to collapse onto,
 so the sole window itself is stripped, un-dedicated and evicted to
 *scratch* -- and no new frame is popped to escape it."
   (edmacs-windows-test--with-clean-layout
@@ -2373,7 +2375,7 @@ so the sole window itself is stripped, un-dedicated and evicted to
           (window (edmacs-test-support-make-wedged-frame 'sole)))
       (should-not (window-parent window))
       (should (edmacs-windows-frame-wedged-p (selected-frame)))
-      (let ((main (edmacs-windows-normalize-frame (selected-frame))))
+      (let ((main (edmacs-windows-repair-frame (selected-frame))))
         (should (window-live-p main))
         (should (eq main (edmacs-main-window)))
         (dolist (parameter '(window-side window-slot
@@ -2640,6 +2642,65 @@ collapsed onto the macro."
 
 
 ;; ---------------------------------------------------------------------------
+;; normalize adds the missing main window; it never collapses the frame
+;; ---------------------------------------------------------------------------
+
+(ert-deftest edmacs-windows-test-normalize-adds-main-and-keeps-side-windows ()
+  "On a side-only frame normalize adds one ordinary main window and leaves
+both side windows exactly as they were. It runs on both sides of every
+tab switch, and `tab-bar-select-tab' saves the outgoing layout, so a
+remedy that collapsed the frame would be written back into the tab being
+left -- the collapse is `edmacs-windows-repair-frame' only."
+  (edmacs-windows-test--with-clean-layout
+    (cl-destructuring-bind (left right) (edmacs-test-support-make-wedged-frame)
+      ;; A popup showing the buffer main will show would be deduped away;
+      ;; give it its own, as a real popup has.
+      (set-window-buffer right (get-buffer-create " ewt-normalize-right"))
+      (let ((main (edmacs-windows-normalize-frame (selected-frame))))
+        (should (window-live-p main))
+        (should (eq main (edmacs-main-window)))
+        (should-not (window-parameter main 'window-side))
+        (should (equal (buffer-name (window-buffer main)) "*scratch*"))
+        (should (window-live-p left))
+        (should (window-live-p right))
+        ;; A sibling of the side windows, not a parent above them.
+        (should (eq (window-parent main) (window-parent left)))
+        (should (eq (window-parent main) (window-parent right)))
+        (should (eq (window-parameter left 'window-side) 'left))
+        (should (eq (window-parameter right 'window-side) 'right))
+        (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+        ;; Idempotent: a second call is the healthy-frame no-op.
+        (should (eq (edmacs-windows-normalize-frame (selected-frame)) main))
+        (should (= 3 (length (window-list nil 'no-minibuf))))))))
+
+(ert-deftest edmacs-windows-test-normalize-keeps-the-selected-window ()
+  "Normalize runs from a redisplay hook, where a `select-window' would
+pull point out of an active minibuffer; the new main is not selected."
+  (edmacs-windows-test--with-clean-layout
+    (cl-destructuring-bind (left _right) (edmacs-test-support-make-wedged-frame)
+      (select-window left)
+      (edmacs-windows-normalize-frame (selected-frame))
+      (should (eq (selected-window) left))
+      (should-not (edmacs-windows-frame-wedged-p (selected-frame))))))
+
+(ert-deftest edmacs-windows-test-normalize-on-a-sole-side-window-adds-main-beside-it ()
+  "The parentless shape: the sole dedicated side window stays dedicated
+and on its side; a `*scratch*' main appears beside it, and no new frame
+is popped to escape it."
+  (edmacs-windows-test--with-clean-layout
+    (let ((frames (length (frame-list)))
+          (window (edmacs-test-support-make-wedged-frame 'sole)))
+      (let ((main (edmacs-windows-normalize-frame (selected-frame))))
+        (should (window-live-p main))
+        (should-not (eq main window))
+        (should (equal (buffer-name (window-buffer main)) "*scratch*"))
+        (should (window-live-p window))
+        (should (eq (window-parameter window 'window-side) 'left))
+        (should (window-dedicated-p window))
+        (should-not (edmacs-windows-frame-wedged-p (selected-frame)))
+        (should (= (length (frame-list)) frames))))))
+
+;; ---------------------------------------------------------------------------
 ;; --repair-plan: the pure half of normalize
 ;; ---------------------------------------------------------------------------
 
@@ -2901,7 +2962,9 @@ and a real deletion anywhere else."
       (should-not (window-parent window))
       (should-not (edmacs-windows--delete-window-if-possible window))
       (should (window-live-p window))
-      (edmacs-windows-normalize-frame (selected-frame)))
+      ;; Normalize adds main beside the side window without selecting it;
+      ;; the nested layout below must not start from the side window.
+      (select-window (edmacs-windows-normalize-frame (selected-frame))))
     (edmacs-windows-test--with-clean-layout
       (delete-other-windows)
       (let ((other (split-window (selected-window))))
@@ -2940,8 +3003,9 @@ now either checks its one expected refusal (see
 
 (ert-deftest edmacs-windows-test-repair-frame-has-only-three-source-mentions ()
   "AC2's grep, enforced by the suite rather than by hand: the name
-survives only as the command's own `defun', its message, and the one
-cross-reference in `edmacs-windows-normalize-frame's docstring."
+survives only as the command's own `defun', its message, the one
+cross-reference in `edmacs-windows-normalize-frame's docstring, and the
+Commentary line that says the collapse is this command alone."
   (let ((sidebar (expand-file-name "modules/sidebar.el" default-directory)))
     (unless (file-readable-p sidebar)
       (ert-skip "cannot locate modules/sidebar.el"))
@@ -2955,6 +3019,6 @@ cross-reference in `edmacs-windows-normalize-frame's docstring."
     (let ((n 0))
       (while (search-forward "edmacs-windows-repair-frame" nil t)
         (setq n (1+ n)))
-      (should (= n 3)))))
+      (should (= n 4)))))
 
 ;;; windows-test.el ends here
