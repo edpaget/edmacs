@@ -37,6 +37,7 @@
 (require 'ert)
 (require 'eglot)
 (require 'subr-x)
+(require 'cl-lib)
 
 (defvar java-test--module
   (expand-file-name
@@ -178,8 +179,27 @@ command -- a stronger, symbol-level check than the prefix-lookup tests above."
 (ert-deftest java-test-semantic-tokens-hooked ()
   "`eglot-semantic-tokens-mode' is a per-buffer minor mode, so the equivalent
 of `lsp-semantic-tokens-enable' is hooking it onto every eglot-managed
-buffer, not calling it once at load time."
-  (should (memq 'eglot-semantic-tokens-mode eglot-managed-mode-hook)))
+buffer, not calling it once at load time. It goes through a guarded
+wrapper (`edmacs--eglot-enable-semantic-tokens'), not the raw mode
+function directly, because `eglot-managed-mode-hook' also fires on the
+disable transition and a no-arg call always turns the mode back on."
+  (should (memq 'edmacs--eglot-enable-semantic-tokens eglot-managed-mode-hook))
+  (should-not (memq 'eglot-semantic-tokens-mode eglot-managed-mode-hook)))
+
+(ert-deftest java-test-semantic-tokens-wrapper-guards-on-disable ()
+  "The wrapper only enables semantic-tokens-mode when eglot still manages
+the buffer, so it does not resurrect the mode on the disable transition."
+  (let (enabled)
+    (cl-letf (((symbol-function 'eglot-managed-p) (lambda () nil))
+              ((symbol-function 'eglot-semantic-tokens-mode)
+               (lambda (&rest _) (setq enabled t))))
+      (edmacs--eglot-enable-semantic-tokens)
+      (should-not enabled))
+    (cl-letf (((symbol-function 'eglot-managed-p) (lambda () t))
+              ((symbol-function 'eglot-semantic-tokens-mode)
+               (lambda (&rest _) (setq enabled t))))
+      (edmacs--eglot-enable-semantic-tokens)
+      (should enabled))))
 
 (ert-deftest java-test-no-lsp-java-or-dap-source-text ()
   "Mirrors the `grep -rn 'lsp-java\\|dap-'' acceptance criterion."

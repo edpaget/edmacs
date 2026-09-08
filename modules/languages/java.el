@@ -30,6 +30,7 @@
 
 (defvar eglot-workspace-configuration)
 (declare-function eglot-semantic-tokens-mode "eglot")
+(declare-function eglot-managed-p "eglot")
 
 ;; jdtls' own settings keys (the "java.*" section VS Code's redhat.java
 ;; extension uses), not the higher-level wrapper names the former LSP Java
@@ -70,8 +71,20 @@
 ;; turns it on in every eglot-managed buffer, not just Java's. This is where
 ;; `lsp-semantic-tokens-enable t' above used to live, so the equivalent
 ;; decision is recorded here even though its effect is global.
+;;
+;; `eglot-managed-mode-hook' also fires on the *disable* transition (eglot
+;; clears its own bookkeeping only after running the hook), so a no-arg call
+;; here must be guarded the same way `edmacs--eglot-disable-flycheck' guards
+;; its own consumption of this hook in programming.el -- otherwise a
+;; shutdown/reconnect turns semantic-tokens-mode back on in a buffer eglot
+;; just stopped managing.
+(defun edmacs--eglot-enable-semantic-tokens ()
+  "Turn on `eglot-semantic-tokens-mode' when eglot manages this buffer."
+  (when (eglot-managed-p)
+    (eglot-semantic-tokens-mode 1)))
+
 (with-eval-after-load 'eglot
-  (add-hook 'eglot-managed-mode-hook #'eglot-semantic-tokens-mode))
+  (add-hook 'eglot-managed-mode-hook #'edmacs--eglot-enable-semantic-tokens))
 
 ;; ============================================================================
 ;; Maven Integration
