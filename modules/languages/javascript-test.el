@@ -28,6 +28,10 @@
 (require 'ert)
 (require 'eglot)
 
+;; Bound by `javascript-test--with-clean-cache'; declared special here so a
+;; byte-compile of this file alone binds it dynamically, not lexically.
+(defvar edmacs-js--typescript-server-cache)
+
 (defvar javascript-test--module
   (expand-file-name
    "javascript.el"
@@ -134,6 +138,22 @@ Return DIR, so it can be consed onto `exec-path'."
         (should (equal 1 (with-temp-buffer
                            (insert-file-contents tally)
                            (count-lines (point-min) (point-max)))))))))
+
+(ert-deftest javascript-test-probe-reruns-after-tsc-changes-on-disk ()
+  "A tsc upgraded in place -- same path, new mtime -- is probed again."
+  (javascript-test--with-scratch dir
+    (javascript-test--with-clean-cache
+      (let ((exec-path (cons (javascript-test--fake-tsc
+                              dir "echo 'Version 5.9.3'")
+                             exec-path)))
+        (should (equal (edmacs-js--typescript-server nil nil)
+                       '("typescript-language-server" "--stdio")))
+        (javascript-test--fake-tsc dir "echo 'Version 7.0.2'")
+        ;; Rewriting within the same second would leave the mtime unchanged.
+        (set-file-times (expand-file-name "tsc" dir)
+                        (time-add (current-time) 10))
+        (should (equal (cdr (edmacs-js--typescript-server nil nil))
+                       '("--lsp" "--stdio")))))))
 
 (ert-deftest javascript-test-contact-arity-is-eglot-compatible ()
   "eglot funcalls a contact function with one or two arguments, never zero."

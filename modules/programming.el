@@ -10,10 +10,27 @@
 ;; Eglot - built-in Language Server Protocol client
 ;; ============================================================================
 
+(declare-function eglot-semantic-tokens-mode "eglot")
+(declare-function eglot-managed-p "eglot")
+
+;; `eglot-managed-mode-hook' also fires on the *disable* transition (eglot
+;; clears its own bookkeeping only after running the hook), so a no-arg call
+;; here must check `eglot-managed-p' -- otherwise a shutdown/reconnect turns
+;; semantic-tokens-mode back on in a buffer eglot just stopped managing.
+(defun edmacs--eglot-enable-semantic-tokens ()
+  "Turn on `eglot-semantic-tokens-mode' when eglot manages this buffer."
+  (when (eglot-managed-p)
+    (eglot-semantic-tokens-mode 1)))
+
 (use-package eglot
   :straight nil
   :commands (eglot eglot-ensure)
   :config
+  ;; `eglot-semantic-tokens-mode' is a per-buffer minor mode with no
+  ;; per-language switch, so it goes on for every managed buffer here rather
+  ;; than in one language's on-demand module.
+  (add-hook 'eglot-managed-mode-hook #'edmacs--eglot-enable-semantic-tokens)
+
   (setq eglot-autoshutdown t
         ;; Default 3s blocks the frame that long per `eglot-ensure'; with a
         ;; desktop restore full of Go buffers that adds up. Finish connecting
@@ -303,13 +320,11 @@
   :config
   (setq yaml-indent-offset 2)
 
-  ;; Needs yaml-language-server: npm install -g yaml-language-server.
+  ;; Needs yaml-language-server (npm install -g yaml-language-server);
+  ;; eglot's own `eglot-server-programs' already maps yaml-mode to it.
   ;; Guarded, unlike the unconditional hook this replaced: a bare
   ;; `eglot-ensure' errors visibly on every yaml file when the server is
   ;; not installed.
-  (with-eval-after-load 'eglot
-    (add-to-list 'eglot-server-programs
-                 '((yaml-mode yaml-ts-mode) . ("yaml-language-server" "--stdio"))))
   (add-hook 'yaml-mode-hook
             (lambda ()
               (when (executable-find "yaml-language-server")

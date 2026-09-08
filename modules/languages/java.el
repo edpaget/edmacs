@@ -29,8 +29,6 @@
   :mode "\\.java\\'")
 
 (defvar eglot-workspace-configuration)
-(declare-function eglot-semantic-tokens-mode "eglot")
-(declare-function eglot-managed-p "eglot")
 
 ;; jdtls' own settings keys (the "java.*" section VS Code's redhat.java
 ;; extension uses), not the higher-level wrapper names the former LSP Java
@@ -66,23 +64,8 @@
               (setq tab-width 4
                     indent-tabs-mode nil))))
 
-;; Global via the hook, not java-ts-mode-local: `eglot-semantic-tokens-mode'
-;; is a per-buffer minor mode with no per-language switch, so hooking it here
-;; turns it on in every eglot-managed buffer, not just Java's. This is where
-;; the previous client's semantic-tokens switch used to live, so the
-;; equivalent decision is recorded here even though its effect is global.
-;;
-;; `eglot-managed-mode-hook' also fires on the *disable* transition (eglot
-;; clears its own bookkeeping only after running the hook), so a no-arg call
-;; here must check `eglot-managed-p' -- otherwise a shutdown/reconnect turns
-;; semantic-tokens-mode back on in a buffer eglot just stopped managing.
-(defun edmacs--eglot-enable-semantic-tokens ()
-  "Turn on `eglot-semantic-tokens-mode' when eglot manages this buffer."
-  (when (eglot-managed-p)
-    (eglot-semantic-tokens-mode 1)))
-
-(with-eval-after-load 'eglot
-  (add-hook 'eglot-managed-mode-hook #'edmacs--eglot-enable-semantic-tokens))
+;; jdtls' semantic highlighting arrives through `eglot-semantic-tokens-mode',
+;; which programming.el turns on for every eglot-managed buffer.
 
 ;; ============================================================================
 ;; Maven Integration

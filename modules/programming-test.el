@@ -26,12 +26,14 @@
 
 (require 'ert)
 (require 'subr-x)
+(require 'cl-lib)
 
 ;; Declared, not required: every one of these arrives only once
 ;; `edmacs-programming-test--ensure' has loaded evil, general and
 ;; programming.el, which a byte-compile of this file alone never does.
 (defvar use-package-keywords)
 (defvar eglot-mode-map)
+(defvar eglot-managed-mode-hook)
 (defvar flymake-show-diagnostics-at-end-of-line)
 (defvar flymake-no-changes-timeout)
 (declare-function evil-local-mode "evil-core")
@@ -229,6 +231,38 @@ bridge and the yaml `flycheck-mode' hook are both gone."
     (dolist (entry (and (boundp hook) (symbol-value hook)))
       (when (symbolp entry)
         (should-not (string-prefix-p "flycheck" (symbol-name entry)))))))
+
+;; ============================================================================
+;; Semantic tokens on every managed buffer
+;; ============================================================================
+
+(ert-deftest edmacs-programming-test-semantic-tokens-hooked ()
+  "`eglot-semantic-tokens-mode' is a per-buffer minor mode, so the only way
+to have it everywhere is a hook on every eglot-managed buffer.  It goes
+through a guarded wrapper, not the raw mode function, because
+`eglot-managed-mode-hook' also fires on the disable transition and a
+no-arg call always turns the mode back on."
+  (unless (edmacs-programming-test--ensure)
+    (ert-skip edmacs-programming-test--skip-message))
+  (should (memq 'edmacs--eglot-enable-semantic-tokens eglot-managed-mode-hook))
+  (should-not (memq 'eglot-semantic-tokens-mode eglot-managed-mode-hook)))
+
+(ert-deftest edmacs-programming-test-semantic-tokens-wrapper-guards-on-disable ()
+  "The wrapper enables semantic-tokens-mode only while eglot still manages
+the buffer, so it does not resurrect the mode on the disable transition."
+  (unless (edmacs-programming-test--ensure)
+    (ert-skip edmacs-programming-test--skip-message))
+  (let (enabled)
+    (cl-letf (((symbol-function 'eglot-managed-p) (lambda () nil))
+              ((symbol-function 'eglot-semantic-tokens-mode)
+               (lambda (&rest _) (setq enabled t))))
+      (edmacs--eglot-enable-semantic-tokens)
+      (should-not enabled))
+    (cl-letf (((symbol-function 'eglot-managed-p) (lambda () t))
+              ((symbol-function 'eglot-semantic-tokens-mode)
+               (lambda (&rest _) (setq enabled t))))
+      (edmacs--eglot-enable-semantic-tokens)
+      (should enabled))))
 
 (provide 'programming-test)
 ;;; programming-test.el ends here

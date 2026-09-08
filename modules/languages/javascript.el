@@ -135,16 +135,20 @@
 (defvar eglot-workspace-configuration)
 
 (defvar edmacs-js--typescript-server-cache (make-hash-table :test #'equal)
-  "Cache of resolved tsc path -> non-nil when that tsc supports `--lsp'.")
+  "Cache of (TSC-PATH . MTIME) -> non-nil when that tsc supports `--lsp'.
+Keyed on the file's modification time as well as its path, so a tsc
+upgraded in place is probed again instead of keeping its old answer for
+the life of the daemon.")
 
 (defun edmacs-js--tsc-serves-language-server-p (tsc)
   "Return non-nil when TSC is a TypeScript 7+ compiler, which serves `--lsp'.
 TypeScript 7's Go compiler is itself the language server; 5 and 6 ship a
 separate tsserver and answer `--lsp' with error TS5023."
-  (let ((cached (gethash tsc edmacs-js--typescript-server-cache 'missing)))
+  (let* ((key (cons tsc (file-attribute-modification-time (file-attributes tsc))))
+         (cached (gethash key edmacs-js--typescript-server-cache 'missing)))
     (if (not (eq cached 'missing))
         cached
-      (puthash tsc
+      (puthash key
                (with-temp-buffer
                  (and (eq 0 (ignore-errors
                               (call-process tsc nil t nil "--version")))
