@@ -71,6 +71,14 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
 - `modules/claude-term-approval-parity-live-test.el` -- runs the real `claude`
   binary to prove an Emacs-hosted session resolves the same permission
   policy as a terminal one (see Tool Approval below)
+- `modules/claude-lib-view-test.el` -- the rendering substrate's mode
+  dispatch, spec validation, caps, key bindings, and the guarantee that
+  `claude-lib-render`'s return value never carries the buffer's contents
+- `modules/claude-lib-view-live-test.el` -- two-tier: the real
+  `svg-print` -> `rsvg-convert` -> PNG round trip as a subprocess, plus
+  `(display-graphic-p)`-gated pixel assertions (`image-size`, `:ascent`,
+  the bar column's declared width against the image's pixel width) that
+  only `scripts/gui-ert.sh` can falsify
 - `modules/windows-test.el` -- master-and-stack layout, popup routing, the
   `SPC w` command set, tab/desktop persistence, the `display-buffer` catch-all
 - `modules/ui-test.el`, `modules/sidebar-test.el` -- ui.el and sidebar.el
@@ -91,6 +99,8 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
   fringe assertions; two-tier (see GUI-only geometry assertions below). The
   standard batch invocation shows 4 of its 10 tests as skipped -- that
   is the documented GUI-only gate, not a regression; run them through
+  `scripts/gui-ert.sh`. `modules/claude-lib-view-live-test.el` has the
+  same shape: 3 of its 8 skip in batch and all 8 pass under
   `scripts/gui-ert.sh`
 
 Run a suite in batch from the repository root, loading the modules it
@@ -254,7 +264,13 @@ those assertions real:
 
 ```bash
 scripts/gui-ert.sh modules/window-geometry-live-test.el [selector] [-l extra.el ...]
+scripts/gui-ert.sh modules/claude-lib-view-live-test.el "" -l modules/claude-lib-view.el
 ```
+
+This tier is not ceremony: it caught a bar column declared 16 characters
+wide carrying a 120-pixel image, which batch cannot see at all -- a batch
+frame accepts an image spec and renders nothing, so the declared width
+and the pixel width can disagree indefinitely without a test noticing.
 
 It never touches the user's real daemon (server name `server`) and never
 sets `--init-directory`, so it cannot bootstrap a second `straight` package

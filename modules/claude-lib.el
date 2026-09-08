@@ -115,6 +115,15 @@
 ;; `.', `!' or `?') naming what the function returns, because that
 ;; line is what a library listing shows.
 ;;
+;; THE RENDERING SUBSTRATE IS NOT IN THIS FILE. `claude-lib-render' and
+;; `claude-lib-render-rasterize' -- which build a BUFFER and return a
+;; summary naming it, never its contents -- live in
+;; `modules/claude-lib-view.el', a hand-written module with its own
+;; tests. They are entry points of this same namespace and show up in
+;; `(apropos-internal "\\`claude-lib-[^-]" #\='fboundp)' alongside the
+;; promoted ones, but they never go through `claude-lib-promote' and
+;; nothing below appends to that file.
+;;
 ;; PROMOTED ENTRIES all live in one contiguous section at the end of
 ;; this file, under a banner, because that is where `claude-lib-promote'
 ;; appends them -- ahead of the trailing provide form and nowhere else.

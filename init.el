@@ -106,6 +106,11 @@ LANGUAGE should be the name without the .el extension."
 ;; to repair it.
 (with-demoted-errors "claude-lib failed to load: %S"
   (load-module "claude-lib"))
+;; The rendering substrate the library's views are built on. Deliberately
+;; OUTSIDE the wrapper above -- that exists for the self-rewriting module
+;; alone, and a silent failure to load an ordinary module is worse than a
+;; loud one.
+(load-module "claude-lib-view")
 (load-module "claude-term")
 (load-module "claude-term-registry")
 ;; (load-module "org-config")
