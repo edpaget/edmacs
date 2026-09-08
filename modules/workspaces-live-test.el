@@ -24,9 +24,9 @@
 ;;
 ;; Run with (a pty allocated directly, which works whether or not stdin is
 ;; already a terminal -- `script -q /dev/null' does not):
-;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/git-common-dir.el \
-;;         -l modules/windows.el -l modules/workspaces.el \
-;;         -l modules/workspaces-live-test.el \
+;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el -l modules/windows.el \
+;;         -l modules/workspaces.el -l modules/workspaces-live-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 ;;
 ;; `modules/windows.el' is on that line because
@@ -66,18 +66,12 @@
 (ignore-errors (set-frame-size (selected-frame) 200 50))
 
 (defun edmacs-workspaces-live-test--make-frame-or-skip ()
-  "Return a new real frame on this process's controlling terminal, or skip."
-  (condition-case e
-      (let ((frame (make-frame '((window-system . nil)
-                                 (tty . "/dev/tty")
-                                 (tty-type . "xterm")))))
-        (unless (frame-live-p frame)
-          (ert-skip "could not create a second frame in this batch environment"))
-        (ignore-errors (set-frame-size frame 200 50))
-        frame)
-    (error (ert-skip (format "could not create a second frame in this batch \
-environment (no controlling terminal? see this file's Commentary for the pty \
-invocation): %s" e)))))
+  "Return a new real frame on the controlling terminal, widened, or skip.
+The shared fixture makes the frame; it is widened here for the same
+reason the ambient frame is above."
+  (let ((frame (edmacs-test-support-make-second-frame-or-skip)))
+    (ignore-errors (set-frame-size frame 200 50))
+    frame))
 
 (defmacro edmacs-workspaces-live-test--with-frames (frames &rest body)
   "Bind FRAMES (a list of symbols) to fresh real frames, run BODY, clean up."

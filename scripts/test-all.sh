@@ -26,8 +26,7 @@
 # frame that was created; if no graphical frame could be created at all
 # (no window server -- e.g. a headless CI runner or a sandboxed agent
 # environment), that row is reported SKIPPED-GUI and does not fail the
-# run, matching the phase's own baseline of only 2-3 gui-ert commands
-# being routinely exercised today.
+# run.
 #
 # A row whose own output does not match the expected ERT-summary shape at
 # all (a parser failure, not a test failure) is treated as unexpected>=1:

@@ -16,11 +16,13 @@
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
-;;         -l modules/git-common-dir.el \
+;;         -l modules/git-common-dir.el -l modules/windows.el \
 ;;         -l modules/workspaces.el -l modules/sessions-test.el \
 ;;         -f ert-run-tests-batch-and-exit
 ;;
-;; `workspaces.el' is on that line because the daemon stash hook now puts
+;; `windows.el' is on that line because the migration sanitizes every
+;; saved window state through `edmacs-windows-ws-ensure-main'.
+;; `workspaces.el' is there because the daemon stash hook now puts
 ;; `desktop-saved-frameset' through `edmacs-workspaces-migrate-frameset'
 ;; before stashing it; without it two tests here would exercise a stub of
 ;; their own subject.
@@ -400,6 +402,8 @@ invocation line (see Commentary). Two frame states in, one out."
              (desktop-saved-frameset fs))
         (unless (fboundp 'edmacs-workspaces-migrate-frameset)
           (ert-skip "workspaces.el is not loaded; add -l modules/workspaces.el"))
+        (unless (fboundp 'edmacs-windows-ws-ensure-main)
+          (ert-skip "windows.el is not loaded; add -l modules/windows.el"))
         (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
                   ((symbol-function 'desktop-restoring-frameset-p) (lambda () nil)))
           (edmacs-sessions--stash-frameset-for-daemon)

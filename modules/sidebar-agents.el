@@ -76,6 +76,7 @@
 (declare-function edmacs-sidebar--redraw "sidebar")
 (declare-function edmacs-sidebar-redraw-frames "sidebar")
 (declare-function edmacs-sidebar--window "sidebar")
+(declare-function edmacs-sidebar--fit "sidebar")
 (declare-function claude-term--pop-to-window "claude-term")
 (declare-function claude-term-registry-get "claude-term-registry")
 (declare-function claude-term-session-buffer "claude-term-registry")
@@ -414,7 +415,7 @@ swappable seam below."
 ;; Header line: repo-wide agent-status roll-up
 ;; ============================================================================
 
-(defun edmacs-sidebar-agents--header-line (frame)
+(defun edmacs-sidebar-agents--header-line (_frame)
   "Return a \"  [N⟳ N💬 N✓]\" roll-up suffix, or nil when no agent is
 tracked at all. Assigned to sidebar.el's
 `edmacs-sidebar-header-line-function' swappable seam, mirroring
@@ -866,7 +867,7 @@ window is currently on screen."
   (not (eq (edmacs-agent-status agent) 'idle)))
 
 (defun edmacs-sidebar-agents--collapsed-section (frame width)
-  "Insert agent statuses into the current buffer's collapsed sidebar strip for FRAME.
+  "Insert agent statuses into the current buffer's collapsed strip for FRAME.
 Inserts one line per agent with non-idle status, or nothing when no such
 agents exist. Each line is glyph + status indicator, applying the status face.
 Fits each line independently with `edmacs-sidebar--fit' to respect double-width

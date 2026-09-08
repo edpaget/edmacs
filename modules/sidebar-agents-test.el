@@ -108,7 +108,8 @@ Mirrors sidebar.el's implementation for tests."
     (defconst edmacs-sidebar-agents-test--sidebar-stubs
       `((edmacs-sidebar--redraw . ,(lambda (_frame) nil))
         (edmacs-sidebar-redraw-frames . ,(lambda () (list 'fake-frame)))
-        (edmacs-sidebar--window . ,(lambda (_frame) nil)))
+        (edmacs-sidebar--window . ,(lambda (_frame) nil))
+        (edmacs-sidebar--fit . ,(lambda (label _width) label)))
       "Canonical stub for every `sidebar' target sidebar-agents.el
 `declare-function's -- the sentinel test below asserts this list stays
 exhaustive against the module's own source.")
@@ -124,7 +125,7 @@ failure here rather than a void-function deep in a behavioral test."
           (insert-file-contents path)
           (goto-char (point-min))
           (while (re-search-forward
-                  "^(declare-function \\([^ ]+\\) \"sidebar\")" nil t)
+                  "^(declare-function \\([^ ]+\\) \"sidebar\"[ )]" nil t)
             (push (intern (match-string 1)) found)))
         (should found)
         (dolist (sym found)

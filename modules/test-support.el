@@ -1,38 +1,21 @@
 ;;; test-support.el --- Shared fixtures for modules/*-test.el -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; The straight-build-tree locators, the magit-section dependency-path
-;; setup, the "second real frame or skip" helper, the sidebar/agent-state
-;; fixtures, the tab-restore fixture, and the wedged-frame builder used to
-;; each live as byte-for-byte (or near-byte-for-byte) copies in a dozen-plus
-;; `modules/*-test.el' files -- see the roadmap phase this file landed
-;; under for the exact counts. This module is the single source of truth
-;; for all of them now.
+;; The single home of the fixtures `modules/*-test.el' files share: the
+;; straight-build-tree locators, the magit-section dependency-path setup,
+;; the "second real frame or skip" helper, the sidebar/agent-state
+;; fixtures, the tab-restore fixture, the wedged-frame builder and the
+;; hermetic run-and-exit wrapper.
 ;;
 ;; Load it once, before the test file that needs it:
 ;;
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/<suite>-test.el -f ert-run-tests-batch-and-exit
 ;;
-;; A file whose own fixture only needs a subset of these (e.g. just the
-;; build-root locator) still loads the whole module -- it is small and has
-;; no side effects of its own beyond `defun'/`defmacro'.
-;;
-;; IMPORTANT for future suites: any 25th `modules/*-test.el' file (or any
-;; existing one) that needs one of these fixtures should call the function
-;; or macro here rather than pasting a new local copy -- and
-;; `scripts/test-all.sh's manifest needs a `-l modules/test-support.el'
-;; entry for it. Keep this file the single place these fixtures are
-;; defined; rediscovering the duplication this file removed is exactly the
-;; tech debt this phase exists to close.
-;;
-;; `edmacs-test-support-straight-build-root' below was formerly copied as
-;; `<prefix>--locate-straight-build-root' into fourteen separate files
-;; (`edmacs-test-support-straight-repos-root' into five more); the shorter
-;; name here deliberately drops the `locate-' prefix so a caller's own
-;; source text never reproduces the old duplicate's exact name --
-;; `grep -l locate-straight-build-root modules/*-test.el' now finds none of
-;; them, only this file's own commentary and history above.
+;; A file that needs only one of these still loads the whole module -- it
+;; is small and has no side effects beyond `defun'/`defmacro'. A new suite
+;; that needs a fixture calls the one here rather than pasting a local
+;; copy, and its rows in `scripts/test-manifest.sh' load this file.
 
 ;;; Code:
 
@@ -354,10 +337,9 @@ production debounce timer a test reschedules (cancel-and-replace, same
 callback) is treated as new and canceled at cleanup, same as before.
 
 Meant to wrap a whole suite's run once -- around the call to
-`ert-run-tests-batch', not around each `ert-deftest' body -- matching
-\"run the suite twice in one process, zero net new timers/buffers\"
-rather than a per-test guarantee that could paper over one test's real
-dependency on state an earlier test in the same file left behind."
+`ert-run-tests-batch', not around each `ert-deftest' body -- so a
+process hosting more than one run starts each clean. It cleans silently
+and never fails on a leak: housekeeping, not a leak detector."
   (declare (indent 0))
   `(let ((edmacs-test-support--timers-before (copy-sequence timer-list))
          (edmacs-test-support--buffer-names-before

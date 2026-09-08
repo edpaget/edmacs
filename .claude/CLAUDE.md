@@ -83,7 +83,8 @@ Run a suite in batch from the repository root, loading the modules it
 depends on first:
 
 ```bash
-emacs -Q --batch -l ert -l modules/git-common-dir.el \
+emacs -Q --batch -l ert -l modules/test-support.el \
+      -l modules/git-common-dir.el \
       -l modules/claude-term.el \
       -l modules/claude-term-registry.el \
       -l modules/claude-term-registry-test.el \
@@ -198,11 +199,10 @@ the suite still exits 0 while silently testing less:
 | `sidebar-test.el` | 2 |
 | `sidebar-buffers-live-test.el` | 2 |
 | `sidebar-agents-live-test.el` | 1 |
-| `workspaces-live-test.el` | 2 |
+| `workspaces-live-test.el` | 3 |
 
 `sessions-test.el` no longer needs a pty: its per-frame restore walk went
-single-frame, and the suite now runs 52/52 with zero skips under plain
-`-Q --batch`.
+single-frame, and the suite runs with zero skips under plain `-Q --batch`.
 
 `scripts/gui-ert.sh` does **not** clear these. It supplies a graphical frame,
 not a terminal, so `/dev/tty` is still absent inside it -- it is the right
@@ -217,8 +217,9 @@ and works in both; the four suites in the table above document it as their
 pty invocation:
 
 ```bash
-scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/git-common-dir.el \
-      -l modules/sidebar-test.el -f ert-run-tests-batch-and-exit
+scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/test-support.el \
+      -l modules/git-common-dir.el -l modules/sidebar-test.el \
+      -f edmacs-test-support-run-and-exit
 ```
 
 Expect it to be slower -- `sidebar-test.el` goes from ~1.4s to ~9s -- because
@@ -434,8 +435,15 @@ edmacs/
 │   ├── org-config.el      # Org mode configuration
 │   ├── git.el             # Magit and git tools
 │   ├── vterm.el           # Terminal configuration
+│   ├── test-support.el    # Shared ERT fixtures, loaded with -l
 │   ├── *-test.el          # ERT suites, run in batch (see above)
 │   └── languages/         # Language-specific configs
+├── scripts/
+│   ├── test-all.sh        # The pre-landing gate: every suite, every tier
+│   ├── test-manifest.sh   # One row per (suite, tier): loads, budget, skips
+│   ├── pty-ert.sh         # Runs a suite under a controlling terminal
+│   ├── gui-ert.sh         # Runs a suite in a throwaway graphical daemon
+│   └── startup-check.sh   # Loads init.el with this checkout's modules
 ├── straight/
 │   └── versions/          # Package version lockfiles (committed)
 └── README.md              # Main repository documentation
