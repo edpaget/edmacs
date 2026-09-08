@@ -599,7 +599,12 @@ Never creates or selects a frame: relocation is entirely within FRAME,
 by selecting the target tab and displaying the buffer there."
   (when (and edmacs-workspaces-stray-visit-relocate
              (not edmacs-workspaces--relocating)
-             (frame-live-p frame))
+             (frame-live-p frame)
+             ;; `--stray-tab-number' reaches `tab-bar-tabs', which CREATES a
+             ;; default tab on a frame with no `tabs' parameter and re-runs
+             ;; `tab-bar-tab-post-open-functions' -- one of which draws a
+             ;; sidebar. Never do that to the daemon's tty placeholder.
+             (edmacs-workspaces-frame-usable-p frame))
     (let ((edmacs-workspaces--relocating t))
       (with-selected-frame frame
         ;; Every candidate is collected before anything moves: selecting a
@@ -626,8 +631,23 @@ by selecting the target tab and displaying the buffer there."
             (let ((buf (cadr move))
                   (target (cddr move)))
               (when (buffer-live-p buf)
-                (tab-bar-select-tab target)
-                (switch-to-buffer buf)))))))))
+                ;; Per-move, because this runs from a timer: a signal here
+                ;; strands every relocation still queued behind it.
+                (condition-case err
+                    (progn
+                      (tab-bar-select-tab target)
+                      ;; Never a bare `switch-to-buffer'. `tab-bar-select-tab'
+                      ;; restores the target tab's OWN selected window, which
+                      ;; after RET on a sidebar row is the dedicated sidebar --
+                      ;; and `switch-to-buffer' signals there. `pop-to-buffer'
+                      ;; goes through `display-buffer', which never reuses a
+                      ;; dedicated window and which this config's base action
+                      ;; already aims at the main window.
+                      (pop-to-buffer buf))
+                  (error
+                   (message "edmacs-workspaces: could not relocate %s: %s"
+                            (buffer-name buf)
+                            (error-message-string err))))))))))))
 
 (defun edmacs-workspaces--on-window-buffer-change (frame)
   "Schedule a stray-visit sweep of FRAME off the redisplay path.
