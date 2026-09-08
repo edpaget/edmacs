@@ -1,8 +1,10 @@
 ;;; completion-test.el --- Tests for completion.el -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; Run from the repo root (main checkout -- `straight/build' must be
-;; populated):
+;; Run with this file on the command line, from any `default-directory'
+;; (the repo root, a sibling worktree, wherever) -- every path below
+;; resolves against this file's own directory via `load-file-name', not
+;; against `default-directory', so cwd does not matter:
 ;;
 ;;   emacs -Q --batch -l ert -l modules/git-common-dir.el \
 ;;         -l modules/completion-test.el -f ert-run-tests-batch-and-exit
@@ -48,6 +50,22 @@
 (require 'ert)
 (require 'subr-x)
 
+(defvar completion-test--repo-root
+  (expand-file-name
+   ".."
+   (file-name-directory
+    (or load-file-name buffer-file-name
+        (expand-file-name "modules/completion-test.el" default-directory))))
+  "Repo root this file lives under (the parent of its own `modules/' dir).
+Resolved from `load-file-name' (or `buffer-file-name' when evaluated
+interactively) rather than `default-directory', so every path derived
+from it below is correct regardless of the caller's cwd -- loading this
+file by absolute path from an unrelated `default-directory' (e.g. the
+main checkout while this file exists only on a roadmap worktree) must
+still load *this* checkout's `modules/completion.el' and
+`modules/core.el', not whatever happens to sit at that relative path
+from cwd.")
+
 (defun completion-test--locate-straight-build-root ()
   "Return this checkout's `straight/build' directory, or nil.
 Tries this checkout's own `straight/build' first, then falls back to
@@ -59,9 +77,9 @@ modules/sidebar-test.el\): a roadmap worktree lives under
 `<parent>/edmacs' checkout, and straight's build cache is per-checkout,
 not shared."
   (or
-   (let ((here (expand-file-name "straight/build" default-directory)))
+   (let ((here (expand-file-name "straight/build" completion-test--repo-root)))
      (and (file-directory-p here) here))
-   (let* ((root (directory-file-name (expand-file-name default-directory)))
+   (let* ((root (directory-file-name completion-test--repo-root))
           (worktrees-dir (directory-file-name (file-name-directory root))))
      (when (string-suffix-p "__worktrees" worktrees-dir)
        (let* ((projects-dir (file-name-directory worktrees-dir))
@@ -87,7 +105,7 @@ real Emacs session) to enable this suite"))
     (add-to-list 'load-path
                  (expand-file-name "marginalia" completion-test--build-root))
 
-    (load (expand-file-name "modules/completion.el" default-directory) nil t)
+    (load (expand-file-name "modules/completion.el" completion-test--repo-root) nil t)
 
     (defun completion-test--load-core ()
       "Load modules/core.el standalone, stubbing `straight-use-package'.
@@ -101,7 +119,7 @@ hard-abort a standalone load with `void-function' otherwise. The
                    (expand-file-name "compat" completion-test--build-root))
       (add-to-list 'load-path
                    (expand-file-name "cond-let" completion-test--build-root))
-      (load (expand-file-name "modules/core.el" default-directory) nil t))
+      (load (expand-file-name "modules/core.el" completion-test--repo-root) nil t))
 
     (completion-test--load-core)
 
