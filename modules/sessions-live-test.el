@@ -30,15 +30,18 @@
 ;;         -l modules/git-common-dir.el \
 ;;         -l modules/sessions-live-test.el -f ert-run-tests-batch-and-exit
 ;;
-;; Two tests here need a REAL graphical frame -- they drive the daemon's
-;; own restore bridge and count graphical frames afterward, which a batch
-;; frame cannot answer. They `ert-skip' in batch; run them with:
+;; Three tests here need a REAL graphical frame -- they drive the daemon's
+;; own restore bridge and then count graphical frames, or check a
+;; dedicated side window's effect on what a tab saves, neither of which a
+;; batch frame can answer. They `ert-skip' in batch; run them with:
 ;;
 ;;   scripts/gui-ert.sh modules/sessions-live-test.el t -l modules/test-support.el
 ;;
-;; from the MAIN checkout (never a worktree: see CLAUDE.md on
-;; `--init-directory'). That script starts a throwaway daemon of its own
-;; and never touches the user's.
+;; from either checkout. That script starts a throwaway daemon under its
+;; own server name, never touches the user's, and never sets
+;; `--init-directory' -- so unlike the commands CLAUDE.md restricts to the
+;; main checkout, it cannot bootstrap a second straight tree and is safe
+;; from a worktree.
 ;;
 ;; None of this exercises the launchd daemon, the Dock, or NS hide/show --
 ;; those need a real GUI login session and are not ERT-testable. The
@@ -532,6 +535,194 @@ must yield real windows, not an empty frame."
                                   (tab-bar--current-tab-find nil frame))
                                  "/w/cloud/"))
                   (should (window-live-p (frame-selected-window frame)))))))))))
+
+    ;; ========================================================================
+    ;; The manual check, automated: a session made with the sidebar selected
+    ;; restores with a main window in every tab and needs no repair
+    ;; ========================================================================
+
+    (defun edmacs-sessions-live-test--audit-restored-tabs (frame)
+      "Select each of FRAME's tabs in turn and audit the layout it restores.
+Returns a plist: `:tabs' how many were visited, `:needing-repair' how
+many restored a layout `edmacs-windows--repair-plan' says has to be
+rebuilt, and `:without-main' how many yielded no usable main window.
+FRAME's originally selected tab is reselected afterward.
+
+Each tab has to be SELECTED to be audited: a restored tab carries its
+layout as `ws' and has no live `wc', so its windows do not exist until
+`tab-bar-select-tab' puts them back.
+
+The audit asks the pure `edmacs-windows--repair-plan' rather than
+counting `edmacs-windows-frame-repaired-functions' firings, because the
+hook is driven by `window-state-change-functions', which redisplay runs
+-- and `--batch' never redisplays, so a firing count is silently always
+zero there. A non-nil plan is the same condition, measured directly."
+      (with-selected-frame frame
+        (let ((original (1+ (tab-bar--current-tab-index nil frame)))
+              (tabs 0) (needing 0) (without-main 0))
+          (unwind-protect
+              (dotimes (i (length (tab-bar-tabs frame)))
+                (tab-bar-select-tab (1+ i))
+                (setq tabs (1+ tabs))
+                (when (edmacs-windows--repair-plan frame)
+                  (setq needing (1+ needing)))
+                (let ((main (edmacs-main-window frame)))
+                  (unless (and (window-live-p main)
+                               (null (window-parameter main 'window-side)))
+                    (setq without-main (1+ without-main)))))
+            (tab-bar-select-tab original))
+          (list :tabs tabs :needing-repair needing :without-main without-main))))
+
+    (defun edmacs-sessions-live-test--poison-saved-tab-ws (saved ws)
+      "Return SAVED with its first ordinary tab's `ws' replaced by WS.
+This is the shape a desktop file written BEFORE the producer fix holds: a
+tab whose saved layout is a side-only tree. It is injected rather than
+reproduced, so the test does not depend on which Emacs still produces it
+-- 31.1's `delete-other-windows' clears `window-side' on the window it
+leaves behind, so the live path no longer makes one, while a session
+saved by an older Emacs still carries it.
+
+Every `wc' key goes with it: `tab-bar-select-tab' prefers a live window
+configuration and never consults `ws' while one is present, and desktop
+strips them on save, so a genuinely restored tab has none."
+      (let* ((state (car (frameset-states saved)))
+             (params (car state))
+             (tabs (alist-get 'tabs params))
+             (poisoned
+              (mapcar (lambda (tab)
+                        (if (and (eq (car-safe tab) 'tab) (assq 'ws (cdr tab)))
+                            (cons (car tab)
+                                  (cons (cons 'ws ws)
+                                        (seq-remove
+                                         (lambda (cell)
+                                           (string-prefix-p
+                                            "wc" (symbol-name (car-safe cell))))
+                                         (cdr tab))))
+                          tab))
+                      tabs)))
+        (setf (frameset-states saved)
+              (list (cons (cons (cons 'tabs poisoned)
+                                (seq-remove (lambda (cell) (eq (car-safe cell) 'tabs))
+                                            params))
+                          (cdr state))))
+        saved))
+
+    (defmacro edmacs-sessions-live-test--restoring (frameset &rest body)
+      "Restore FRAMESET over the selected frame with desktop, then run BODY."
+      (declare (indent 1))
+      `(let ((desktop-saved-frameset ,frameset)
+             (desktop-restore-frames t)
+             (desktop-restore-reuses-frames t))
+         (desktop-restore-frameset)
+         ,@body))
+
+    (ert-deftest edmacs-sessions-live-test-restoring-a-pre-fix-session-needs-no-repair ()
+      "Steps 4-5 of the manual check: a session saved BEFORE this fix comes
+back with a main window in every tab, and with nothing to repair.
+
+A desktop file written by the old code holds a tab whose `ws' is a
+side-only tree. `window-state-put' restores that into a frame with no
+main window, from which every later `split-window' delegates through
+`window-main-window' back into itself -- the recursion the two deleted
+`tab-bar-select-tab' advices were bolted on for. The sanitizer
+`edmacs-workspaces-migrate-frameset' runs each tab's `ws' through is what
+makes such a file self-heal on the next boot.
+
+Both directions are asserted in the one run, so the sanitizer is what is
+being measured rather than merely present: with it, no restored tab needs
+a repair; with it stubbed back to `identity', at least one does."
+      (let ((frame (selected-frame)))
+        (edmacs-sessions-live-test--with-restored-frame frame
+          (edmacs-sessions-live-test--with-synthetic-groups
+            (edmacs-sessions-live-test--with-scratch-tabs frame
+              (with-selected-frame frame
+                (let ((side-only (progn
+                                   (edmacs-test-support-make-wedged-frame 'sole)
+                                   (window-state-get (frame-root-window) t))))
+                  (edmacs-windows-normalize-frame frame)
+                  ;; The fixture really is the poisonous shape.
+                  (should (edmacs-windows-ws-side-only-p side-only))
+                  (delete-other-windows)
+                  (edmacs-window-set-main (selected-window))
+                  (edmacs-workspaces-set-tab-root "/w/edmacs/" frame)
+                  (tab-bar-new-tab)
+                  (edmacs-workspaces-set-tab-root
+                   "/w/edmacs__worktrees/roadmap-x/" frame)
+                  (let ((poisoned (edmacs-sessions-live-test--poison-saved-tab-ws
+                                   (frameset-save (list frame)) side-only)))
+                    ;; With the sanitizer: every tab restores healthy.
+                    (edmacs-sessions-live-test--restoring
+                        (edmacs-workspaces-migrate-frameset (copy-tree poisoned))
+                      (let ((audit (edmacs-sessions-live-test--audit-restored-tabs
+                                    frame)))
+                        (should (= 2 (plist-get audit :tabs)))
+                        (should (= 0 (plist-get audit :needing-repair)))
+                        (should (= 0 (plist-get audit :without-main)))))
+                    ;; Without it, the same session restores a tab that does
+                    ;; need one -- which is what the assertion above pins.
+                    (edmacs-sessions-live-test--restoring
+                        (cl-letf (((symbol-function 'edmacs-windows-ws-ensure-main)
+                                   #'identity))
+                          (edmacs-workspaces-migrate-frameset (copy-tree poisoned)))
+                      (let ((audit (edmacs-sessions-live-test--audit-restored-tabs
+                                    frame)))
+                        (should (> (plist-get audit :needing-repair) 0))))
+                    ;; Leave the frame healthy for whatever runs next.
+                    (edmacs-windows-normalize-frame frame)))))))))
+
+    (ert-deftest edmacs-sessions-live-test-sidebar-selected-new-tab-restores-with-a-main-window ()
+      "The manual GUI check, run end to end: make a tab while point is in the
+dedicated sidebar, save the session, restore it the way the daemon does
+on a restart, and confirm every tab has a main window and none needs a
+repair.
+
+It belongs on a real graphical frame -- under `--batch' a side window's
+dedication and the restore bridge's frame reuse are both unfalsifiable,
+which is why it skips there rather than passing vacuously. The
+poisoned-desktop half of the same check, which does not need a window
+system, is the test above."
+      (edmacs-sessions-live-test--skip-unless-graphic)
+      (let ((frame (selected-frame))
+            (buf (generate-new-buffer "eslt-sidebar-newtab")))
+        (unwind-protect
+            (edmacs-sessions-live-test--with-restored-frame frame
+              (edmacs-sessions-live-test--with-synthetic-groups
+                (edmacs-sessions-live-test--with-scratch-tabs frame
+                  (with-selected-frame frame
+                    (delete-other-windows)
+                    (edmacs-window-set-main (selected-window))
+                    (edmacs-workspaces-set-tab-root "/w/edmacs/" frame)
+                    (let ((side (display-buffer-in-side-window
+                                 buf '((side . left) (slot . 0)
+                                       (window-parameters
+                                        . ((no-delete-other-windows . t)))))))
+                      (set-window-dedicated-p side t)
+                      (select-window side)
+                      ;; The precondition, asserted rather than assumed: without
+                      ;; it the scenario degrades to an ordinary new tab.
+                      (should (window-parameter (selected-window) 'window-side))
+                      (should (window-dedicated-p (selected-window)))
+                      ;; Steps 1-2: a new tab with the sidebar holding point.
+                      (tab-bar-new-tab)
+                      (edmacs-workspaces-set-tab-root
+                       "/w/edmacs__worktrees/roadmap-x/" frame)))
+                  ;; Step 3: nothing was saved side-only, so nothing to repair.
+                  (dolist (tab (tab-bar-tabs frame))
+                    (let ((ws (alist-get 'ws (cdr tab))))
+                      (when ws (should-not (edmacs-windows-ws-side-only-p ws)))))
+                  (should-not (edmacs-windows-frame-wedged-p frame))
+                  ;; Steps 4-5: save, then restore through the daemon's own
+                  ;; bridge -- the path a restart actually takes.
+                  (let ((migrated (edmacs-workspaces-migrate-frameset
+                                   (frameset-save (list frame)))))
+                    (edmacs-sessions-live-test--drive-bridge migrated
+                      (should (frame-live-p frame))
+                      (let ((audit (edmacs-sessions-live-test--audit-restored-tabs
+                                    frame)))
+                        (should (= 2 (plist-get audit :tabs)))
+                        (should (= 0 (plist-get audit :needing-repair)))
+                        (should (= 0 (plist-get audit :without-main)))))))))
+          (kill-buffer buf))))
 
     (provide 'sessions-live-test)))
 ;;; sessions-live-test.el ends here

@@ -43,6 +43,11 @@
 # would clear it, but a single test does not earn a whole extra row --
 # accepting the documented skip is the cheaper honest answer.
 #
+# sessions-live-test's batch row expects 3, all three of them its GUI-only
+# tests: the two that count graphical frames after the real restore bridge,
+# and the sidebar-selected-new-tab check, whose side window dedication a
+# batch frame cannot answer for. Its gui row runs all three and must show 0.
+#
 # Keep this the single source of truth for "what suites exist and how to
 # run them": a 25th modules/*-test.el file, or a new tier for an existing
 # suite, is added here, not hand-rolled elsewhere.
@@ -59,7 +64,7 @@ MANIFEST=(
   "core-live-test|batch|15|0|modules/test-support.el,modules/core-live-test.el|ert-run-tests-batch-and-exit"
   "git-common-dir-test|batch|15|0|modules/git-common-dir.el,modules/git-common-dir-test.el|ert-run-tests-batch-and-exit"
   "keybindings-test|batch|15|0|modules/test-support.el,modules/keybindings-test.el|ert-run-tests-batch-and-exit"
-  "sessions-live-test|batch|15|2|modules/test-support.el,modules/git-common-dir.el,modules/sessions-live-test.el|ert-run-tests-batch-and-exit"
+  "sessions-live-test|batch|15|3|modules/test-support.el,modules/git-common-dir.el,modules/sessions-live-test.el|ert-run-tests-batch-and-exit"
   "sessions-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/windows.el,modules/workspaces.el,modules/sessions-test.el|ert-run-tests-batch-and-exit"
   "sidebar-agents-live-test|batch|15|1|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-agents-live-test.el|ert-run-tests-batch-and-exit"
   "sidebar-agents-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/agents.el,modules/sidebar-agents-test.el|ert-run-tests-batch-and-exit"
