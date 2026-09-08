@@ -1,7 +1,18 @@
 ;;; java.el --- Java language configuration -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; Java development setup with LSP (Eclipse JDT.LS), DAP debugger, and build tools.
+;; Java development setup with eglot/jdtls, navigation-only (see the
+;; roadmap-edmacs-builtins phase-5 commit for the accepted feature loss:
+;; the jdtls-protocol refactoring/generation commands and the whole
+;; debugger integration this file used to wrap). jdtls itself is not
+;; bundled: install it via the `[tools.jdtls]' entry in
+;; `~/.config/mise/config.toml' (`mise install'), then confirm it resolves
+;; through a *login* shell -- `$SHELL -l -c "command -v jdtls"' -- since
+;; the daemon's PATH comes from `exec-path-from-shell' in core.el, which
+;; only sees a login shell's environment. eglot's bundled
+;; `eglot-server-programs' entry for `(java-mode java-ts-mode)' already
+;; contacts a bare "jdtls" on PATH; no custom entry is needed once that
+;; resolves.
 ;; This file is loaded on-demand when opening Java files.
 
 ;;; Code:
@@ -17,8 +28,32 @@
   :straight nil
   :mode "\\.java\\'")
 
+(defvar eglot-workspace-configuration)
+(declare-function eglot-semantic-tokens-mode "eglot")
+
+;; jdtls' own settings keys (the "java.*" section VS Code's redhat.java
+;; extension uses), not the higher-level wrapper names the former LSP Java
+;; package used for the same settings. Global rather than buffer-local, and
+;; merged rather than assigned: eglot resolves this in a temp buffer of its
+;; own, and every language shares the one plist. Only the settings worth
+;; keeping without that wrapper -- build-tool import, downloading dependency
+;; sources for navigation, and keeping the workspace built for fresh
+;; diagnostics -- survive; the completion/code-lens/signature-help tuning
+;; the old package also set is dropped, along with the Google-style
+;; formatter (its XML profile was never actually committed to this repo --
+;; `find . -iname '*google-style*'' finds nothing even on the pre-migration
+;; checkout -- so there was no real formatting behavior to port; `SPC c f'
+;; still runs jdtls' own default-style formatter via eglot).
+(with-eval-after-load 'eglot
+  (setq-default eglot-workspace-configuration
+                (plist-put (default-value 'eglot-workspace-configuration)
+                           :java
+                           '(:import (:gradle (:enabled t) :maven (:enabled t))
+                             :maven (:downloadSources t)
+                             :autobuild (:enabled t)))))
+
 (with-eval-after-load 'java-ts-mode
-  (add-hook 'java-ts-mode-hook #'lsp-deferred)
+  (add-hook 'java-ts-mode-hook #'eglot-ensure)
 
   ;; java-ts-mode ignores cc-mode's c-basic-offset.
   (setq java-ts-mode-indent-offset 4)
@@ -30,111 +65,13 @@
               (setq tab-width 4
                     indent-tabs-mode nil))))
 
-;; ============================================================================
-;; LSP Java - Eclipse JDT Language Server
-;; ============================================================================
-
-(use-package lsp-java
-  :after lsp-mode
-  :config
-  (setq lsp-java-server-install-dir (expand-file-name "lsp/jdtls" user-emacs-directory)
-        lsp-java-workspace-dir (expand-file-name "lsp/java-workspace" user-emacs-directory))
-
-  (setq lsp-java-format-settings-url
-        (lsp--path-to-uri (expand-file-name "eclipse-java-google-style.xml" user-emacs-directory))
-        lsp-java-format-settings-profile "GoogleStyle"
-        lsp-java-save-actions-organize-imports t
-        lsp-java-autobuild-enabled t
-        lsp-java-completion-enabled t
-        lsp-java-completion-overwrite t
-        lsp-java-completion-guess-method-arguments t
-        lsp-java-import-gradle-enabled t
-        lsp-java-import-maven-enabled t
-        lsp-java-maven-download-sources t
-        lsp-java-implementations-code-lens-enabled t
-        lsp-java-references-code-lens-enabled t
-        lsp-java-signature-help-enabled t)
-
-  (setq lsp-semantic-tokens-enable t)
-
-  (general-define-key
-   :states 'normal
-   :keymaps 'java-ts-mode-map
-   :prefix "SPC c"
-   ;; Organize imports
-   "o" '(:ignore t :which-key "organize")
-   "oi" '(lsp-java-organize-imports :which-key "imports")
-
-   ;; Build
-   "b" '(:ignore t :which-key "build")
-   "bb" '(lsp-java-build-project :which-key "build project")
-   "bc" '(lsp-java-build-project :which-key "compile")
-
-   ;; Not on r/d/t or R/D: lsp-mode-map (a minor-mode map, so it wins) binds
-   ;; those under SPC c in programming.el. X and K are free.
-   "X" '(:ignore t :which-key "run")
-   "Xr" '(dap-java-run-test-class :which-key "run class")
-   "Xm" '(dap-java-run-test-method :which-key "run method")
-
-   "K" '(:ignore t :which-key "debug")
-   "Kd" '(dap-java-debug-test-class :which-key "debug class")
-   "Km" '(dap-java-debug-test-method :which-key "debug method")
-
-   ;; Tests
-   "T" '(:ignore t :which-key "test")
-   "Tt" '(dap-java-run-test-method :which-key "test method")
-   "Tc" '(dap-java-run-test-class :which-key "test class")
-
-   ;; Refactoring
-   "=" '(:ignore t :which-key "refactor")
-   "=i" '(lsp-java-add-import :which-key "add import")
-   "=u" '(lsp-java-add-unimplemented-methods :which-key "add unimplemented")
-   "=g" '(lsp-java-generate-getters-and-setters :which-key "getters/setters")
-   "=t" '(lsp-java-generate-to-string :which-key "toString")
-   "=e" '(lsp-java-generate-equals-and-hash-code :which-key "equals/hashCode")
-   "=o" '(lsp-java-generate-overrides :which-key "overrides")
-
-   ;; Not on h: lsp-mode-map binds SPC c h to hover.
-   "H" '(:ignore t :which-key "hierarchy")
-   "Ht" '(lsp-java-type-hierarchy :which-key "type hierarchy")))
-
-;; ============================================================================
-;; DAP Mode - Debug Adapter Protocol for Java
-;; ============================================================================
-
-(use-package dap-mode
-  :after lsp-mode
-  :commands (dap-debug dap-debug-edit-template)
-  :config
-  (dap-auto-configure-mode)
-
-  (setq dap-auto-configure-features
-        '(sessions locals breakpoints expressions repl controls tooltip))
-
-  (general-define-key
-   :states 'normal
-   :keymaps 'java-ts-mode-map
-   :prefix "SPC d"
-   "" '(:ignore t :which-key "debug")
-   "b" '(dap-breakpoint-toggle :which-key "toggle breakpoint")
-   "B" '(dap-breakpoint-condition :which-key "conditional breakpoint")
-   "d" '(dap-debug :which-key "debug")
-   "l" '(dap-debug-last :which-key "debug last")
-   "r" '(dap-debug-recent :which-key "debug recent")
-   "e" '(dap-eval :which-key "eval")
-   "E" '(dap-eval-region :which-key "eval region")
-   "s" '(dap-step-in :which-key "step in")
-   "n" '(dap-next :which-key "next")
-   "o" '(dap-step-out :which-key "step out")
-   "c" '(dap-continue :which-key "continue")
-   "q" '(dap-disconnect :which-key "disconnect")
-   "u" '(dap-ui-sessions :which-key "ui sessions")
-   "h" '(dap-hydra :which-key "hydra")))
-
-;; DAP Java support
-(use-package dap-java
-  :straight nil
-  :after (dap-mode lsp-java))
+;; Global via the hook, not java-ts-mode-local: `eglot-semantic-tokens-mode'
+;; is a per-buffer minor mode with no per-language switch, so hooking it here
+;; turns it on in every eglot-managed buffer, not just Java's. This is where
+;; `lsp-semantic-tokens-enable t' above used to live, so the equivalent
+;; decision is recorded here even though its effect is global.
+(with-eval-after-load 'eglot
+  (add-hook 'eglot-managed-mode-hook #'eglot-semantic-tokens-mode))
 
 ;; ============================================================================
 ;; Maven Integration
@@ -177,15 +114,5 @@
    "r" '(gradle-run :which-key "run")
    "e" '(gradle-execute :which-key "execute")))
 
-;; ============================================================================
-;; Spring Boot support (optional)
-;; ============================================================================
-
-;; Uncomment if working with Spring Boot projects
-;; (use-package lsp-java-boot
-;;   :straight nil
-;;   :after lsp-java
-;;   :config
-;;   (require 'lsp-java-boot))
-
+(provide 'java)
 ;;; java.el ends here

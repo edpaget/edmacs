@@ -8,7 +8,7 @@ Language-specific configurations for edmacs. Each module provides optimized sett
 |----------|------|-------------|-------------|------|
 | JavaScript/TypeScript | `javascript.el` | 2 spaces | ✅ typescript-language-server | ❌ |
 | Clojure/ClojureScript | `clojure.el` | Lisp-style | ✅ clojure-lsp | ✅ CIDER |
-| Java | `java.el` | 4 spaces | ✅ Eclipse JDT.LS | ❌ |
+| Java | `java.el` | 4 spaces | ✅ eglot + jdtls (navigation-only) | ❌ |
 
 ---
 
@@ -167,42 +167,61 @@ CIDER provides extensive keybindings under `,` (local leader) in Clojure files:
 
 ### Features
 
+Navigation-only, by deliberate choice (roadmap `edmacs-builtins`, phase 5):
+Java gets eglot/jdtls for code intelligence and nothing beyond it. The
+jdtls-protocol refactoring/generation commands (organize imports, add
+unimplemented methods, generate getters/setters/toString/equals-hashCode,
+type hierarchy) and the whole debugger integration that used to live here
+are gone, not ported -- see that phase's landing commit for the full list.
+
 - **Java Support**: `.java` files
-- **LSP Integration**: Eclipse JDT.LS for IntelliSense
+- **LSP Integration**: eglot talking to jdtls (Eclipse JDT Language Server)
 - **4-Space Indentation**: Standard Java formatting
-- **Build Tool Integration**: Maven and Gradle support
-- **DAP Debugging**: Debug Adapter Protocol support
-- **Test Runner**: JUnit integration
-- **Project Management**: Automatic project detection
-- **Import Organization**: Automatic import management
+- **Build Tool Integration**: Maven and Gradle support (`mvn.el` / `gradle-mode`, unrelated to jdtls)
+- **Semantic Tokens**: jdtls' semantic highlighting via `eglot-semantic-tokens-mode`
 
 ### Indentation
 
 Java files use 4-space indentation:
 
 ```elisp
-c-basic-offset: 4
+java-ts-mode-indent-offset: 4
 tab-width: 4
 indent-tabs-mode: nil
 ```
 
 ### LSP Configuration
 
-The Eclipse JDT Language Server provides:
+jdtls, via eglot, provides:
 
-- Code completion with IntelliSense
+- Code completion (through corfu)
 - Hover documentation
-- Go to definition/references
+- Go to definition/references/implementation/type definition
 - Code actions and quick fixes
-- Refactoring support
-- Organize imports
-- Format on save
+- Rename
+- Workspace symbols
+- Diagnostics (via flymake)
 
 ### Prerequisites
 
-The LSP Java package automatically downloads Eclipse JDT.LS on first use. No manual installation required!
+jdtls is **not** bundled and does not auto-install -- install it by hand:
 
-Optional tools:
+1. Add a `[tools.jdtls]` entry to `~/.config/mise/config.toml` (see the
+   file's existing comments for the exact form; jdtls ships tarballs, not
+   proper GitHub releases, so it goes through an asdf plugin rather than
+   mise's `ubi:`/`github:` backends) and run `mise install`.
+2. Confirm it resolves through a **login** shell, not just your current
+   one: `$SHELL -l -c 'command -v jdtls'`. This matters because the Emacs
+   daemon gets its `PATH` from `exec-path-from-shell` (`modules/core.el`),
+   which only sees what a login shell exports -- a jdtls that only
+   resolves interactively is invisible to eglot, and the failure mode is a
+   silent non-attach with no error.
+
+eglot's bundled `eglot-server-programs` entry already contacts a bare
+`jdtls` on `PATH`; no custom entry is needed once the above resolves.
+
+Optional build-tool CLIs (only needed if you don't use the project's own
+wrapper script):
 
 ```bash
 # Maven (if not already installed)
@@ -212,31 +231,29 @@ brew install maven  # macOS
 brew install gradle  # macOS
 ```
 
-### DAP Debugging
-
-Java debugging is available through DAP mode:
-
-1. Set breakpoints with `SPC c d b`
-2. Start debugging with `SPC c d d`
-3. Step through code, inspect variables, etc.
-
 ### Keybindings
 
-Standard LSP keybindings under `SPC c`:
+Standard eglot/xref keybindings under `SPC c` (wired globally in
+`programming.el`, not by this file):
 
 - `SPC c a` - Code action
 - `SPC c r` - Rename symbol
 - `SPC c f` - Format buffer
 - `SPC c d` - Go to definition
 - `SPC c R` - Find references
-- `SPC c i` - Organize imports
+- `SPC c i` - Go to implementation
+- `SPC c t` - Go to type definition
+- `SPC c s` - Workspace symbols
+
+Maven and Gradle keep their own local-leader prefixes, `, m` and `, g`.
 
 ### Packages Used
 
-- **lsp-java**: Eclipse JDT Language Server integration
-- **dap-java**: Debugging support
-- **lsp-treemacs**: Project explorer
-- **flycheck**: Syntax checking
+- **eglot** (built-in): talks to jdtls over LSP
+- **jdtls**: the Java language server, installed via mise (see Prerequisites) -- not an Emacs package
+- **mvn**: Maven integration
+- **gradle-mode**: Gradle integration
+- **flymake** (built-in): diagnostics
 
 ---
 
