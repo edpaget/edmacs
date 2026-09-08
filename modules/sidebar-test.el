@@ -5,40 +5,31 @@
 ;; is genuinely load-bearing to even parse the file under `-Q --batch':
 ;; `define-derived-mode' errors if `magit-section-mode' is undefined, and
 ;; sidebar.el's own `(require 'magit-section)' errors even earlier if
-;; `load-path' lacks it. So this file carries its own, different
-;; invocation:
+;; `load-path' lacks it. So this file carries its own, different invocation
+;; -- and sidebar.el is NOT passed on the command line, because this file
+;; fixes `load-path' against the straight build tree and loads sidebar.el
+;; (and windows.el, which sidebar.el `require's) itself, below. Loading
+;; windows.el also installs its global side effects
+;; (`display-buffer-base-action', the `quit-restore-window' advice, the
+;; `tab-bar-tab-post-open-functions' hook) into this batch session. With no
+;; bootstrapped straight tree in this checkout or its sibling main one, the
+;; whole suite reports a single skip rather than erroring on file load.
 ;;
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/git-common-dir.el \
 ;;         -l modules/sidebar-test.el -f edmacs-test-support-run-and-exit
 ;;
-;; Note sidebar.el is NOT passed on the command line -- this file fixes
-;; `load-path' against the straight build tree and loads sidebar.el itself,
-;; below, so sidebar.el's own `(require 'magit-section)' succeeds. It loads
-;; `modules/windows.el' first, which sidebar.el now `require's for
-;; `edmacs-windows-claim-side'; that also installs windows.el's global side
-;; effects (`display-buffer-base-action', the `quit-restore-window' advice,
-;; the `tab-bar-tab-post-open-functions' hook) into this batch session. If
-;; neither this checkout nor its sibling main `edmacs' checkout has ever
-;; bootstrapped straight, the whole suite reports a single skip rather than
-;; erroring out on file load.
-;;
-;; Two tests need a second real frame, which needs a controlling terminal
-;; to attach to -- plain `-Q --batch' with no pty has none, so both skip
-;; cleanly under the invocation above:
+;; Two tests need a second real frame, which needs a controlling terminal:
+;; plain `-Q --batch' with no pty has none, so
 ;; `-singleton-buffer-shared-across-frames' and
-;; `-anchor-region-pulls-point-forward-on-unselected-frame'.
-;; To actually exercise them, attach a pty.  `script' works from an
-;; interactive shell but fails where stdin is not itself a terminal;
-;; `scripts/pty-ert.sh' allocates one directly and works in both
-;; (140/140, no skips):
+;; `-anchor-region-pulls-point-forward-on-unselected-frame' skip cleanly
+;; under the invocation above. `scripts/pty-ert.sh' allocates a pty
+;; directly (unlike `script', which needs stdin to be a terminal itself)
+;; and drives them for real, at the cost of raw escape codes in the
+;; output.
 ;;
 ;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/git-common-dir.el -l modules/sidebar-test.el -f edmacs-test-support-run-and-exit
-;;
-;; This draws real terminal escape sequences to that pty as a side
-;; effect (the second frame is a live tty frame) -- harmless, but expect
-;; screen-clear/cursor codes in the raw output.
 
 ;;; Code:
 
@@ -113,28 +104,6 @@ behind for a later test."
     ;; AC1 -- redraw content, marker, RET-driven visit, 1-based numbering,
     ;; frame-explicit tab-index lookups
     ;; ==========================================================================
-
-    (ert-deftest edmacs-sidebar-test-redraw-lists-both-tabs-with-marker ()
-      (edmacs-sidebar-test--with-extra-tab
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show (selected-frame))
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (let ((text (buffer-string)))
-                  (should (= 2 (length (split-string text "\n" t))))
-                  (should (= 1 (cl-count ?● text)))
-                  (should (= 1 (cl-count ?○ text))))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
-
-    (ert-deftest edmacs-sidebar-test-first-tab-section-value-is-one-not-zero ()
-      (edmacs-sidebar-test--with-extra-tab
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show (selected-frame))
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (goto-char (point-min))
-                (should (= 1 (oref (magit-current-section) value)))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
     (ert-deftest edmacs-sidebar-test-visit-tab-selects-and-moves-marker ()
       (edmacs-sidebar-test--with-extra-tab
@@ -271,55 +240,365 @@ lives with the real functions, in sidebar-agents-test.el's
             (should (= 1 agent-visit-calls))
             (should (= 1 buffer-visit-calls))))))
 
-    (ert-deftest edmacs-sidebar-test-redraw-passes-tabs-and-frame-explicitly ()
-      "Regression test for the frame-mismatch fix.
-Every `tab-bar--tab-index' call inside redraw must pass TABS/FRAME
-explicitly, never rely on the 0-arg form's `(selected-frame)' default --
-the 0-arg form would silently return nil for a tab belonging to a
-non-selected frame, making that frame's rows non-selectable via RET."
-      (edmacs-sidebar-test--with-extra-tab
-        (unwind-protect
-            (let ((calls nil))
-              (cl-letf* ((orig (symbol-function 'tab-bar--tab-index))
-                         ((symbol-function 'tab-bar--tab-index)
-                          (lambda (tab &optional tabs frame)
-                            (push (cons tabs frame) calls)
-                            (funcall orig tab tabs frame))))
-                (edmacs-sidebar-show (selected-frame)))
-              (should calls)
-              (dolist (call calls)
-                (should (car call))
-                (should (cdr call))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
+    ;; ==========================================================================
+    ;; The render plan -- pure structure, no frame and no tab fixtures
+    ;; ==========================================================================
+    ;; `edmacs-sidebar--plan' is a pure function of frame/tab-bar state, so a
+    ;; render's whole SHAPE (row kinds, labels, faces, section values,
+    ;; nesting, hook arguments) is assertable without opening a real tab,
+    ;; priming the git-common-dir cache, or unwinding anything. The fixture
+    ;; below is `cl-letf' only, deliberately.
+
+    (defun edmacs-sidebar-test--window-call (&rest _)
+      "Signal: a code path that must be pure reached a window primitive."
+      (error "window call from a pure path"))
+
+    (defun edmacs-sidebar-test--plan-records (spec)
+      "Expand SPEC into an ordered list of (TAB GROUP ROOT KIND) records.
+SPEC is a list of plists, one per tab-bar group: :group (nil for a
+group-less, flat frame), :main-root (what
+`edmacs-sidebar-main-root-function' answers), :collapsed, and :tabs, a
+list of (NAME ROOT KIND CURRENT-P) tab specs in order."
+      (let (records)
+        (dolist (entry spec (nreverse records))
+          (let ((group (plist-get entry :group)))
+            (dolist (tab-spec (plist-get entry :tabs))
+              (push (list (append (list (if (nth 3 tab-spec) 'current-tab 'tab))
+                                  (list (cons 'name (nth 0 tab-spec)))
+                                  (when group (list (cons 'group group))))
+                          group (nth 1 tab-spec) (nth 2 tab-spec))
+                    records))))))
+
+    (defmacro edmacs-sidebar-test--with-plan-fixture (spec &rest body)
+      "Run BODY with every workspaces lookup `edmacs-sidebar--plan' makes
+stubbed from the literal SPEC (see `edmacs-sidebar-test--plan-records').
+`cl-letf' only: no real tab, no frame, no primed git-common-dir cache,
+nothing to unwind. FRAME is nil in most callers -- the planner never
+dereferences it, only hands it on. A :collapsed entry makes
+`frame-parameter' answer that flag while every other parameter reads
+through; glyphs are forced to the plain-text table; and every root is
+live unless BODY rebinds `edmacs-sidebar-worktree-live-p-function'."
+      (declare (indent 1))
+      `(let* ((records (edmacs-sidebar-test--plan-records ,spec))
+              (tabs (mapcar #'car records))
+              (groups (delete-dups (delq nil (mapcar (lambda (r) (nth 1 r)) records))))
+              (current-group (car (delq nil
+                                        (mapcar (lambda (r)
+                                                  (and (eq (car (nth 0 r)) 'current-tab)
+                                                       (nth 1 r)))
+                                                records))))
+              (main-roots (mapcar (lambda (e) (cons (plist-get e :group)
+                                                    (plist-get e :main-root)))
+                                  ,spec))
+              (collapsed (seq-some (lambda (e) (plist-get e :collapsed)) ,spec))
+              (edmacs-sidebar-worktree-live-p-function #'always)
+              (edmacs-sidebar-force-text-glyphs t)
+              (edmacs-sidebar-main-root-function
+               (lambda (group-tabs)
+                 (alist-get (nth 1 (assq (car group-tabs) records))
+                            main-roots nil nil #'equal))))
+         (cl-letf* ((frame-parameter-orig (symbol-function 'frame-parameter))
+                    ((symbol-function 'frame-parameter)
+                     (lambda (frame parameter)
+                       (if (eq parameter 'edmacs-sidebar-collapsed)
+                           collapsed
+                         (funcall frame-parameter-orig frame parameter))))
+                    ((symbol-function 'tab-bar-tabs) (lambda (&optional _f) tabs))
+                    ((symbol-function 'edmacs-workspaces-groups) (lambda (&optional _f) groups))
+                    ((symbol-function 'edmacs-workspaces-current-group)
+                     (lambda (&optional _f) current-group))
+                    ((symbol-function 'edmacs-workspaces-tabs-in-group)
+                     (lambda (group &optional _f)
+                       (mapcar #'car (seq-filter (lambda (r) (equal group (nth 1 r))) records))))
+                    ((symbol-function 'edmacs-workspaces-tab-root)
+                     (lambda (tab) (nth 2 (assq tab records))))
+                    ((symbol-function 'edmacs-workspaces-classify-root)
+                     (lambda (root)
+                       (nth 3 (seq-find (lambda (r) (equal root (nth 2 r))) records))))
+                    ((symbol-function 'edmacs-workspaces-tab-number)
+                     (lambda (tab &optional _f)
+                       (when-let* ((i (seq-position tabs tab #'eq))) (1+ i)))))
+           ,@body)))
+
+    (defconst edmacs-sidebar-test--two-project-spec
+      '((:group "repoA" :main-root "/repoA/main/"
+         :tabs (("main" "/repoA/main/" main t)
+                ("roadmap-foo" "/repoA__worktrees/roadmap-foo/" roadmap nil)))
+        (:group "repoB" :main-root "/repoB/main/"
+         :tabs (("main" "/repoB/main/" main nil))))
+      "repoA with a current main tab plus one roadmap worktree; repoB with
+only its main tab.")
+
+    (defun edmacs-sidebar-test--rows-of-kind (kind rows)
+      "Return the members of ROWS whose :kind is KIND."
+      (seq-filter (lambda (row) (eq (plist-get row :kind) kind)) rows))
+
+    (ert-deftest edmacs-sidebar-test-plan-grouped-shape ()
+      "AC1: one `project' row per group, worktrees only under their own
+project, the count matching the child rows, no row for a never-opened
+worktree, a `roadmap-'-stripped child name, the `(GROUP . ROOT)' :value
+`--capture-positions' keys point and fold state on, the active group's
+current-tab face vs. an inactive group's nil face vs. the worktree hue,
+and the trailing extra-section and :anchor'd bottom-anchor hook rows."
+      (edmacs-sidebar-test--with-plan-fixture edmacs-sidebar-test--two-project-spec
+        (let* ((rows (edmacs-sidebar--plan nil))
+               (projects (edmacs-sidebar-test--rows-of-kind 'project rows))
+               (a (nth 0 projects))
+               (b (nth 1 projects))
+               (children (edmacs-sidebar-test--rows-of-kind 'worktree (plist-get a :children)))
+               (tail (last rows 2)))
+          (should (= 2 (length projects)))
+          (should (equal "● repoA [1]" (plist-get a :label)))
+          (should (equal "○ repoB [0]" (plist-get b :label)))
+          (should (equal (cons "repoA" "/repoA/main/") (plist-get a :value)))
+          (should (equal (cons "repoB" "/repoB/main/") (plist-get b :value)))
+          (should (= 1 (length children)))
+          (should (equal "  ◆ foo" (plist-get (car children) :label)))
+          (should (equal (cons "repoA" "/repoA__worktrees/roadmap-foo/")
+                         (plist-get (car children) :value)))
+          (should-not (edmacs-sidebar-test--rows-of-kind 'worktree (plist-get b :children)))
+          (should (eq 'edmacs-sidebar-current-tab-face (plist-get a :face)))
+          (should-not (plist-get b :face))
+          (should (eq 'edmacs-sidebar-worktree-child-face (plist-get (car children) :face)))
+          (should (equal 'edmacs-sidebar-extra-section-functions (plist-get (nth 0 tail) :hook)))
+          (should-not (plist-get (nth 0 tail) :anchor))
+          (should (equal 'edmacs-sidebar-bottom-anchor-section-functions
+                         (plist-get (nth 1 tail) :hook)))
+          (should (equal '(nil) (plist-get (nth 1 tail) :args)))
+          (should (plist-get (nth 1 tail) :anchor)))))
+
+    (ert-deftest edmacs-sidebar-test-plan-and-render-flat-tabs ()
+      "A frame carrying no tab-bar group at all (the daemon's boot/spare
+frame) plans a flat list of `tab' rows keyed on the bare 1-BASED tab
+number -- 0 is `tab-bar-select-tab's sentinel, so a 0 would make the
+first row unselectable. Only the current tab takes the current-tab glyph
+and face; the render is one unindented row each."
+      (edmacs-sidebar-test--with-plan-fixture
+          '((:group nil :tabs (("one" nil nil nil) ("two" nil nil t))))
+        (let ((rows (edmacs-sidebar-test--rows-of-kind 'tab (edmacs-sidebar--plan nil))))
+          (should (equal '(1 2) (mapcar (lambda (r) (plist-get r :value)) rows)))
+          (should (equal '("○ one" "● two") (mapcar (lambda (r) (plist-get r :label)) rows)))
+          (should-not (plist-get (nth 0 rows) :face))
+          (should (eq 'edmacs-sidebar-current-tab-face (plist-get (nth 1 rows) :face))))
+        (should (equal "○ one\n● two\n"
+                       (substring-no-properties
+                        (car (edmacs-sidebar-test--render-to-string
+                              (edmacs-sidebar--plan nil) 20)))))))
+
+    (ert-deftest edmacs-sidebar-test-plan-collapsed ()
+      "A collapsed frame plans exactly the two collapsed hook rows -- no
+project, worktree or tab row at all -- with :anchor on the second and
+the `edmacs-sidebar--width' sentinel in place of the width only
+`edmacs-sidebar--render' can supply."
+      (edmacs-sidebar-test--with-plan-fixture
+          (append edmacs-sidebar-test--two-project-spec '((:collapsed t)))
+        (let ((rows (edmacs-sidebar--plan nil)))
+          (should (equal '(hook hook) (mapcar (lambda (r) (plist-get r :kind)) rows)))
+          (should (equal 'edmacs-sidebar-collapsed-section-functions
+                         (plist-get (nth 0 rows) :hook)))
+          (should (equal 'edmacs-sidebar-collapsed-bottom-anchor-section-functions
+                         (plist-get (nth 1 rows) :hook)))
+          (should-not (plist-get (nth 0 rows) :anchor))
+          (should (plist-get (nth 1 rows) :anchor))
+          (should (equal (list nil edmacs-sidebar--width) (plist-get (nth 0 rows) :args)))
+          (should (equal (list nil edmacs-sidebar--width) (plist-get (nth 1 rows) :args))))))
+
+    (ert-deftest edmacs-sidebar-test-plan-marks-a-missing-root ()
+      "A row whose stamped root is gone from disk carries a trailing
+\" (missing)\" and `edmacs-sidebar-missing-worktree-face', which
+OUTRANKS both the current-tab face and the worktree-child hue, on a
+worktree row and a project row alike. A live sibling is untouched."
+      (edmacs-sidebar-test--with-plan-fixture
+          '((:group "repoM" :main-root "/repoM/main/"
+             :tabs (("main" "/repoM/main/" main nil)
+                    ("gone" "/repoM__worktrees/gone/" nil t)
+                    ("alive" "/repoM__worktrees/alive/" nil nil))))
+        (let* ((edmacs-sidebar-worktree-live-p-function
+                (lambda (root) (not (equal root "/repoM__worktrees/gone/"))))
+               (project (car (edmacs-sidebar-test--rows-of-kind
+                              'project (edmacs-sidebar--plan nil))))
+               (children (edmacs-sidebar-test--rows-of-kind
+                          'worktree (plist-get project :children))))
+          ;; "gone" is also the frame's current tab -- the marker still wins.
+          (should (equal "  · gone (missing)" (plist-get (nth 0 children) :label)))
+          (should (eq 'edmacs-sidebar-missing-worktree-face (plist-get (nth 0 children) :face)))
+          (should (equal "  · alive" (plist-get (nth 1 children) :label)))
+          (should (eq 'edmacs-sidebar-worktree-child-face (plist-get (nth 1 children) :face)))
+          (should (eq 'edmacs-sidebar-current-tab-face (plist-get project :face)))
+          (let ((edmacs-sidebar-worktree-live-p-function #'ignore))
+            (should (eq 'edmacs-sidebar-missing-worktree-face
+                        (plist-get (car (edmacs-sidebar-test--rows-of-kind
+                                         'project (edmacs-sidebar--plan nil)))
+                                   :face)))))))
+
+    (ert-deftest edmacs-sidebar-test-plan-hook-rows-carry-root-has-tab-frame-and-tab-number ()
+      "`edmacs-sidebar-worktree-section-functions' keeps its published
+\(ROOT HAS-TAB FRAME TAB-NUMBER\) tuple, materialized as data on a
+`hook' row nested inside the row it belongs to: a project row whose main
+tab IS open reports HAS-TAB non-nil and that tab's own 1-based number, a
+project row whose main tab is NOT open reports nil for both, and a
+worktree row always reports HAS-TAB t. That second group also covers the
+derived main root: a group with only a linked worktree open still plans
+ONE project row, at the root `edmacs-sidebar-main-root-function' derives
+-- never a second, tabless project row, and never crashing."
+      (edmacs-sidebar-test--with-plan-fixture
+          '((:group "repoJ" :main-root "/repoJ/main/"
+             :tabs (("main" "/repoJ/main/" main t)
+                    ("roadmap-wt" "/repoJ__worktrees/roadmap-wt/" roadmap nil)))
+            (:group "repoK" :main-root "/repoK/main/"
+             :tabs (("roadmap-wt" "/repoK__worktrees/roadmap-wt/" roadmap nil))))
+        (let* ((projects (edmacs-sidebar-test--rows-of-kind
+                          'project (edmacs-sidebar--plan nil)))
+               (hook-args (lambda (row)
+                            (plist-get (car (edmacs-sidebar-test--rows-of-kind
+                                             'hook (plist-get row :children)))
+                                       :args))))
+          (should (equal 'edmacs-sidebar-worktree-section-functions
+                         (plist-get (car (plist-get (nth 0 projects) :children)) :hook)))
+          (should (equal (list "/repoJ/main/" t nil 1) (funcall hook-args (nth 0 projects))))
+          (should (equal (list "/repoJ__worktrees/roadmap-wt/" t nil 2)
+                         (funcall hook-args
+                                  (car (edmacs-sidebar-test--rows-of-kind
+                                        'worktree (plist-get (nth 0 projects) :children))))))
+          (should (equal (list "/repoK/main/" nil nil nil)
+                         (funcall hook-args (nth 1 projects))))
+          (should (= 2 (length projects)))
+          (should (equal (cons "repoK" "/repoK/main/") (plist-get (nth 1 projects) :value)))
+          (should (equal "○ repoK [1]" (plist-get (nth 1 projects) :label)))
+          (should (= 1 (length (edmacs-sidebar-test--rows-of-kind
+                                'worktree (plist-get (nth 1 projects) :children))))))))
+
+    (ert-deftest edmacs-sidebar-test-plan-passes-frame-explicitly ()
+      "Regression test for the frame-mismatch fix: every workspaces lookup
+the planner makes must be handed FRAME explicitly. The 0-arg form's
+`(selected-frame)' default silently returns nil for a tab belonging to a
+non-selected frame, making that frame's rows unselectable via RET."
+      (edmacs-sidebar-test--with-plan-fixture edmacs-sidebar-test--two-project-spec
+        (let (seen)
+          (cl-letf* ((number-orig (symbol-function 'edmacs-workspaces-tab-number))
+                     (group-orig (symbol-function 'edmacs-workspaces-tabs-in-group))
+                     ((symbol-function 'edmacs-workspaces-tab-number)
+                      (lambda (tab &optional frame)
+                        (push frame seen) (funcall number-orig tab frame)))
+                     ((symbol-function 'edmacs-workspaces-tabs-in-group)
+                      (lambda (group &optional frame)
+                        (push frame seen) (funcall group-orig group frame))))
+            (edmacs-sidebar--plan 'test-frame))
+          (should seen)
+          (dolist (frame seen) (should (eq 'test-frame frame))))))
+
+    (ert-deftest edmacs-sidebar-test-plan-and-truncate-make-no-window-calls ()
+      "AC5: the planner and `edmacs-sidebar--truncate-label' are pure of
+window measurement. Every window primitive either could reach signals --
+`window-list' included, since `edmacs-sidebar--window' reaches a window
+through it, so stubbing only `window-width'/`get-buffer-window' would
+miss a regression there."
+      (edmacs-sidebar-test--with-plan-fixture edmacs-sidebar-test--two-project-spec
+        (cl-letf (((symbol-function 'window-width) #'edmacs-sidebar-test--window-call)
+                  ((symbol-function 'window-body-width) #'edmacs-sidebar-test--window-call)
+                  ((symbol-function 'window-body-size) #'edmacs-sidebar-test--window-call)
+                  ((symbol-function 'get-buffer-window) #'edmacs-sidebar-test--window-call)
+                  ((symbol-function 'get-buffer-window-list) #'edmacs-sidebar-test--window-call)
+                  ((symbol-function 'window-list) #'edmacs-sidebar-test--window-call))
+          (let ((projects (edmacs-sidebar-test--rows-of-kind
+                           'project (edmacs-sidebar--plan nil))))
+            (should (= 2 (length projects)))
+            (should (equal "● repoA [1]" (plist-get (car projects) :label))))
+          (should (equal "a-long-…" (edmacs-sidebar--truncate-label "a-long-label" 8))))))
+
+    ;; A small golden set: the renderer turns plan rows into exactly this
+    ;; buffer text, with exactly these text properties.
+
+    (defun edmacs-sidebar-test--render-to-string (rows width)
+      "Render ROWS at WIDTH into a fresh sidebar-mode buffer, returning
+\(TEXT . ANCHOR-REGION)."
+      (with-temp-buffer
+        (edmacs-sidebar-mode)
+        (let* ((inhibit-read-only t)
+               (region (edmacs-sidebar--render rows width)))
+          (cons (buffer-string) region))))
+
+    (ert-deftest edmacs-sidebar-test-render-grouped-golden ()
+      "The grouped plan inserts one heading line per row, children indented
+under their project, propertizes a label only where the row carries a
+face, and truncates to the width it is HANDED, never one it measures."
+      (edmacs-sidebar-test--with-plan-fixture edmacs-sidebar-test--two-project-spec
+        (let* ((rendered (edmacs-sidebar-test--render-to-string
+                          (edmacs-sidebar--plan nil) 20))
+               (text (car rendered)))
+          (should (equal "● repoA [1]\n  ◆ foo\n○ repoB [0]\n"
+                         (substring-no-properties text)))
+          (should (eq 'edmacs-sidebar-current-tab-face (get-text-property 0 'face text)))
+          (should-not (get-text-property (string-match "○ repoB" text) 'face text))
+          ;; No row was marked :anchor, so no anchored region came back.
+          (should-not (cdr rendered))
+          (should (equal "● rep…\n  ◆ f…\n○ rep…\n"
+                         (substring-no-properties
+                          (car (edmacs-sidebar-test--render-to-string
+                                (edmacs-sidebar--plan nil) 6))))))))
+
+    (ert-deftest edmacs-sidebar-test-render-collapsed-golden-substitutes-the-width ()
+      "The collapsed plan inserts only what its two hooks insert, the
+`edmacs-sidebar--width' sentinel is replaced by the renderer's own WIDTH
+argument, and the returned region brackets the second hook's insertion."
+      (edmacs-sidebar-test--with-plan-fixture
+          (append edmacs-sidebar-test--two-project-spec '((:collapsed t)))
+        (let* ((widths nil)
+               (edmacs-sidebar-collapsed-section-functions
+                (list (lambda (_frame width) (push width widths) (insert "strip\n"))))
+               (edmacs-sidebar-collapsed-bottom-anchor-section-functions
+                (list (lambda (_frame width) (push width widths) (insert "usage\n"))))
+               (rendered (edmacs-sidebar-test--render-to-string
+                          (edmacs-sidebar--plan nil) 4)))
+          (should (equal '(4 4) widths))
+          (should (equal "strip\nusage\n" (substring-no-properties (car rendered))))
+          (should (equal (cons 7 13) (cdr rendered))))))
+
+    (ert-deftest edmacs-sidebar-test-render-hook-row-nests-inside-its-own-row ()
+      "A function on `edmacs-sidebar-worktree-section-functions' inserts
+its section from inside the row's own `magit-insert-section' body: the
+contributed section's PARENT is that row's own `edmacs-sidebar-tab'
+section, not `magit-root-section' and not the project row above it."
+      (edmacs-sidebar-test--with-plan-fixture
+          '((:group "repoJ" :main-root "/repoJ/main/"
+             :tabs (("main" "/repoJ/main/" main t)
+                    ("roadmap-wt" "/repoJ__worktrees/roadmap-wt/" roadmap nil))))
+        (let* (sections
+               (edmacs-sidebar-worktree-section-functions
+                (list (lambda (root _has-tab _frame _tab-number)
+                        (push (cons root
+                                    (magit-insert-section (edmacs-sidebar-test-child nil)
+                                      (magit-insert-heading "    test child")))
+                              sections)))))
+          (edmacs-sidebar-test--render-to-string (edmacs-sidebar--plan nil) 40)
+          (dolist (expected '(("/repoJ/main/" . ("repoJ" . "/repoJ/main/"))
+                              ("/repoJ__worktrees/roadmap-wt/"
+                               . ("repoJ" . "/repoJ__worktrees/roadmap-wt/"))))
+            (let ((parent (oref (cdr (assoc (car expected) sections)) parent)))
+              (should (eq (oref parent type) 'edmacs-sidebar-tab))
+              (should (equal (cdr expected) (oref parent value))))))))
 
     ;; ==========================================================================
     ;; Workspaces model fixtures (edmacs-tab-groups phase 3)
     ;; ==========================================================================
     ;; workspaces.el itself is not loaded by this suite's invocation (see
-    ;; this file's own Commentary) -- `sidebar.el' only ever calls it
-    ;; through its own `declare-function' forward references. Rather than
-    ;; `cl-letf'-stubbing each one per test, the small, pure lookups sidebar.el's
-    ;; grouped-tree render/activate path calls -- `edmacs-workspaces-groups',
-    ;; `-tabs-in-group', `-tab-root', `-set-tab-root', `-find-tab',
-    ;; `-select-tab', `-current-group', `-tab-number', `-main-root', `-frame-usable-p' -- are defined here for REAL, exact copies of
-    ;; workspaces.el's own logic against real `tab-bar.el' primitives
-    ;; (already loaded transitively via sidebar.el's own `(require 'tab-
-    ;; bar)'). This means an ordinary test that never assigns a tab-bar
-    ;; `group' parameter falls through to the flat tab list automatically,
-    ;; with no per-test stub at all -- exactly like before this phase.
+    ;; this file's Commentary) -- sidebar.el only ever calls it through its
+    ;; own `declare-function' forward references. Rather than `cl-letf'-
+    ;; stubbing each one per test, the small, pure lookups sidebar.el's
+    ;; grouped-tree render/activate path calls are defined here for REAL,
+    ;; as exact copies of workspaces.el's logic over real `tab-bar.el'
+    ;; primitives. A test that never assigns a tab-bar `group' parameter
+    ;; therefore falls through to the flat tab list with no stub at all.
+    ;; `edmacs-workspaces-classify-root' is real too, over the real
+    ;; `edmacs-git-common-dir-cache' -- which is why every fixture ROOT is
+    ;; pre-warmed into that cache by `edmacs-sidebar-test--with-project',
+    ;; since an uncached one would shell out to git from inside a redraw.
+    ;; `-open-project'/`-open-worktree' (real `dired'/`tab-bar-new-tab'/
+    ;; `vc-git' side effects) are stubbed per-test instead.
     ;;
-    ;; `edmacs-workspaces-classify-root' is also real: `edmacs-git-common-dir'/
-    ;; `-main-worktree' (git-common-dir.el) ARE loaded by this suite's own
-    ;; invocation. But a real, uncached ROOT would shell out to git, which
-    ;; the no-shellout guard tests correctly refuse to allow from inside a
-    ;; redraw -- so every fixture ROOT used below is pre-warmed into the
-    ;; real `edmacs-git-common-dir-cache' first, via
-    ;; `edmacs-sidebar-test--with-project'.
-    ;;
-    ;; `edmacs-workspaces-open-project'/`-open-worktree' (real side effects:
-    ;; `dired', `tab-bar-new-tab', a `vc-git' shell-out) are stubbed
-    ;; per-test instead, exactly as `-open-worktree' already was before
-    ;; this phase.
+    ;; Structure-only assertions do NOT belong on this fixture -- the plan
+    ;; tests above cover those. What is left needs real tab-bar state:
+    ;; activation, close, rename, and the survival tripwires.
 
     (defconst edmacs-sidebar-test--root-parameter 'edmacs-workspace-root)
 
@@ -437,49 +716,6 @@ tab\" by default, since that is this phase's own new edge case."
                ,@body)
            (dolist (root edmacs-sidebar-test--primed-roots)
              (remhash root edmacs-git-common-dir-cache)))))
-
-    (ert-deftest edmacs-sidebar-test-redraw-projects-shape ()
-      "AC1: two project rows, worktrees only under their own project, the
-count matching the child rows -- \"repoA\" has a main tab plus one
-roadmap-worktree tab open (1 child, count \"[1]\"), \"repoB\" has only
-its main tab open (0 children, count \"[0]\"). No row exists for a
-worktree that was never opened at all."
-      (edmacs-sidebar-test--with-project
-          '(("repoA" "/repoA/main/" "/repoA/main/.git"
-             ("/repoA/main/" "main") ("/repoA__worktrees/roadmap-foo/" "roadmap-foo"))
-            ("repoB" "/repoB/main/" "/repoB/main/.git"
-             ("/repoB/main/" "main")))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show (selected-frame))
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (let ((text (buffer-string)))
-                  (should (string-match-p "repoA \\[1\\]" text))
-                  (should (string-match-p "repoB \\[0\\]" text))
-                  (should (string-match-p "foo" text))
-                  (should-not (string-match-p "roadmap-foo" text)))
-                (let ((top (oref magit-root-section children)))
-                  (should (= 2 (length top)))
-                  (should (= 1 (length (oref (car top) children))))
-                  (should (= 0 (length (oref (cadr top) children)))))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
-
-    (ert-deftest edmacs-sidebar-test-redraw-projects-no-open-main-tab ()
-      "A group with only a linked worktree open (no main tab) still renders
-one project row, using the derived main root -- never a second, tabless
-project row, and never crashing."
-      (edmacs-sidebar-test--with-project
-          '(("repoC" "/repoC/main/" "/repoC/main/.git"
-             ("/repoC__worktrees/task-bar/" "task-bar")))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show (selected-frame))
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (let ((top (oref magit-root-section children)))
-                  (should (= 1 (length top)))
-                  (should (equal (cons "repoC" "/repoC/main/") (oref (car top) value)))
-                  (should (= 1 (length (oref (car top) children)))))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
     (ert-deftest edmacs-sidebar-test-activate-project-row-opens-once-then-reselects ()
       "RET on a project row whose main tab isn't open calls
@@ -711,9 +947,9 @@ real EIEIO `magit-section' instance always has its `value' slot bound
     ;; ==========================================================================
     ;; `edmacs-sidebar-test-redraw-and-hooks-never-shell-out' above (the
     ;; phase-2 regression test) only ever drives an UNGROUPED frame -- it
-    ;; opens no project group, so it exercises `edmacs-sidebar--redraw-tabs'
-    ;; but never `edmacs-sidebar--redraw-worktrees', `edmacs-sidebar-activate'
-    ;; on an already-open row, or `edmacs-sidebar-close-worktree'. This is
+    ;; opens no project group, so it exercises the flat-tab plan but never
+    ;; `edmacs-sidebar--plan-projects', `edmacs-sidebar-activate' on an
+    ;; already-open row, or `edmacs-sidebar-close-worktree'. This is
     ;; the direct regression test for THIS phase's own no-shellout claim,
     ;; covering both a populated cache and a cache miss.
 
@@ -751,7 +987,7 @@ own Commentary on the workspaces fixtures above)."
                   (edmacs-sidebar-show (selected-frame))
                   (dotimes (_ 50)
                     (edmacs-sidebar--redraw (selected-frame))
-                    (edmacs-sidebar--redraw-projects (selected-frame))
+                    (edmacs-sidebar--render (edmacs-sidebar--plan (selected-frame)) 32)
                     (edmacs-sidebar--on-tab-select nil nil)
                     (edmacs-sidebar--on-tab-open nil)
                     (edmacs-sidebar--on-tab-pre-close nil nil)
@@ -1113,22 +1349,14 @@ non-graphical batch frame."
     ;; sidebar.el.)
 
     (ert-deftest edmacs-sidebar-test-redraw-and-hooks-never-shell-out ()
-      "Extended for phase 8: also drives every new command (J/K/gr/rename/
-help) through the same guard. This phase adds no new *expected*
-subprocess call -- the guard's expectation stays 'zero', not 'zero
-except N'. The one real, already-documented exception elsewhere in this
-codebase (sidebar-agents.el's tmux-jump `start-process' calls [phase 6])
-is never reached by this loop: it never fires an agent jump. This automated guard is the primary, CI-equivalent check;
-the phase body's own 'one minute of `profiler-start' over mixed tab
-switching/buffer opening/agent state changes' is a documented,
-non-automated interactive checklist pass for the implementer/reviewer
-to run once before marking the phase reviewed.
-
-Also poisons `edmacs-sidebar-remembered-width' up front and re-drives
-`edmacs-sidebar-show', `--remember-width', and `--on-desktop-read'
-through the same loop (item 4b's clamp path), so the width-clamp code
-added for AC4 is exercised under this same zero-subprocess guarantee,
-not only under its own dedicated AC4 tests."
+      "The flat-tab render, every tab-bar hook, and every command
+(J/K/gr/rename/help) drive zero subprocess calls -- the expectation is
+'zero', not 'zero except N'. sidebar-agents.el's tmux-jump
+`start-process' is the one documented exception in this codebase and is
+never reached here: this loop fires no agent jump. A poisoned
+`edmacs-sidebar-remembered-width' is set up front and `--show',
+`--remember-width' and `--on-desktop-read' re-driven through the same
+loop, so the width-clamp path is exercised under the same guarantee."
       (edmacs-sidebar-test--with-extra-tab
         (let ((violations nil)
               (guarded '(call-process call-process-region process-file
@@ -1530,116 +1758,33 @@ through explicitly instead of `call-interactively'-ing blind."
                                 (alist-get 'name (tab-bar--current-tab-find))))))
           (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
 
-    (ert-deftest edmacs-sidebar-test-project-row-current-face-and-worktree-child-face ()
-      "The project row for the active group gets
-`edmacs-sidebar-current-tab-face' when its main tab is the frame's own
-selected tab (AC2); a worktree child row that is not itself the
-selected tab gets `edmacs-sidebar-worktree-child-face' (AC3's
-\"worktree hue\")."
-      (edmacs-sidebar-test--with-project
-          '(("repoI" "/repoI/main/" "/repoI/main/.git"
-             ("/repoI/main/" "main") ("/repoI__worktrees/roadmap-wt/" "roadmap-wt")))
-        (unwind-protect
-            (progn
-              ;; The LAST tab this fixture creates ("roadmap-wt") is left
-              ;; current -- switch back to "main" so it (and therefore the
-              ;; project row) is the frame's active/current one instead.
-              (tab-bar-switch-to-tab "main")
-              (edmacs-sidebar-show (selected-frame))
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (goto-char (point-min))
-                (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-current-tab-face))
-                (forward-line 1)
-                (should (eq (get-text-property (point) 'face) 'edmacs-sidebar-worktree-child-face))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
-
     ;; ==========================================================================
     ;; A stamped worktree root that has been deleted from disk
     ;; ==========================================================================
     ;; The per-row replacement for the frames model's whole-frame "repo
     ;; missing" warning row (`edmacs-sidebar--insert-missing-repo-warning',
-    ;; deleted with `edmacs-repo-missing'). These two drive the REAL
-    ;; `file-directory-p' probe against real directories, rebinding
-    ;; `edmacs-sidebar-worktree-live-p-function' back from the `always'
-    ;; that `edmacs-sidebar-test--with-project' installs for every other
-    ;; test in this file.
+    ;; deleted with `edmacs-repo-missing'). How the marker and face reach a
+    ;; ROW is a plan property, covered fixture-free by
+    ;; `edmacs-sidebar-test-plan-marks-a-missing-root' and
+    ;; `-plan-missing-root-outranks-current-tab-face'; what is left here is
+    ;; the probe itself, driven against REAL directories through the real
+    ;; `file-directory-p' default.
 
-    (defmacro edmacs-sidebar-test--with-real-roots (names bindings &rest body)
-      "Create one real temp directory per symbol in NAMES, bind each to its
-own directory name, run BODY, then delete whichever of them still
-exist. BINDINGS is a list of extra `let*' bindings evaluated after the
-directories exist."
-      (declare (indent 2))
-      `(let* (,@(mapcar (lambda (name)
-                          `(,name (file-name-as-directory
-                                   (make-temp-file
-                                    ,(format "edmacs-sidebar-test-%s-" name) t))))
-                        names)
-              ,@bindings)
-         (unwind-protect (progn ,@body)
-           (dolist (dir (list ,@names))
-             (when (file-directory-p dir) (delete-directory dir t))))))
-
-    (ert-deftest edmacs-sidebar-test-missing-worktree-row-is-marked ()
-      "A worktree child row whose stamped root has been deleted from disk
-renders with `edmacs-sidebar-missing-worktree-face' and a trailing
-\" (missing)\"; a sibling row whose root still exists keeps the ordinary
-`edmacs-sidebar-worktree-child-face' and carries no marker."
-      (edmacs-sidebar-test--with-real-roots (main gone alive) ()
-        (edmacs-sidebar-test--with-project
-            (list (list "repoMW" main (expand-file-name ".git" main)
-                        (list main "main")
-                        (list gone "gone")
-                        (list alive "alive")))
-          (let ((edmacs-sidebar-worktree-live-p-function #'file-directory-p))
-            (unwind-protect
-                (progn
-                  ;; The worktree directory disappears out from under an
-                  ;; already-open tab -- `rm -rf' of a landed worktree.
-                  (delete-directory gone t)
-                  (tab-bar-switch-to-tab "main")
-                  (edmacs-sidebar-show (selected-frame))
-                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-                      (should (string-match-p "gone (missing)" text))
-                      (should-not (string-match-p "alive (missing)" text)))
-                    (goto-char (point-min))
-                    ;; Row 0 is the project row (main, still on disk).
-                    (should (eq (get-text-property (point) 'face)
-                                'edmacs-sidebar-current-tab-face))
-                    (forward-line 1)
-                    (should (eq (get-text-property (point) 'face)
-                                'edmacs-sidebar-missing-worktree-face))
-                    (forward-line 1)
-                    (should (eq (get-text-property (point) 'face)
-                                'edmacs-sidebar-worktree-child-face))))
-              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
-
-    (ert-deftest edmacs-sidebar-test-missing-worktree-outranks-current-tab-face ()
-      "The missing-worktree face wins over the current-tab face: a row
-pointing at a directory that no longer exists says so even while it is
-the frame's own selected tab, and the project row for a repo whose main
-worktree is gone is marked the same way."
-      (edmacs-sidebar-test--with-real-roots (main child) ()
-        (edmacs-sidebar-test--with-project
-            (list (list "repoMW2" main (expand-file-name ".git" main)
-                        (list main "main")
-                        (list child "roadmap-child")))
-          (let ((edmacs-sidebar-worktree-live-p-function #'file-directory-p))
-            (unwind-protect
-                (progn
-                  ;; Leaves "roadmap-child" the frame's current tab.
-                  (delete-directory main t)
-                  (delete-directory child t)
-                  (edmacs-sidebar-show (selected-frame))
-                  (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                    (goto-char (point-min))
-                    (should (eq (get-text-property (point) 'face)
-                                'edmacs-sidebar-missing-worktree-face))
-                    (forward-line 1)
-                    (should (eq (get-text-property (point) 'face)
-                                'edmacs-sidebar-missing-worktree-face))))
-              (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))))
+    (ert-deftest edmacs-sidebar-test-root-missing-p-probes-a-real-directory ()
+      "The default probe is a real `file-directory-p' stat: a root that
+exists on disk is live, the same root is missing once deleted, and a nil
+root is never missing -- there is no stamp to be stale."
+      (let ((alive (file-name-as-directory (make-temp-file "edmacs-sidebar-test-alive-" t)))
+            (gone (file-name-as-directory (make-temp-file "edmacs-sidebar-test-gone-" t))))
+        (unwind-protect
+            (progn
+              (should-not (edmacs-sidebar--root-missing-p alive))
+              (should-not (edmacs-sidebar--root-missing-p gone))
+              (delete-directory gone t)
+              (should (edmacs-sidebar--root-missing-p gone))
+              (should-not (edmacs-sidebar--root-missing-p nil)))
+          (dolist (dir (list alive gone))
+            (when (file-directory-p dir) (delete-directory dir t))))))
 
     (ert-deftest edmacs-sidebar-test-missing-worktree-probe-skips-remote-roots ()
       "A remote root is never probed: `file-directory-p' on one blocks on
@@ -1952,25 +2097,6 @@ collapse."
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
-    (ert-deftest edmacs-sidebar-test-redraw-collapsed-branch-runs-hook-and-nils-header-line ()
-      "Collapsed `--redraw' skips the normal tab/worktree render and the
-header line entirely, running only
-`edmacs-sidebar-collapsed-section-functions' with FRAME and WIDTH --
-the two renders never run against the same window on the same pass."
-      (let ((frame (selected-frame)) (calls nil))
-        (unwind-protect
-            (let ((edmacs-sidebar-collapsed-section-functions
-                   (list (lambda (f w) (push (cons f w) calls)))))
-              (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
-              (edmacs-sidebar-show frame)
-              (should (equal calls (list (cons frame edmacs-sidebar--collapsed-width))))
-              (with-current-buffer (edmacs-sidebar--buffer frame)
-                (should-not header-line-format)
-                (should-not (string-match-p "no tab" (buffer-string)))))
-          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
-
     (ert-deftest edmacs-sidebar-test-fit-uses-string-width-not-length ()
       "A double-width glyph counts as two columns, so a label carrying one
 truncates a column earlier than a same-length ASCII label at the same
@@ -1986,13 +2112,6 @@ WIDTH would -- `length' alone would never notice the difference."
         ;; ...but the equal-length wide one overflows it and gets truncated.
         (should-not (equal wide (edmacs-sidebar--fit wide 4)))
         (should (<= (string-width (edmacs-sidebar--fit wide 4)) 4))))
-
-    (ert-deftest edmacs-sidebar-test-fit-defends-against-non-positive-width ()
-      "Mirrors `--truncate-label's own `(max 0 ...)' treatment: a
-pathologically narrow (or negative) WIDTH returns \"\" rather than
-signaling."
-      (should (equal "" (edmacs-sidebar--fit "hello" 0)))
-      (should (equal "" (edmacs-sidebar--fit "hello" -3))))
 
     (ert-deftest edmacs-sidebar-test-collapse-expand-adds-no-new-timer ()
       "Collapsing/expanding calls only `set-frame-parameter',
@@ -2192,30 +2311,23 @@ nil rather than dedicating and keeping it."
           (when (window-live-p stub-window) (delete-window stub-window))
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
-    (ert-deftest edmacs-sidebar-test-header-line-shows-active-project-group ()
+    (ert-deftest edmacs-sidebar-test-header-line-name-prefers-the-active-group ()
       "The header line names the ACTIVE PROJECT -- the current tab's own
-tab-bar group, which is the repo name -- not a per-frame repo parameter."
-      (edmacs-sidebar-test--with-project
-          '(("repo" "/repo/main/" "/repo/main/.git" ("/repo/main/" "main")))
-        (unwind-protect
-            (progn
-              (edmacs-sidebar-show (selected-frame))
-              (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                (should (equal "repo" (substring-no-properties header-line-format)))))
-          (edmacs-sidebar-test--cleanup-sidebar (selected-frame)))))
-
-    (ert-deftest edmacs-sidebar-test-header-line-shows-frame-name-when-repo-less ()
-      (let ((frame (selected-frame))
-            (original-name (frame-parameter (selected-frame) 'name)))
-        (unwind-protect
-            (progn
-              (set-frame-parameter frame 'name "edmacs-sidebar-test-boot-frame")
-              (edmacs-sidebar-show frame)
-              (with-current-buffer (edmacs-sidebar--buffer frame)
-                (should (equal "edmacs-sidebar-test-boot-frame"
-                                (substring-no-properties header-line-format)))))
-          (set-frame-parameter frame 'name original-name)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
+tab-bar group, which is the repo name -- not a per-frame repo
+parameter, and falls back to the frame's own sanitised name when the
+frame carries no group at all. Pure: `--header-line-name' needs no
+window, so this drives it directly instead of through
+`edmacs-sidebar-show'."
+      (edmacs-sidebar-test--with-plan-fixture
+          '((:group "repo" :main-root "/repo/main/"
+             :tabs (("main" "/repo/main/" main t))))
+        (should (equal "repo" (edmacs-sidebar--header-line-name nil))))
+      (edmacs-sidebar-test--with-plan-fixture
+          '((:group nil :tabs (("main" nil nil t))))
+        (cl-letf (((symbol-function 'frame-parameter)
+                   (lambda (_frame _param) "edmacs-sidebar-test-boot-frame - Emacs")))
+          (should (equal "edmacs-sidebar-test-boot-frame"
+                         (edmacs-sidebar--header-line-name nil))))))
 
     ;; ==========================================================================
     ;; Tab/worktree marker glyphs: nerd-icons with a plain-text fallback
@@ -2241,9 +2353,11 @@ distinct from each other and from an unclassified worktree's generic key."
       (should (eq 'worktree (edmacs-sidebar--worktree-kind-glyph-key nil)))
       (should (eq 'worktree (edmacs-sidebar--worktree-kind-glyph-key 'main))))
 
-    (ert-deftest edmacs-sidebar-test-glyph-prefers-nerd-icons-when-available ()
-      "When `nerd-icons' is (simulated) present, its icon wins over the
-plain fallback."
+    (ert-deftest edmacs-sidebar-test-glyph-nerd-icons-precedence ()
+      "A present `nerd-icons' wins over the plain fallback; a nerd-icons
+call that ERRORS falls back to plain text rather than signalling; and
+`edmacs-sidebar-force-text-glyphs' overrides a working nerd-icons
+outright (the terminal-frame escape hatch)."
       (cl-letf (((symbol-function 'nerd-icons-octicon)
                  (lambda (name) (format "NERD-%s" name)))
                 ((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons))))
@@ -2251,20 +2365,12 @@ plain fallback."
         (should (equal "NERD-nf-oct-circle" (edmacs-sidebar--glyph 'open-tab)))
         (should (equal "NERD-nf-oct-git_branch" (edmacs-sidebar--glyph 'roadmap-worktree)))
         (should (equal "NERD-nf-oct-checklist" (edmacs-sidebar--glyph 'task-worktree)))
-        (should (equal "NERD-nf-oct-file_directory" (edmacs-sidebar--glyph 'worktree)))))
-
-    (ert-deftest edmacs-sidebar-test-glyph-nerd-icon-error-falls-back ()
-      "A `nerd-icons' call that errors falls back to plain text, never signals."
+        (should (equal "NERD-nf-oct-file_directory" (edmacs-sidebar--glyph 'worktree)))
+        (let ((edmacs-sidebar-force-text-glyphs t))
+          (should (equal "●" (edmacs-sidebar--glyph 'current-tab)))))
       (cl-letf (((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
                 ((symbol-function 'fboundp) (lambda (f) (eq f 'nerd-icons-octicon)))
                 ((symbol-function 'nerd-icons-octicon) (lambda (_name) (error "boom"))))
-        (should (equal "●" (edmacs-sidebar--glyph 'current-tab)))))
-
-    (ert-deftest edmacs-sidebar-test-glyph-force-text-overrides-nerd-icons ()
-      (cl-letf (((symbol-function 'nerd-icons-octicon) (lambda (_name) "NERD-ARROW"))
-                ((symbol-function 'featurep) (lambda (f) (eq f 'nerd-icons)))
-                ((symbol-function 'fboundp) (lambda (f) (eq f 'nerd-icons-octicon)))
-                (edmacs-sidebar-force-text-glyphs t))
         (should (equal "●" (edmacs-sidebar--glyph 'current-tab)))))
 
     ;; ==========================================================================
@@ -2272,60 +2378,49 @@ plain fallback."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-test-truncate-label-boundary ()
-      "A label exactly as wide as the window is left untouched; one
-character over gets truncated with a trailing … so the result is still
-exactly WIDTH characters wide; no live sidebar window falls back to the
-frame's remembered width run through `edmacs-sidebar--clamp-width', then
-`edmacs-sidebar-width' likewise clamped. `edmacs-sidebar--min-width' is
-lowered here so the small widths this test drives (5, 10) exercise the
-truncation math itself rather than the floor -- the floor's own
-interaction with the fallback is covered separately below."
-      (let ((frame (selected-frame))
-            (edmacs-sidebar--min-width 1))
-        (should-not (edmacs-sidebar--window frame))
-        (unwind-protect
-            (let ((edmacs-sidebar-width 10))
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-              (should (equal "0123456789" (edmacs-sidebar--truncate-label "0123456789" frame)))
-              (should (equal "012345678…" (edmacs-sidebar--truncate-label "0123456789X" frame)))
-              (should (= 10 (length (edmacs-sidebar--truncate-label "0123456789X" frame))))
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width 5)
-              (should (equal "0123…" (edmacs-sidebar--truncate-label "0123456789" frame))))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil))))
+      "A label exactly as wide as WIDTH is left untouched; one character
+over gets truncated with a trailing … so the result is still exactly
+WIDTH columns wide; a width of 0 or less yields the empty string rather
+than signalling. Pure: `edmacs-sidebar--truncate-label' takes its width
+as an argument now, so this test names no frame and no window."
+      (should (equal "0123456789" (edmacs-sidebar--truncate-label "0123456789" 10)))
+      (should (equal "012345678…" (edmacs-sidebar--truncate-label "0123456789X" 10)))
+      (should (= 10 (string-width (edmacs-sidebar--truncate-label "0123456789X" 10))))
+      (should (equal "0123…" (edmacs-sidebar--truncate-label "0123456789" 5)))
+      (should (equal "" (edmacs-sidebar--truncate-label "0123456789" 0)))
+      (should (equal "" (edmacs-sidebar--truncate-label "0123456789" -3))))
 
-    (ert-deftest edmacs-sidebar-test-truncate-label-fallback-clamps-poisoned-width ()
-      "The no-live-window fallback in `edmacs-sidebar--truncate-label' must
-run the remembered width through `edmacs-sidebar--clamp-width', exactly
-like `edmacs-sidebar-show' and `edmacs-sidebar--remember-width' already
-do for the same frame parameter. Without that, a poisoned remembered
-width (the reported ~50%-of-frame bug) renders a full, untruncated
-label on the very first pre-window redraw -- self-healing only once a
-live, clamped window exists on the next redraw."
-      (let ((frame (selected-frame)))
-        (should-not (edmacs-sidebar--window frame))
-        (unwind-protect
-            (let* ((edmacs-sidebar--min-width 5)
-                   (edmacs-sidebar-max-width-fraction 0.33)
-                   (clamped (edmacs-sidebar--clamp-width most-positive-fixnum frame))
-                   (long (make-string (+ clamped 20) ?x)))
-              (set-frame-parameter frame 'edmacs-sidebar-remembered-width most-positive-fixnum)
-              (should (= clamped (length (edmacs-sidebar--truncate-label long frame)))))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil))))
-
-    (ert-deftest edmacs-sidebar-test-truncate-label-uses-live-window-width ()
-      "Once the sidebar window is live, truncation keys off its current
-width, not the static `edmacs-sidebar-width' default -- a widened
-sidebar must not keep truncating to the old default."
+    (ert-deftest edmacs-sidebar-test-render-width-live-window-then-clamped-fallback ()
+      "`edmacs-sidebar--render-width' keys off the sidebar window's current
+width once one is live -- a widened sidebar must not keep truncating to
+the old `edmacs-sidebar-width' default. With no live window it falls
+back to the frame's remembered width, then that default, each run
+through `edmacs-sidebar--clamp-width' exactly like `edmacs-sidebar-show'
+and `--remember-width' already do for the same frame parameter: without
+that clamp a poisoned remembered width (the reported ~50%-of-frame bug)
+renders a full, untruncated label on the very first pre-window redraw."
       (let ((frame (selected-frame)))
         (unwind-protect
             (progn
+              (should-not (edmacs-sidebar--window frame))
+              (let ((edmacs-sidebar--min-width 1)
+                    (edmacs-sidebar-width 10))
+                (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
+                (should (= 10 (edmacs-sidebar--render-width frame)))
+                (set-frame-parameter frame 'edmacs-sidebar-remembered-width 5)
+                (should (= 5 (edmacs-sidebar--render-width frame))))
+              (let* ((edmacs-sidebar--min-width 5)
+                     (edmacs-sidebar-max-width-fraction 0.33)
+                     (clamped (edmacs-sidebar--clamp-width most-positive-fixnum frame)))
+                (set-frame-parameter frame 'edmacs-sidebar-remembered-width most-positive-fixnum)
+                (should (= clamped (edmacs-sidebar--render-width frame))))
+              (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
               (edmacs-sidebar-show frame)
-              (let* ((window (edmacs-sidebar--window frame))
-                     (width (window-width window))
-                     (long (make-string (+ width 5) ?x)))
-                (should (= width (length (edmacs-sidebar--truncate-label long frame))))))
+              (let ((window (edmacs-sidebar--window frame)))
+                (should (window-live-p window))
+                (should (= (window-width window) (edmacs-sidebar--render-width frame)))))
+          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
-
 
     ;; ==========================================================================
     ;; The sidebar is never a frame's sole or root window
@@ -2586,61 +2681,6 @@ preventing it from leaking onto the buffer that replaces the sidebar."
     ;; section, so a contributed section is a real child, not a sibling
     ;; ==========================================================================
 
-    (ert-deftest edmacs-sidebar-test-redraw-projects-hook-runs-inside-child-row-section ()
-      "A function on `edmacs-sidebar-worktree-section-functions' inserts a
-child section from inside the callback a worktree CHILD row hands it --
-the resulting section's PARENT is that child row's own
-`edmacs-sidebar-tab' section, not `magit-root-section' or the project
-row, proving the hook still runs inside each row's own body."
-      (edmacs-sidebar-test--with-project
-          '(("repoJ" "/repoJ/main/" "/repoJ/main/.git"
-             ("/repoJ/main/" "main") ("/repoJ__worktrees/roadmap-wt/" "roadmap-wt")))
-        (let* (child-section
-               (edmacs-sidebar-worktree-section-functions
-                (list (lambda (root _has-tab _frame _tab-number)
-                       (when (equal root "/repoJ__worktrees/roadmap-wt/")
-                         (setq child-section
-                               (magit-insert-section (edmacs-sidebar-test-child nil)
-                                 (magit-insert-heading "    test child"))))))))
-          (unwind-protect
-              (progn
-                (edmacs-sidebar-show (selected-frame))
-                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                  (should child-section)
-                  (let ((parent (oref child-section parent)))
-                    (should parent)
-                    (should (eq (oref parent type) 'edmacs-sidebar-tab))
-                    (should (equal (oref parent value) (cons "repoJ" "/repoJ__worktrees/roadmap-wt/"))))))
-            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
-
-    (ert-deftest edmacs-sidebar-test-redraw-projects-hook-runs-inside-project-row-with-no-main-tab ()
-      "Same contract on a project row whose own main tab isn't open: the
-hook still fires (HAS-TAB nil, ROOT the derived main root), and its
-contributed section still nests under the project row rather than the
-root."
-      (edmacs-sidebar-test--with-project
-          '(("repoK" "/repoK/main/" "/repoK/main/.git"
-             ("/repoK__worktrees/roadmap-wt/" "roadmap-wt")))
-        (let* (child-section has-tab-seen
-               (edmacs-sidebar-worktree-section-functions
-                (list (lambda (root has-tab _frame _tab-number)
-                       (when (equal root "/repoK/main/")
-                         (setq has-tab-seen has-tab)
-                         (setq child-section
-                               (magit-insert-section (edmacs-sidebar-test-child nil)
-                                 (magit-insert-heading "  test child"))))))))
-          (unwind-protect
-              (progn
-                (edmacs-sidebar-show (selected-frame))
-                (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
-                  (should child-section)
-                  (should-not has-tab-seen)
-                  (let ((parent (oref child-section parent)))
-                    (should parent)
-                    (should (eq (oref parent type) 'edmacs-sidebar-tab))
-                    (should (equal (oref parent value) (cons "repoK" "/repoK/main/"))))))
-            (edmacs-sidebar-test--cleanup-sidebar (selected-frame))))))
-
     ;; ==========================================================================
     ;; AC2 -- visit/close/rename/toggle all resolve through one shared
     ;; enclosing-worktree parent walk, so they work from any nested row
@@ -2868,53 +2908,27 @@ silently keeping a wrong-looking-but-live window-start."
     ;; Sanitiser and collision prevention for repo-less frames
     ;; ==========================================================================
 
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-minibuf-example ()
-      "The canonical broken case: *Minibuf-1* - Emacs should sanitise to empty."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "*Minibuf-1* - Emacs") "")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-earmuff-only ()
-      "Frame title with only earmuffs and Emacs suffix sanitises to empty."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "*foo* - Emacs") "")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-content-with-suffix ()
-      "Frame title with content and Emacs suffix strips the suffix."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "Foo - Emacs") "Foo")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-content-only ()
-      "Frame title with content and no Emacs suffix is preserved."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "Foo") "Foo")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-multiple-earmuffs ()
-      "Multiple earmuffs followed by Emacs suffix sanitise to empty."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "  *a* *b*  - Emacs") "")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-empty-string ()
-      "Empty string remains empty."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "") "")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-whitespace-only ()
-      "Whitespace-only string becomes empty."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "   ") "")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-nil ()
-      "Nil is handled gracefully and returns empty string."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title nil) "")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-with-internal-whitespace ()
-      "Internal whitespace is collapsed."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "My   Frame   Name") "My Frame Name")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-leading-earmuff ()
-      "Leading earmuff is stripped."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "*buffer* My Frame") "My Frame")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-trailing-earmuff ()
-      "Trailing earmuff is stripped."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "My Frame *buffer*") "My Frame")))
-
-    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-my-frame-emacs ()
-      "Real example: My Frame - Emacs → My Frame."
-      (should (string-equal (edmacs-sidebar--sanitise-frame-title "My Frame - Emacs") "My Frame")))
+    (ert-deftest edmacs-sidebar-test-sanitise-frame-title-table ()
+      "`--sanitise-frame-title' strips a trailing \" - Emacs\", strips
+leading/trailing `*...*' earmuffs, collapses internal whitespace, and
+answers \"\" for anything that leaves nothing usable -- nil included.
+Table-driven: twelve near-identical one-assertion tests said the same
+thing twelve times over."
+      (dolist (row '(("*Minibuf-1* - Emacs" . "")
+                     ("*foo* - Emacs" . "")
+                     ("  *a* *b*  - Emacs" . "")
+                     ("Foo - Emacs" . "Foo")
+                     ("My Frame - Emacs" . "My Frame")
+                     ("Foo" . "Foo")
+                     ("" . "")
+                     ("   " . "")
+                     (nil . "")
+                     ("My   Frame   Name" . "My Frame Name")
+                     ("*buffer* My Frame" . "My Frame")
+                     ("My Frame *buffer*" . "My Frame")))
+        (should (equal (cdr row)
+                       (ert-info ((format "%S" (car row)))
+                         (edmacs-sidebar--sanitise-frame-title (car row)))))))
 
     ;; The two buffer-NAME-collision tests that used to live here
     ;; (`-buffer-name-collision-prevention',
@@ -2933,120 +2947,106 @@ silently keeping a wrong-looking-but-live window-start."
     ;; edmacs-sidebar-polish phase 13 -- bottom-anchor the usage section
     ;; ==========================================================================
 
-    (ert-deftest edmacs-sidebar-test-anchor-region-pads-short-content ()
-      "`--anchor-region-to-bottom' pads a short anchored region with blank
-lines so it starts exactly `window-body-height' rows down from the top
--- flush with the bottom -- and leaves the anchored text itself
-untouched."
-      (with-temp-buffer
-        (insert "row one\nrow two\n")
-        (let ((region-start (point)))
-          (insert "anchored one\nanchored two\n")
-          (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 10)))
-            (edmacs-sidebar--anchor-region-to-bottom (selected-window) region-start))
-          ;; above (2) + pad (6) + anchored (2) = 10.
-          (should (equal (split-string (buffer-string) "\n")
-                          '("row one" "row two" "" "" "" "" "" ""
-                            "anchored one" "anchored two" ""))))))
+    (ert-deftest edmacs-sidebar-test-anchor-plan-table ()
+      "`edmacs-sidebar--anchor-plan' is pure arithmetic over (ABOVE
+ANCHORED BODY-HEIGHT POINT-ABOVE-P): short content pads, an exact fit
+no-ops, overflow scrolls, and POINT-ABOVE-P suppresses only the scroll,
+never the pad. No window call, so nothing here restates a stub."
+      (dolist (row '((2 2 10 nil (:pad 6))
+                     (4 5 10 nil (:pad 1))
+                     (2 1 3 nil nil)
+                     (20 2 5 nil (:scroll-to 5))
+                     (20 2 5 t nil)
+                     (2 2 10 t (:pad 6))
+                     (0 9 5 nil (:scroll-to 5))
+                     (0 1 0 nil (:scroll-to 0))))
+        (let ((args (butlast row))
+              (expected (car (last row))))
+          (should (equal expected
+                         (ert-info ((format "%S" row))
+                           (apply #'edmacs-sidebar--anchor-plan args)))))))
 
-    (ert-deftest edmacs-sidebar-test-anchor-region-noops-when-heights-match ()
-      "`--anchor-region-to-bottom' does nothing at all when the buffer
-already exactly fills `window-body-height' -- no padding, no
-`window-start' change."
-      (with-temp-buffer
-        (insert "row one\nrow two\n")
-        (let ((region-start (point)))
-          (insert "anchored\n")
-          (let ((before (buffer-string)))
-            (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 3)))
-              (edmacs-sidebar--anchor-region-to-bottom (selected-window) region-start))
-            (should (equal before (buffer-string)))))))
+    (defmacro edmacs-sidebar-test--with-anchor-window (var &rest body)
+      "Run BODY with VAR bound to a real, live split window showing a fresh
+temp buffer, that buffer current; both cleaned up after. Real, so
+`window-body-size' reports a height to measure against, not a stub."
+      (declare (indent 1))
+      `(let* ((buf (generate-new-buffer " *anchor-window-test*"))
+              (,var (split-window (selected-window))))
+         (unwind-protect
+             (progn
+               (set-window-buffer ,var buf)
+               (with-current-buffer buf ,@body))
+           (when (window-live-p ,var) (delete-window ,var))
+           (when (buffer-live-p buf) (kill-buffer buf)))))
+
+    (ert-deftest edmacs-sidebar-test-anchor-region-pads-short-content ()
+      "The applier pads a short anchored region with blank lines so the
+buffer ends flush with the real window's bottom edge, leaving the
+anchored text itself untouched -- nothing at all on a second call,
+which is exactly the repeated-reapply shape
+`edmacs-sidebar--reapply-bottom-anchor' produces, and nothing at all
+against a window that is not `window-live-p'."
+      (edmacs-sidebar-test--with-anchor-window window
+        (let ((height (window-body-size window)))
+          (skip-unless (> height 4))
+          (insert "row one\nrow two\n")
+          (let ((region-start (point)))
+            (insert "anchored one\nanchored two\n")
+            ;; A dead window is a no-op -- the shape `--redraw' hits on the
+            ;; very first paint, before any window exists at all.
+            (let ((before (buffer-string)))
+              (edmacs-sidebar--anchor-region-to-bottom nil region-start)
+              (should (equal before (buffer-string))))
+            (edmacs-sidebar--anchor-region-to-bottom window region-start)
+            (should (string-suffix-p "anchored one\nanchored two\n" (buffer-string)))
+            (should (string-prefix-p "row one\nrow two\n" (buffer-string)))
+            (should (= height (count-screen-lines (point-min) (point-max) nil window)))
+            (let ((padded (buffer-string))
+                  (start (window-start window)))
+              (edmacs-sidebar--anchor-region-to-bottom window region-start)
+              (should (equal padded (buffer-string)))
+              (should (= start (window-start window))))))))
 
     (ert-deftest edmacs-sidebar-test-anchor-region-scrolls-past-overflow ()
-      "`--anchor-region-to-bottom' forces `window-start' past overflowing
-content above the anchored region, so the last `window-body-height'
-screen lines of the buffer -- which necessarily include the whole
-anchored region -- are what the window would actually show. Batch mode
-never runs real redisplay, so this is asserted via `window-start' and
-`count-screen-lines' directly rather than `pos-visible-in-window-p',
-which depends on a redisplay cycle that never happens here."
-      (let* ((original-window (selected-window))
-             (buf (generate-new-buffer " *anchor-overflow-test*"))
-             (window (split-window original-window)))
-        (unwind-protect
-            (progn
-              (set-window-buffer window buf)
-              (with-current-buffer buf
-                (dotimes (i 20) (insert (format "row %d\n" i)))
-                (let ((region-start (point)))
-                  (insert "anchored one\nanchored two\n")
-                  (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 5)))
-                    (edmacs-sidebar--anchor-region-to-bottom window region-start))
-                  (should (<= (window-start window) region-start))
-                  (should (= 5 (count-screen-lines (window-start window) (point-max) nil window))))))
-          (when (window-live-p window) (delete-window window))
-          (when (buffer-live-p buf) (kill-buffer buf)))))
-
-    (ert-deftest edmacs-sidebar-test-anchor-region-never-drags-point-in-the-selected-window ()
-      "The anchor must not move the cursor in the window the user is in.
-Forcing `window-start' to the last `window-body-height' lines and pulling
-point forward to meet it drags the cursor out of the project rows and down
-into the Claude usage block; every redraw (the agents tick, a buffer-list
-change, a usage refresh) then drags it back, so `C-w h' lands in the usage
-section and `k' cannot climb out. A backgrounded window still gets the
-anchor -- only the selected one yields."
-      (let* ((original-window (selected-window))
-             (buf (generate-new-buffer " *anchor-selected-point-test*"))
-             (window (split-window original-window)))
-        (unwind-protect
-            (progn
-              (set-window-buffer window buf)
-              (with-current-buffer buf
-                (dotimes (i 20) (insert (format "row %d\n" i)))
-                (let ((region-start (point))
-                      (top (save-excursion (goto-char (point-min))
-                                           (forward-line 2)
-                                           (point))))
-                  (insert "anchored one\nanchored two\n")
-                  (set-window-point window top)
-                  (with-selected-window window
-                    (cl-letf (((symbol-function 'window-body-height)
-                               (lambda (&optional _w) 5)))
-                      (edmacs-sidebar--anchor-region-to-bottom window region-start)))
-                  ;; Point stayed exactly where the user left it.
-                  (should (= top (window-point window))))))
-          (when (window-live-p window) (delete-window window))
-          (when (buffer-live-p buf) (kill-buffer buf)))))
-
-    (ert-deftest edmacs-sidebar-test-anchor-region-noops-on-dead-window ()
-      "`--anchor-region-to-bottom' is a no-op against a window that is not
-`window-live-p' -- the shape `edmacs-sidebar--redraw' hits on the very
-first paint, before `display-buffer-in-side-window' has created a
-window at all."
-      (with-temp-buffer
-        (insert "above\n")
-        (let ((region-start (point)))
-          (insert "anchored\n")
-          (let ((before (buffer-string)))
-            (edmacs-sidebar--anchor-region-to-bottom nil region-start)
-            (should (equal before (buffer-string)))))))
+      "The applier forces `window-start' past overflowing content above the
+anchored region, so the last screen lines of the buffer -- which
+necessarily include the whole anchored region -- are what the real
+window would show. Batch mode never runs redisplay, so this is asserted
+via `window-start' and `count-screen-lines' rather than
+`pos-visible-in-window-p'. But point wins in the window the user is
+actually in: forcing the scroll there would drag the cursor out of the
+project rows and into the Claude usage block, with every redraw dragging
+it back, so `C-w h' landed in the usage section and `k' could not climb
+out. A backgrounded window still gets the anchor -- only the selected
+one yields."
+      (edmacs-sidebar-test--with-anchor-window window
+        (let ((height (window-body-size window)))
+          (dotimes (i (+ height 10)) (insert (format "row %d\n" i)))
+          (let ((region-start (point))
+                (top (save-excursion (goto-char (point-min)) (forward-line 2) (point))))
+            (insert "anchored one\nanchored two\n")
+            (edmacs-sidebar--anchor-region-to-bottom window region-start)
+            (should (<= (window-start window) region-start))
+            (should (= height (count-screen-lines
+                               (window-start window) (point-max) nil window)))
+            ;; Same buffer, same overflow -- but now WINDOW is the selected
+            ;; one and point is above the forced start, so nothing moves.
+            (set-window-point window top)
+            (with-selected-window window
+              (edmacs-sidebar--anchor-region-to-bottom window region-start))
+            (should (= top (window-point window)))))))
 
     (ert-deftest edmacs-sidebar-test-anchor-region-pulls-point-forward-on-unselected-frame ()
-      "The overflow branch's force-scroll-and-pull-forward step must not be
-gated on WINDOW's own frame being the selected frame -- only on WINDOW
-being the process-wide `selected-window' itself. A window on a real,
-backgrounded frame is not that window, so it must still get the forced
-`window-start' and the point pulled forward to meet it, exactly like any
-other non-selected window (`edmacs-sidebar--anchor-region-to-bottom's own
-comment: redisplay keeps a backgrounded window's own point visible
-regardless of which frame or window is selected). Uses a genuinely
-separate, live frame \(not a stub\) via
-`edmacs-test-support-make-second-frame-or-skip', mirroring this suite's
-other real-multi-frame tests. Asserts concrete state changes -- not
-merely `>=' between two values that can trivially agree at their
+      "The overflow branch's force-scroll-and-pull-forward step is gated on
+WINDOW being the process-wide `selected-window', never on WINDOW's own
+frame being the selected frame. A window on a real, backgrounded frame
+is not that window, so it must still get the forced `window-start' and
+the point pulled forward to meet it. Asserts concrete state changes --
+not merely `>=' between two values that can trivially agree at their
 untouched defaults -- so a guard that wrongly widens to skip every
-backgrounded frame's own selected window (not just the truly selected
-one) fails this test instead of passing it vacuously."
+backgrounded frame's own selected window fails here rather than passing
+vacuously."
       (let* ((f1 (selected-frame))
              (f2 (edmacs-test-support-make-second-frame-or-skip))
              buf window)
@@ -3060,13 +3060,14 @@ one) fails this test instead of passing it vacuously."
               (setq window (frame-first-window f2))
               (set-window-buffer window buf)
               (with-current-buffer buf
-                (dotimes (i 20) (insert (format "row %d\n" i)))
+                (dotimes (i (+ (window-body-size window) 10))
+                  (insert (format "row %d\n" i)))
                 (let ((region-start (point))
                       (start-before-call (window-start window)))
                   (insert "anchored one\nanchored two\n")
                   ;; Well above where the forced overflow `window-start' will land.
                   (set-window-point window (point-min))
-                  (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 5)))
+                  (progn
                     (should (eq f1 (selected-frame)))
                     (should (eq window (frame-selected-window f2)))
                     (should-not (eq window (selected-window)))
@@ -3079,77 +3080,72 @@ one) fails this test instead of passing it vacuously."
           (when (buffer-live-p buf) (kill-buffer buf))
           (when (frame-live-p f2) (delete-frame f2)))))
 
-    (ert-deftest edmacs-sidebar-test-bottom-anchor-section-visible-with-short-content ()
-      "A short registrant on `edmacs-sidebar-bottom-anchor-section-functions'
-is padded down to the sidebar window's bottom edge through
+    (ert-deftest edmacs-sidebar-test-bottom-anchor-section-visible-through-show ()
+      "A registrant on `edmacs-sidebar-bottom-anchor-section-functions' is
+padded down to the sidebar window's real bottom edge through
 `edmacs-sidebar-show', not left floating just below the tab list with
-dead space beneath it."
+dead space beneath it -- and stays visible, via a forced `window-start',
+once it inserts more than the window can hold, instead of scrolling off
+the bottom unseen. The window's height is measured, not stubbed, and
+the overflow case is driven by inserting past that measured height."
       (let ((frame (selected-frame)))
         (unwind-protect
             (let ((edmacs-sidebar-bottom-anchor-section-functions
                    (list (lambda (_frame) (insert "ZZBOTTOMMARKERZZ\n")))))
-              (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 40)))
-                (edmacs-sidebar-show frame))
-              (with-current-buffer (edmacs-sidebar--buffer frame)
-                (should (string-suffix-p "ZZBOTTOMMARKERZZ\n" (buffer-string)))
-                (should (= 40 (count-screen-lines
-                               (point-min) (point-max) nil (edmacs-sidebar--window frame))))))
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
-
-    (ert-deftest edmacs-sidebar-test-bottom-anchor-section-visible-with-overflowing-content ()
-      "The same registrant stays visible -- via a forced `window-start' --
-when the sidebar's own content overflows a short window, instead of
-scrolling off the bottom unseen."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (let ((edmacs-sidebar-bottom-anchor-section-functions
-                   (list (lambda (_frame) (insert "ZZBOTTOMMARKERZZ\n")))))
-              (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 2)))
-                (edmacs-sidebar-show frame))
-              (with-current-buffer (edmacs-sidebar--buffer frame)
-                (let ((window (edmacs-sidebar--window frame)))
+              (edmacs-sidebar-show frame)
+              (let* ((window (edmacs-sidebar--window frame))
+                     (height (window-body-size window)))
+                (with-current-buffer (edmacs-sidebar--buffer frame)
                   (should (string-suffix-p "ZZBOTTOMMARKERZZ\n" (buffer-string)))
-                  (should (= 2 (count-screen-lines
-                                (window-start window) (point-max) nil window))))))
+                  (should (= height (count-screen-lines
+                                     (point-min) (point-max) nil window))))
+                (let ((edmacs-sidebar-bottom-anchor-section-functions
+                       (list (lambda (_frame)
+                               (dotimes (i (+ height 10)) (insert (format "fill %d\n" i)))
+                               (insert "ZZBOTTOMMARKERZZ\n")))))
+                  (edmacs-sidebar--redraw frame)
+                  (with-current-buffer (edmacs-sidebar--buffer frame)
+                    (should (string-suffix-p "ZZBOTTOMMARKERZZ\n" (buffer-string)))
+                    (should (= height (count-screen-lines
+                                       (window-start window) (point-max) nil window)))))))
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
 
-    (ert-deftest edmacs-sidebar-test-collapsed-bottom-anchor-section-visible-with-short-content ()
+    (ert-deftest edmacs-sidebar-test-collapsed-bottom-anchor-section-visible-through-show ()
       "The collapsed strip's own bottom-anchor hook
-\(`edmacs-sidebar-collapsed-bottom-anchor-section-functions'\) is padded
-to the window's bottom edge exactly like the expanded one -- AC4's
-\"yes, anchor there too\" decision."
+\(`edmacs-sidebar-collapsed-bottom-anchor-section-functions'\) gets the
+same padding and the same forced `window-start' as the expanded one --
+AC4's \"yes, anchor there too\" decision. The collapsed branch nils the
+header line rather than rendering one, and hands its section hooks the
+window's real usable width."
       (let ((frame (selected-frame)))
         (unwind-protect
-            (let ((edmacs-sidebar-collapsed-bottom-anchor-section-functions
-                   (list (lambda (_frame _width) (insert "ZZC\n")))))
+            (let* ((widths nil)
+                   (edmacs-sidebar-collapsed-section-functions
+                    (list (lambda (_frame width) (push width widths))))
+                   (edmacs-sidebar-collapsed-bottom-anchor-section-functions
+                    (list (lambda (_frame _width) (insert "ZZC\n")))))
               (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
-              (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 30)))
-                (edmacs-sidebar-show frame))
-              (with-current-buffer (edmacs-sidebar--buffer frame)
-                (should (string-suffix-p "ZZC\n" (buffer-string)))
-                (should (= 30 (count-screen-lines
-                               (point-min) (point-max) nil (edmacs-sidebar--window frame))))))
-          (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
-          (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
-          (edmacs-sidebar-test--cleanup-sidebar frame))))
-
-    (ert-deftest edmacs-sidebar-test-collapsed-bottom-anchor-section-visible-with-overflowing-content ()
-      "The collapsed strip's bottom-anchor hook also stays visible under
-overflow, via the same forced `window-start'."
-      (let ((frame (selected-frame)))
-        (unwind-protect
-            (let ((edmacs-sidebar-collapsed-bottom-anchor-section-functions
-                   (list (lambda (_frame _width) (insert "ZZC\n")))))
-              (set-frame-parameter frame 'edmacs-sidebar-collapsed t)
-              (cl-letf (((symbol-function 'window-body-height) (lambda (&optional _w) 2)))
-                (edmacs-sidebar-show frame))
-              (with-current-buffer (edmacs-sidebar--buffer frame)
-                (let ((window (edmacs-sidebar--window frame)))
+              (edmacs-sidebar-show frame)
+              (let* ((window (edmacs-sidebar--window frame))
+                     (height (window-body-size window)))
+                ;; The strip hook is handed the window's real usable width,
+                ;; not the `--collapsed-width' constant it was asked for.
+                (should (equal (list (edmacs-sidebar--strip-width frame)) widths))
+                (with-current-buffer (edmacs-sidebar--buffer frame)
+                  (should-not header-line-format)
                   (should (string-suffix-p "ZZC\n" (buffer-string)))
-                  (should (= 2 (count-screen-lines
-                                (window-start window) (point-max) nil window))))))
+                  (should (= height (count-screen-lines
+                                     (point-min) (point-max) nil window))))
+                (let ((edmacs-sidebar-collapsed-bottom-anchor-section-functions
+                       (list (lambda (_frame _width)
+                               (dotimes (i (+ height 10)) (insert (format "f%d\n" i)))
+                               (insert "ZZC\n")))))
+                  (edmacs-sidebar--redraw frame)
+                  (with-current-buffer (edmacs-sidebar--buffer frame)
+                    (should (string-suffix-p "ZZC\n" (buffer-string)))
+                    (should (= height (count-screen-lines
+                                       (window-start window) (point-max) nil window)))))))
           (set-frame-parameter frame 'edmacs-sidebar-collapsed nil)
           (set-frame-parameter frame 'edmacs-sidebar-remembered-width nil)
           (edmacs-sidebar-test--cleanup-sidebar frame))))
@@ -3198,7 +3194,7 @@ sidebar window's own geometry, and reapplies the bottom anchor
                           ((symbol-function 'window-old-pixel-height)
                            (lambda (&optional w) (window-pixel-height (or w window))))
                           ((symbol-function 'window-old-body-pixel-height)
-                           (lambda (&optional w) (window-body-height (or w window) t))))
+                           (lambda (&optional w) (window-body-size (or w window) nil t))))
                   (edmacs-sidebar--on-window-size-change-anchor frame))
                 (should-not reapplied)
                 (should-not redrawn)
@@ -3248,16 +3244,19 @@ hook variable names."
     ;; ==========================================================================
 
     (ert-deftest edmacs-sidebar-test-point-identity-family-retired ()
-      "`--point-identity'/`--goto-identity' (replaced by
-`--capture-positions'/`--restore-positions' built on
-`magit-section-get-relative-position'/`magit-section-goto-successor')
-and `--find-worktree-section' (left with zero callers once
-`--goto-identity's cons-dispatch wrapper was deleted -- unlike
-`--find-agent-section'/`--find-buffer-section', which each keep a real
-direct caller) are gone entirely, not merely unused."
+      "Retired internals are gone entirely, not merely unused:
+`--point-identity'/`--goto-identity' (replaced by
+`--capture-positions'/`--restore-positions'), `--find-worktree-section'
+(zero callers once the cons-dispatch wrapper went), and the five row
+inserters the planner/renderer split replaced."
       (should-not (fboundp 'edmacs-sidebar--point-identity))
       (should-not (fboundp 'edmacs-sidebar--goto-identity))
-      (should-not (fboundp 'edmacs-sidebar--find-worktree-section)))
+      (should-not (fboundp 'edmacs-sidebar--find-worktree-section))
+      ;; The five row inserters the planner/renderer split replaced.
+      (dolist (fn '(edmacs-sidebar--redraw-tabs edmacs-sidebar--redraw-projects
+                    edmacs-sidebar--insert-tab-row edmacs-sidebar--insert-project-row
+                    edmacs-sidebar--insert-worktree-child-row))
+        (should-not (fboundp fn))))
 
     (ert-deftest edmacs-sidebar-test-show-refuses-an-unusable-frame ()
       "`edmacs-sidebar-show' must create no window on a frame this config may
