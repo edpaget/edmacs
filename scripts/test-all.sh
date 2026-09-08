@@ -39,7 +39,30 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
 # shellcheck source=test-manifest.sh
-source "$REPO_ROOT/scripts/test-manifest.sh"
+if ! source "$REPO_ROOT/scripts/test-manifest.sh"; then
+  echo "FATAL: could not source scripts/test-manifest.sh -- refusing to report a false green" >&2
+  exit 1
+fi
+
+if [ "${#MANIFEST[@]}" -eq 0 ]; then
+  echo "FATAL: scripts/test-manifest.sh loaded but MANIFEST is empty -- refusing to report a false green" >&2
+  exit 1
+fi
+
+# Sanity floor: the manifest must cover at least the 24 modules/*-test.el
+# files known at the time this gate was built (several appear under more
+# than one tier, so the array itself is longer than 24). A manifest that
+# quietly lost rows -- a bad merge, a stray edit -- must fail loud here
+# rather than silently running fewer suites and still exiting 0.
+declare -A MANIFEST_SUITE_NAMES=()
+for row in "${MANIFEST[@]}"; do
+  IFS='|' read -r manifest_name _ _ _ _ _ <<<"$row"
+  MANIFEST_SUITE_NAMES["$manifest_name"]=1
+done
+if [ "${#MANIFEST_SUITE_NAMES[@]}" -lt 24 ]; then
+  echo "FATAL: manifest names only ${#MANIFEST_SUITE_NAMES[@]} distinct suites, expected at least 24 -- refusing to report a false green" >&2
+  exit 1
+fi
 
 TIER_ARG="${1:-all}"
 case "$TIER_ARG" in
@@ -222,6 +245,11 @@ for row in "${MANIFEST[@]}"; do
     batch) [ "$TIER_ARG" = "batch" ] || [ "$TIER_ARG" = "all" ] || continue ;;
     pty)   [ "$TIER_ARG" = "pty" ]   || [ "$TIER_ARG" = "all" ] || continue ;;
     gui)   [ "$TIER_ARG" = "gui" ]   || [ "$TIER_ARG" = "all" ] || continue ;;
+    *)
+      echo "FATAL: manifest row for '$name' has unrecognized tier '$tier' -- refusing to silently drop it" >&2
+      OVERALL_EXIT=1
+      continue
+      ;;
   esac
 
   case "$tier" in
@@ -230,6 +258,10 @@ for row in "${MANIFEST[@]}"; do
       ;;
     gui)
       run_gui_row "$name" "$expected_skips" "$loads" "$target"
+      ;;
+    *)
+      echo "FATAL: manifest row for '$name' has unrecognized tier '$tier' -- refusing to silently drop it" >&2
+      OVERALL_EXIT=1
       ;;
   esac
 done

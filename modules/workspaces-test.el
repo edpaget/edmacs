@@ -14,7 +14,7 @@
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/git-common-dir.el \
 ;;         -l modules/workspaces.el -l modules/workspaces-test.el \
-;;         -f edmacs-workspaces-test-run-and-exit
+;;         -f edmacs-test-support-run-and-exit
 
 ;;; Code:
 
@@ -1658,19 +1658,5 @@ window, and a TRAMP round trip there stalls the sweep on the network."
     (should-not (edmacs-workspaces--buffer-dir (current-buffer)))))
 
 (provide 'workspaces-test)
-
-(defun edmacs-workspaces-test-run-and-exit ()
-  "Run this suite, undo any timer/buffer/`tab-bar-mode' it leaks, then exit.
-Point `-f' at this instead of `ert-run-tests-batch-and-exit' directly:
-that function calls `kill-emacs' itself, and `kill-emacs' does not run
-Lisp `unwind-protect' cleanups up its caller's stack -- wrapping ITS call
-in `edmacs-test-support-with-hermetic-state' would never actually run the
-cleanup. Calling the non-exiting `ert-run-tests-batch' inside the
-hermetic-state form, then exiting afterward with the same status
-`ert-run-tests-batch-and-exit' would have used, gets both properties."
-  (let (stats)
-    (edmacs-test-support-with-hermetic-state
-      (setq stats (ert-run-tests-batch nil)))
-    (kill-emacs (if (zerop (ert-stats-completed-unexpected stats)) 0 1))))
 
 ;;; workspaces-test.el ends here

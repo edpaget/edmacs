@@ -10,7 +10,7 @@
 ;;
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/git-common-dir.el \
-;;         -l modules/sidebar-test.el -f edmacs-sidebar-test-run-and-exit
+;;         -l modules/sidebar-test.el -f edmacs-test-support-run-and-exit
 ;;
 ;; Note sidebar.el is NOT passed on the command line -- this file fixes
 ;; `load-path' against the straight build tree and loads sidebar.el itself,
@@ -34,7 +34,7 @@
 ;; (140/140, no skips):
 ;;
 ;;   scripts/pty-ert.sh emacs -Q --batch -l ert -l modules/test-support.el \
-;;         -l modules/git-common-dir.el -l modules/sidebar-test.el -f edmacs-sidebar-test-run-and-exit
+;;         -l modules/git-common-dir.el -l modules/sidebar-test.el -f edmacs-test-support-run-and-exit
 ;;
 ;; This draws real terminal escape sequences to that pty as a side
 ;; effect (the second frame is a live tty frame) -- harmless, but expect
@@ -3243,19 +3243,5 @@ under an `F1' header a moment after drawing correctly."
         (should (equal (edmacs-sidebar-redraw-frames) (frame-list)))))
 
     )) ; end of build-root-found branch
-
-(defun edmacs-sidebar-test-run-and-exit ()
-  "Run this suite, undo any timer/buffer/`tab-bar-mode' it leaks, then exit.
-Point `-f' at this instead of `ert-run-tests-batch-and-exit' directly:
-that function calls `kill-emacs' itself, and `kill-emacs' does not run
-Lisp `unwind-protect' cleanups up its caller's stack -- wrapping ITS call
-in `edmacs-test-support-with-hermetic-state' would never actually run the
-cleanup. Calling the non-exiting `ert-run-tests-batch' inside the
-hermetic-state form, then exiting afterward with the same status
-`ert-run-tests-batch-and-exit' would have used, gets both properties."
-  (let (stats)
-    (edmacs-test-support-with-hermetic-state
-      (setq stats (ert-run-tests-batch nil)))
-    (kill-emacs (if (zerop (ert-stats-completed-unexpected stats)) 0 1))))
 
 ;;; sidebar-test.el ends here

@@ -8,7 +8,7 @@
 ;;   scripts/run-ert-suite.sh 30 emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/git-common-dir.el -l modules/claude-term.el \
 ;;         -l modules/workspaces.el -l modules/windows.el \
-;;         -l modules/windows-test.el -f edmacs-windows-test-run-and-exit
+;;         -l modules/windows-test.el -f edmacs-test-support-run-and-exit
 ;;
 ;; `modules/workspaces.el' is on that line because the AC4 load-order test
 ;; below loads `modules/sidebar.el' for real, leaving sidebar.el's
@@ -2439,19 +2439,5 @@ main takes a stack pane's buffer and hands its own -- already duplicated
             (should (= 2 (length (edmacs-stack-windows)))))
         (kill-buffer a)
         (kill-buffer b)))))
-
-(defun edmacs-windows-test-run-and-exit ()
-  "Run this suite, undo any timer/buffer/`tab-bar-mode' it leaks, then exit.
-Point `-f' at this instead of `ert-run-tests-batch-and-exit' directly:
-that function calls `kill-emacs' itself, and `kill-emacs' does not run
-Lisp `unwind-protect' cleanups up its caller's stack -- wrapping ITS call
-in `edmacs-test-support-with-hermetic-state' would never actually run the
-cleanup. Calling the non-exiting `ert-run-tests-batch' inside the
-hermetic-state form, then exiting afterward with the same status
-`ert-run-tests-batch-and-exit' would have used, gets both properties."
-  (let (stats)
-    (edmacs-test-support-with-hermetic-state
-      (setq stats (ert-run-tests-batch nil)))
-    (kill-emacs (if (zerop (ert-stats-completed-unexpected stats)) 0 1))))
 
 ;;; windows-test.el ends here

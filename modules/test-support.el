@@ -362,5 +362,22 @@ dependency on state an earlier test in the same file left behind."
        (unless (eq tab-bar-mode edmacs-test-support--tab-bar-mode-before)
          (tab-bar-mode (if edmacs-test-support--tab-bar-mode-before 1 -1))))))
 
+(defun edmacs-test-support-run-and-exit ()
+  "Run the current file's ERT suite, undo leaked state, then exit.
+Point a suite's own `-f' at this instead of
+`ert-run-tests-batch-and-exit' directly: that function calls `kill-emacs'
+itself, and `kill-emacs' does not run Lisp `unwind-protect' cleanups up
+its caller's stack -- wrapping ITS call in
+`edmacs-test-support-with-hermetic-state' would never actually run the
+cleanup. Calling the non-exiting `ert-run-tests-batch' inside the
+hermetic-state form, then exiting afterward with the same status
+`ert-run-tests-batch-and-exit' would have used, gets both properties.
+Suite-agnostic -- every suite needing a hermetic batch-and-exit wrapper
+points `-f' at this one shared symbol rather than pasting a local copy."
+  (let (stats)
+    (edmacs-test-support-with-hermetic-state
+      (setq stats (ert-run-tests-batch nil)))
+    (kill-emacs (if (zerop (ert-stats-completed-unexpected stats)) 0 1))))
+
 (provide 'test-support)
 ;;; test-support.el ends here
