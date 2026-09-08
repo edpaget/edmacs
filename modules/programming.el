@@ -100,8 +100,12 @@
 (declare-function flycheck-mode "flycheck")
 
 (defun edmacs--eglot-disable-flycheck ()
-  "Turn flycheck off in an eglot-managed buffer; flymake owns diagnostics there."
-  (when (and (eglot-managed-p) (bound-and-true-p flycheck-mode))
+  "Turn flycheck off in an eglot-managed buffer; flymake owns diagnostics there.
+Either mode can come up second, so this runs from both their hooks: the
+first buffer of a project gets eglot last (it waits on the connection),
+while a later buffer of the same project gets it from
+`after-change-major-mode-hook' ahead of `global-flycheck-mode'."
+  (when (and (bound-and-true-p flycheck-mode) (eglot-managed-p))
     (flycheck-mode -1)))
 
 (use-package eglot
@@ -121,6 +125,7 @@
   ;; `go-ts-mode'; with the lsp checker gone they would fire on save and
   ;; annotate over flymake's own diagnostics.
   (add-hook 'eglot-managed-mode-hook #'edmacs--eglot-disable-flycheck)
+  (add-hook 'flycheck-mode-hook #'edmacs--eglot-disable-flycheck)
 
   ;; A parallel binding set rather than client-agnostic commands: both
   ;; clients stay live while the languages migrate, and a per-client

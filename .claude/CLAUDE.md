@@ -250,6 +250,44 @@ runs. A test's `:expected-result :failed` marker is honored here the same
 way ERT's own batch reporter honors it: an expected failure is not counted
 toward the script's exit code, only a genuinely unexpected result is.
 
+#### Batch runs no command loop, so LSP clients never connect
+
+`eglot-ensure` does not connect. It appends a buffer-local
+`post-command-hook` entry and returns; the connection happens the next time
+the command loop runs a command. `emacs --batch` runs no command loop, so
+the obvious verification -- `find-file`, then poll `eglot-managed-p` --
+spins to its deadline with **zero** processes spawned and reads as a broken
+config. One `(run-hooks 'post-command-hook)` in the buffer fixes it.
+
+Two more of the same shape sit behind it, and each one silently reports "no
+diagnostics" rather than failing:
+
+- flymake's first check on a buffer whose `flymake-mode` came up from
+  `after-change-major-mode-hook` -- which is every buffer after the first in
+  an already-managed project. Force it with `(flymake-start t t)`.
+- a language's `lsp-deferred`/`eglot-ensure` hook entry, registered from a
+  `with-eval-after-load` or `use-package` `:config` form. `<mode>-hook` is
+  empty until the mode's own library is loaded, so `require` it before
+  asserting anything about the hook list.
+
+`scripts/go-eglot-check.sh` is the worked example -- Go under eglot and
+gopls, end to end in batch, no frame and no screenshot. It builds a
+throwaway Go module outside the repo (project.el would otherwise root a
+module created inside a worktree at the edmacs repo, and gopls would report
+"no packages"), runs it through `startup-check.sh`, and asserts the buffer
+is eglot-managed, the server is gopls, `textDocument/definition` answers,
+`lsp-mode` never attached, the `:gopls` workspace configuration reached the
+server, and `edmacs-modeline-diagnostics` renders flymake's counts:
+
+```bash
+scripts/go-eglot-check.sh
+```
+
+It re-execs itself through a login shell when `gopls` is missing, because
+the toolchain resolves through mise exactly as it does for the daemon via
+`exec-path-from-shell`. Copy its shape for the next language moved to
+eglot.
+
 ### Compilation
 
 Modules are loaded from source, not byte-compiled as a build step. To check
