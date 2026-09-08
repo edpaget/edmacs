@@ -111,6 +111,8 @@ LANGUAGE should be the name without the .el extension."
 ;; alone, and a silent failure to load an ordinary module is worse than a
 ;; loud one.
 (load-module "claude-lib-view")
+;; One consumer on that substrate: ERT per-test wall-clock durations.
+(load-module "claude-lib-ert")
 (load-module "claude-term")
 (load-module "claude-term-registry")
 ;; (load-module "org-config")

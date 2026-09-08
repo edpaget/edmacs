@@ -79,6 +79,14 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
   `(display-graphic-p)`-gated pixel assertions (`image-size`, `:ascent`,
   the bar column's declared width against the image's pixel width) that
   only `scripts/gui-ert.sh` can falsify
+- `modules/claude-lib-ert-test.el` -- pure-function coverage of the one
+  consumer built on that substrate: parsing ERT's own batch-output
+  lines, text-scanning `(ert-deftest ...)` source locations, and the
+  per-test budget/over-budget arithmetic
+- `modules/claude-lib-ert-live-test.el` -- the real subprocess round
+  trip: a synthetic two-test suite run for real through
+  `scripts/run-ert-suite.sh`, asserted against the returned plist and a
+  real rasterised file
 - `modules/windows-test.el` -- master-and-stack layout, popup routing, the
   `SPC w` command set, tab/desktop persistence, the `display-buffer` catch-all
 - `modules/ui-test.el`, `modules/sidebar-test.el` -- ui.el and sidebar.el
@@ -100,7 +108,7 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
   standard batch invocation shows 4 of its 10 tests as skipped -- that
   is the documented GUI-only gate, not a regression; run them through
   `scripts/gui-ert.sh`. `modules/claude-lib-view-live-test.el` has the
-  same shape: 3 of its 8 skip in batch and all 8 pass under
+  same shape: 3 of its 9 skip in batch and all 9 pass under
   `scripts/gui-ert.sh`
 
 Run a suite in batch from the repository root, loading the modules it

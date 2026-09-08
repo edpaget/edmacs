@@ -184,6 +184,26 @@ known."
             (should (file-exists-p path)))
         (when (and path (file-exists-p path)) (delete-file path))))))
 
+(ert-deftest claude-lib-view-live-test-round-trip-rasterizes-a-thresholded-bar ()
+  "A bar drawn with `:bar-threshold' still rasterises cleanly, extra element and all."
+  (claude-lib-view-live-test--require-rsvg)
+  (claude-lib-view-live-test--with-views
+    (let* ((result (claude-lib-render "suite wall clock, budgeted" :name "live-threshold"
+                                      :display nil
+                                      :columns [("Suite" 20 t)]
+                                      :bar-threshold 100.0
+                                      :rows '((:id windows :cells ("windows-test") :bar 282.0)
+                                              (:id ui :cells ("ui-test") :bar 12.4))))
+           (path (claude-lib-render-rasterize (plist-get result :buffer) 'windows)))
+      (unwind-protect
+          (progn
+            (should (string-suffix-p ".png" path))
+            (should (file-exists-p path))
+            (should (> (file-attribute-size (file-attributes path)) 0))
+            (should (equal (claude-lib-view-live-test--magic path 4)
+                           (unibyte-string 137 ?P ?N ?G))))
+        (when (file-exists-p path) (delete-file path))))))
+
 (ert-deftest claude-lib-view-live-test-rasterized-svg-is-well-formed ()
   "The markup written for the round trip parses -- no duplicate `xmlns'.
 The duplicate is what a caller copying the common `svg-create :xmlns'

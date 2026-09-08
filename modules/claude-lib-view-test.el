@@ -403,6 +403,39 @@ trip would fail on a picture that looks fine on screen."
                                              (:id b :cells ("y"))))))
       (should (eq (plist-get result :mode) 'unified)))))
 
+(ert-deftest claude-lib-view-test-bar-threshold-adds-one-element-and-clamps ()
+  "A `:bar-threshold' contributes exactly one extra dom element, clamped into range."
+  (let ((plain (claude-lib--view-bar-svg 50 100 120 12))
+        (marked (claude-lib--view-bar-svg 50 100 120 12 40)))
+    (should (= (1+ (claude-lib--view-element-count plain))
+              (claude-lib--view-element-count marked))))
+  ;; A threshold above :bar-max clamps to the bar's full width rather
+  ;; than erroring or drawing off-canvas.
+  (let* ((dom (claude-lib--view-bar-svg 50 100 120 12 500))
+         (line (car (last (dom-children dom)))))
+    (should (= 120 (dom-attr line 'x1)))
+    (should (= 120 (dom-attr line 'x2))))
+  ;; A nil/zero threshold on a nil/zero max still draws at x=0, not NaN.
+  (let* ((dom (claude-lib--view-bar-svg nil 0 120 12 5))
+         (line (car (last (dom-children dom)))))
+    (should (= 0 (dom-attr line 'x1)))))
+
+(ert-deftest claude-lib-view-test-bar-threshold-needs-a-bar ()
+  "`:bar-threshold' with no `:bar' anywhere is a `user-error', not a silent no-op."
+  (claude-lib-view-test--with-views
+    (should-error
+     (claude-lib-render "rows only" :name "threshold-no-bar"
+                        :columns [("A" 10 t)]
+                        :bar-threshold 5
+                        :rows '((:id a :cells ("x"))))
+     :type 'user-error)
+    (should-error
+     (claude-lib-render "image only" :name "threshold-image"
+                        :bar-threshold 5
+                        :image '(:width 10 :height 10
+                                 :elements ((rect :x 0 :y 0 :width 10 :height 10))))
+     :type 'user-error)))
+
 ;; ============================================================================
 ;; AC5 -- the inherited `q', not a reimplemented one
 ;; ============================================================================

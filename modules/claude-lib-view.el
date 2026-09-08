@@ -16,7 +16,9 @@
 ;;               inside a `tabulated-list' cell, so one buffer is both
 ;;               navigable and illustrated -- point moves by row, RET
 ;;               jumps to the source behind the row, and the bar sits
-;;               beside the label it measures.
+;;               beside the label it measures.  An optional
+;;               `:bar-threshold' draws one shared value as a dashed
+;;               line across every row's bar (a budget line).
 ;;   image    -- no rows, `:image' only.  The FALLBACK, not the default.
 ;;               It honestly gives up navigation (point cannot move
 ;;               through a scatter plot), so it is for data with no
@@ -391,12 +393,18 @@ duplicate root attributes collapsed."
    (t
     (user-error "claude-lib-render: :image is neither an SVG dom nor a (:width :height :elements) plist"))))
 
-(defun claude-lib--view-bar-svg (value max width height)
-  "Return a two-rect SVG dom: a track WIDTH wide and a fill sized by VALUE/MAX.
+(defun claude-lib--view-bar-svg (value max width height &optional threshold)
+  "Return a track+fill SVG dom, optionally with a THRESHOLD marker line.
 A nil, zero or negative VALUE, or a MAX that is nil or not positive,
 renders the bare track rather than dividing by zero or emitting a
 negative-width rect -- which some renderers accept and `rsvg-convert'
-may not.  A VALUE above MAX clamps to the full width."
+may not.  A VALUE above MAX clamps to the full width.
+
+THRESHOLD, when non-nil, adds a third element: a dashed vertical line
+at THRESHOLD/MAX of WIDTH, clamped into [0,1] so an out-of-range
+THRESHOLD (bigger than MAX, or a degenerate MAX) never emits an
+off-canvas coordinate -- defensively, even though `claude-lib-render'
+already keeps its derived :bar-max at or above :bar-threshold."
   (let* ((ratio (if (and (numberp value) (numberp max) (> max 0))
                     (/ (float value) max)
                   0))
@@ -405,6 +413,14 @@ may not.  A VALUE above MAX clamps to the full width."
     (svg-rectangle dom 0 0 width height :fill "#3a3a3a" :rx 2)
     (when (> fill 0)
       (svg-rectangle dom 0 0 fill height :fill "#4682b4" :rx 2))
+    (when (numberp threshold)
+      (let* ((tratio (if (and (numberp max) (> max 0))
+                         (min 1.0 (max 0.0 (/ (float threshold) max)))
+                       0.0))
+             (x (* width tratio)))
+        (svg-line dom x 0 x height
+                  :stroke-color "#e8a33d" :stroke-width 2
+                  :stroke-dasharray "2,2")))
     dom))
 
 (defun claude-lib--view-element-count (dom)
@@ -641,6 +657,11 @@ KEYS is a plist:
                omitted.
   :bar-column  index at which to insert the value/bar column pair;
                appended when omitted.
+  :bar-threshold  a shared value drawn as a dashed marker line across
+               every row's bar (e.g. a per-test time budget).  Valid
+               only with the unified shape (:rows plus a :bar
+               somewhere) -- a `user-error' otherwise, since a plain
+               table or a standalone image has no bar to mark.
   :name        buffer base name, slugged from SUMMARY when omitted.
   :display     display the buffer (default t).  nil builds and populates
                it and displays nothing.
@@ -665,11 +686,18 @@ is reported in :displaced; a name there may well be an agent's."
          (image (plist-get keys :image))
          (bar-column (plist-get keys :bar-column))
          (bar-max (plist-get keys :bar-max))
+         (bar-threshold (plist-get keys :bar-threshold))
          (name (or (plist-get keys :name) (claude-lib--view-slug summary)))
          (display (if (plist-member keys :display) (plist-get keys :display) t)))
     (claude-lib--view-validate-spec summary columns rows image)
     (let ((mode (claude-lib--view-mode-for-spec rows image bar-column))
           image-dom row-svgs format entries)
+      (when bar-threshold
+        (unless (numberp bar-threshold)
+          (user-error "claude-lib-render: :bar-threshold must be a number: %S" bar-threshold))
+        (unless (eq mode 'unified)
+          (user-error "claude-lib-render: :bar-threshold needs the unified shape (:rows with a :bar); got mode %s"
+                      mode)))
       ;; Everything that can fail is done before a buffer exists.
       (pcase mode
         ('image
@@ -692,7 +720,8 @@ is reported in :displaced; a name there may well be an agent's."
            (dolist (row rows)
              (let ((dom (claude-lib--view-bar-svg (plist-get row :bar) ceiling
                                                   claude-lib--view-bar-pixel-width
-                                                  claude-lib--view-bar-pixel-height)))
+                                                  claude-lib--view-bar-pixel-height
+                                                  bar-threshold)))
                (setq total (+ total (claude-lib--view-element-count dom)))
                (push (cons (plist-get row :id) dom) row-svgs)))
            (setq row-svgs (nreverse row-svgs))
