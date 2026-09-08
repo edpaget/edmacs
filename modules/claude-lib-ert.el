@@ -158,8 +158,12 @@ directly when present -- ERT already resolved it via
 `find-function-search-for-symbol'.  Otherwise each of FILES is
 text-scanned in order, via `insert-file-contents' into a temporary
 buffer (never a live buffer -- no `load' and no `find-function' touch
-the running daemon's obarray), for the literal substring
-\"(ert-deftest NAME\".  The first file that contains it wins, so two
+the running daemon's obarray), for `(ert-deftest NAME' anchored on a
+symbol boundary right after NAME -- so a shorter test name that is a
+literal textual prefix of a longer one defined earlier in the same
+file (e.g. \"windows-basic-layout\" against an earlier
+\"windows-basic-layout-extended\") never matches the longer test's own
+definition.  The first file that contains it wins, so two
 same-named tests defined in different files resolve deterministically
 to FILES's own order rather than erroring or duplicating.  Returns nil
 when no candidate file contains it -- a dynamically-defined test, or a
@@ -167,7 +171,8 @@ file omitted from FILES -- rather than signalling: the row still
 renders, and RET on it signals `claude-lib-view-visit's own \"carries
 no :location\" error instead of the whole render failing."
   (or at-hint
-      (let ((needle (format "(ert-deftest %s" name))
+      (let ((needle (concat "(ert-deftest[[:space:]]+"
+                             (regexp-quote name) "\\_>"))
             found)
         (dolist (file files)
           (unless found
@@ -175,7 +180,7 @@ no :location\" error instead of the whole render failing."
               (with-temp-buffer
                 (insert-file-contents file)
                 (goto-char (point-min))
-                (when (search-forward needle nil t)
+                (when (re-search-forward needle nil t)
                   (setq found (cons file (line-number-at-pos))))))))
         found)))
 

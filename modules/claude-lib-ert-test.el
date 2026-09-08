@@ -151,6 +151,23 @@
       (should (equal (claude-lib--ert-locate "dup" nil (list file-b file-a))
                      (cons file-b 1))))))
 
+(ert-deftest claude-lib-ert-test-locate-does-not-match-name-as-a-prefix ()
+  "A shorter test name is not matched inside a longer name's definition.
+`windows-basic-layout' is a literal textual prefix of
+`windows-basic-layout-extended', which is defined FIRST in the fixture
+-- a bare substring search for \"(ert-deftest windows-basic-layout\"
+would wrongly stop on the `-extended' test's own definition line."
+  (claude-lib-ert-test--with-fixture-file file
+      (concat "(ert-deftest windows-basic-layout-extended ()\n"
+              "  (should t))\n"
+              "\n"
+              "(ert-deftest windows-basic-layout ()\n"
+              "  (should t))\n")
+    (should (equal (claude-lib--ert-locate "windows-basic-layout" nil (list file))
+                   (cons file 4)))
+    (should (equal (claude-lib--ert-locate "windows-basic-layout-extended" nil (list file))
+                   (cons file 1)))))
+
 (ert-deftest claude-lib-ert-test-files-from-command-reads-dash-l-flags ()
   "The default :files set is every `-l FILE' argument, resolved against ROOT.
 Includes a bare `-l ert' -- it resolves to a non-existent path under
