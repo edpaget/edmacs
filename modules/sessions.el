@@ -66,7 +66,17 @@ never the name that sticks."
   ;; Core supplies no frame -- ambient-reads: ok
   (if-let* ((root (edmacs-workspaces-current-tab-root)))
       (file-name-nondirectory (directory-file-name root))
-    (tab-bar-tab-name-current)))
+    ;; `tab-bar-tab-name-current' names the tab after the SELECTED window's
+    ;; buffer, and the sidebar is a selectable side window -- so an unstamped
+    ;; tab read while it held point was named `*sidebar*'. Only that case is
+    ;; answered here, from a real window; everything else stays core's.
+    (if (window-parameter (selected-window) 'window-side)
+        (if-let* ((win (seq-find
+                        (lambda (w) (not (window-parameter w 'window-side)))
+                        (window-list nil 'no-minibuf))))
+            (buffer-name (window-buffer win))
+          (tab-bar-tab-name-current))
+      (tab-bar-tab-name-current))))
 (setq tab-bar-tab-name-function #'edmacs-sessions--tab-name)
 
 (tab-bar-mode 1)

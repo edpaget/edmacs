@@ -709,9 +709,15 @@ and a frame-wide group would file such a tab under the wrong project."
          (root (or had-root
                    (edmacs-workspaces--normalize-root
                     (alist-get edmacs-workspaces--legacy-root-parameter params))))
+         ;; The frame's GROUP is the fallback for a tab that HAS a root whose
+         ;; repo will not resolve -- never for a rootless one. The daemon's
+         ;; boot tab has no root and belongs to no project; filing it under
+         ;; the frame's group renders it as a phantom worktree row inside
+         ;; that project's tree.
          (group (or had-group
-                    (and root (ignore-errors (edmacs-workspaces-group-name root)))
-                    group))
+                    (and root
+                         (or (ignore-errors (edmacs-workspaces-group-name root))
+                             group))))
          ;; The legacy root always goes; a nil-valued `group'/root
          ;; placeholder goes too, re-appended below with a real value or
          ;; not at all. An entry that already holds a value is kept where

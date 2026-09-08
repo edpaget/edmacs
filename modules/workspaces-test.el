@@ -910,6 +910,32 @@ restore tabs the new model cannot read at all."
       ;; The focused frame stays primary, so its tab is the one still selected.
       (should (equal (alist-get 'name (cdr (assq 'current-tab tabs))) "edmacs")))))
 
+(ert-deftest edmacs-workspaces-test-migrate-leaves-a-rootless-tab-ungrouped ()
+  "A tab with no root of any kind belongs to no project, so the frame's
+group must not be grafted onto it. The daemon's boot tab is exactly that
+tab; filing it under the frame's group rendered it as a phantom worktree
+row inside that project's tree in the sidebar. The frame-group fallback
+still applies to a tab that HAS a root whose repo will not resolve."
+  (let* ((rootless (list 'tab (cons 'name "*sidebar*") (list 'explicit-name)))
+         (out (edmacs-workspaces--migrate-tab rootless "edmacs")))
+    (should (null (alist-get 'group (cdr out))))
+    (should (null (alist-get edmacs-workspaces-root-parameter (cdr out))))
+    ;; Still a fixed point on its own output.
+    (should (equal out (edmacs-workspaces--migrate-tab out "edmacs")))))
+
+(ert-deftest edmacs-workspaces-test-migrate-still-groups-a-legacy-rooted-tab ()
+  "The rootless carve-out above must not disarm the migration itself: a tab
+carrying only the LEGACY root parameter is what the frames model saved, and
+it still has to come back with both a group and this module's root."
+  (let* ((legacy (list 'tab (cons 'name "old")
+                       (cons edmacs-workspaces--legacy-root-parameter
+                             (expand-file-name default-directory))))
+         (out (edmacs-workspaces--migrate-tab legacy "edmacs")))
+    (should (alist-get 'group (cdr out)))
+    (should (alist-get edmacs-workspaces-root-parameter (cdr out)))
+    (should (null (alist-get edmacs-workspaces--legacy-root-parameter
+                             (cdr out))))))
+
 (ert-deftest edmacs-workspaces-test-migrate-folds-window-state-into-ws ()
   "AC5: a folded `current-tab' MUST gain the frame's window state as `ws'.
 A `current-tab' carries none by construction, and a restored tab has no

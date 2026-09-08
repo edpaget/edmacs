@@ -259,6 +259,31 @@ unrelated buffer is deliberately current throughout."
                 (should (equal (edmacs-sessions--tab-name) "core-fallback"))))
           (set-frame-parameter frame 'tabs saved))))
 
+    (ert-deftest edmacs-sessions-test-tab-name-never-names-a-tab-after-a-side-window ()
+      "Core's `tab-bar-tab-name-current' answers from the SELECTED window's
+buffer, and the sidebar is a selectable side window -- so an unstamped tab
+read while the sidebar held point was named `*sidebar*', and that name stuck
+in the tab alist and rendered as a phantom row in the sidebar's own tree."
+      (let* ((frame (selected-frame))
+             (saved (frame-parameter frame 'tabs))
+             (real (generate-new-buffer "est-real-window-buffer"))
+             (side-buf (generate-new-buffer "est-side-window-buffer")))
+        (unwind-protect
+            (save-window-excursion
+              (delete-other-windows)
+              (set-frame-parameter frame 'tabs (list (list 'current-tab)))
+              (set-window-buffer (selected-window) real)
+              (let ((side (display-buffer-in-side-window
+                           side-buf '((side . left) (slot . 0)))))
+                (select-window side)
+                (should (equal (buffer-name (window-buffer (selected-window)))
+                               "est-side-window-buffer"))
+                (should (equal (edmacs-sessions--tab-name)
+                               "est-real-window-buffer"))))
+          (set-frame-parameter frame 'tabs saved)
+          (kill-buffer real)
+          (kill-buffer side-buf))))
+
     (ert-deftest edmacs-sessions-test-tab-name-is-the-tab-bar-name-function ()
       (should (eq tab-bar-tab-name-function #'edmacs-sessions--tab-name)))
 
