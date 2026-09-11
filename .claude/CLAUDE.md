@@ -589,6 +589,8 @@ edmacs/
 │   ├── programming.el     # LSP, Flycheck, Apheleia
 │   ├── ai.el              # Markdown editor polish
 │   ├── claude-lib.el      # Bash-driven eval channel + Claude's promoted-code library
+│   ├── claude-lib-view.el # Rendering substrate: rows, SVG bars, one navigable buffer
+│   ├── claude-lib-ert.el  # First consumer of the view substrate: ERT per-test durations
 │   ├── claude-lib-drive.el # Drive interactive code with simulated input, unblockably
 │   ├── claude-term.el     # Claude CLI hosted in a ghostel terminal
 │   ├── claude-term-registry.el # Session registry + SPC a keymap

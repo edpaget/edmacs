@@ -48,6 +48,14 @@
 # and the sidebar-selected-new-tab check, whose side window dedication a
 # batch frame cannot answer for. Its gui row runs all three and must show 0.
 #
+# claude-lib-view-live-test's batch row expects 3: the pixel assertions
+# (`image-size', `:ascent', bar width against image width) are gated on
+# `display-graphic-p'. Its gui row runs all nine and must show 0.
+#
+# claude-lib-drive-live-test and claude-lib-live-test each spawn real
+# throwaway daemons per test, hence the long budgets; neither skips on
+# main (the `-Q'-gate test needs a populated straight/build, present there).
+#
 # Keep this the single source of truth for "what suites exist and how to
 # run them": a new modules/*-test.el file (under modules/ or
 # modules/languages/), or a new tier for an existing
@@ -83,6 +91,14 @@ MANIFEST=(
   "java-test|batch|15|0|modules/git-common-dir.el,modules/languages/java-test.el|ert-run-tests-batch-and-exit"
   "javascript-test|batch|15|0|modules/languages/javascript-test.el|ert-run-tests-batch-and-exit"
   "rust-test|batch|15|0|modules/languages/rust-test.el|ert-run-tests-batch-and-exit"
+  "claude-lib-test|batch|15|0|modules/claude-lib.el,modules/claude-lib-test.el|ert-run-tests-batch-and-exit"
+  "claude-lib-live-test|batch|60|0|modules/claude-lib-live-test.el|ert-run-tests-batch-and-exit"
+  "claude-lib-view-test|batch|60|0|modules/windows.el,modules/claude-lib.el,modules/claude-lib-view.el,modules/claude-lib-view-test.el|ert-run-tests-batch-and-exit"
+  "claude-lib-view-live-test|batch|60|3|modules/claude-lib-view.el,modules/claude-lib-view-live-test.el|ert-run-tests-batch-and-exit"
+  "claude-lib-ert-test|batch|30|0|modules/claude-lib-view.el,modules/claude-lib-ert.el,modules/claude-lib-ert-test.el|ert-run-tests-batch-and-exit"
+  "claude-lib-ert-live-test|batch|60|0|modules/claude-lib-view.el,modules/claude-lib-ert.el,modules/claude-lib-ert-live-test.el|ert-run-tests-batch-and-exit"
+  "claude-lib-drive-test|batch|120|0|modules/claude-lib.el,modules/claude-lib-view.el,modules/claude-lib-drive.el,modules/claude-lib-drive-test.el|ert-run-tests-batch-and-exit"
+  "claude-lib-drive-live-test|batch|300|0|modules/claude-lib.el,modules/claude-lib-drive.el,modules/claude-lib-drive-live-test.el|ert-run-tests-batch-and-exit"
 
   "sidebar-test|pty|30|0|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-test.el|edmacs-test-support-run-and-exit"
   "sidebar-buffers-live-test|pty|30|0|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-buffers-live-test.el|edmacs-test-support-run-and-exit"
@@ -92,4 +108,5 @@ MANIFEST=(
   "ui-live-test|gui|-|0|modules/test-support.el|t"
   "sessions-live-test|gui|-|0|modules/test-support.el|t"
   "window-geometry-live-test|gui|-|0|modules/test-support.el|t"
+  "claude-lib-view-live-test|gui|-|0|modules/claude-lib-view.el|t"
 )
