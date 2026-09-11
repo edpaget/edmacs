@@ -825,8 +825,14 @@ here."
                   (dolist (f files) (find-file f))
                   (should (= 0 redraw-count))
                   (should (timerp edmacs-sidebar-buffers--redraw-timer))
-                  (sleep-for 0.1)
-                  (sit-for 0)
+                  ;; `sleep-for' does not reliably run timers under
+                  ;; `--batch' -- a 0.05s debounce waited out with
+                  ;; (sleep-for 0.1) fires maybe one run in three.
+                  ;; `sit-for' does, so poll it to a deadline instead of
+                  ;; racing one fixed wait against the debounce window.
+                  (let ((deadline (+ (float-time) 5)))
+                    (while (and (zerop redraw-count) (< (float-time) deadline))
+                      (sit-for 0.02)))
                   (should (= 1 redraw-count))
                   (should-not edmacs-sidebar-buffers--redraw-timer)))
             (when (timerp edmacs-sidebar-buffers--redraw-timer)
