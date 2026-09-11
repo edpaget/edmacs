@@ -7,9 +7,8 @@
 ;; truename against each open tab's own root (`workspaces.el', via
 ;; `edmacs-workspaces-tab-root') -- and again in a global ALL AGENTS
 ;; section at the bottom of every frame's sidebar. Since
-;; edmacs-tab-groups phase 3, the header-line roll-up and per-worktree
-;; matching both operate on every tracked agent regardless of which
-;; project's rows are on screen.
+;; edmacs-tab-groups phase 3, per-worktree matching operates on every
+;; tracked agent regardless of which project's rows are on screen.
 ;; Generalizes sidebar.el's RET into a
 ;; type-dispatching visit command (raise the repo's frame, open/select
 ;; the worktree's tab, then either drive tmux or select an in-Emacs side
@@ -85,7 +84,6 @@
 (defvar edmacs-sidebar-worktree-label-suffix-function)
 (defvar edmacs-sidebar-worktree-section-functions)
 (defvar edmacs-sidebar-extra-section-functions)
-(defvar edmacs-sidebar-header-line-function)
 (defvar edmacs-sidebar-force-text-glyphs)
 (defvar edmacs-sidebar-visibility-functions)
 
@@ -410,38 +408,6 @@ swappable seam below."
     (and (> n 0) (format " (%d)" n))))
 
 (setq edmacs-sidebar-worktree-label-suffix-function #'edmacs-sidebar-agents--label-suffix)
-
-;; ============================================================================
-;; Header line: repo-wide agent-status roll-up
-;; ============================================================================
-
-(defun edmacs-sidebar-agents--header-line (_frame)
-  "Return a \"  [N⟳ N💬 N✓]\" roll-up suffix, or nil when no agent is
-tracked at all. Assigned to sidebar.el's
-`edmacs-sidebar-header-line-function' swappable seam, mirroring
-`--label-suffix's own assignment above. The roll-up is global (every
-tracked agent, every project).
-
-Glyphs, not words, and zero counts omitted: the prose form
-(\"  [1 working, 0 waiting, 0 done]\") is 31 columns and this suffix
-renders inside a sidebar whose default body width is 30, so it was
-always truncated away. Same glyph vocabulary as claude-term-agents.el's
-own per-buffer mode-line segment."
-  (let ((agents (edmacs-sidebar-agents--all)))
-    (when agents
-      (let ((working (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'working)) agents))
-            (waiting (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'waiting)) agents))
-            (done (cl-count-if (lambda (a) (eq (edmacs-agent-status a) 'done)) agents)))
-        (format "  [%s]"
-                (string-join
-                 (or (delq nil
-                           (list (and (> working 0) (format "%d⟳" working))
-                                 (and (> waiting 0) (format "%d💬" waiting))
-                                 (and (> done 0) (format "%d✓" done))))
-                     (list "0"))
-                 " "))))))
-
-(setq edmacs-sidebar-header-line-function #'edmacs-sidebar-agents--header-line)
 
 ;; ============================================================================
 ;; Rendering: global ALL AGENTS section

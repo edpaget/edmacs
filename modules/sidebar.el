@@ -205,13 +205,6 @@ anything about agents or buffers.")
 every other section. Lets sidebar-agents.el append its own
 frame-independent ALL AGENTS section.")
 
-(defvar edmacs-sidebar-header-line-function #'ignore
-  "Function of one argument, a FRAME, returning a suffix string to
-append to that frame's own repo-name header line, or nil.
-sidebar-agents.el reassigns this to append a repo-wide agent-status
-roll-up -- the same swappable-seam convention
-`edmacs-sidebar-worktree-label-suffix-function' uses.")
-
 (defvar edmacs-sidebar-collapsed-section-functions nil
   "Hook run with (FRAME WIDTH) in place of every other section when
 FRAME's sidebar is collapsed (see `edmacs-sidebar--redraw') -- WIDTH is
@@ -1074,21 +1067,16 @@ the cleaned string. Returns empty string if nothing usable remains."
            (collapsed (replace-regexp-in-string "\\s-+" " " step3)))
       (string-trim collapsed))))
 
-(defun edmacs-sidebar--header-line-name (frame)
-  "Return FRAME's own identity string for the header line.
-The ACTIVE PROJECT's name when FRAME's current tab is in a project
-group -- the group name IS the repo name, `edmacs-workspaces-group-name'
-deriving it through `edmacs-git-common-dir-repo-name' -- else FRAME's
-sanitised `name' parameter (the ungrouped flat-tab-list case)."
-  (or (edmacs-workspaces-current-group frame)
-      (edmacs-sidebar--sanitise-frame-title (or (frame-parameter frame 'name) ""))))
-
 (defun edmacs-sidebar--header-line (frame)
-  "Return FRAME's sidebar header-line string: its own repo/frame
-identity plus whatever suffix `edmacs-sidebar-header-line-function'
-supplies (sidebar-agents.el's repo-wide roll-up, by default none)."
-  (let ((suffix (funcall edmacs-sidebar-header-line-function frame)))
-    (propertize (concat (edmacs-sidebar--header-line-name frame) (or suffix ""))
+  "Return FRAME's sidebar header-line string, or nil to show none.
+Nil whenever FRAME's current tab is in a project group: the grouped
+tree's own current-project row already names the active project, so a
+header restating it was pure redundancy. Only the ungrouped
+flat-tab-list case still gets one -- FRAME's sanitised `name'
+parameter, the one identity no tab row carries."
+  (unless (edmacs-workspaces-current-group frame)
+    (propertize (edmacs-sidebar--sanitise-frame-title
+                 (or (frame-parameter frame 'name) ""))
                 'face 'edmacs-sidebar-header-face)))
 
 (defun edmacs-sidebar--strip-width (frame)
@@ -1222,7 +1210,8 @@ measured ONCE here -- `edmacs-sidebar--strip-width' when collapsed,
 buffer. Point and fold state are preserved on the same row when possible,
 via `edmacs-sidebar--capture-positions'/`--restore-positions' and
 `magit-section-ident' stability -- see the plan-row contract's `:value'
-entry. The header line is nil'd on the collapsed branch.
+entry. The header line is nil'd on the collapsed branch, and by
+`edmacs-sidebar--header-line' itself on the grouped one.
 
 Whatever the plan's `:anchor' rows inserted is then pinned to the
 window's bottom edge by `edmacs-sidebar--anchor-region-to-bottom',

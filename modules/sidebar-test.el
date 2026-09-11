@@ -2334,23 +2334,23 @@ nil rather than dedicating and keeping it."
         :cleanup
         (when (window-live-p stub-window) (delete-window stub-window))))
 
-    (ert-deftest edmacs-sidebar-test-header-line-name-prefers-the-active-group ()
-      "The header line names the ACTIVE PROJECT -- the current tab's own
-tab-bar group, which is the repo name -- not a per-frame repo
-parameter, and falls back to the frame's own sanitised name when the
-frame carries no group at all. Pure: `--header-line-name' needs no
-window, so this drives it directly instead of through
-`edmacs-sidebar-show'."
+    (ert-deftest edmacs-sidebar-test-header-line-absent-when-grouped ()
+      "No header line at all when the current tab is in a project group:
+the tree's current-project row already names the active project, so
+a header restating it was redundant. The ungrouped flat-tab-list case
+keeps the frame's own sanitised name, the one identity no row shows.
+Pure: `--header-line' needs no window, so this drives it directly
+instead of through `edmacs-sidebar-show'."
       (edmacs-sidebar-test--with-plan-fixture
           '((:group "repo" :main-root "/repo/main/"
              :tabs (("main" "/repo/main/" main t))))
-        (should (equal "repo" (edmacs-sidebar--header-line-name nil))))
+        (should-not (edmacs-sidebar--header-line nil)))
       (edmacs-sidebar-test--with-plan-fixture
           '((:group nil :tabs (("main" nil nil t))))
         (cl-letf (((symbol-function 'frame-parameter)
                    (lambda (_frame _param) "edmacs-sidebar-test-boot-frame - Emacs")))
           (should (equal "edmacs-sidebar-test-boot-frame"
-                         (edmacs-sidebar--header-line-name nil))))))
+                         (edmacs-sidebar--header-line nil))))))
 
     ;; ==========================================================================
     ;; Tab/worktree marker glyphs: nerd-icons with a plain-text fallback

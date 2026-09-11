@@ -60,7 +60,6 @@ a real Emacs session) to enable this suite"))
     (defvar edmacs-sidebar-worktree-label-suffix-function #'ignore)
     (defvar edmacs-sidebar-worktree-section-functions nil)
     (defvar edmacs-sidebar-extra-section-functions nil)
-    (defvar edmacs-sidebar-header-line-function #'ignore)
     (defvar edmacs-sidebar-collapsed-section-functions nil)
     (defvar edmacs-sidebar-force-text-glyphs nil)
     (defvar edmacs-sidebar-visibility-functions nil)
@@ -816,82 +815,6 @@ whether or not `claude-term-registry.el' happens to be loaded first."
       (let ((agent (edmacs-sidebar-agents-test--make-agent :source nil)))
         (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
           (should-error (edmacs-sidebar-agents-kill agent) :type 'user-error))))
-
-    ;; ==========================================================================
-    ;; Header-line roll-up (phase 8)
-    ;; ==========================================================================
-
-    (ert-deftest edmacs-sidebar-agents-test-header-line-roll-up-counts-per-status ()
-      (edmacs-test-support-with-clean-sidebar-agents-state
-        (edmacs-sidebar-agents-test--put
-         (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
-        (edmacs-sidebar-agents-test--put
-         (edmacs-sidebar-agents-test--make-agent :root "/r2/" :instance "%1" :status 'waiting))
-        (edmacs-sidebar-agents-test--put
-         (edmacs-sidebar-agents-test--make-agent :root "/r3/" :instance "%1" :status 'done))
-        (should (equal "  [1⟳ 1💬 1✓]"
-                        (edmacs-sidebar-agents--header-line (selected-frame))))))
-
-    (ert-deftest edmacs-sidebar-agents-test-header-line-counts-every-agent-regardless-of-frame ()
-      "Since edmacs-tab-groups phase 3, the roll-up is global: an agent in
-a DIFFERENT project's worktree still counts, on a frame naming no one
-project -- one frame now shows every project, so a roll-up scoped to one
-no longer matches what the sidebar displays."
-      (edmacs-test-support-with-clean-sidebar-agents-state
-        (edmacs-sidebar-agents-test--put
-         (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
-        (edmacs-sidebar-agents-test--put
-         (edmacs-sidebar-agents-test--make-agent :root "/other/wt/" :instance "%1" :status 'working))
-        (should (equal "  [2⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))))
-
-    (ert-deftest edmacs-sidebar-agents-test-header-line-rolls-up-every-project ()
-      "The header-line roll-up counts every tracked agent, whatever FRAME it
-is handed -- it reads neither the retired per-frame repo parameter nor
-any per-repo worktree list. Structural since the frame-scoping wrapper
-was removed, but worth pinning: this is the phase 3 decision that the
-roll-up matches a tree showing every project, not one of them."
-      (edmacs-test-support-with-clean-sidebar-agents-state
-        (edmacs-sidebar-agents-test--put
-         (edmacs-sidebar-agents-test--make-agent :root "/mine/wt/" :instance "%1" :status 'working))
-        (edmacs-sidebar-agents-test--put
-         (edmacs-sidebar-agents-test--make-agent :root "/other/wt/" :instance "%1" :status 'working))
-        (should (= 2 (length (edmacs-sidebar-agents--all))))
-        ;; Two agents in different roots, so a frame-scoped roll-up would
-        ;; count one; both frames must see both.
-        (should (equal (edmacs-sidebar-agents--header-line (selected-frame))
-                       (edmacs-sidebar-agents--header-line nil)))
-        (should (string-match-p "2" (edmacs-sidebar-agents--header-line nil)))))
-
-    (ert-deftest edmacs-sidebar-agents-test-header-line-omits-zero-counts ()
-      "Only non-zero statuses appear -- the suffix renders inside a 30-column
-sidebar, so the prose form was truncated away entirely."
-      (edmacs-test-support-with-clean-sidebar-agents-state
-        (edmacs-sidebar-agents-test--put
-         (edmacs-sidebar-agents-test--make-agent :root "/r1/" :instance "%1" :status 'working))
-        (should (equal "  [1⟳]" (edmacs-sidebar-agents--header-line (selected-frame))))))
-
-    (ert-deftest edmacs-sidebar-agents-test-header-line-fits-a-default-sidebar ()
-      "The whole suffix fits `edmacs-sidebar-width' (30 body columns) even
-with two-digit counts in every status."
-      (edmacs-test-support-with-clean-sidebar-agents-state
-        (dotimes (i 12)
-          (edmacs-sidebar-agents-test--put
-           (edmacs-sidebar-agents-test--make-agent
-            :root (format "/w%d/" i) :instance "%1" :status 'working))
-          (edmacs-sidebar-agents-test--put
-           (edmacs-sidebar-agents-test--make-agent
-            :root (format "/x%d/" i) :instance "%1" :status 'waiting))
-          (edmacs-sidebar-agents-test--put
-           (edmacs-sidebar-agents-test--make-agent
-            :root (format "/y%d/" i) :instance "%1" :status 'done)))
-        (should (<= (length (edmacs-sidebar-agents--header-line (selected-frame))) 30))))
-
-    (ert-deftest edmacs-sidebar-agents-test-header-line-nil-when-no-agents ()
-      (edmacs-test-support-with-clean-sidebar-agents-state
-        (should-not (edmacs-sidebar-agents--header-line (selected-frame)))))
-
-    (ert-deftest edmacs-sidebar-agents-test-header-line-assigned-to-sidebar-extension-point ()
-      (should (eq edmacs-sidebar-header-line-function #'edmacs-sidebar-agents--header-line)))
 
     ;; ==========================================================================
     ;; Collapsed sidebar section (phase 10)
