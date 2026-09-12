@@ -28,11 +28,16 @@
 (use-package ghostel
   :straight t
   :defer t
+  :custom
   ;; 5 MB, ghostel's default, is roughly 5,000 rows at 80 columns and fewer
   ;; in a narrow pane -- short of a long agent session and of the 50,000
   ;; lines tmux is configured for.  The scrollback is materialized into the
   ;; Emacs buffer, so this is heap as well as terminal memory.
-  :custom (ghostel-max-scrollback (* 20 1024 1024))
+  (ghostel-max-scrollback (* 20 1024 1024))
+  ;; 0.033, ghostel's default, caps redraw at 30 fps during sustained output,
+  ;; and an agent streaming tokens is sustained output.  A full-frame
+  ;; redisplay measures ~3.5 ms here, well inside a 16 ms budget.
+  (ghostel-timer-delay 0.016)
   :config
   ;; C-w is the global window prefix (modules/keybindings.el), so ghostel's
   ;; own char-mode keymap must let it reach Emacs instead of sending a
