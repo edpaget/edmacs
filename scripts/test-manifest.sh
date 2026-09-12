@@ -82,6 +82,7 @@ MANIFEST=(
   "sidebar-test|batch|15|2|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-test.el|edmacs-test-support-run-and-exit"
   "ui-live-test|batch|15|1|modules/test-support.el,modules/ui-live-test.el|ert-run-tests-batch-and-exit"
   "ui-test|batch|15|0|modules/ui.el,modules/ui-test.el|ert-run-tests-batch-and-exit"
+  "wedge-trace-test|batch|15|0|modules/test-support.el,modules/wedge-trace.el,modules/wedge-trace-test.el|ert-run-tests-batch-and-exit"
   "window-geometry-live-test|batch|15|4|modules/test-support.el,modules/git-common-dir.el,modules/window-geometry-live-test.el|ert-run-tests-batch-and-exit"
   "windows-test|batch|30|1|modules/test-support.el,modules/git-common-dir.el,modules/claude-term.el,modules/workspaces.el,modules/windows.el,modules/windows-test.el|edmacs-test-support-run-and-exit"
   "workspaces-live-test|batch|15|3|modules/test-support.el,modules/git-common-dir.el,modules/windows.el,modules/workspaces.el,modules/workspaces-live-test.el|ert-run-tests-batch-and-exit"
