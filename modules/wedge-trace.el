@@ -98,10 +98,20 @@ Hot enough to be noticeable while typing; see this file's Commentary."
 
 (defun edmacs-wedge-trace--write (line)
   "Append LINE to `edmacs-wedge-trace-file', swallowing any error.
-A failed write must never break the timer whose firing triggered it."
+A failed write must never break the timer whose firing triggered it.
+
+`create-lockfiles' is off because `write-region' otherwise locks its
+target, and a lock conflict calls `ask-user-about-lock', which reads the
+minibuffer: from inside a timer that enters a recursive edit the daemon
+never leaves, and every later timer recurses into another one.
+`inhibit-interaction' is the backstop -- any other prompt this path could
+reach signals instead of blocking.  Both are load-bearing; this tracer
+wedged the daemon exactly this way on 2026-09-11."
   (condition-case nil
       (let ((coding-system-for-write 'utf-8-unix)
-            (write-region-inhibit-fsync t))
+            (write-region-inhibit-fsync t)
+            (create-lockfiles nil)
+            (inhibit-interaction t))
         (write-region (concat line "\n") nil edmacs-wedge-trace-file
                       'append 'no-message))
     (error nil)))
@@ -113,7 +123,8 @@ because it sits on the path of every timer firing."
   (setq edmacs-wedge-trace--writes (1+ edmacs-wedge-trace--writes))
   (when (zerop (mod edmacs-wedge-trace--writes 200))
     (condition-case nil
-        (let ((size (file-attribute-size
+        (let ((inhibit-interaction t)
+              (size (file-attribute-size
                      (file-attributes edmacs-wedge-trace-file))))
           (when (and size (> size edmacs-wedge-trace-max-bytes))
             (rename-file edmacs-wedge-trace-file
@@ -141,7 +152,9 @@ because it sits on the path of every timer firing."
   "Overwrite `edmacs-wedge-trace-heartbeat-file' with the current time."
   (condition-case nil
       (let ((coding-system-for-write 'utf-8-unix)
-            (write-region-inhibit-fsync t))
+            (write-region-inhibit-fsync t)
+            (create-lockfiles nil)
+            (inhibit-interaction t))
         (write-region (format "%s pid=%d\n" (edmacs-wedge-trace--stamp) (emacs-pid))
                       nil edmacs-wedge-trace-heartbeat-file nil 'no-message))
     (error nil)))

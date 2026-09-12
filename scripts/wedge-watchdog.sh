@@ -55,9 +55,12 @@ HEARTBEAT_FILE="$CACHE_DIR/wedge-heartbeat"
 # Probing `server' is the whole point here -- unlike the scratch-daemon
 # scripts, which refuse it -- but a wedge capture is read-only: this
 # script never evaluates anything that could mutate the daemon.
+# The subshell keeps bash's own "Alarm clock" job-death report out of the
+# log -- that report comes from the shell that owns the timed-out perl, not
+# from perl, so only redirecting perl's stderr would leave it behind.
 probe() {
-  perl -e 'alarm shift; exec @ARGV' "$INTERVAL" \
-    emacsclient -s "$SERVER" --eval '(emacs-pid)' >/dev/null 2>&1
+  ( perl -e 'alarm shift; exec @ARGV' "$INTERVAL" \
+      emacsclient -s "$SERVER" --eval '(emacs-pid)' ) >/dev/null 2>&1
 }
 
 daemon_pid() {

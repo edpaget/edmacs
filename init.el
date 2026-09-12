@@ -154,7 +154,10 @@ LANGUAGE should be the name without the .el extension."
 ;; before the loop stopped returning; see the module's Commentary and
 ;; `scripts/wedge-watchdog.sh'. Remove once the wedge is attributed.
 (load-module "wedge-trace")
-(edmacs-wedge-trace-mode 1)
+;; Daemon only: a batch Emacs that loads init.el (scripts/startup-check.sh)
+;; would otherwise append to the same trace file as the running daemon.
+(when (daemonp)
+  (edmacs-wedge-trace-mode 1))
 
 ;; ============================================================================
 ;; Language-specific configurations

@@ -27,9 +27,9 @@
 (require 'seq)
 (require 'wedge-trace)
 
-;; No subr is `cl-letf''d here, so this guard is not load-bearing today;
-;; it travels with the file per this repo's CLAUDE.md so a later
-;; addition cannot reintroduce the ~28s native-comp trampoline cost.
+;; Load-bearing: the locking/interaction tests `cl-letf' `write-region',
+;; a C subr, which would otherwise force a ~28s native-comp trampoline
+;; compile per this repo's CLAUDE.md.
 (when (boundp 'native-comp-enable-subr-trampolines)
   (setq native-comp-enable-subr-trampolines nil))
 
@@ -94,6 +94,47 @@
     (let ((edmacs-wedge-trace-file "/nonexistent-dir-xyz/trace.log"))
       ;; Must not signal: this runs inside every timer firing.
       (should (null (edmacs-wedge-trace--write "boom"))))))
+
+(ert-deftest wedge-trace-write-disables-locking-and-interaction ()
+  ;; The regression that wedged the daemon on 2026-09-11: `write-region'
+  ;; locks its target unless `create-lockfiles' is nil, and a lock
+  ;; conflict calls `ask-user-about-lock', which reads the minibuffer.
+  ;; From a timer that is a recursive edit the daemon never leaves.
+  (wedge-trace-test--with-trace-file
+    (let (called seen-lockfiles seen-interaction)
+      (cl-letf (((symbol-function 'write-region)
+                 (lambda (&rest _)
+                   (setq called t
+                         seen-lockfiles create-lockfiles
+                         seen-interaction inhibit-interaction))))
+        (edmacs-wedge-trace--write "x"))
+      (should called)
+      (should (null seen-lockfiles))
+      (should (eq t seen-interaction)))))
+
+(ert-deftest wedge-trace-heartbeat-disables-locking-and-interaction ()
+  (wedge-trace-test--with-trace-file
+    (let (called seen-lockfiles seen-interaction)
+      (cl-letf (((symbol-function 'write-region)
+                 (lambda (&rest _)
+                   (setq called t
+                         seen-lockfiles create-lockfiles
+                         seen-interaction inhibit-interaction))))
+        (edmacs-wedge-trace--heartbeat))
+      (should called)
+      (should (null seen-lockfiles))
+      (should (eq t seen-interaction)))))
+
+(ert-deftest wedge-trace-a-prompting-write-cannot-wedge-the-caller ()
+  ;; End to end: a write path that tries to prompt must signal and be
+  ;; swallowed, leaving the timer bracket intact rather than blocking.
+  (wedge-trace-test--with-trace-file
+    (cl-letf (((symbol-function 'write-region)
+               (lambda (&rest _)
+                 (if inhibit-interaction
+                     (signal 'inhibited-interaction nil)
+                   (error "test would have blocked on a prompt")))))
+      (should (null (edmacs-wedge-trace--write "x"))))))
 
 (ert-deftest wedge-trace-rotate-only-stats-every-200th-record ()
   (wedge-trace-test--with-trace-file
