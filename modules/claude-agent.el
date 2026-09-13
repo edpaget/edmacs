@@ -173,6 +173,10 @@
 (declare-function evil-define-key* "evil-core")
 (defvar agent-shell-transcript-file-path-function)
 (defvar agent-shell-show-welcome-message)
+(defvar corfu-map)
+(defvar corfu--index)
+(declare-function corfu-insert "corfu")
+(declare-function corfu-quit "corfu")
 (defvar shell-maker-prompt-before-killing-buffer)
 (defvar agent-shell-header-style)
 (defvar agent-shell-dot-subdir-function)
@@ -541,6 +545,55 @@ shipped exactly that bug against bare `python3')."
               (agent-shell-anthropic-make-claude-client :buffer buffer))))
     config))
 
+(defun claude-agent-ret ()
+  "RET in an agent shell: take a selected completion, else fall through.
+
+`corfu-map' binds RET to `corfu-insert', and that map outranks the mode
+map whenever the popup is open.  With `corfu-preselect' set to `prompt'
+nothing is selected until you move, so `corfu--index' is -1 and
+`corfu-insert' falls to `corfu-quit': the popup closes and the key is
+CONSUMED.  With `corfu-auto' opening after a few characters, that is most
+of the time in a chat buffer -- RET neither completes nor does what it
+would have done.
+
+So: insert the candidate when there genuinely is one, otherwise dismiss
+the popup and run whatever RET means here WITHOUT corfu in the way.  That
+is `newline' in insert state and `claude-agent-submit' in normal state,
+per evil-collection and agent-shell's README -- this command decides
+nothing about which, it just stops corfu swallowing the key.
+
+`minor-mode-overriding-map-alist' keys corfu's map on
+`completion-in-region-mode', so binding that to nil around the lookup is
+what makes `key-binding' report the non-corfu answer."
+  (interactive)
+  (if (and (bound-and-true-p corfu--index)
+           (>= corfu--index 0))
+      (call-interactively #'corfu-insert)
+    (when (bound-and-true-p completion-in-region-mode)
+      (corfu-quit))
+    (let* ((completion-in-region-mode nil)
+           (cmd (key-binding (kbd "RET"))))
+      (when (commandp cmd)
+        (setq this-command cmd)
+        (call-interactively cmd)))))
+
+(defvar claude-agent-corfu-map nil
+  "Buffer-local `corfu-map' for agent shells, or nil before corfu loads.
+Corfu installs whatever `corfu-map' is bound to at completion time, via
+the buffer-local `minor-mode-overriding-map-alist', so overriding the
+variable buffer-locally is enough -- the global map is untouched.")
+
+(defun claude-agent--corfu-map ()
+  "Return the agent-shell `corfu-map', building it on first use."
+  (when (boundp 'corfu-map)
+    (or claude-agent-corfu-map
+        (setq claude-agent-corfu-map
+              (let ((map (make-sparse-keymap)))
+                (set-keymap-parent map corfu-map)
+                (define-key map (kbd "RET") #'claude-agent-ret)
+                (define-key map [return] #'claude-agent-ret)
+                map)))))
+
 (defun claude-agent--configure-buffer (buffer)
   "Apply this module's buffer-local settings to BUFFER.
 
@@ -552,7 +605,9 @@ session under `~/.claude/projects' -- drops into the else branch and
 re-enables shell-maker's own save-on-kill query."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (setq-local shell-maker-prompt-before-killing-buffer nil))))
+      (setq-local shell-maker-prompt-before-killing-buffer nil)
+      (when-let* ((map (claude-agent--corfu-map)))
+        (setq-local corfu-map map)))))
 
 (defun claude-agent--configure-evil (buffer)
   "Put BUFFER into evil insert state when evil is on.

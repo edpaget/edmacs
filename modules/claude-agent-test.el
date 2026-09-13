@@ -571,6 +571,54 @@ property phase 2 was accepted on."
           (claude-agent-start root)
           (should (eq t seen)))))))
 
+(defvar corfu--index nil
+  "Globally special so the `let' forms below bind DYNAMICALLY.
+claude-agent.el declares it with a one-argument `defvar', which is special
+only within that file -- enough for the byte-compiler, not enough for a
+`let' here to be visible to `bound-and-true-p'.  corfu.el defines it
+properly in a real session.")
+
+(ert-deftest claude-agent-test-ret-accepts-a-selected-candidate ()
+  "With a candidate selected, RET inserts it and does not fall through."
+  (let ((corfu--index 2) (inserted 0) (fell-through 0))
+    (cl-letf (((symbol-function 'corfu-insert)
+               (lambda () (interactive) (setq inserted (1+ inserted))))
+              ((symbol-function 'claude-agent-submit)
+               (lambda () (interactive) (setq fell-through (1+ fell-through)))))
+      (claude-agent-ret)
+      (should (= 1 inserted))
+      (should (= 0 fell-through)))))
+
+(ert-deftest claude-agent-test-ret-falls-through-to-the-state-binding ()
+  "With nothing selected, RET runs what RET would have run without corfu.
+The point of the command: it must not hardcode submit.  Here the
+non-corfu binding is `newline', so `newline' is what must run -- the same
+code path yields `claude-agent-submit' in normal state, because that is
+what the keymaps say there."
+  (let ((corfu--index -1) (ran nil))
+    (with-temp-buffer
+      (use-local-map (let ((m (make-sparse-keymap)))
+                       (define-key m (kbd "RET") #'newline) m))
+      (cl-letf (((symbol-function 'newline)
+                 (lambda (&rest _) (interactive) (setq ran 'newline)))
+                ((symbol-function 'claude-agent-submit)
+                 (lambda () (interactive) (setq ran 'submit))))
+        (claude-agent-ret)
+        (should (eq 'newline ran))))))
+
+(ert-deftest claude-agent-test-ret-does-not-consume-the-key ()
+  "RET always does something: it never silently swallows the keystroke.
+That swallowing is the live bug -- `corfu-insert' at index -1 calls
+`corfu-quit' and stops."
+  (let ((corfu--index -1) (ran nil))
+    (with-temp-buffer
+      (use-local-map (let ((m (make-sparse-keymap)))
+                       (define-key m (kbd "RET") #'ignore) m))
+      (cl-letf (((symbol-function 'ignore)
+                 (lambda (&rest _) (interactive) (setq ran t))))
+        (claude-agent-ret)
+        (should ran)))))
+
 (ert-deftest claude-agent-test-kill-does-not-prompt-to-save ()
   "The buffer opts out of shell-maker's save-on-kill query.
 agent-shell only suppresses it when IT writes a transcript; this module
