@@ -107,6 +107,18 @@
 ;; and for the interactive variant, `claude-lib-drive-command' from
 ;; modules/claude-lib-drive.el, which cannot block.
 ;;
+;; That recipe is DEMONSTRATED, not merely written down:
+;; scripts/claude-agent-headless-check.sh runs exactly it against a real
+;; `claude-agent-acp' and asserts the start call returned, `(minibuffer-depth)'
+;; was 0 and no minibuffer opened at all, a real `session/new' answered with a
+;; session id, and neither `.git/info/exclude' nor the worktree's absent
+;; `info/' directory changed.  It is deliberately not a row in
+;; scripts/test-manifest.sh: it spawns a real Claude Code process, which is
+;; not a cost `scripts/test-all.sh' should carry.  Run it by hand whenever
+;; this start path or the pinned agent-shell/acp.el revisions move -- a
+;; regression here does not fail an assertion, it hangs, which is the one
+;; failure mode a stubbed ERT test cannot reproduce.
+;;
 ;; ------------------------------------------------------------------
 ;; A DEAD AGENT IS NOT A BACKTRACE.  `claude-agent--ensure-agent' resolves
 ;; the ACP agent, and the interpreter its shebang names, before any
@@ -327,11 +339,17 @@ noisy one.  Never signals."
       (condition-case err
           (with-temp-buffer
             (insert-file-contents file)
+            ;; Arrays come back as VECTORS, deliberately.  Parsed as lists
+            ;; they are indistinguishable from objects -- an array of
+            ;; objects is a list whose every element is a cons, which is
+            ;; exactly what an alist is -- and `mcpServers' written as an
+            ;; array is a realistic hand-edit.  See
+            ;; `claude-agent--json-object-p'.
             (if (fboundp 'json-parse-buffer)
-                (json-parse-buffer :object-type 'alist :array-type 'list
+                (json-parse-buffer :object-type 'alist :array-type 'array
                                    :null-object nil :false-object nil)
               (let ((json-object-type 'alist)
-                    (json-array-type 'list))
+                    (json-array-type 'vector))
                 (json-read))))
         (error
          (display-warning 'claude-agent
@@ -341,13 +359,29 @@ noisy one.  Never signals."
          nil)))))
 
 (defun claude-agent--json-object-p (value)
-  "Return non-nil when VALUE could be a parsed JSON object.
-`json-parse-buffer' renders an object as an alist, `{}' as nil, and an
-array as a plain list -- so \"is it a list\" does not distinguish the
-two.  Every element of an object is a cons; `[1,2,3]' has none.  This is
-the only shape check between a hand-edited `.mcp.json' and an `alist-get'
-on an integer."
-  (and (listp value) (seq-every-p #'consp value)))
+  "Return non-nil when VALUE is a parsed JSON object.
+`claude-agent--read-mcp-config' parses objects as alists, `{}' as nil,
+and arrays as vectors -- so a vector is never an object here, and \"is it
+a list\" is sound for the rest.  The per-element key check is the second
+half: it is what rejects an array of objects (`{\"mcpServers\":
+[{\"command\":\"c\"}]}', a realistic hand-edit) should a parser ever
+hand arrays back as lists, since such a list's elements are whole alists
+whose `car' is a cons rather than a key.  Without both halves that file
+reaches the translators, which read each server ENTRY as a name, and the
+warning names `(command . c)' instead of saying the file is misshapen.
+This is the only shape check between a hand-edited `.mcp.json' and an
+`alist-get' on an integer."
+  (and (listp value)
+       (seq-every-p (lambda (element)
+                      (and (consp element)
+                           (let ((key (car element)))
+                             (or (symbolp key) (stringp key)))))
+                    value)))
+
+(defun claude-agent--json-array-to-list (value)
+  "Return JSON array VALUE as a list, or nil when it is not an array.
+Arrays parse as vectors; a list here is an object and not an array."
+  (and (vectorp value) (append value nil)))
 
 (defun claude-agent--mcp-key-name (key)
   "Return JSON object KEY as a string, whatever the parser produced."
@@ -392,7 +426,7 @@ Both are skipped by name, not signalled.  The result is the shape
        ((and (stringp command) (or (null type) (equal type "stdio")))
         `((name . ,name)
           (command . ,command)
-          (args . ,(and (listp args) (seq-filter #'stringp args)))
+          (args . ,(seq-filter #'stringp (claude-agent--json-array-to-list args)))
           (env . ,(claude-agent--mcp-name-value-pairs (alist-get 'env entry)))))))))
 
 (defun claude-agent--mcp-servers-object (config)

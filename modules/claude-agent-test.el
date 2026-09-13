@@ -54,6 +54,11 @@
                     (file-name-directory (or load-file-name buffer-file-name)))
   "Path to the module under test, sibling to this file.")
 
+(defconst claude-agent-test--repo-root
+  (file-name-directory (directory-file-name
+                        (file-name-directory claude-agent-test--module)))
+  "The checkout this suite is running out of -- modules/'s parent.")
+
 ;; agent-shell is absent under `-Q'.  Standing in for it as a FEATURE (so
 ;; `claude-agent--start-at's `(require 'agent-shell nil t)' succeeds) plus
 ;; a real keymap is enough for every assertion below; the functions
@@ -186,6 +191,46 @@ parse; none of them is an object of server objects."
         (should (claude-agent--mcp-config-problem
                  (claude-agent--read-mcp-config root)))
         (should-not (claude-agent--mcp-servers-for-root root))))))
+
+(ert-deftest claude-agent-test-mcp-servers-as-an-array-of-objects-is-ignored-whole ()
+  "An `mcpServers' ARRAY of server objects is rejected as a shape, not parsed.
+The array-of-scalars case above is caught by any \"every element is a
+cons\" check; this one is not.  Parsed with arrays as lists, an array of
+objects IS an alist of alists, so it reaches the translators, which then
+read each server object as a NAME -- the user gets `Skipping unsupported
+MCP server(s): (command . c)', which names neither the real problem nor a
+fix.  Both halves of `claude-agent--json-object-p' exist for this file."
+  (claude-agent-test--with-root root
+    (let ((warning-minimum-level :emergency)
+          (text "{\"mcpServers\":[{\"command\":\"c\"},{\"command\":\"d\"}]}"))
+      (claude-agent-test--write root ".mcp.json" text)
+      (let ((config (claude-agent--read-mcp-config root)))
+        (should config)
+        (should (equal "its `mcpServers' is not a JSON object"
+                       (claude-agent--mcp-config-problem config)))
+        ;; No garbled name ever reaches a warning: the file is rejected
+        ;; before the per-entry skip path runs at all.
+        (should-not (claude-agent--mcp-entries config))
+        (should-not (claude-agent--mcp-skipped-names config)))
+      (should-not (claude-agent--mcp-servers-for-root root)))))
+
+(ert-deftest claude-agent-test-mcp-json-arrays-parse-as-vectors ()
+  "The parser setting the shape checks rest on, asserted directly.
+`claude-agent--json-object-p' is only sound because an array is a vector
+here; flipping `:array-type' back to `list' would make every array of
+objects read as an object again."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write
+     root ".mcp.json" "{\"mcpServers\":{\"x\":{\"command\":\"c\",\"args\":[\"a\"]}}}")
+    (let* ((config (claude-agent--read-mcp-config root))
+           (entry (cdr (car (claude-agent--mcp-entries config)))))
+      (should (vectorp (alist-get 'args entry)))
+      (should-not (claude-agent--json-object-p (alist-get 'args entry)))
+      (should (claude-agent--json-object-p entry))
+      ;; ...and the vector still reaches agent-shell as the list its own
+      ;; normalizer expects.
+      (should (equal '("a")
+                     (alist-get 'args (car (claude-agent--mcp-servers-from-config config))))))))
 
 (ert-deftest claude-agent-test-mcp-scalar-env-and-args-degrade ()
   "Per-field scalars where an object or array belongs are dropped, not fatal.
@@ -353,9 +398,7 @@ every single call."
 This is what suppresses `agent-shell--ensure-gitignore': it appends
 `/.agent-shell/' to `.git/info/exclude' only when the directory it just
 created is under the project's own `.agent-shell/'."
-  (let ((repo (file-name-directory
-               (directory-file-name
-                (file-name-directory claude-agent-test--module)))))
+  (let ((repo claude-agent-test--repo-root))
     (dolist (subdir '("transcripts" "screenshots" "worktrees"))
       (let ((path (claude-agent--dot-subdir subdir)))
         (should (file-name-absolute-p path))
@@ -402,6 +445,33 @@ with a void function -- which is how the recipe shipped once already."
     (should (search-forward "claude-scratch.sh start" nil t))
     (should (search-forward "modules/claude-agent.el" nil t))
     (should (search-forward "claude-agent-start" nil t))))
+
+(ert-deftest claude-agent-test-headless-recipe-is-demonstrated-not-just-written ()
+  "The recipe has a runnable demonstration, and the module names it.
+A recipe asserted only in prose (or only in a commit message) is a claim;
+scripts/claude-agent-headless-check.sh runs it against a REAL
+`claude-agent-acp' and fails on a wedge.  It cannot be a manifest row --
+it spawns a live Claude Code process -- so this is the link that keeps
+the script from being deleted as unreferenced and the Commentary from
+outliving it."
+  (let ((script (expand-file-name "scripts/claude-agent-headless-check.sh"
+                                  claude-agent-test--repo-root)))
+    (should (file-exists-p script))
+    (should (file-executable-p script))
+    (with-temp-buffer
+      (insert-file-contents claude-agent-test--module)
+      (goto-char (point-min))
+      (should (search-forward "scripts/claude-agent-headless-check.sh" nil t)))))
+
+(ert-deftest claude-agent-test-headless-check-is-not-a-manifest-row ()
+  "The live demonstration stays out of the pre-landing gate, deliberately.
+scripts/test-all.sh runs every manifest row; a row here would spawn a real
+Claude Code process on every landing."
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "scripts/test-manifest.sh"
+                                            claude-agent-test--repo-root))
+    (goto-char (point-min))
+    (should-not (search-forward "claude-agent-headless-check" nil t))))
 
 (ert-deftest claude-agent-test-module-opens-no-general-block ()
   "`SPC a' is claude-term-registry.el's alone; this module adds no second

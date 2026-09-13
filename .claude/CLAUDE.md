@@ -71,7 +71,8 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
   `.mcp.json` parsing and its translation into agent-shell's server shape,
   login-shell `node`/`npx` resolution, the missing-agent message, and the
   picker-free start path.  No live row: a real ACP session costs network
-  and subscription, neither of which belongs in `test-all.sh`
+  and subscription, neither of which belongs in `test-all.sh` -- run
+  `scripts/claude-agent-headless-check.sh` by hand for that tier instead
 - `modules/claude-term-registry-live-test.el` -- registry wiring that needs a real spawn
 - `modules/claude-term-approval-parity-live-test.el` -- runs the real `claude`
   binary to prove an Emacs-hosted session resolves the same permission
@@ -616,6 +617,7 @@ edmacs/
 │   ├── test-manifest.sh   # One row per (suite, tier): loads, budget, skips
 │   ├── pty-ert.sh         # Runs a suite under a controlling terminal
 │   ├── gui-ert.sh         # Runs a suite in a throwaway graphical daemon
+│   ├── claude-agent-headless-check.sh # Live ACP session, by hand, not in the gate
 │   └── startup-check.sh   # Loads init.el with this checkout's modules
 ├── straight/
 │   └── versions/          # Package version lockfiles (committed)
