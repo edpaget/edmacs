@@ -119,6 +119,12 @@ LANGUAGE should be the name without the .el extension."
 (load-module "claude-lib-drive")
 (load-module "claude-term")
 (load-module "claude-term-registry")
+;; After the registry, which is SPC a's sole owner and forward-references
+;; `claude-agent-start' in its keymap form -- the same shape sidebar-agents.el
+;; relies on from further down this list. `general-define-key' stores the
+;; symbol and resolves it at keypress, so only the command's own load order
+;; matters, not the binding's.
+(load-module "claude-agent")
 ;; (load-module "org-config")
 (load-module "git")
 (load-module "sessions")

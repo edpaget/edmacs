@@ -769,10 +769,18 @@ checkout has fetched it.")
   "Path to the real modules/ai.el, sibling to this test file.")
 
 (defconst claude-term-registry-test--retired-spc-a-keys
-  '("a" "I" "b" "c" "s" "k" "K" "l" "i" "t" "p")
-  "Every `SPC a' leaf key modules/ai.el bound to a claude-repl command.
-\"p\" was the approval-policy submenu prefix rather than a leaf.  All of
-them must be unbound now that the module is deleted.")
+  '("a" "I" "b" "s" "k" "K" "l" "i" "t" "p")
+  "Every `SPC a' leaf key modules/ai.el bound to a claude-repl command
+that is still unbound.  \"p\" was the approval-policy submenu prefix
+rather than a leaf.  All of these must resolve to nothing now that the
+module is deleted.
+
+\"c\" was on this list too and is deliberately not any more: the
+edmacs-claude-acp roadmap re-adopted the free letter for
+`claude-agent-start' (modules/claude-agent.el).  It is covered by the
+positive assertion in `claude-term-registry-test-spc-a-bindings-resolve'
+instead, which is the stronger check -- it names the command the key must
+reach, not merely that it reaches something.")
 
 (defun claude-term-registry-test--load-real-general-and-evil ()
   "Add load-path entries for, and `require', the real evil and general.
@@ -788,14 +796,18 @@ straight locally -- so the caller can `ert-skip' instead of failing."
     t))
 
 (ert-deftest claude-term-registry-test-spc-a-bindings-resolve ()
-  "This module's eight SPC a leaf keys resolve to its own commands.
+  "Every SPC a leaf key resolves, from this module's single keymap form.
+Eight are this module's own commands.
 `SPC a TAB' resolves to edmacs-sidebar roadmap phase 6's global agent
 attention-jump (`edmacs-sidebar-agents-goto-attention', sidebar-agents.el)
--- this module is SPC a's sole owner, so that binding lives in its own
-`with-eval-after-load' block even though the command itself belongs to
-another module; `general-define-key' stores the quoted symbol without
-requiring it to be `fboundp', so this resolves correctly even though
-sidebar-agents.el itself is not loaded by this test file."
+and `SPC a c' to the edmacs-claude-acp roadmap's `claude-agent-start'
+(modules/claude-agent.el) -- this module is SPC a's sole owner, so both
+bindings live in its own `with-eval-after-load' block even though neither
+command belongs to it; `general-define-key' stores the quoted symbol
+without requiring it to be `fboundp', so both resolve correctly even
+though neither module is loaded by this test file.  That all three sets
+resolve from ONE form is the property: a second `general' block opened
+elsewhere would fight this one for the prefix."
   (unless (claude-term-registry-test--load-real-general-and-evil)
     (ert-skip "real evil.el/general.el not found in this checkout; bootstrap straight once locally to enable this test"))
   ;; This module's own `with-eval-after-load 'general' bindings
@@ -803,6 +815,10 @@ sidebar-agents.el itself is not loaded by this test file."
   ;; deferred until 'general' actually loaded -- `require' above just
   ;; fired them for real.
   (let ((ours '(("n" . claude-term-new-session)
+                ;; Bound here, defined in modules/claude-agent.el: this
+                ;; module is SPC a's sole owner, so every leaf under the
+                ;; prefix lives in its single `general-define-key' form.
+                ("c" . claude-agent-start)
                 ("j" . claude-term-jump)
                 ("L" . claude-term-list-sessions)
                 ("w" . claude-term-toggle-pane)

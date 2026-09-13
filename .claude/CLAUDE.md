@@ -67,6 +67,11 @@ suites living beside the code they cover, as `modules/<module>-test.el`:
 - `modules/claude-term-test.el` -- pure-function coverage of `claude-term.el`
 - `modules/claude-term-live-test.el` -- kill/restart/exit lifecycle against real subprocesses
 - `modules/claude-term-registry-test.el` -- pure-function coverage of the session registry
+- `modules/claude-agent-test.el` -- pure-function coverage of the ACP module:
+  `.mcp.json` parsing and its translation into agent-shell's server shape,
+  login-shell `node`/`npx` resolution, the missing-agent message, and the
+  picker-free start path.  No live row: a real ACP session costs network
+  and subscription, neither of which belongs in `test-all.sh`
 - `modules/claude-term-registry-live-test.el` -- registry wiring that needs a real spawn
 - `modules/claude-term-approval-parity-live-test.el` -- runs the real `claude`
   binary to prove an Emacs-hosted session resolves the same permission
@@ -594,6 +599,7 @@ edmacs/
 │   ├── claude-lib-drive.el # Drive interactive code with simulated input, unblockably
 │   ├── claude-term.el     # Claude CLI hosted in a ghostel terminal
 │   ├── claude-term-registry.el # Session registry + SPC a keymap
+│   ├── claude-agent.el     # ACP-backed Claude sessions via agent-shell
 │   ├── git-common-dir.el  # Worktree-aware git dir resolution
 │   ├── workspaces.el      # Project/worktree identity on tab-bar groups
 │   ├── sidebar.el         # Grouped project/worktree tree, buffers, agents

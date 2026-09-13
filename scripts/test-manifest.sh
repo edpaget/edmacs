@@ -63,6 +63,7 @@
 
 MANIFEST=(
   "agents-test|batch|15|0|modules/test-support.el,modules/agents.el,modules/agents-test.el|ert-run-tests-batch-and-exit"
+  "claude-agent-test|batch|30|0|modules/test-support.el,modules/claude-agent.el,modules/claude-agent-test.el|ert-run-tests-batch-and-exit"
   "claude-term-agents-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/claude-term.el,modules/claude-term-registry.el,modules/agents.el,modules/claude-term-agents.el,modules/claude-term-agents-test.el|ert-run-tests-batch-and-exit"
   "claude-term-approval-parity-live-test|batch|30|2|modules/git-common-dir.el,modules/claude-term.el,modules/claude-term-registry.el,modules/claude-term-approval-parity-live-test.el|ert-run-tests-batch-and-exit"
   "claude-term-live-test|batch|30|5|modules/claude-term.el,modules/claude-term-registry.el,modules/claude-term-live-test.el|ert-run-tests-batch-and-exit"

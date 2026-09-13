@@ -640,9 +640,18 @@ was asked to die (see the phase body's own edge case)."
 ;; (`edmacs-sidebar-agents-goto-attention', sidebar-agents.el) rather than
 ;; anything of this module's own, kept here rather than duplicating a
 ;; second `with-eval-after-load' block elsewhere, since this module is
-;; SPC a's sole owner.
+;; SPC a's sole owner.  "c" is the third application of that same pattern:
+;; the command is `claude-agent-start' and its home module is
+;; modules/claude-agent.el (edmacs-claude-acp roadmap phase 2), which
+;; opens no `general' block of its own.  The letter was ai.el's once, for
+;; a claude-repl command deleted with that module; it is free again, and
+;; claude-term-registry-test.el asserts it now resolves here rather than
+;; nowhere.  Both forward references are safe for the same reason:
+;; `general-define-key' stores the quoted symbol and resolves it at
+;; keypress, and init.el loads both modules after this one.
 
 (declare-function edmacs-sidebar-agents-goto-attention "sidebar-agents")
+(declare-function claude-agent-start "claude-agent")
 
 (with-eval-after-load 'general
   (general-define-key
@@ -650,6 +659,7 @@ was asked to die (see the phase body's own edge case)."
    :prefix "SPC a"
    "" '(:ignore t :which-key "claude")
    "n" '(claude-term-new-session :which-key "new session")
+   "c" '(claude-agent-start :which-key "new ACP session")
    "j" '(claude-term-jump :which-key "jump to session")
    "L" '(claude-term-list-sessions :which-key "list sessions")
    "w" '(claude-term-toggle-pane :which-key "toggle pane")

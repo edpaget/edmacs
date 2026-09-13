@@ -1,0 +1,514 @@
+;;; claude-agent-test.el --- Tests for claude-agent.el -*- lexical-binding: t -*-
+
+;;; Commentary:
+;; Pure-function coverage of modules/claude-agent.el: the `.mcp.json'
+;; reader and its translation into agent-shell's server shape, login-shell
+;; executable resolution, the missing-agent message, the truename session
+;; key, and the picker-free start path driven against a stubbed
+;; `agent-shell--start'.
+;;
+;; Run with:
+;;   scripts/run-ert-suite.sh 30 emacs -Q --batch -l ert \
+;;         -l modules/test-support.el -l modules/claude-agent.el \
+;;         -l modules/claude-agent-test.el -f ert-run-tests-batch-and-exit
+;;
+;; (Loading claude-agent.el under `-Q' prints a benign "Unrecognized
+;; keyword: :straight" notice from each of its three `use-package' forms,
+;; since straight.el is not bootstrapped in this bare batch harness.  The
+;; notice is caught internally by use-package and aborts nothing -- but it
+;; does mean the forms' `:custom' block never runs here, so the two
+;; transcript/dot-subdir settings are asserted at the SOURCE level below
+;; and their live values are asserted through `scripts/startup-check.sh',
+;; which loads the real init.)
+;;
+;; NO live row.  There is deliberately no claude-agent-live-test.el in
+;; scripts/test-manifest.sh: a real ACP session spawns a Node agent and
+;; talks to the Anthropic API, and neither network nor subscription cost
+;; belongs in the pre-landing gate.
+;;
+;; The `SPC a c' keybinding assertion is NOT here -- the binding lives in
+;; modules/claude-term-registry.el (SPC a's sole owner), so it is asserted
+;; in claude-term-registry-test.el, whose manifest row already loads
+;; claude-term.el, claude-term-registry.el and the real evil/general.
+
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+(require 'subr-x)
+(require 'seq)
+(require 'warnings)
+
+;; `executable-find' and `file-readable-p' are C subrs this file `cl-letf's;
+;; without this guard each redirected subr makes Emacs build a native
+;; trampoline via a synchronous compiler subprocess (~28s, almost entirely
+;; wall clock). See .claude/CLAUDE.md's Testing section and windows-test.el's
+;; precedent.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
+
+(defconst claude-agent-test--module
+  (expand-file-name "claude-agent.el"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "Path to the module under test, sibling to this file.")
+
+;; agent-shell is absent under `-Q'.  Standing in for it as a FEATURE (so
+;; `claude-agent--start-at's `(require 'agent-shell nil t)' succeeds) plus
+;; a real keymap is enough for every assertion below; the functions
+;; themselves are stubbed per-test.
+(provide 'agent-shell)
+(defvar agent-shell-mode-map (make-sparse-keymap))
+(defvar agent-shell-anthropic-claude-acp-command '("claude-agent-acp"))
+
+;; Declared, not defined: claude-agent.el owns both, and is loaded before
+;; this file.  Naming them here keeps the `let' bindings below dynamic
+;; even when this file is byte-compiled on its own.
+(defvar claude-agent--path-reimported)
+(defvar claude-agent-acp-command)
+
+(defun claude-agent-test--write (dir name text)
+  "Write TEXT to NAME under DIR and return the directory."
+  (with-temp-file (expand-file-name name dir)
+    (insert text))
+  dir)
+
+(defmacro claude-agent-test--with-root (var &rest body)
+  "Bind VAR to a fresh temporary project root and run BODY, then delete it."
+  (declare (indent 1))
+  `(let ((,var (file-name-as-directory (make-temp-file "claude-agent-root" t))))
+     (unwind-protect (progn ,@body)
+       (delete-directory ,var t))))
+
+;; ============================================================================
+;; .mcp.json
+;; ============================================================================
+
+(ert-deftest claude-agent-test-mcp-absent-file-returns-nil ()
+  "An absent `.mcp.json' is the DEFAULT case -- this repo has none."
+  (claude-agent-test--with-root root
+    (should-not (claude-agent--read-mcp-config root))
+    (should-not (claude-agent--mcp-servers-for-root root))))
+
+(ert-deftest claude-agent-test-mcp-malformed-json-returns-nil ()
+  "Malformed JSON degrades to nil, never a backtrace at session start."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write root ".mcp.json" "{ not json at all ")
+    (let ((warning-minimum-level :emergency))
+      (should-not (claude-agent--read-mcp-config root))
+      (should-not (claude-agent--mcp-servers-for-root root)))))
+
+(ert-deftest claude-agent-test-mcp-stdio-server-translates ()
+  "A stdio entry becomes agent-shell's (name command args env) alist.
+`env' becomes the name/value pair list `agent-shell-mcp-servers'
+documents, not the raw JSON object."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write
+     root ".mcp.json"
+     "{\"mcpServers\":{\"fs\":{\"command\":\"npx\",\"args\":[\"-y\",\"srv\"],\"env\":{\"A\":\"1\"}}}}")
+    (let ((servers (claude-agent--mcp-servers-for-root root)))
+      (should (= 1 (length servers)))
+      (let ((server (car servers)))
+        (should (equal "fs" (alist-get 'name server)))
+        (should (equal "npx" (alist-get 'command server)))
+        (should (equal '("-y" "srv") (alist-get 'args server)))
+        (should (equal '(((name . "A") (value . "1"))) (alist-get 'env server)))
+        (should-not (alist-get 'url server))))))
+
+(ert-deftest claude-agent-test-mcp-http-server-translates ()
+  "An http entry takes the url/headers schema, not the stdio one."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write
+     root ".mcp.json"
+     "{\"mcpServers\":{\"n\":{\"type\":\"http\",\"url\":\"https://e/mcp\",\"headers\":{\"H\":\"v\"}}}}")
+    (let ((server (car (claude-agent--mcp-servers-for-root root))))
+      (should (equal "n" (alist-get 'name server)))
+      (should (equal "http" (alist-get 'type server)))
+      (should (equal "https://e/mcp" (alist-get 'url server)))
+      (should (equal '(((name . "H") (value . "v"))) (alist-get 'headers server)))
+      (should-not (alist-get 'command server)))))
+
+(ert-deftest claude-agent-test-mcp-sse-server-translates ()
+  "An sse entry takes the same url/headers schema as http."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write
+     root ".mcp.json"
+     "{\"mcpServers\":{\"s\":{\"type\":\"sse\",\"url\":\"https://e/sse\"}}}")
+    (let ((server (car (claude-agent--mcp-servers-for-root root))))
+      (should (equal "sse" (alist-get 'type server)))
+      (should (equal "https://e/sse" (alist-get 'url server)))
+      (should (equal '() (alist-get 'headers server))))))
+
+(ert-deftest claude-agent-test-mcp-unsupported-entry-is-skipped-and-named ()
+  "An entry naming neither a command nor an http/sse url is dropped.
+It is dropped by NAME, not silently: `claude-agent--mcp-skipped-names'
+is what the caller's single warning reports."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write
+     root ".mcp.json"
+     "{\"mcpServers\":{\"ok\":{\"command\":\"c\"},\"weird\":{\"type\":\"carrier-pigeon\"}}}")
+    (let* ((config (claude-agent--read-mcp-config root))
+           (warning-minimum-level :emergency))
+      (should (equal '("weird") (claude-agent--mcp-skipped-names config)))
+      (should (equal '("ok") (mapcar (lambda (s) (alist-get 'name s))
+                                     (claude-agent--mcp-servers-from-config config)))))))
+
+(ert-deftest claude-agent-test-mcp-is-read-per-root ()
+  "Two roots get two answers -- a worktree and its main checkout differ."
+  (claude-agent-test--with-root with-config
+    (claude-agent-test--with-root without-config
+      (claude-agent-test--write
+       with-config ".mcp.json" "{\"mcpServers\":{\"a\":{\"command\":\"c\"}}}")
+      (should (claude-agent--mcp-servers-for-root with-config))
+      (should-not (claude-agent--mcp-servers-for-root without-config)))))
+
+(ert-deftest claude-agent-test-header-records-mcp-scope ()
+  "The Commentary records the residual gap rather than claiming parity.
+Phase 1 rated MCP the one `degraded' row in its checklist; a header that
+stopped naming the user-scope and settings-gating limitations would
+overstate what this module does."
+  (with-temp-buffer
+    (insert-file-contents claude-agent-test--module)
+    (goto-char (point-min))
+    (should (search-forward "~/.claude.json" nil t))
+    (goto-char (point-min))
+    (should (search-forward "enabledMcpjsonServers" nil t))
+    (goto-char (point-min))
+    (should (search-forward "IMAGE PASTE" nil t))))
+
+;; ============================================================================
+;; Session key and project root
+;; ============================================================================
+
+(ert-deftest claude-agent-test-key-collapses-a-symlinked-root ()
+  "Two paths to one root collapse to one key, as in the claude-term registry."
+  (claude-agent-test--with-root root
+    (let ((link (expand-file-name "link" (temporary-file-directory))))
+      (unwind-protect
+          (progn
+            (when (file-symlink-p link) (delete-file link))
+            (make-symbolic-link (directory-file-name root) link t)
+            (should (equal (claude-agent--key root nil)
+                           (claude-agent--key link nil)))
+            (should-not (equal (claude-agent--key root nil)
+                               (claude-agent--key root "second"))))
+        (when (file-symlink-p link) (delete-file link))))))
+
+(ert-deftest claude-agent-test-project-root-signals-outside-a-project ()
+  "No project is a `user-error', not a backtrace out of `SPC a c'."
+  (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil)))
+    (should-error (claude-agent--project-root) :type 'user-error)))
+
+;; ============================================================================
+;; Executable resolution
+;; ============================================================================
+
+(ert-deftest claude-agent-test-resolve-executable-hit-needs-no-shell ()
+  "A PATH hit returns immediately without shelling out to the login shell."
+  (let ((claude-agent--path-reimported nil)
+        (shelled 0))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_n &optional _r) "/bin/node"))
+              ((symbol-function 'exec-path-from-shell-copy-env)
+               (lambda (_v) (cl-incf shelled))))
+      (should (equal "/bin/node" (claude-agent--resolve-executable "node")))
+      (should (= 0 shelled)))))
+
+(ert-deftest claude-agent-test-resolve-executable-retries-login-shell-once ()
+  "A first miss re-imports PATH once; a second miss must not re-shell.
+The memo is what keeps a missing toolchain from costing a login shell on
+every single call."
+  (let ((claude-agent--path-reimported nil)
+        (shelled 0)
+        (found nil))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_n &optional _r) found))
+              ((symbol-function 'exec-path-from-shell-copy-env)
+               (lambda (_v) (cl-incf shelled) (setq found "/mise/bin/node"))))
+      (should (equal "/mise/bin/node" (claude-agent--resolve-executable "node")))
+      (should (= 1 shelled))
+      (setq found nil)
+      (should-not (claude-agent--resolve-executable "node"))
+      (should (= 1 shelled)))))
+
+(ert-deftest claude-agent-test-resolve-executable-final-miss-returns-nil ()
+  "The resolver never signals -- callers decide what a miss means."
+  (let ((claude-agent--path-reimported nil))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_n &optional _r) nil))
+              ((symbol-function 'exec-path-from-shell-copy-env) #'ignore))
+      (should-not (claude-agent--resolve-executable "definitely-not-installed")))))
+
+(ert-deftest claude-agent-test-script-interpreter-reads-the-shebang ()
+  "`#!/usr/bin/env node' names node, not env -- env is not what must resolve."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write root "envscript" "#!/usr/bin/env node\nconsole.log(1)\n")
+    (claude-agent-test--write root "direct" "#!/bin/sh\necho hi\n")
+    (claude-agent-test--write root "plain" "not a script at all\n")
+    (should (equal "node" (claude-agent--script-interpreter
+                           (expand-file-name "envscript" root))))
+    (should (equal "/bin/sh" (claude-agent--script-interpreter
+                              (expand-file-name "direct" root))))
+    (should-not (claude-agent--script-interpreter (expand-file-name "plain" root)))
+    (should-not (claude-agent--script-interpreter (expand-file-name "absent" root)))))
+
+;; ============================================================================
+;; A missing agent is a readable line
+;; ============================================================================
+
+(ert-deftest claude-agent-test-missing-agent-signals-user-error ()
+  "A missing ACP agent names the install command, and signals no backtrace."
+  (let ((claude-agent--path-reimported t))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_n &optional _r) nil)))
+      (let ((err (should-error (claude-agent--ensure-agent) :type 'user-error)))
+        (should (string-match-p "claude-agent-acp" (error-message-string err)))
+        (should (string-match-p "@agentclientprotocol/claude-agent-acp"
+                                (error-message-string err))))
+      ;; Reached through the command, not only the helper: the whole point
+      ;; is that `SPC a c' fails in this module's message.
+      (cl-letf (((symbol-function 'claude-agent--project-root)
+                 (lambda () (expand-file-name "~/"))))
+        (should-error (claude-agent-start) :type 'user-error)))))
+
+(ert-deftest claude-agent-test-missing-interpreter-signals-user-error ()
+  "An agent whose node interpreter is gone is the other readable failure."
+  (claude-agent-test--with-root root
+    (let ((agent (expand-file-name "claude-agent-acp" root))
+          (claude-agent--path-reimported t))
+      (claude-agent-test--write root "claude-agent-acp" "#!/usr/bin/env node\n")
+      (cl-letf (((symbol-function 'claude-agent--resolve-executable)
+                 (lambda (name) (and (equal name claude-agent-acp-command) agent))))
+        (let ((err (should-error (claude-agent--ensure-agent) :type 'user-error)))
+          (should (string-match-p "node" (error-message-string err))))))))
+
+;; ============================================================================
+;; Filesystem cleanliness
+;; ============================================================================
+
+(ert-deftest claude-agent-test-dot-subdir-resolves-outside-every-checkout ()
+  "agent-shell's on-demand writers land outside any project root.
+This is what suppresses `agent-shell--ensure-gitignore': it appends
+`/.agent-shell/' to `.git/info/exclude' only when the directory it just
+created is under the project's own `.agent-shell/'."
+  (let ((repo (file-name-directory
+               (directory-file-name
+                (file-name-directory claude-agent-test--module)))))
+    (dolist (subdir '("transcripts" "screenshots" "worktrees"))
+      (let ((path (claude-agent--dot-subdir subdir)))
+        (should (file-name-absolute-p path))
+        (should (string-suffix-p subdir path))
+        (should-not (file-in-directory-p path repo))
+        (should-not (string-match-p "\\.agent-shell" path))))))
+
+(ert-deftest claude-agent-test-module-disables-the-transcript-writer ()
+  "The two settings that keep a session out of the checkout are declared.
+Asserted at the source level because `use-package's `:custom' block never
+runs under `-Q' (see this file's Commentary); their live values are
+asserted by `scripts/startup-check.sh'."
+  (with-temp-buffer
+    (insert-file-contents claude-agent-test--module)
+    (goto-char (point-min))
+    (should (search-forward "(agent-shell-transcript-file-path-function nil)" nil t))
+    (goto-char (point-min))
+    (should (search-forward
+             "(agent-shell-dot-subdir-function #'claude-agent--dot-subdir)" nil t))))
+
+(ert-deftest claude-agent-test-module-opens-no-general-block ()
+  "`SPC a' is claude-term-registry.el's alone; this module adds no second
+`general' block to fight it for the prefix label."
+  (with-temp-buffer
+    (insert-file-contents claude-agent-test--module)
+    (goto-char (point-min))
+    (should-not (re-search-forward "with-eval-after-load '?general" nil t))))
+
+;; ============================================================================
+;; The picker-free start path
+;; ============================================================================
+
+(defvar claude-agent-test--start-args nil
+  "Keyword arguments the stubbed `agent-shell--start' last received.")
+
+(defvar claude-agent-test--start-cwd nil
+  "`default-directory' the stubbed `agent-shell--start' last saw.")
+
+(defmacro claude-agent-test--with-stubbed-start (&rest body)
+  "Run BODY with a stubbed agent-shell start path and a minibuffer counter.
+Binds `claude-agent-test--entered-minibuffer' to the number of minibuffer
+entries observed while BODY ran."
+  (declare (indent 0))
+  `(let ((claude-agent-test--start-args nil)
+         (claude-agent-test--start-cwd nil)
+         (claude-agent-test--entered-minibuffer 0)
+         (buffer (get-buffer-create "*claude-agent-test-shell*")))
+     (unwind-protect
+         (cl-letf* ((minibuffer-setup-hook
+                     (list (lambda () (cl-incf claude-agent-test--entered-minibuffer))))
+                    ((symbol-function 'claude-agent--resolve-executable)
+                     (lambda (_name) "/opt/bin/claude-agent-acp"))
+                    ((symbol-function 'claude-agent--script-interpreter)
+                     (lambda (_path) nil))
+                    ((symbol-function 'agent-shell-anthropic-make-claude-code-config)
+                     (lambda () (list (cons :identifier 'claude-code)
+                                      (cons :client-maker #'ignore)
+                                      (cons :mcp-servers nil))))
+                    ((symbol-function 'agent-shell-anthropic-make-claude-client)
+                     (lambda (&rest _) '((:command . "stub"))))
+                    ((symbol-function 'display-buffer) (lambda (b &rest _) b))
+                    ((symbol-function 'agent-shell--start)
+                     (lambda (&rest args)
+                       (setq claude-agent-test--start-args args)
+                       (setq claude-agent-test--start-cwd default-directory)
+                       buffer)))
+           ,@body)
+       (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(defvar claude-agent-test--entered-minibuffer 0
+  "Minibuffer entries counted inside `claude-agent-test--with-stubbed-start'.")
+
+(ert-deftest claude-agent-test-start-never-opens-the-picker ()
+  "The start call asks for a NEW session outright.
+agent-shell's `Start shell (default: New shell)' picker is not on the
+start call: `agent-shell-session-strategy' defaults to `prompt' and the
+`completing-read' fires from the async `session/list' callback, long
+after the start form returned.  Overriding the strategy is what keeps it
+from opening; phase 1 proved that answering it once open wedges the
+driving connection."
+  (claude-agent-test--with-root root
+    (claude-agent-test--with-stubbed-start
+      (should (claude-agent-start root))
+      (should (eq 'new (plist-get claude-agent-test--start-args :session-strategy)))
+      (should (plist-get claude-agent-test--start-args :new-session))
+      (should (plist-get claude-agent-test--start-args :no-focus))
+      (should (= 0 claude-agent-test--entered-minibuffer))
+      (should (= 0 (minibuffer-depth))))))
+
+(ert-deftest claude-agent-test-start-runs-at-the-truename-project-root ()
+  "With no ROOT, the session starts at the current project's root."
+  (claude-agent-test--with-root root
+    (claude-agent-test--with-stubbed-start
+      (cl-letf (((symbol-function 'project-current)
+                 (lambda (&rest _) (cons 'transient root))))
+        (should (claude-agent-start))
+        (should (equal (file-name-as-directory (file-truename root))
+                       claude-agent-test--start-cwd))))))
+
+(ert-deftest claude-agent-test-start-passes-the-projects-mcp-servers ()
+  "`.mcp.json' reaches the agent config, not the global defcustom.
+Going through the config's `:mcp-servers' (which
+`agent-shell--mcp-servers' prefers) is what keeps two projects' sessions
+from cross-contaminating through one global list."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write
+     root ".mcp.json" "{\"mcpServers\":{\"fs\":{\"command\":\"npx\"}}}")
+    (claude-agent-test--with-stubbed-start
+      (claude-agent-start root)
+      (let ((config (plist-get claude-agent-test--start-args :config)))
+        (should (equal '("fs") (mapcar (lambda (s) (alist-get 'name s))
+                                       (alist-get :mcp-servers config))))))))
+
+(ert-deftest claude-agent-test-start-bakes-the-resolved-agent-path-in ()
+  "The client is built from the ABSOLUTE agent path, never a bare name.
+modules/claude-repl/ shipped exactly this bug: it resolved `python3' at
+spawn time, against whatever `exec-path' the spawning buffer had."
+  (claude-agent-test--with-root root
+    (claude-agent-test--with-stubbed-start
+      (claude-agent-start root)
+      (let* ((config (plist-get claude-agent-test--start-args :config))
+             (maker (alist-get :client-maker config))
+             (seen nil))
+        (should (functionp maker))
+        (cl-letf (((symbol-function 'agent-shell-anthropic-make-claude-client)
+                   (lambda (&rest _)
+                     (setq seen (car agent-shell-anthropic-claude-acp-command))
+                     nil)))
+          (funcall maker (current-buffer)))
+        (should (equal "/opt/bin/claude-agent-acp" seen))
+        ;; ... and the global defcustom was left alone.
+        (should (equal '("claude-agent-acp") agent-shell-anthropic-claude-acp-command))))))
+
+(ert-deftest claude-agent-test-buffer-name-is-not-claude-term-shaped ()
+  "An ACP shell must not be mistaken for a claude-term session.
+claude-term's registry, session picker and the sidebar's agent rows all
+match on `*claude-term:<leaf>[:<instance>]*'; agent-shell's own default
+name shares no part of it."
+  (let ((regexp "\\`\\*claude-term:\\([^:*]+\\)\\(?::\\([^*]+\\)\\)?\\*\\'"))
+    (dolist (name '("Claude Agent @ edmacs" "*Claude Agent @ edmacs*" "*agent*"))
+      (should-not (string-match-p regexp name)))
+    ;; Control: the shape it must not collide with really does match.
+    (should (string-match-p regexp "*claude-term:edmacs*"))))
+
+;; ============================================================================
+;; evil
+;; ============================================================================
+;; Drives the REAL evil, loaded from the straight repos tree (this
+;; checkout's, falling back to the sibling main checkout's) -- the same
+;; technique claude-term-registry-test.el uses -- rather than asserting
+;; against a hand-rolled stand-in for evil's state machinery.
+
+(defconst claude-agent-test--evil-source
+  ;; `fboundp'-guarded so this file still LOADS under a bare `-Q' without
+  ;; modules/test-support.el (`claude-lib-check-q' runs it that way); the
+  ;; manifest row supplies it for real, so the evil tests below do not skip.
+  (if-let* (((fboundp 'edmacs-test-support-straight-repos-root))
+            (repos (edmacs-test-support-straight-repos-root)))
+      (expand-file-name "evil/evil.el" repos)
+    "")
+  "Path to the real evil.el, when this checkout or its sibling has it.")
+
+(defun claude-agent-test--load-real-evil ()
+  "Load the real evil, or return nil so the caller can `ert-skip'."
+  (when (file-exists-p claude-agent-test--evil-source)
+    (add-to-list 'load-path (file-name-directory claude-agent-test--evil-source))
+    (require 'evil)
+    t))
+
+(ert-deftest claude-agent-test-evil-initial-state-is-insert-explicitly ()
+  "Insert state is declared, not inherited from evil's comint default.
+Phase 1 found the inherited behaviour accidental; an upstream change to
+`evil-insert-state-modes', or a shell-maker mode reparent, would silently
+take it away."
+  (unless (claude-agent-test--load-real-evil)
+    (ert-skip "real evil.el not found in this checkout or its sibling main checkout"))
+  ;; Modern evil records an initial state as membership in the state's own
+  ;; `-modes' list, which is what `evil-set-initial-state' writes.
+  (should (memq 'agent-shell-mode evil-insert-state-modes)))
+
+(ert-deftest claude-agent-test-normal-state-ret-is-not-evil-ret ()
+  "Normal-state RET resolves to this module's wrapper.
+Evil's own `evil-ret' errors with \"End of buffer\" on the input line --
+the last line of the buffer -- which is phase 1's reproduction."
+  (unless (claude-agent-test--load-real-evil)
+    (ert-skip "real evil.el not found in this checkout or its sibling main checkout"))
+  (let ((aux (evil-get-auxiliary-keymap agent-shell-mode-map 'normal)))
+    (should (keymapp aux))
+    (should (eq 'claude-agent-submit (lookup-key aux (kbd "RET"))))))
+
+(ert-deftest claude-agent-test-submit-outside-an-agent-shell-does-nothing ()
+  "RET elsewhere is a no-op, not a signal."
+  (with-temp-buffer
+    (should-not (claude-agent-submit))))
+
+(ert-deftest claude-agent-test-submit-outside-the-input-region-does-nothing ()
+  "Above the prompt, RET neither submits nor errors."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode)
+    (cl-letf (((symbol-function 'agent-shell-submit)
+               (lambda () (error "must not be reached")))
+              ((symbol-function 'claude-agent--in-input-region-p) (lambda () nil)))
+      (should-not (claude-agent-submit)))))
+
+(ert-deftest claude-agent-test-submit-reports-rather-than-signals ()
+  "agent-shell's own \"Busy, please wait\", and an end-of-buffer, become
+messages -- a key pressed this often must not raise."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode)
+    (cl-letf (((symbol-function 'claude-agent--in-input-region-p) (lambda () t)))
+      (cl-letf (((symbol-function 'agent-shell-submit)
+                 (lambda () (user-error "Busy, please wait"))))
+        (should-not (claude-agent-submit)))
+      (cl-letf (((symbol-function 'agent-shell-submit)
+                 (lambda () (signal 'end-of-buffer nil))))
+        (should-not (claude-agent-submit)))
+      (let ((submitted 0))
+        (cl-letf (((symbol-function 'agent-shell-submit)
+                   (lambda () (cl-incf submitted))))
+          (claude-agent-submit)
+          (should (= 1 submitted)))))))
+
+;;; claude-agent-test.el ends here
