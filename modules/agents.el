@@ -54,8 +54,15 @@ can key off it directly. STATUS is one of `working', `waiting', `done'
 or `idle' (`idle' only ever appears after `edmacs-agents-mark-read').
 STATUS-TS is the row's last status-change time; UPDATED-TS is its most
 recent write of any kind. TITLE is a human-readable label. SOURCE is
-`claude-term' or `claude-repl'. LOCATOR is adapter-specific: a
-claude-term row's (phase 9) is its buffer. UNREAD is set on a
+`claude-term' (claude-term-agents.el) or `claude-agent'
+(claude-agent-agents.el, an ACP session) -- or nil for a row created by
+`edmacs-agents-set-status' itself, i.e. the `emacs-status.sh'
+shell-hook ingress, which populates neither SOURCE nor LOCATOR; that is
+a known gap, filed as task `agents-set-status-drops-source', and it is
+why sidebar-agents.el's visit/rename/kill dispatch keeps a nil-source
+catch-all. LOCATOR is adapter-specific and is the session's buffer for
+both current sources: a ghostel buffer for `claude-term', the
+`agent-shell-mode' buffer for `claude-agent'. UNREAD is set on a
 transition into `done' and cleared by `edmacs-agents-mark-read'."
   key root instance status status-ts updated-ts title source locator unread)
 
@@ -208,6 +215,10 @@ equal-or-older STATUS-TS is not mistaken for newer than this read."
                            (format "%s" (or (edmacs-agent-instance row) ""))
                            (format "%s%s" (edmacs-agent-status row)
                                    (if (edmacs-agent-unread row) "*" ""))
+                           ;; A nil SOURCE is the `emacs-status.sh' ingress
+                           ;; (see the struct docstring); rendered "-" so it
+                           ;; reads as a real, distinguishable value here.
+                           (format "%s" (or (edmacs-agent-source row) "-"))
                            (or (edmacs-agent-title row) "")))
              entries))
      edmacs-agents--table)
@@ -223,7 +234,8 @@ equal-or-older STATUS-TS is not mistaken for newer than this read."
 A temporary view for this phase -- phase 6 replaces it with the
 sidebar's own ALL AGENTS section."
   (setq tabulated-list-format
-        [("Instance" 10 t) ("Root" 34 t) ("Pane" 8 t) ("Status" 12 t) ("Title" 24 t)])
+        [("Instance" 10 t) ("Root" 34 t) ("Pane" 8 t) ("Status" 12 t)
+         ("Source" 12 t) ("Title" 24 t)])
   (setq tabulated-list-padding 2)
   (setq revert-buffer-function #'edmacs-agents--revert-list)
   (tabulated-list-init-header))

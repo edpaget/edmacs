@@ -30,6 +30,18 @@
 ;;     at the end of every redraw, letting this file append the
 ;;     frame-independent ALL AGENTS section.
 ;;
+;; TWO SOURCES, ONE LIST. Every row-reading function here
+;; (`--all', `--for-root', `--compare', `--attention-list') reads
+;; `edmacs-agents--table' wholesale and is source-agnostic, so a
+;; `claude-agent' row (an ACP session, claude-agent-agents.el) lands in
+;; the per-worktree group, in ALL AGENTS and in `SPC a TAB' attention
+;; order for free. What IS source-aware is exactly three dispatch sites
+;; -- visit, rename, kill -- plus the per-source badge
+;; (`edmacs-sidebar-agents-source-badges') that tells the two apart on
+;; screen. `SPC a j/L/r/x' route through the source-agnostic commands
+;; near the bottom of this file; `SPC a n/w/A/X' stay claude-term-only,
+;; since each operates on ghostel panes and the claude-term registry.
+;;
 ;; `edmacs-agents--table' is a single hash table shared by every frame
 ;; (agents.el is not frame-scoped), so "every agent across frames" for
 ;; the ALL AGENTS section and the attention list is simply the whole
@@ -81,6 +93,8 @@
 (declare-function claude-term-session-buffer "claude-term-registry")
 (declare-function claude-term-rename "claude-term-registry")
 (declare-function claude-term-kill "claude-term")
+(declare-function claude-agent-pop-to-buffer "claude-agent")
+(declare-function claude-agent-agents-rename "claude-agent-agents")
 (defvar edmacs-sidebar-worktree-label-suffix-function)
 (defvar edmacs-sidebar-worktree-section-functions)
 (defvar edmacs-sidebar-extra-section-functions)
@@ -101,6 +115,7 @@
 (declare-function edmacs-agent-locator "agents")
 (declare-function edmacs-agent-unread "agents")
 (declare-function edmacs-agents-mark-read "agents")
+(declare-function edmacs-agents--remove "agents")
 (defvar edmacs-agents--table)
 (defvar edmacs-agents-changed-hook)
 
@@ -140,6 +155,35 @@ strong color, so a busy worktree's list doesn't read as an alert."
   '((t :inherit shadow))
   "Face for an `idle' agent row (only reached after `edmacs-agents-mark-read')."
   :group 'edmacs-sidebar-agents)
+
+(defface edmacs-sidebar-agent-source-face
+  '((t :inherit shadow))
+  "Face for an agent row's source badge -- deliberately quiet.
+The badge says which adapter owns the row, not how urgent it is, so it
+must never compete with the status face beside it."
+  :group 'edmacs-sidebar-agents)
+
+(defcustom edmacs-sidebar-agents-source-badges
+  '((claude-term . "") (claude-agent . "acp"))
+  "Alist of `edmacs-agent' SOURCE symbol -> the badge string to render.
+An empty string means no badge at all.  `claude-term' is empty by
+design: it is the long-standing majority source, so ABSENCE of a badge
+is what distinguishes it, and every claude-term row's label stays
+byte-identical to what it rendered before a second source existed.  A
+source not listed here -- including the nil source of a row created by
+the `emacs-status.sh' ingress -- also renders no badge."
+  :type '(alist :key-type symbol :value-type string)
+  :group 'edmacs-sidebar-agents)
+
+(defun edmacs-sidebar-agents--source-badge (source)
+  "Return SOURCE's propertized badge string, or the empty string.
+An empty string is returned for a nil SOURCE, an unknown one, and one
+whose configured badge is itself empty, so the single caller can test
+one condition rather than three."
+  (let ((badge (alist-get source edmacs-sidebar-agents-source-badges)))
+    (if (and (stringp badge) (not (string-empty-p badge)))
+        (propertize badge 'face 'edmacs-sidebar-agent-source-face)
+      "")))
 
 (defun edmacs-sidebar-agents--status-face (status)
   "Return STATUS's face, or nil for an unrecognized status."
@@ -354,16 +398,32 @@ when AGENT is an unread `done' row -- cleared the moment
 below call before redrawing."
   (let* ((unread (and (eq (edmacs-agent-status agent) 'done) (edmacs-agent-unread agent)))
          (glyph (edmacs-sidebar-agents--glyph (edmacs-agent-status agent)))
+         (badge (edmacs-sidebar-agents--source-badge (edmacs-agent-source agent)))
+         (title (or (edmacs-agent-title agent) ""))
          (elapsed (edmacs-sidebar-agents--elapsed-string (edmacs-agent-status-ts agent)))
+         ;; Two formats rather than one joined list: a badge-less row must
+         ;; render EXACTLY the string it rendered before this seam existed,
+         ;; including the double space an empty title produces.
          (label (string-trim-right
-                 (format "  %s %s %s" glyph (or (edmacs-agent-title agent) "") elapsed)))
+                 (if (string-empty-p badge)
+                     (format "  %s %s %s" glyph title elapsed)
+                   (format "  %s %s %s %s" glyph badge title elapsed))))
          (status-face (edmacs-sidebar-agents--status-face (edmacs-agent-status agent)))
          (face (cond ((and unread status-face) (list 'bold status-face))
                      (unread 'bold)
                      (t status-face))))
     (magit-insert-section (edmacs-sidebar-agent agent)
       (magit-insert-heading
-        (if face (propertize label 'face face) label)))))
+        (if face
+            ;; `add-face-text-property' with APPEND, not `propertize': a
+            ;; plain `propertize' over the whole label REPLACES the face
+            ;; property, which would silently erase the source badge's own
+            ;; face. Appending layers the row face UNDER whatever a span
+            ;; already carries, so the badge keeps reading as a badge.
+            (let ((s (copy-sequence label)))
+              (add-face-text-property 0 (length s) face t s)
+              s)
+          label)))))
 
 (defun edmacs-sidebar-agents--insert-group (root agents)
   "Insert AGENTS (already known to belong to ROOT) as child rows of one
@@ -469,8 +529,14 @@ source-specific extra step in `edmacs-sidebar-agents--visit-source-extra'."
   "Run AGENT's source-specific jump side effect.
 A `claude-term' row displays and selects its own pane via
 `claude-term--pop-to-window' -- an ordinary window, not a side window,
-since claude-term stopped allocating right-hand side slots. Any other
-source (including a `nil', unattached row) is a deliberate no-op: this
+since claude-term stopped allocating right-hand side slots. A
+`claude-agent' row (an ACP session, claude-agent-agents.el) pops to its
+`agent-shell-mode' buffer via `claude-agent-pop-to-buffer' -- NOT
+`claude-term--pop-to-window', which is claude-term's own pane logic and
+would misroute an ordinary buffer. Any other
+source (including a `nil', unattached row -- the `emacs-status.sh'
+ingress, see task `agents-set-status-drops-source') is a deliberate
+no-op: this
 pcase has no catch-all, so a row with no jump target simply does
 nothing here, after `edmacs-sidebar-agents--visit-common' has already
 selected the worktree tab and marked it read. Called unguarded on purpose: the
@@ -478,7 +544,9 @@ selected the worktree tab and marked it read. Called unguarded on purpose: the
 silent no-op rather than an error."
   (pcase (edmacs-agent-source agent)
     ('claude-term
-     (claude-term--pop-to-window (edmacs-agent-locator agent)))))
+     (claude-term--pop-to-window (edmacs-agent-locator agent)))
+    ('claude-agent
+     (claude-agent-pop-to-buffer (edmacs-agent-locator agent)))))
 
 ;;;###autoload
 (defun edmacs-sidebar-agents-visit ()
@@ -535,7 +603,12 @@ loaded, such as this module's own pure test suite."
 ;;;###autoload
 (defun edmacs-sidebar-agents-rename (agent)
   "Rename AGENT's title, called by sidebar.el's `edmacs-sidebar-rename-at-point'.
-Only a `claude-term'-sourced row can be renamed here: resolves AGENT's
+Dispatches on SOURCE. A `claude-agent' row (an ACP session) delegates to
+`claude-agent-agents-rename', which re-keys the row in place -- ACP has
+no rename verb of its own and agent-shell owns the buffer name, so that
+renames the row LABEL only; see that function's docstring.
+
+A `claude-term'-sourced row resolves AGENT's
 live session's buffer via `edmacs-sidebar-agents--claude-term-buffer'
 and delegates entirely to `claude-term-rename' on it, rather than
 calling `claude-term-registry-rename' directly -- `claude-term-rename' also
@@ -544,9 +617,11 @@ buffer itself, both of which `claude-term--on-exit' (claude-term.el)
 reads to deregister the session on kill; skipping them here would
 leave the registry keyed under the OLD instance for that lookup while
 this file's own row model already reflects the new one. Any non-
-`claude-term' source, including a `nil', unattached row, signals
-`user-error' -- only a `claude-term' row's title has a channel this UI
-can push a rename through.
+`claude-term'/`claude-agent' source, including a `nil', unattached row
+\(the `emacs-status.sh' ingress\), signals `user-error' through the
+catch-all -- deliberately left intact so task
+`agents-set-status-drops-source's own fix for that case drops in here
+cleanly rather than colliding with this phase.
 This function's own test coverage of the `claude-term' branch (this
 file's pure suite) is against a synthetic `edmacs-agent' struct and a
 mocked `claude-term-registry-get'/`claude-term-rename', not a real
@@ -557,11 +632,14 @@ delegates to, already has real-session coverage via
 adapter-produced row to run against: see
 `edmacs-sidebar-agents-live-test-real-claude-term-row-visit-and-kill'
 (sidebar-agents-live-test.el, edmacs-sidebar roadmap phase 9)."
-  (if (eq (edmacs-agent-source agent) 'claude-term)
-      (let ((buffer (edmacs-sidebar-agents--claude-term-buffer agent)))
-        (claude-term-rename buffer)
-        (edmacs-sidebar-agents--redraw-all))
-    (user-error "Cannot rename a %s agent" (edmacs-agent-source agent))))
+  (pcase (edmacs-agent-source agent)
+    ('claude-term
+     (let ((buffer (edmacs-sidebar-agents--claude-term-buffer agent)))
+       (claude-term-rename buffer)))
+    ('claude-agent
+     (claude-agent-agents-rename agent))
+    (source (user-error "Cannot rename a %s agent" source)))
+  (edmacs-sidebar-agents--redraw-all))
 
 ;; ============================================================================
 ;; d -- kill an agent session (sidebar.el's `edmacs-sidebar-kill-at-point')
@@ -574,15 +652,92 @@ A `claude-term' row resolves its live session's buffer via
 `edmacs-sidebar-agents--claude-term-buffer' and calls `claude-term-kill'
 on it -- teardown then runs through claude-term.el's own async
 sentinel/`claude-term--on-exit' path exactly as it does for the direct
-command, so the registry and buffer stay in sync. Any other source
-signals `user-error'."
+command, so the registry and buffer stay in sync.
+
+A `claude-agent' row is killed with plain `kill-buffer' on its
+`agent-shell-mode' buffer, which is the correct verb rather than a
+shortcut: agent-shell runs `agent-shell--clean-up' from
+`kill-buffer-hook', which emits its `clean-up' event (mapped to a reap
+by claude-agent-agents.el) and then calls `agent-shell--shutdown',
+which shuts the ACP client down. A row whose buffer is already dead is
+reaped directly instead. Any other source signals `user-error'."
   (when (yes-or-no-p (format "Kill agent session %s? " (edmacs-agent-title agent)))
     (pcase (edmacs-agent-source agent)
       ('claude-term
        (let ((buffer (edmacs-sidebar-agents--claude-term-buffer agent)))
          (claude-term-kill buffer)))
+      ('claude-agent
+       (let ((buffer (edmacs-agent-locator agent)))
+         (if (buffer-live-p buffer)
+             (kill-buffer buffer)
+           ;; The buffer is already gone, so agent-shell's `clean-up'
+           ;; event can never fire for it and the row would sit here
+           ;; forever; reap it directly. `kill-buffer' on a dead buffer
+           ;; signals, so this branch is required, not defensive.
+           (edmacs-agents--remove (edmacs-agent-key agent)))))
       (source (user-error "Cannot kill a %s agent" source)))
     (edmacs-sidebar-agents--redraw-all)))
+
+(defun edmacs-sidebar-agents--read-row (prompt)
+  "Read one tracked agent with PROMPT and return its `edmacs-agent' struct.
+The source-agnostic counterpart to picking a row in the sidebar, for the
+`SPC a' commands that have no point to read a row off. Candidates are
+labelled \"SOURCE TITLE - ROOT-LEAF\" so two sessions of different kinds
+under the same worktree, or same-titled sessions under different ones,
+stay tellable apart. Signals `user-error' on an empty table rather than
+opening a `completing-read' with no candidates."
+  (let* ((rows (edmacs-sidebar-agents--all))
+         (rows (sort rows #'edmacs-sidebar-agents--compare)))
+    (unless rows
+      (user-error "No agents are being tracked"))
+    (let* ((candidates
+            (mapcar
+             (lambda (row)
+               (cons (format "%s %s - %s"
+                             (or (edmacs-agent-source row) "-")
+                             (or (edmacs-agent-title row) "")
+                             (file-name-nondirectory
+                              (directory-file-name (or (edmacs-agent-root row) ""))))
+                     row))
+             rows))
+           ;; `completing-read' over the alist's KEYS, then look the struct
+           ;; back up: the struct itself is not a valid completion candidate,
+           ;; and two rows can legitimately produce the same label (same
+           ;; source, title and worktree leaf), in which case the first wins
+           ;; rather than the call erroring.
+           (choice (completing-read prompt (mapcar #'car candidates) nil t)))
+      (or (cdr (assoc choice candidates))
+          (user-error "No such agent: %s" choice)))))
+
+;;;###autoload
+(defun edmacs-sidebar-agents-jump ()
+  "Jump to a tracked agent of any source, chosen by completion.
+`SPC a j'. The source-agnostic replacement for `claude-term-jump', which
+only ever saw claude-term sessions; that command is still reachable
+through \[execute-extended-command] for a claude-term-only view."
+  (interactive)
+  (let ((agent (edmacs-sidebar-agents--read-row "Jump to agent: ")))
+    (edmacs-sidebar-agents--visit-common agent)
+    (edmacs-sidebar-agents--visit-source-extra agent)))
+
+;;;###autoload
+(defun edmacs-sidebar-agents-rename-any ()
+  "Rename a tracked agent of any source, chosen by completion.
+`SPC a r'. Delegates to `edmacs-sidebar-agents-rename', so the per-source
+dispatch -- and the `user-error' for a source with no rename channel --
+has exactly one definition."
+  (interactive)
+  (edmacs-sidebar-agents-rename
+   (edmacs-sidebar-agents--read-row "Rename agent: ")))
+
+;;;###autoload
+(defun edmacs-sidebar-agents-kill-any ()
+  "Kill a tracked agent of any source, chosen by completion.
+`SPC a x'. Delegates to `edmacs-sidebar-agents-kill', which confirms with
+`yes-or-no-p' and owns the per-source dispatch."
+  (interactive)
+  (edmacs-sidebar-agents-kill
+   (edmacs-sidebar-agents--read-row "Kill agent: ")))
 
 ;; ============================================================================
 ;; SPC a TAB -- attention cycling

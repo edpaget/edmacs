@@ -817,6 +817,244 @@ whether or not `claude-term-registry.el' happens to be loaded first."
           (should-error (edmacs-sidebar-agents-kill agent) :type 'user-error))))
 
     ;; ==========================================================================
+    ;; Two sources in one table (edmacs-claude-acp phase 3)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-agents-test-source-badge ()
+      "Only a source with a non-empty configured badge renders one.
+`claude-term' is empty BY DESIGN -- absence of a badge is what marks it
+-- and an unknown or nil source renders nothing rather than erroring."
+      (should (equal "" (edmacs-sidebar-agents--source-badge 'claude-term)))
+      (should (equal "" (edmacs-sidebar-agents--source-badge nil)))
+      (should (equal "" (edmacs-sidebar-agents--source-badge 'something-else)))
+      (let ((badge (edmacs-sidebar-agents--source-badge 'claude-agent)))
+        (should (equal "acp" (substring-no-properties badge)))
+        (should (eq 'edmacs-sidebar-agent-source-face
+                    (get-text-property 0 'face badge)))))
+
+    (ert-deftest edmacs-sidebar-agents-test-claude-term-row-label-is-unchanged ()
+      "A claude-term row's label is byte-identical to the pre-badge format.
+The empty-badge branch exists precisely so adding a second source cannot
+shift a single column of the majority source's rendering."
+      (let* ((agent (edmacs-sidebar-agents-test--make-agent
+                     :source 'claude-term :status 'working
+                     :title "Claude Code" :status-ts (float-time)))
+             (expected (string-trim-right
+                        (format "  %s %s %s"
+                                (edmacs-sidebar-agents--glyph 'working)
+                                "Claude Code"
+                                (edmacs-sidebar-agents--elapsed-string
+                                 (edmacs-agent-status-ts agent))))))
+        (edmacs-test-support-with-sidebar-buffer
+          (edmacs-sidebar-agents--insert-row agent)
+          (should (equal expected
+                         (string-trim-right
+                          (substring-no-properties (buffer-string))))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-mixed-source-group-renders-badge ()
+      "Both sources render in ONE per-worktree group, told apart by badge."
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (let ((term (edmacs-sidebar-agents-test--make-agent
+                     :root "/repo/wt/" :instance "%1" :source 'claude-term
+                     :title "Claude Code" :status 'working))
+              (acp (edmacs-sidebar-agents-test--make-agent
+                    :root "/repo/wt/" :instance "acp" :source 'claude-agent
+                    :title "acp" :status 'working)))
+          (edmacs-sidebar-agents-test--put term)
+          (edmacs-sidebar-agents-test--put acp)
+          ;; Both sources are visible to every row-reading function.
+          (should (= 2 (length (edmacs-sidebar-agents--for-root "/repo/wt/"))))
+          (should (= 2 (length (edmacs-sidebar-agents--all))))
+          (should (equal " (2)" (edmacs-sidebar-agents--label-suffix "/repo/wt/")))
+          (edmacs-test-support-with-sidebar-buffer
+            (edmacs-sidebar-agents--insert-group "/repo/wt/" (list term acp))
+            (let* ((text (buffer-string))
+                   (lines (seq-remove #'string-empty-p
+                                      (split-string text "\n")))
+                   (acp-line (seq-find (lambda (l) (string-match-p "acp" l)) lines))
+                   (term-line (seq-find (lambda (l) (string-match-p "Claude Code" l))
+                                        lines)))
+              (should (= 2 (length lines)))
+              (should acp-line)
+              (should term-line)
+              ;; The ACP line carries the badge, propertized; the
+              ;; claude-term line carries no badge at all.
+              (should (string-match-p "acp" acp-line))
+              (should-not (string-match-p "acp" term-line))
+              ;; The badge keeps its OWN face: the row's status face is
+              ;; layered under it rather than replacing it.
+              (let* ((pos (string-match "acp" acp-line))
+                     (face (get-text-property pos 'face acp-line)))
+                (should (if (listp face)
+                            (memq 'edmacs-sidebar-agent-source-face face)
+                          (eq 'edmacs-sidebar-agent-source-face face)))))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-mixed-source-attention-order ()
+      "A waiting ACP row outranks an unread `done' claude-term row, and
+`edmacs-sidebar-agents-goto-attention' reaches it first."
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (let ((acp (edmacs-sidebar-agents-test--make-agent
+                    :root "/repo/a/" :instance "acp" :source 'claude-agent
+                    :title "acp" :status 'waiting))
+              (term (edmacs-sidebar-agents-test--make-agent
+                     :root "/repo/b/" :instance "%1" :source 'claude-term
+                     :title "Claude Code" :status 'done :unread t)))
+          (edmacs-sidebar-agents-test--put acp)
+          (edmacs-sidebar-agents-test--put term)
+          (let ((order (edmacs-sidebar-agents--attention-list)))
+            (should (= 2 (length order)))
+            (should (eq 'claude-agent (edmacs-agent-source (car order))))
+            (should (eq 'claude-term (edmacs-agent-source (cadr order)))))
+          (let ((visited nil))
+            (cl-letf (((symbol-function 'edmacs-workspaces-open-worktree)
+                       (lambda (dir) (push dir visited)))
+                      ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
+              (edmacs-sidebar-agents-goto-attention)
+              (should (equal '("/repo/a/") visited)))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-visit-source-extra-dispatches-claude-agent ()
+      "A `claude-agent' row pops to its agent-shell buffer -- and does NOT
+go through claude-term's pane logic, which would misroute it."
+      (let ((agent (edmacs-sidebar-agents-test--make-agent
+                    :source 'claude-agent :locator 'fake-acp-buffer))
+            (popped nil)
+            (term-called nil))
+        (cl-letf (((symbol-function 'claude-agent-pop-to-buffer)
+                   (lambda (buf) (setq popped buf)))
+                  ((symbol-function 'claude-term--pop-to-window)
+                   (lambda (&rest _) (setq term-called t))))
+          (edmacs-sidebar-agents--visit-source-extra agent)
+          (should (eq 'fake-acp-buffer popped))
+          (should-not term-called))))
+
+    (ert-deftest edmacs-sidebar-agents-test-rename-dispatches-claude-agent ()
+      "A `claude-agent' row delegates to `claude-agent-agents-rename'; a
+claude-term row still reaches `claude-term-rename'; a nil-source row
+still signals the catch-all `user-error'."
+      (let ((acp (edmacs-sidebar-agents-test--make-agent
+                  :source 'claude-agent :locator 'fake-acp-buffer))
+            (renamed nil)
+            (term-called nil))
+        (cl-letf (((symbol-function 'claude-agent-agents-rename)
+                   (lambda (a) (setq renamed a)))
+                  ((symbol-function 'claude-term-rename)
+                   (lambda (&rest _) (setq term-called t)))
+                  ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
+          (edmacs-sidebar-agents-rename acp)
+          (should (eq acp renamed))
+          (should-not term-called))))
+
+    (ert-deftest edmacs-sidebar-agents-test-kill-dispatches-claude-agent ()
+      "A `claude-agent' row is killed by killing its buffer -- which is what
+runs agent-shell's own `clean-up' and ACP shutdown."
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (let* ((buffer (generate-new-buffer " *sidebar-agents-test-acp*"))
+               (agent (edmacs-sidebar-agents-test--make-agent
+                       :source 'claude-agent :locator buffer))
+               (term-called nil))
+          (unwind-protect
+              (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                        ((symbol-function 'claude-term-kill)
+                         (lambda (&rest _) (setq term-called t)))
+                        ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
+                (edmacs-sidebar-agents-kill agent)
+                (should-not (buffer-live-p buffer))
+                (should-not term-called))
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-kill-claude-agent-with-a-dead-buffer-reaps ()
+      "Killing an ACP row whose buffer is already gone reaps the row rather
+than signalling -- `kill-buffer' on a dead buffer errors, and no
+`clean-up' event can ever arrive for it."
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (let* ((buffer (generate-new-buffer " *sidebar-agents-test-acp-dead*"))
+               (agent (edmacs-sidebar-agents-test--make-agent
+                       :root "/repo/wt/" :instance "acp"
+                       :source 'claude-agent :locator buffer)))
+          (edmacs-sidebar-agents-test--put agent)
+          (kill-buffer buffer)
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                    ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore))
+            (edmacs-sidebar-agents-kill agent)
+            (should-not (gethash (edmacs-agent-key agent) edmacs-agents--table))))))
+
+    ;; ==========================================================================
+    ;; Source-agnostic SPC a commands (edmacs-claude-acp phase 3)
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-agents-test-read-row-offers-both-sources ()
+      "The completion surface lists rows of every source, labelled by it."
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (let ((term (edmacs-sidebar-agents-test--make-agent
+                     :root "/repo/wt/" :instance "%1" :source 'claude-term
+                     :title "Claude Code" :status 'working))
+              (acp (edmacs-sidebar-agents-test--make-agent
+                    :root "/repo/wt/" :instance "acp" :source 'claude-agent
+                    :title "acp" :status 'waiting))
+              (offered nil))
+          (edmacs-sidebar-agents-test--put term)
+          (edmacs-sidebar-agents-test--put acp)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt candidates &rest _)
+                       (setq offered candidates)
+                       (car candidates))))
+            (let ((chosen (edmacs-sidebar-agents--read-row "Pick: ")))
+              (should (= 2 (length offered)))
+              (should (seq-find (lambda (c) (string-prefix-p "claude-agent " c))
+                                offered))
+              (should (seq-find (lambda (c) (string-prefix-p "claude-term " c))
+                                offered))
+              ;; Attention order, so the waiting ACP row is offered first.
+              (should (eq acp chosen)))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-read-row-on-an-empty-table-user-errors ()
+      "An empty table signals rather than opening a candidate-less prompt."
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (should-error (edmacs-sidebar-agents--read-row "Pick: ")
+                      :type 'user-error)))
+
+    (ert-deftest edmacs-sidebar-agents-test-jump-any-source ()
+      "`SPC a j' reaches an ACP row, visiting AND running its source extra."
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (let ((acp (edmacs-sidebar-agents-test--make-agent
+                    :root "/repo/wt/" :instance "acp" :source 'claude-agent
+                    :locator 'fake-acp-buffer :status 'waiting))
+              (visited nil)
+              (popped nil))
+          (edmacs-sidebar-agents-test--put acp)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_p candidates &rest _) (car candidates)))
+                    ((symbol-function 'edmacs-workspaces-open-worktree)
+                     (lambda (dir) (push dir visited)))
+                    ((symbol-function 'edmacs-sidebar-agents--redraw-all) #'ignore)
+                    ((symbol-function 'claude-agent-pop-to-buffer)
+                     (lambda (buf) (setq popped buf))))
+            (edmacs-sidebar-agents-jump)
+            (should (equal '("/repo/wt/") visited))
+            (should (eq 'fake-acp-buffer popped))))))
+
+    (ert-deftest edmacs-sidebar-agents-test-rename-any-and-kill-any-delegate ()
+      "Both wrappers funnel into the one dispatching command, so the
+per-source logic has exactly one definition."
+      (edmacs-test-support-with-clean-sidebar-agents-state
+        (let ((acp (edmacs-sidebar-agents-test--make-agent
+                    :root "/repo/wt/" :instance "acp" :source 'claude-agent
+                    :locator 'fake-acp-buffer :status 'waiting))
+              (renamed nil)
+              (killed nil))
+          (edmacs-sidebar-agents-test--put acp)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_p candidates &rest _) (car candidates)))
+                    ((symbol-function 'edmacs-sidebar-agents-rename)
+                     (lambda (a) (setq renamed a)))
+                    ((symbol-function 'edmacs-sidebar-agents-kill)
+                     (lambda (a) (setq killed a))))
+            (edmacs-sidebar-agents-rename-any)
+            (edmacs-sidebar-agents-kill-any)
+            (should (eq acp renamed))
+            (should (eq acp killed))))))
+
+    ;; ==========================================================================
     ;; Collapsed sidebar section (phase 10)
     ;; ==========================================================================
 

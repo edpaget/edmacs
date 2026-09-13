@@ -542,6 +542,37 @@ agent-shell brought up before that setting could apply to it."
     (with-current-buffer buffer
       (evil-insert-state))))
 
+(defvar claude-agent-session-create-functions nil
+  "Hook run with (ROOT BUFFER) once an ACP session's buffer exists.
+ROOT is the slash-terminated truename the session was started at;
+BUFFER is its live `agent-shell-mode' buffer.  A swappable seam in the
+same spirit as `claude-term-registry-create-functions', so an adapter
+\(modules/claude-agent-agents.el) can mirror a session into another
+table without this module knowing that table exists, and without
+advising the start path.
+
+Deliberately UNPAIRED -- there is no matching remove hook.  A session
+ends in two ways this module cannot observe from here: its buffer is
+killed (agent-shell emits its own `clean-up' event from
+`kill-buffer-hook') or its agent process dies (only the process
+sentinel sees that).  A remove hook fired from this file would cover
+neither, so removal is left entirely to whoever registered.
+
+Fired at the very END of `claude-agent--start-at', after
+`display-buffer', mirroring where `claude-term-registry-put' fires its
+own create hook.")
+
+(defun claude-agent-pop-to-buffer (buffer)
+  "Display and select BUFFER, an ACP session's agent shell.
+Not `claude-term--pop-to-window': that is claude-term's own pane logic
+for a ghostel buffer, and an `agent-shell-mode' buffer is an ordinary
+buffer with no pane discipline of its own.  Signals `user-error' rather
+than erroring deep inside `pop-to-buffer' when BUFFER is already dead --
+a sidebar row can outlive its session by the width of one redraw."
+  (unless (buffer-live-p buffer)
+    (user-error "Claude-agent: this session's buffer is gone"))
+  (pop-to-buffer buffer))
+
 (defun claude-agent--start-at (root)
   "Start an ACP session rooted at ROOT and return its buffer.
 Never enters the minibuffer: passing `:session-strategy' as the symbol
@@ -569,7 +600,8 @@ picker from opening at all, rather than racing to answer it once it has."
         ;; cwd again -- `session/new' is sent from an async callback.
         (setq-local agent-shell-cwd-function (lambda () root)))
       (claude-agent--configure-evil buffer)
-      (display-buffer buffer))
+      (display-buffer buffer)
+      (run-hook-with-args 'claude-agent-session-create-functions root buffer))
     buffer))
 
 ;;;###autoload

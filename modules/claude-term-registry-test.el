@@ -797,7 +797,9 @@ straight locally -- so the caller can `ert-skip' instead of failing."
 
 (ert-deftest claude-term-registry-test-spc-a-bindings-resolve ()
   "Every SPC a leaf key resolves, from this module's single keymap form.
-Eight are this module's own commands.
+Four are this module's own, claude-term-only commands (n/w/A/X); four
+more (j/L/r/x) are the source-agnostic agent verbs that reach an ACP
+session as readily as a claude-term one (edmacs-claude-acp phase 3).
 `SPC a TAB' resolves to edmacs-sidebar roadmap phase 6's global agent
 attention-jump (`edmacs-sidebar-agents-goto-attention', sidebar-agents.el)
 and `SPC a c' to the edmacs-claude-acp roadmap's `claude-agent-start'
@@ -814,21 +816,31 @@ elsewhere would fight this one for the prefix."
   ;; (claude-term-registry.el, loaded via -l before this test file) were
   ;; deferred until 'general' actually loaded -- `require' above just
   ;; fired them for real.
-  (let ((ours '(("n" . claude-term-new-session)
-                ;; Bound here, defined in modules/claude-agent.el: this
-                ;; module is SPC a's sole owner, so every leaf under the
-                ;; prefix lives in its single `general-define-key' form.
-                ("c" . claude-agent-start)
-                ("j" . claude-term-jump)
-                ("L" . claude-term-list-sessions)
-                ("w" . claude-term-toggle-pane)
-                ("A" . claude-term-show-all)
-                ("x" . claude-term-kill)
-                ("X" . claude-term-kill-all)
-                ("r" . claude-term-rename))))
-    (dolist (pair ours)
+  ;; The claude-term-only residue: each operates on a ghostel pane or on
+  ;; this module's own registry, neither of which an ACP session has.
+  (let ((claude-term-only '(("n" . claude-term-new-session)
+                            ("w" . claude-term-toggle-pane)
+                            ("A" . claude-term-show-all)
+                            ("X" . claude-term-kill-all))))
+    (dolist (pair claude-term-only)
       (should (eq (lookup-key evil-normal-state-map (kbd (concat "SPC a " (car pair))))
                   (cdr pair)))))
+  ;; The source-agnostic verbs: these act on an AGENT whatever started it,
+  ;; so they resolve into agents.el/sidebar-agents.el rather than here.
+  ;; `claude-term-jump'/`claude-term-list-sessions' are deliberately no
+  ;; longer bound -- both remain M-x-reachable for a claude-term-only view.
+  (let ((any-source '(("j" . edmacs-sidebar-agents-jump)
+                      ("L" . edmacs-agents-list)
+                      ("r" . edmacs-sidebar-agents-rename-any)
+                      ("x" . edmacs-sidebar-agents-kill-any))))
+    (dolist (pair any-source)
+      (should (eq (lookup-key evil-normal-state-map (kbd (concat "SPC a " (car pair))))
+                  (cdr pair)))))
+  ;; Bound here, defined in modules/claude-agent.el: this module is SPC
+  ;; a's sole owner, so every leaf under the prefix lives in its single
+  ;; `general-define-key' form.
+  (should (eq (lookup-key evil-normal-state-map (kbd "SPC a c"))
+              'claude-agent-start))
   (should (eq (lookup-key evil-normal-state-map (kbd "SPC a TAB"))
               'edmacs-sidebar-agents-goto-attention)))
 

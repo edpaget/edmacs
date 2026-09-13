@@ -203,9 +203,61 @@ rendered as a trailing `*' and a read `idle' row rendered without one."
           (should (equal (aref done-cols 1) root))
           (should (equal (aref done-cols 2) "%1"))
           (should (equal (aref done-cols 3) "done*"))
-          (should (equal (aref done-cols 4) "Fixing the thing"))
+          (should (equal (aref done-cols 4) "claude-term"))
+          (should (equal (aref done-cols 5) "Fixing the thing"))
           (should (equal (aref idle-cols 3) "idle"))
-          (should (equal (aref idle-cols 4) "Already read")))))))
+          (should (equal (aref idle-cols 4) "claude-term"))
+          (should (equal (aref idle-cols 5) "Already read")))))))
+
+(ert-deftest edmacs-agents-test-list-entries-carry-source ()
+  "Every row renders its SOURCE, including a nil one as \"-\".
+The tabulated listing is `SPC a L', so it is where a mixed table is read
+as a table; a nil SOURCE is the `emacs-status.sh' ingress (see the
+struct docstring and task `agents-set-status-drops-source'), and must
+render as a real value rather than an empty cell."
+  (edmacs-test-support-with-clean-agent-state
+    (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
+           (rows '(("%1" . claude-term) ("acp" . claude-agent) ("hook" . nil))))
+      (dolist (row rows)
+        (let ((key (edmacs-agents--key root (car row))))
+          (puthash key (make-edmacs-agent
+                        :key key :root root :instance (car row)
+                        :status 'idle :status-ts 1 :updated-ts 1
+                        :title (car row) :source (cdr row)
+                        :locator nil :unread nil)
+                   edmacs-agents--table)))
+      (let ((entries (edmacs-agents--list-entries)))
+        (should (= 3 (length entries)))
+        (dolist (expected '(("%1" . "claude-term")
+                            ("acp" . "claude-agent")
+                            ("hook" . "-")))
+          (let ((cols (cadr (assoc (edmacs-agents--key root (car expected))
+                                   entries))))
+            (should cols)
+            (should (equal (cdr expected) (aref cols 4)))))))))
+
+(ert-deftest edmacs-agents-test-struct-docstring-names-sources ()
+  "The struct docstring names the REAL second source, not the retired one.
+`claude-repl' was archived at tag `archive/claude-repl' and has never
+been a source this table could actually hold; `claude-agent' is."
+  (let ((doc (cl--class-docstring (cl-find-class 'edmacs-agent))))
+    (should (stringp doc))
+    (should (string-match-p "claude-agent" doc))
+    (should (string-match-p "claude-term" doc))
+    (should-not (string-match-p "claude-repl" doc))))
+
+(ert-deftest edmacs-agents-test-set-status-still-creates-source-nil-row ()
+  "`edmacs-agents-set-status's CREATION branch is untouched by phase 3.
+Pinned deliberately: that branch is task `agents-set-status-drops-source's
+territory, and the ACP adapter works AROUND it (creating its own rows)
+rather than changing it, precisely so the two land without colliding. A
+later fix should change this test knowingly, not silently."
+  (edmacs-test-support-with-clean-agent-state
+    (let* ((root (file-truename (make-temp-file "edmacs-agents-test-root-" t)))
+           (row (edmacs-agents-set-status root 'working "hook")))
+      (should (eq 'working (edmacs-agent-status row)))
+      (should-not (edmacs-agent-source row))
+      (should-not (edmacs-agent-locator row)))))
 
 (ert-deftest edmacs-agents-test-list-entries-empty ()
   "An empty table produces an empty entries list, not an error."

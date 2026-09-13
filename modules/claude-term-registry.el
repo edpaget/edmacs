@@ -649,8 +649,31 @@ was asked to die (see the phase body's own edge case)."
 ;; nowhere.  Both forward references are safe for the same reason:
 ;; `general-define-key' stores the quoted symbol and resolves it at
 ;; keypress, and init.el loads both modules after this one.
+;;
+;; SOURCE-AGNOSTIC vs CLAUDE-TERM-ONLY (edmacs-claude-acp roadmap phase
+;; 3, which gave the shared agents table a second SOURCE, `claude-agent',
+;; for ACP sessions).  Four leaves operate on an AGENT, whatever started
+;; it, and so route through agents.el/sidebar-agents.el rather than this
+;; module's own registry: "j" (jump), "L" (list), "r" (rename) and "x"
+;; (kill).  Four remain claude-term-only, and not by omission -- each
+;; operates on a ghostel pane or on this module's registry, neither of
+;; which an ACP session has at all:
+;;
+;;   "n"  new session  -- spawns a ghostel pane running the claude CLI;
+;;                        "c" is the ACP equivalent.
+;;   "w"  toggle pane  -- shows/hides claude-term's own windows.
+;;   "A"  show all     -- displays every registered claude-term buffer.
+;;   "X"  kill all     -- walks this module's registry.
+;;
+;; `claude-term-jump' and `claude-term-list-sessions' are no longer bound
+;; here, but both remain commands and stay reachable via M-x for a
+;; claude-term-only view.
 
 (declare-function edmacs-sidebar-agents-goto-attention "sidebar-agents")
+(declare-function edmacs-sidebar-agents-jump "sidebar-agents")
+(declare-function edmacs-sidebar-agents-rename-any "sidebar-agents")
+(declare-function edmacs-sidebar-agents-kill-any "sidebar-agents")
+(declare-function edmacs-agents-list "agents")
 (declare-function claude-agent-start "claude-agent")
 
 (with-eval-after-load 'general
@@ -660,13 +683,13 @@ was asked to die (see the phase body's own edge case)."
    "" '(:ignore t :which-key "claude")
    "n" '(claude-term-new-session :which-key "new session")
    "c" '(claude-agent-start :which-key "new ACP session")
-   "j" '(claude-term-jump :which-key "jump to session")
-   "L" '(claude-term-list-sessions :which-key "list sessions")
+   "j" '(edmacs-sidebar-agents-jump :which-key "jump to agent")
+   "L" '(edmacs-agents-list :which-key "list agents")
    "w" '(claude-term-toggle-pane :which-key "toggle pane")
    "A" '(claude-term-show-all :which-key "show all sessions")
-   "x" '(claude-term-kill :which-key "kill session")
+   "x" '(edmacs-sidebar-agents-kill-any :which-key "kill agent")
    "X" '(claude-term-kill-all :which-key "kill all sessions")
-   "r" '(claude-term-rename :which-key "rename session")
+   "r" '(edmacs-sidebar-agents-rename-any :which-key "rename agent")
    "TAB" '(edmacs-sidebar-agents-goto-attention :which-key "next agent wanting attention")
    "u" '(claude-usage :which-key "usage")))
 

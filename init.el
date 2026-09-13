@@ -151,6 +151,12 @@ LANGUAGE should be the name without the .el extension."
 ;; `with-eval-after-load' on `nano-modeline' -- nano-modeline is loaded
 ;; by ui.el, not here, so the install itself waits for that.
 (load-module "claude-term-agents")
+;; The ACP half of the same seam (edmacs-claude-acp roadmap phase 3):
+;; needs claude-agent.el's `claude-agent-session-create-functions' hook
+;; var (loaded above) and agents.el's row API (loaded just above) to
+;; exist -- it `add-hook's onto the former at its own load time, so this
+;; one IS an ordering dependency, not just a readability convention.
+(load-module "claude-agent-agents")
 ;; After git.el: straight only puts `magit-section' on `load-path' once
 ;; `use-package magit' (in git.el) has registered it, same as sidebar.el.
 (load-module "claude-usage")

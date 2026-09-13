@@ -586,6 +586,37 @@ spawn time, against whatever `exec-path' the spawning buffer had."
         ;; ... and the global defcustom was left alone.
         (should (equal '("claude-agent-acp") agent-shell-anthropic-claude-acp-command))))))
 
+(ert-deftest claude-agent-test-start-fires-the-create-hook ()
+  "`claude-agent-session-create-functions' fires exactly once, with the
+truename'd slash-terminated ROOT and the live session BUFFER.
+The seam modules/claude-agent-agents.el registers a row on: an adapter
+must never have to advise the start path to learn a session exists."
+  (claude-agent-test--with-root root
+    (claude-agent-test--with-stubbed-start
+      (let ((calls nil))
+        (let ((claude-agent-session-create-functions
+               (list (lambda (r b) (push (cons r b) calls)))))
+          (let ((buffer (claude-agent-start root)))
+            (should (= 1 (length calls)))
+            (should (equal (file-name-as-directory (file-truename root))
+                           (car (car calls))))
+            (should (eq buffer (cdr (car calls))))))))))
+
+(ert-deftest claude-agent-test-pop-to-buffer-rejects-a-dead-buffer ()
+  "A row can outlive its session by a redraw, so the jump target must
+report that plainly rather than erroring inside `pop-to-buffer'."
+  (let ((buffer (generate-new-buffer " *claude-agent-test-dead*")))
+    (kill-buffer buffer)
+    (should-error (claude-agent-pop-to-buffer buffer) :type 'user-error))
+  (let ((buffer (generate-new-buffer " *claude-agent-test-live*")))
+    (unwind-protect
+        (let ((popped nil))
+          (cl-letf (((symbol-function 'pop-to-buffer)
+                     (lambda (b &rest _) (setq popped b))))
+            (claude-agent-pop-to-buffer buffer)
+            (should (eq buffer popped))))
+      (kill-buffer buffer))))
+
 (ert-deftest claude-agent-test-buffer-name-is-not-claude-term-shaped ()
   "An ACP shell must not be mistaken for a claude-term session.
 claude-term's registry, session picker and the sidebar's agent rows all
