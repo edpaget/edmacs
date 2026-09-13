@@ -525,6 +525,76 @@ entries observed while BODY ran."
 (defvar claude-agent-test--entered-minibuffer 0
   "Minibuffer entries counted inside `claude-agent-test--with-stubbed-start'.")
 
+(ert-deftest claude-agent-test-resume-opens-the-picker ()
+  "`claude-agent-resume' asks for the `prompt' strategy.
+That is the only path in this module that opens agent-shell's session
+picker.  The picker is populated from the agent's `session/list', which
+reads the same `~/.claude/projects' store the `claude' CLI resumes from,
+so a claude-term-started conversation is offered here too."
+  (claude-agent-test--with-root root
+    (claude-agent-test--with-stubbed-start
+      (should (claude-agent-resume root))
+      (should (eq 'prompt (plist-get claude-agent-test--start-args :session-strategy))))))
+
+(ert-deftest claude-agent-test-resume-does-not-inhibit-interaction ()
+  "The resume path leaves `inhibit-interaction' alone.
+`claude-agent--start-at' binds it to t on every other strategy so a
+prompt upstream adds fails loudly instead of wedging the daemon.  The
+`prompt' strategy IS a prompt, so inhibiting it there would break the
+picker it exists to open."
+  (claude-agent-test--with-root root
+    (claude-agent-test--with-stubbed-start
+      (let ((inhibit-interaction nil)
+            (seen 'unset))
+        (cl-letf (((symbol-function 'agent-shell--start)
+                   (lambda (&rest args)
+                     (setq claude-agent-test--start-args args)
+                     (setq seen inhibit-interaction)
+                     (current-buffer))))
+          (claude-agent-resume root)
+          (should-not seen))))))
+
+(ert-deftest claude-agent-test-start-still-inhibits-interaction ()
+  "The default strategy keeps the headless guarantee.
+Sibling of the resume test above: `claude-agent-start' must still bind
+`inhibit-interaction' to t, so adding the resume path did not loosen the
+property phase 2 was accepted on."
+  (claude-agent-test--with-root root
+    (claude-agent-test--with-stubbed-start
+      (let ((inhibit-interaction nil)
+            (seen 'unset))
+        (cl-letf (((symbol-function 'agent-shell--start)
+                   (lambda (&rest args)
+                     (setq claude-agent-test--start-args args)
+                     (setq seen inhibit-interaction)
+                     (current-buffer))))
+          (claude-agent-start root)
+          (should (eq t seen)))))))
+
+(ert-deftest claude-agent-test-kill-does-not-prompt-to-save ()
+  "The buffer opts out of shell-maker's save-on-kill query.
+agent-shell only suppresses it when IT writes a transcript; this module
+disables transcripts, which re-enables the query unless we turn it off."
+  (let ((buffer (generate-new-buffer " *claude-agent-kill-test*")))
+    (unwind-protect
+        (progn
+          (claude-agent--configure-buffer buffer)
+          (with-current-buffer buffer
+            (should (local-variable-p 'shell-maker-prompt-before-killing-buffer))
+            (should-not shell-maker-prompt-before-killing-buffer)))
+      (kill-buffer buffer))))
+
+(ert-deftest claude-agent-test-startup-chrome-is-off ()
+  "The welcome banner and header are disabled by this module.
+Both are one-shot or redundant decoration.  The busy indicator is left
+alone deliberately -- it reports live state rather than decorating the
+start -- and this asserts that by its absence: loading this module under
+`-Q' must leave `agent-shell-show-busy-indicator' unbound, which a
+`setq' or `defvar' added here would silently change."
+  (should-not agent-shell-show-welcome-message)
+  (should-not agent-shell-header-style)
+  (should-not (boundp 'agent-shell-show-busy-indicator)))
+
 (ert-deftest claude-agent-test-start-never-opens-the-picker ()
   "The start call asks for a NEW session outright.
 agent-shell's `Start shell (default: New shell)' picker is not on the

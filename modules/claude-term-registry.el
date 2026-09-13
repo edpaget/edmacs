@@ -661,6 +661,9 @@ was asked to die (see the phase body's own edge case)."
 ;;
 ;;   "n"  new session  -- spawns a ghostel pane running the claude CLI;
 ;;                        "c" is the ACP equivalent.
+;;   "R"  resume       -- opens agent-shell's session picker, populated
+;;                        from the agent's `session/list'.  "c" never
+;;                        prompts; "R" is the only path that does.
 ;;   "w"  toggle pane  -- shows/hides claude-term's own windows.
 ;;   "A"  show all     -- displays every registered claude-term buffer.
 ;;   "X"  kill all     -- walks this module's registry.
@@ -675,6 +678,7 @@ was asked to die (see the phase body's own edge case)."
 (declare-function edmacs-sidebar-agents-kill-any "sidebar-agents")
 (declare-function edmacs-agents-list "agents")
 (declare-function claude-agent-start "claude-agent")
+(declare-function claude-agent-resume "claude-agent")
 
 (with-eval-after-load 'general
   (general-define-key
@@ -683,6 +687,7 @@ was asked to die (see the phase body's own edge case)."
    "" '(:ignore t :which-key "claude")
    "n" '(claude-term-new-session :which-key "new session")
    "c" '(claude-agent-start :which-key "new ACP session")
+   "R" '(claude-agent-resume :which-key "resume ACP session")
    "j" '(edmacs-sidebar-agents-jump :which-key "jump to agent")
    "L" '(edmacs-agents-list :which-key "list agents")
    "w" '(claude-term-toggle-pane :which-key "toggle pane")

@@ -170,7 +170,11 @@
 ;; declared so this file byte-compiles and loads under a bare `emacs -Q',
 ;; where none of the three packages exists.  Same posture as
 ;; modules/claude-term.el's ghostel-family declarations.
+(declare-function evil-define-key* "evil-core")
 (defvar agent-shell-transcript-file-path-function)
+(defvar agent-shell-show-welcome-message)
+(defvar shell-maker-prompt-before-killing-buffer)
+(defvar agent-shell-header-style)
 (defvar agent-shell-dot-subdir-function)
 (defvar agent-shell-cwd-function)
 (defvar agent-shell-anthropic-claude-acp-command)
@@ -182,7 +186,6 @@
 
 ;; `evil' and `exec-path-from-shell' are likewise absent under `-Q'.
 (declare-function evil-set-initial-state "evil-core")
-(declare-function evil-define-key* "evil-core")
 (declare-function evil-insert-state "evil-states")
 (declare-function exec-path-from-shell-copy-env "exec-path-from-shell")
 
@@ -295,6 +298,13 @@ see this file's Commentary on `.git/info/exclude'.  Directory creation is
 ;; overwrites the default.  Neither upstream defcustom carries a `:set',
 ;; so `setq' and `:custom' are equivalent wherever both actually run.
 (setq agent-shell-transcript-file-path-function nil)
+
+;; Startup chrome off: the welcome banner is a one-shot splash that costs a
+;; screenful on every new session, and the header duplicates what the mode
+;; line and the buffer name already say.  The busy indicator stays on -- it
+;; reports live state rather than decorating the start.
+(setq agent-shell-show-welcome-message nil)
+(setq agent-shell-header-style nil)
 (setq agent-shell-dot-subdir-function #'claude-agent--dot-subdir)
 
 ;; ============================================================================
@@ -531,6 +541,19 @@ shipped exactly that bug against bare `python3')."
               (agent-shell-anthropic-make-claude-client :buffer buffer))))
     config))
 
+(defun claude-agent--configure-buffer (buffer)
+  "Apply this module's buffer-local settings to BUFFER.
+
+`shell-maker-prompt-before-killing-buffer' is turned off.  agent-shell
+only suppresses that prompt when IT is writing a transcript
+\(`agent-shell--transcript-file' non-nil); disabling transcripts -- which
+this module does deliberately, since Claude Code already stores every
+session under `~/.claude/projects' -- drops into the else branch and
+re-enables shell-maker's own save-on-kill query."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq-local shell-maker-prompt-before-killing-buffer nil))))
+
 (defun claude-agent--configure-evil (buffer)
   "Put BUFFER into evil insert state when evil is on.
 `evil-set-initial-state' below is what makes insert state contractual for
@@ -573,33 +596,46 @@ a sidebar row can outlive its session by the width of one redraw."
     (user-error "Claude-agent: this session's buffer is gone"))
   (pop-to-buffer buffer))
 
-(defun claude-agent--start-at (root)
+(defun claude-agent--start-at (root &optional strategy)
   "Start an ACP session rooted at ROOT and return its buffer.
-Never enters the minibuffer: passing `:session-strategy' as the symbol
-`new' is what keeps agent-shell's \"Start shell (default: New shell)\"
-picker from opening at all, rather than racing to answer it once it has."
+STRATEGY is an `agent-shell-session-strategy' value -- `new' (the
+default), `latest', or `prompt'.
+
+`new' and `latest' never enter the minibuffer: passing the strategy
+explicitly is what keeps agent-shell's \"Start shell (default: New
+shell)\" picker from opening at all, rather than racing to answer it
+once it has.  `prompt' deliberately does open it, so it is reachable
+only from `claude-agent-resume' -- never from a headless caller, where
+phase 1 proved answering that picker wedges the driving connection."
   (unless (require 'agent-shell nil t)
     (user-error "Claude-agent: agent-shell is not installed"))
-  (let* ((agent (claude-agent--ensure-agent))
+  (let* ((strategy (or strategy 'new))
+         (interactive-strategy (eq strategy 'prompt))
+         (agent (claude-agent--ensure-agent))
          (root (file-name-as-directory (file-truename root)))
          (config (claude-agent--make-config agent (claude-agent--mcp-servers-for-root root)))
          (buffer (let ((default-directory root)
                        (agent-shell-cwd-function (lambda () root))
-                       ;; Belt and braces: any prompt upstream adds on this
-                       ;; path must fail loudly here rather than wedge the
-                       ;; daemon for every later client.
-                       (inhibit-interaction t)
+                       ;; Belt and braces on the non-prompt strategies: any
+                       ;; prompt upstream adds there must fail loudly rather
+                       ;; than wedge the daemon for every later client.  The
+                       ;; `prompt' strategy IS the picker, so it must not be
+                       ;; inhibited -- a human is at the keyboard for it.
+                       (inhibit-interaction (if interactive-strategy
+                                                inhibit-interaction
+                                              t))
                        (enable-recursive-minibuffers nil))
                    (agent-shell--start :config config
                                        :no-focus t
                                        :new-session t
-                                       :session-strategy 'new))))
+                                       :session-strategy strategy))))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         ;; The `let' above is long gone by the time agent-shell asks for a
         ;; cwd again -- `session/new' is sent from an async callback.
         (setq-local agent-shell-cwd-function (lambda () root)))
       (claude-agent--configure-evil buffer)
+      (claude-agent--configure-buffer buffer)
       (display-buffer buffer)
       (run-hook-with-args 'claude-agent-session-create-functions root buffer))
     buffer))
@@ -611,6 +647,20 @@ Returns the session buffer.  Independent of `claude-term': neither
 module's registry, buffer names or keys are touched by the other."
   (interactive)
   (claude-agent--start-at (or root (claude-agent--project-root))))
+
+(defun claude-agent-resume (&optional root)
+  "Resume an ACP-backed Claude session at ROOT, choosing from past ones.
+Opens agent-shell's session picker, which it populates from the agent's
+`session/list' -- the same `~/.claude/projects' store the `claude' CLI
+resumes from, so a conversation started in `claude-term' (or a bare
+terminal) is offered here too, and one started here is offered to
+`claude --resume'.
+
+`claude-agent-start' is the always-fresh entry point and never prompts;
+this is the only path that opens the picker, and it is interactive-only
+for that reason."
+  (interactive)
+  (claude-agent--start-at (or root (claude-agent--project-root)) 'prompt))
 
 (defun claude-agent--in-input-region-p ()
   "Return non-nil when point is in the agent shell's editable input region."
@@ -648,6 +698,14 @@ than a signal for a key pressed this often."
 (with-eval-after-load 'evil
   (evil-set-initial-state 'agent-shell-mode 'insert)
   (with-eval-after-load 'agent-shell
+    ;; Normal-state RET goes through `agent-shell-submit', not
+    ;; evil-collection's `shell-maker-submit'.  The difference is a gate:
+    ;; `agent-shell-submit' refuses with "Busy, please wait" until the ACP
+    ;; session is ready, so text typed during startup stays editable
+    ;; instead of being committed and rejected.  Insert-state RET is left
+    ;; to evil-collection's `repl-newline' -- both agent-shell's README and
+    ;; `evil-collection-repl-submit-state' intend newline there, with
+    ;; S-RET as the always-newline key.
     (evil-define-key* 'normal agent-shell-mode-map (kbd "RET") #'claude-agent-submit)))
 
 (provide 'claude-agent)
