@@ -45,7 +45,11 @@
 ;;   - the CLI's approval prompt for a newly-seen project server has no
 ;;     equivalent here: every stdio/http/sse entry in the file is sent.
 ;;   - an entry naming neither a `command' nor an http/sse `url' is
-;;     skipped with one warning naming it.
+;;     skipped with one warning naming it, as is one that is not a JSON
+;;     object at all; a file whose shape is not an object of objects is
+;;     ignored whole, with one warning.  `.mcp.json' is not authored here,
+;;     so valid-JSON-wrong-shape is a case this module owns rather than a
+;;     `wrong-type-argument' out of `SPC a c'.
 ;;
 ;; IMAGE PASTE / SCREENSHOTS are unevaluated -- phase 1 time-boxed them out
 ;; entirely.  Treat as unknown, not working.
@@ -68,6 +72,15 @@
 ;; `.agent-shell/'.
 ;;
 ;; ------------------------------------------------------------------
+;; AGENT-SHELL SETTINGS are applied by plain `setq', NOT by a `:custom'
+;; block on the `use-package' form.  use-package parses a declaration as a
+;; whole, so wherever `:straight' is unregistered -- a bare `-Q',
+;; scripts/claude-scratch.sh's daemon, this module's ERT harness -- the
+;; form expands to nothing and every clause on it goes with it, reported
+;; only as a warning.  agent-shell then comes up on its defaults and the
+;; first session writes into whatever checkout it ran in.
+;;
+;; ------------------------------------------------------------------
 ;; HEADLESS START.  agent-shell's session picker is not on the start call
 ;; at all: `agent-shell-session-strategy' defaults to `prompt', and the
 ;; `completing-read' fires asynchronously from the `session/list' response
@@ -80,8 +93,16 @@
 ;; recipe, from a THROWAWAY daemon (never the server named `server'):
 ;;
 ;;   scripts/claude-scratch.sh start
-;;   scripts/claude-scratch.sh eval '(claude-agent-start)'
-;;   scripts/claude-scratch.sh eval '(claude-agent-start "/path/to/root")'
+;;   scripts/claude-scratch.sh eval \
+;;     '(load (expand-file-name "modules/claude-agent.el" default-directory) nil t)'
+;;   scripts/claude-scratch.sh eval '(claude-agent-start "/abs/path/to/root")'
+;;
+;; The middle line is not optional: claude-scratch.sh boots the claude-lib
+;; family and nothing else.  It runs `emacs -Q' with no straight
+;; bootstrap, which is exactly where a `:custom' block would have been
+;; dropped -- see "AGENT-SHELL SETTINGS".  `default-directory' there is
+;; the CALLING checkout, so the `expand-file-name' picks up the module
+;; under test rather than main's copy.
 ;;
 ;; and for the interactive variant, `claude-lib-drive-command' from
 ;; modules/claude-lib-drive.el, which cannot block.
@@ -126,17 +147,12 @@
 
 (use-package agent-shell
   :straight (agent-shell :type git :host github :repo "xenodium/agent-shell")
-  :defer t
-  ;; Deliberately NO `:after (acp shell-maker)': `:after' wraps the WHOLE
-  ;; use-package body -- `:custom' included -- in an `eval-after-load', so
-  ;; with both of those packages themselves deferred the two settings
-  ;; below would never be applied and agent-shell would come up writing
-  ;; transcripts into the checkout.  agent-shell.el `require's them itself.
-  :custom
-  ;; See "NO TRANSCRIPTS IN THE REPO" above.  `:custom', not `setq': both
-  ;; of these are defcustoms whose `:set' is what upstream expects to run.
-  (agent-shell-transcript-file-path-function nil)
-  (agent-shell-dot-subdir-function #'claude-agent--dot-subdir))
+  :defer t)
+
+;; The two settings that keep a session out of the checkout are applied
+;; below, at top level, NOT through a `:custom' block on the form above --
+;; see "AGENT-SHELL SETTINGS" in the Commentary for why that distinction
+;; is load-bearing rather than stylistic.
 
 ;; Referenced from function bodies and from the `:custom' block above;
 ;; declared so this file byte-compiles and loads under a bare `emacs -Q',
@@ -260,6 +276,15 @@ see this file's Commentary on `.git/info/exclude'.  Directory creation is
 `agent-shell--dot-subdir's job, not this function's."
   (expand-file-name subdir claude-agent-data-directory))
 
+;; Applied unconditionally at load time, not through `use-package' -- see
+;; the Commentary.  This works in both load orders: `defcustom' leaves an
+;; already-bound variable alone, so setting them before agent-shell loads
+;; survives its declaration, and setting them after it has loaded
+;; overwrites the default.  Neither upstream defcustom carries a `:set',
+;; so `setq' and `:custom' are equivalent wherever both actually run.
+(setq agent-shell-transcript-file-path-function nil)
+(setq agent-shell-dot-subdir-function #'claude-agent--dot-subdir)
+
 ;; ============================================================================
 ;; Sessions
 ;; ============================================================================
@@ -315,47 +340,88 @@ noisy one.  Never signals."
                           :warning)
          nil)))))
 
+(defun claude-agent--json-object-p (value)
+  "Return non-nil when VALUE could be a parsed JSON object.
+`json-parse-buffer' renders an object as an alist, `{}' as nil, and an
+array as a plain list -- so \"is it a list\" does not distinguish the
+two.  Every element of an object is a cons; `[1,2,3]' has none.  This is
+the only shape check between a hand-edited `.mcp.json' and an `alist-get'
+on an integer."
+  (and (listp value) (seq-every-p #'consp value)))
+
+(defun claude-agent--mcp-key-name (key)
+  "Return JSON object KEY as a string, whatever the parser produced."
+  (cond ((symbolp key) (symbol-name key))
+        ((stringp key) key)
+        (t (format "%s" key))))
+
 (defun claude-agent--mcp-name-value-pairs (object)
   "Translate a JSON OBJECT of string values into ACP name/value alists.
 `((A . \"1\"))' becomes `(((name . \"A\") (value . \"1\")))', the shape
-`agent-shell-mcp-servers' documents for both `env' and `headers'."
-  (delq nil
-        (mapcar (lambda (pair)
-                  (let ((key (car pair))
-                        (value (cdr pair)))
-                    (when (and key (stringp value))
-                      `((name . ,(if (symbolp key) (symbol-name key) (format "%s" key)))
-                        (value . ,value)))))
-                object)))
+`agent-shell-mcp-servers' documents for both `env' and `headers'.  A
+non-object OBJECT -- `\"env\": true' is the realistic hand-edit -- yields
+nil rather than signalling."
+  (when (claude-agent--json-object-p object)
+    (delq nil
+          (mapcar (lambda (pair)
+                    (let ((key (car pair))
+                          (value (cdr pair)))
+                      (when (and key (stringp value))
+                        `((name . ,(claude-agent--mcp-key-name key))
+                          (value . ,value)))))
+                  object))))
 
 (defun claude-agent--mcp-server-from-entry (name entry)
   "Translate `.mcp.json' ENTRY named NAME into one ACP server alist.
 Returns nil for an entry this client cannot express: one naming neither a
-stdio `command' nor an http/sse `url'.  The result is the shape
+stdio `command' nor an http/sse `url', and equally one that is not a JSON
+object at all (`\"weird\": \"a-string\"' parses fine and is not a server).
+Both are skipped by name, not signalled.  The result is the shape
 `agent-shell--make-mcp-server' normalizes -- see `agent-shell-mcp-servers'."
-  (let ((type (alist-get 'type entry))
-        (command (alist-get 'command entry))
-        (url (alist-get 'url entry)))
-    (cond
-     ((and (member type '("http" "sse")) (stringp url))
-      `((name . ,name)
-        (type . ,type)
-        (url . ,url)
-        (headers . ,(claude-agent--mcp-name-value-pairs (alist-get 'headers entry)))))
-     ((and (stringp command) (or (null type) (equal type "stdio")))
-      `((name . ,name)
-        (command . ,command)
-        (args . ,(seq-filter #'stringp (alist-get 'args entry)))
-        (env . ,(claude-agent--mcp-name-value-pairs (alist-get 'env entry))))))))
+  (when (claude-agent--json-object-p entry)
+    (let ((type (alist-get 'type entry))
+          (command (alist-get 'command entry))
+          (url (alist-get 'url entry))
+          (args (alist-get 'args entry)))
+      (cond
+       ((and (member type '("http" "sse")) (stringp url))
+        `((name . ,name)
+          (type . ,type)
+          (url . ,url)
+          (headers . ,(claude-agent--mcp-name-value-pairs (alist-get 'headers entry)))))
+       ((and (stringp command) (or (null type) (equal type "stdio")))
+        `((name . ,name)
+          (command . ,command)
+          (args . ,(and (listp args) (seq-filter #'stringp args)))
+          (env . ,(claude-agent--mcp-name-value-pairs (alist-get 'env entry)))))))))
+
+(defun claude-agent--mcp-servers-object (config)
+  "Return CONFIG's `mcpServers' value when it is a JSON object, else nil."
+  (when (claude-agent--json-object-p config)
+    (let ((servers (alist-get 'mcpServers config)))
+      (and (claude-agent--json-object-p servers) servers))))
+
+(defun claude-agent--mcp-config-problem (config)
+  "Return why CONFIG is not a usable `.mcp.json', or nil when it is one.
+An absent or empty `mcpServers' is not a problem -- that is a project with
+no servers, which is this repo's own case.  A top-level array or scalar,
+or an `mcpServers' that is not itself an object, is: each parses as valid
+JSON and none of them is a config."
+  (cond
+   ((not (claude-agent--json-object-p config))
+    "its top level is not a JSON object")
+   ((let ((servers (alist-get 'mcpServers config)))
+      (and servers (not (claude-agent--json-object-p servers))))
+    "its `mcpServers' is not a JSON object")))
 
 (defun claude-agent--mcp-entries (config)
   "Return CONFIG's `mcpServers' object as a list of (NAME . ENTRY) conses.
-NAME is a string; ENTRY is the raw alist."
+NAME is a string; ENTRY is whatever the file held there, validated by
+`claude-agent--mcp-server-from-entry' rather than assumed to be an alist.
+Nil whenever CONFIG is not the object-of-objects shape."
   (mapcar (lambda (pair)
-            (cons (let ((key (car pair)))
-                    (if (symbolp key) (symbol-name key) (format "%s" key)))
-                  (cdr pair)))
-          (alist-get 'mcpServers config)))
+            (cons (claude-agent--mcp-key-name (car pair)) (cdr pair)))
+          (claude-agent--mcp-servers-object config)))
 
 (defun claude-agent--mcp-servers-from-config (config)
   "Translate CONFIG into the list `agent-shell' takes as `:mcp-servers'.
@@ -377,17 +443,39 @@ Entries this client cannot express are dropped; see
 (defun claude-agent--mcp-servers-for-root (root)
   "Return the ACP MCP server list for project ROOT, warning about skips.
 Reads only ROOT's own `.mcp.json' -- a worktree and its main checkout are
-separate roots and get separate answers."
-  (let ((config (claude-agent--read-mcp-config root)))
-    (when config
-      (let ((skipped (claude-agent--mcp-skipped-names config)))
-        (when skipped
-          (display-warning 'claude-agent
-                           (format "Skipping unsupported MCP server(s) in %s: %s"
-                                   (claude-agent--mcp-config-file root)
-                                   (string-join skipped ", "))
-                           :warning)))
-      (claude-agent--mcp-servers-from-config config))))
+separate roots and get separate answers.
+
+NEVER SIGNALS.  `.mcp.json' is an external file this module does not
+author, and a hand-edited one can be valid JSON in a shape none of the
+translators above expect.  Every such shape degrades to an empty server
+list plus one warning naming the file, because the alternative is `SPC a
+c' dying with a bare `wrong-type-argument' that names neither the file
+nor what is wrong with it.  The `condition-case' is the backstop under
+the shape checks, not a substitute for them."
+  (let ((file (claude-agent--mcp-config-file root)))
+    (condition-case err
+        (let ((config (claude-agent--read-mcp-config root)))
+          (cond
+           ((null config) nil)
+           ((claude-agent--mcp-config-problem config)
+            (display-warning 'claude-agent
+                             (format "Ignoring %s: %s" file
+                                     (claude-agent--mcp-config-problem config))
+                             :warning)
+            nil)
+           (t
+            (let ((skipped (claude-agent--mcp-skipped-names config)))
+              (when skipped
+                (display-warning 'claude-agent
+                                 (format "Skipping unsupported MCP server(s) in %s: %s"
+                                         file (string-join skipped ", "))
+                                 :warning)))
+            (claude-agent--mcp-servers-from-config config))))
+      (error
+       (display-warning 'claude-agent
+                        (format "Ignoring %s: %s" file (error-message-string err))
+                        :warning)
+       nil))))
 
 ;; ============================================================================
 ;; Start

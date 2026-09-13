@@ -16,10 +16,12 @@
 ;; keyword: :straight" notice from each of its three `use-package' forms,
 ;; since straight.el is not bootstrapped in this bare batch harness.  The
 ;; notice is caught internally by use-package and aborts nothing -- but it
-;; does mean the forms' `:custom' block never runs here, so the two
-;; transcript/dot-subdir settings are asserted at the SOURCE level below
-;; and their live values are asserted through `scripts/startup-check.sh',
-;; which loads the real init.)
+;; does mean each of those forms expands to NOTHING here, every clause on
+;; it included.  That is exactly why the two transcript/dot-subdir
+;; settings live outside them, and it is what makes this harness able to
+;; assert their live values rather than only grep the source for them: if
+;; either one ever moves back into a `:custom' block, the assertion below
+;; fails here long before a real session writes into a checkout.)
 ;;
 ;; NO live row.  There is deliberately no claude-agent-live-test.el in
 ;; scripts/test-manifest.sh: a real ACP session spawns a Node agent and
@@ -65,6 +67,12 @@
 ;; even when this file is byte-compiled on its own.
 (defvar claude-agent--path-reimported)
 (defvar claude-agent-acp-command)
+
+;; agent-shell's own, set by claude-agent.el at load time and asserted
+;; below.  Declared without a value so this assertion reads what the
+;; module actually did rather than a value this file supplied.
+(defvar agent-shell-transcript-file-path-function)
+(defvar agent-shell-dot-subdir-function)
 
 (defun claude-agent-test--write (dir name text)
   "Write TEXT to NAME under DIR and return the directory."
@@ -151,6 +159,65 @@ is what the caller's single warning reports."
       (should (equal '("weird") (claude-agent--mcp-skipped-names config)))
       (should (equal '("ok") (mapcar (lambda (s) (alist-get 'name s))
                                      (claude-agent--mcp-servers-from-config config)))))))
+
+(ert-deftest claude-agent-test-mcp-non-object-entry-is-skipped-not-signalled ()
+  "A server entry that is a JSON scalar is valid JSON and not a server.
+`{\"weird\": \"just-a-string\"}' used to reach `alist-get' on a string and
+take `SPC a c' down with a raw `wrong-type-argument'."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write
+     root ".mcp.json"
+     "{\"mcpServers\":{\"ok\":{\"command\":\"c\"},\"weird\":\"just-a-string\"}}")
+    (let ((warning-minimum-level :emergency))
+      (should (equal '("ok") (mapcar (lambda (s) (alist-get 'name s))
+                                     (claude-agent--mcp-servers-for-root root))))
+      (should (equal '("weird")
+                     (claude-agent--mcp-skipped-names
+                      (claude-agent--read-mcp-config root)))))))
+
+(ert-deftest claude-agent-test-mcp-wrong-shaped-config-is-ignored-whole ()
+  "Valid JSON in a shape that is not a config degrades to nil, with a reason.
+A top-level array, a scalar, and an `mcpServers' that is an array all
+parse; none of them is an object of server objects."
+  (claude-agent-test--with-root root
+    (let ((warning-minimum-level :emergency))
+      (dolist (text '("{\"mcpServers\": [1,2,3]}" "[1,2,3]" "\"hello\"" "42"))
+        (claude-agent-test--write root ".mcp.json" text)
+        (should (claude-agent--mcp-config-problem
+                 (claude-agent--read-mcp-config root)))
+        (should-not (claude-agent--mcp-servers-for-root root))))))
+
+(ert-deftest claude-agent-test-mcp-scalar-env-and-args-degrade ()
+  "Per-field scalars where an object or array belongs are dropped, not fatal.
+`\"env\": true' and `\"args\": 7' are the same hand-edit one level down."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write
+     root ".mcp.json"
+     "{\"mcpServers\":{\"x\":{\"command\":\"c\",\"env\":true,\"args\":7}}}")
+    (let ((server (car (claude-agent--mcp-servers-for-root root))))
+      (should (equal "c" (alist-get 'command server)))
+      (should-not (alist-get 'env server))
+      (should-not (alist-get 'args server)))))
+
+(ert-deftest claude-agent-test-mcp-empty-server-object-is-not-a-problem ()
+  "An explicitly empty `mcpServers' is a project with no servers, not an error."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write root ".mcp.json" "{\"mcpServers\":{}}")
+    (should-not (claude-agent--mcp-config-problem
+                 (claude-agent--read-mcp-config root)))
+    (should-not (claude-agent--mcp-servers-for-root root))))
+
+(ert-deftest claude-agent-test-mcp-servers-for-root-never-signals ()
+  "The contract the start path depends on, asserted against a thrown error.
+`claude-agent--start-at' calls this unguarded; if a translator this module
+does not own can ever signal through it, `SPC a c' reports a
+`wrong-type-argument' naming neither the file nor the fault."
+  (claude-agent-test--with-root root
+    (claude-agent-test--write root ".mcp.json" "{\"mcpServers\":{\"a\":{\"command\":\"c\"}}}")
+    (let ((warning-minimum-level :emergency))
+      (cl-letf (((symbol-function 'claude-agent--mcp-servers-from-config)
+                 (lambda (_config) (signal 'wrong-type-argument '(listp 1)))))
+        (should-not (claude-agent--mcp-servers-for-root root))))))
 
 (ert-deftest claude-agent-test-mcp-is-read-per-root ()
   "Two roots get two answers -- a worktree and its main checkout differ."
@@ -297,17 +364,44 @@ created is under the project's own `.agent-shell/'."
         (should-not (string-match-p "\\.agent-shell" path))))))
 
 (ert-deftest claude-agent-test-module-disables-the-transcript-writer ()
-  "The two settings that keep a session out of the checkout are declared.
-Asserted at the source level because `use-package's `:custom' block never
-runs under `-Q' (see this file's Commentary); their live values are
-asserted by `scripts/startup-check.sh'."
+  "Loading the module is what disables the writer, in THIS bare harness.
+No straight, so no `:straight' keyword, so every `use-package' form in the
+module expanded to nothing -- and the two settings still hold, which is
+the whole point of applying them at top level.  Were they in a `:custom'
+block, both variables would read as unbound here and a session started
+from any straight-less Emacs would write `.agent-shell/transcripts/' into
+the checkout it ran in."
+  (should (boundp 'agent-shell-transcript-file-path-function))
+  (should-not agent-shell-transcript-file-path-function)
+  (should (eq #'claude-agent--dot-subdir agent-shell-dot-subdir-function)))
+
+(ert-deftest claude-agent-test-settings-are-not-inside-a-use-package-form ()
+  "Structural guard on the test above: no `:custom' clause anywhere.
+The live assertion alone would start passing again the moment a future
+edit moved the settings into a `use-package' form in an Emacs that DOES
+parse `:straight' -- so the shape is asserted too, at the source level."
   (with-temp-buffer
     (insert-file-contents claude-agent-test--module)
     (goto-char (point-min))
-    (should (search-forward "(agent-shell-transcript-file-path-function nil)" nil t))
+    ;; Code, not prose: the Commentary discusses `:custom' at length.
+    (should-not (re-search-forward "^[ \t]*:custom\\b" nil t))
+    (goto-char (point-min))
+    (should (search-forward "(setq agent-shell-transcript-file-path-function nil)" nil t))
     (goto-char (point-min))
     (should (search-forward
-             "(agent-shell-dot-subdir-function #'claude-agent--dot-subdir)" nil t))))
+             "(setq agent-shell-dot-subdir-function #'claude-agent--dot-subdir)" nil t))))
+
+(ert-deftest claude-agent-test-headless-recipe-loads-the-module ()
+  "The documented automation recipe names the load step it needs.
+scripts/claude-scratch.sh boots the claude-lib family and nothing else, so
+a recipe that goes straight from `start' to `(claude-agent-start)' fails
+with a void function -- which is how the recipe shipped once already."
+  (with-temp-buffer
+    (insert-file-contents claude-agent-test--module)
+    (goto-char (point-min))
+    (should (search-forward "claude-scratch.sh start" nil t))
+    (should (search-forward "modules/claude-agent.el" nil t))
+    (should (search-forward "claude-agent-start" nil t))))
 
 (ert-deftest claude-agent-test-module-opens-no-general-block ()
   "`SPC a' is claude-term-registry.el's alone; this module adds no second
