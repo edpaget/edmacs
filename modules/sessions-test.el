@@ -8,7 +8,9 @@
 ;; defines, which in turn needs the real `evil'/`general', loaded only in a
 ;; real init.el session). So this file, like sidebar-test.el, fixes up the
 ;; environment before loading sessions.el itself rather than taking it as a
-;; `-l' argument:
+;; `-l' argument, via `edmacs-test-support-load-sessions-stack'
+;; (`modules/test-support.el'), the same helper
+;; `modules/sessions-live-test.el' and `modules/keybindings-test.el' use:
 ;;
 ;;   - `edmacs-evil-config-add-c-x-chord' is stubbed as a no-op.
 ;;   - the real `evil' and `general' are pulled off this checkout's (or its
@@ -91,23 +93,10 @@ a real Emacs session) to enable this suite"))
 
   (progn
 
-    (add-to-list 'load-path (expand-file-name "evil" edmacs-sessions-test--build-root))
-    (add-to-list 'load-path (expand-file-name "general" edmacs-sessions-test--build-root))
-    (require 'evil)
-    (require 'general)
-
-    (unless (fboundp 'edmacs-evil-config-add-c-x-chord)
-      (defun edmacs-evil-config-add-c-x-chord (&rest _)
-        "Stub for tests: sessions.el's real target lives in evil-config.el."
-        nil))
-
-    ;; sessions.el's `SPC T'/`SPC p w' maps go through `leader-def', a real
-    ;; macro `modules/keybindings.el' defines -- load it before sessions.el
-    ;; so that macro exists when sessions.el's top level is read.
-    (unless (fboundp 'leader-def)
-      (load (expand-file-name "modules/keybindings.el" default-directory) nil t))
-
-    (load (expand-file-name "modules/sessions.el" default-directory) nil t)
+    ;; See `edmacs-test-support-load-sessions-stack''s docstring for the
+    ;; full bootstrap recipe (evil/general, the chord stub, `leader-def'
+    ;; via keybindings.el, then git-common-dir/windows/workspaces/sessions).
+    (edmacs-test-support-load-sessions-stack)
 
     ;; ==========================================================================
     ;; Test helpers

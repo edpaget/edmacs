@@ -61,29 +61,13 @@ has never bootstrapped straight locally, so callers can `ert-skip'."
           (setq edmacs-keybindings-test--keybindings-loaded t))
         t))))
 
-(defvar edmacs-keybindings-test--sessions-loaded nil
-  "Non-nil once `modules/sessions.el' has been loaded for real by this file.")
-
 (defun edmacs-keybindings-test--ensure-sessions-keys ()
   "Load real evil/general/keybindings.el, then `SPC T'/`SPC p w's owner.
-Mirrors `modules/sessions-test.el''s own recipe for loading
-`modules/sessions.el' standalone: stub
-`edmacs-evil-config-add-c-x-chord' as a no-op, then load
-`modules/git-common-dir.el', `modules/windows.el',
-`modules/workspaces.el' and `modules/sessions.el' in that order.
+Delegates to `edmacs-test-support-load-sessions-stack' for the shared
+`modules/sessions.el' bootstrap recipe.
 Returns non-nil on success; nil (without erroring) when this checkout
 has never bootstrapped straight locally, so callers can `ert-skip'."
-  (when (edmacs-keybindings-test--ensure-keybindings)
-    (unless edmacs-keybindings-test--sessions-loaded
-      (unless (fboundp 'edmacs-evil-config-add-c-x-chord)
-        (defalias 'edmacs-evil-config-add-c-x-chord #'ignore
-          "Stub for tests: the real target lives in evil-config.el."))
-      (load (expand-file-name "modules/git-common-dir.el" default-directory) nil t)
-      (load (expand-file-name "modules/windows.el" default-directory) nil t)
-      (load (expand-file-name "modules/workspaces.el" default-directory) nil t)
-      (load (expand-file-name "modules/sessions.el" default-directory) nil t)
-      (setq edmacs-keybindings-test--sessions-loaded t))
-    t))
+  (edmacs-test-support-load-sessions-stack))
 
 ;; ============================================================================
 ;; Tests

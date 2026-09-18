@@ -3,9 +3,10 @@
 ;;; Commentary:
 ;; The single home of the fixtures `modules/*-test.el' files share: the
 ;; straight-build-tree locators, the magit-section dependency-path setup,
-;; the "second real frame or skip" helper, the sidebar/agent-state
-;; fixtures, the tab-restore fixture, the wedged-frame builder and the
-;; hermetic run-and-exit wrapper.
+;; the sessions.el dependency-stack loader, the "second real frame or
+;; skip" helper, the sidebar/agent-state fixtures, the tab-restore
+;; fixture, the wedged-frame builder and the hermetic run-and-exit
+;; wrapper.
 ;;
 ;; Load it once, before the test file that needs it:
 ;;
@@ -82,6 +83,43 @@ and need no straight resolution; only these do."
     (let ((dir (expand-file-name dep build-root)))
       (when (file-directory-p dir)
         (add-to-list 'load-path dir)))))
+
+(defun edmacs-test-support-load-sessions-stack ()
+  "Load real evil/general, then `modules/sessions.el''s dependency stack.
+`modules/sessions.el' cannot be `-l'-loaded standalone under plain `-Q
+--batch': it makes an unconditional `edmacs-evil-config-add-c-x-chord'
+call and unconditional `leader-def'/`general-define-key' calls. This
+stubs `edmacs-evil-config-add-c-x-chord' as a no-op (its real target
+lives in evil-config.el, never loaded here), then loads
+`modules/keybindings.el' (for the `leader-def' macro),
+`modules/git-common-dir.el', `modules/windows.el', `modules/workspaces.el'
+and `modules/sessions.el' in that order -- `windows.el' before
+`workspaces.el' because the post-open handler workspaces.el installs
+calls `edmacs-windows-designate-main' directly. Each load is guarded so
+calling this more than once, or after some of the stack is already on
+`load-path' via an outer `-l', is a no-op rather than a reload.
+Returns non-nil on success; nil (without erroring) when this checkout
+has never bootstrapped straight locally, so callers can `ert-skip'."
+  (let ((build-root (edmacs-test-support-straight-build-root)))
+    (when build-root
+      (add-to-list 'load-path (expand-file-name "evil" build-root))
+      (add-to-list 'load-path (expand-file-name "general" build-root))
+      (require 'evil)
+      (require 'general)
+      (unless (fboundp 'edmacs-evil-config-add-c-x-chord)
+        (defalias 'edmacs-evil-config-add-c-x-chord #'ignore
+          "Stub for tests: the real target lives in evil-config.el."))
+      (unless (fboundp 'leader-def)
+        (load (expand-file-name "modules/keybindings.el" default-directory) nil t))
+      (unless (featurep 'git-common-dir)
+        (load (expand-file-name "modules/git-common-dir.el" default-directory) nil t))
+      (unless (featurep 'windows)
+        (load (expand-file-name "modules/windows.el" default-directory) nil t))
+      (unless (featurep 'workspaces)
+        (load (expand-file-name "modules/workspaces.el" default-directory) nil t))
+      (unless (fboundp 'edmacs-sessions--ensure-sidebar)
+        (load (expand-file-name "modules/sessions.el" default-directory) nil t))
+      t)))
 
 ;; ============================================================================
 ;; Second-frame / graphical-frame skip helpers

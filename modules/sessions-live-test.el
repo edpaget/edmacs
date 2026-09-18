@@ -24,8 +24,10 @@
 ;; Commentary): `evil' and `general' come off this checkout's -- or its
 ;; sibling main checkout's -- `straight/build', `modules/keybindings.el' is
 ;; loaded first for its `leader-def' macro, and
-;; `edmacs-evil-config-add-c-x-chord' is stubbed. One benign "Cannot load
-;; bufferlo" notice is expected.
+;; `edmacs-evil-config-add-c-x-chord' is stubbed, all via
+;; `edmacs-test-support-load-sessions-stack' (`modules/test-support.el'),
+;; the shared helper this file, sessions-test.el and keybindings-test.el
+;; all call. One benign "Cannot load bufferlo" notice is expected.
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
@@ -81,33 +83,17 @@ a real Emacs session) to enable this suite"))
 
   (progn
 
-    (add-to-list 'load-path
-                 (expand-file-name "evil" edmacs-sessions-live-test--build-root))
-    (add-to-list 'load-path
-                 (expand-file-name "general" edmacs-sessions-live-test--build-root))
-    (require 'evil)
-    (require 'general)
-
-    (unless (fboundp 'edmacs-evil-config-add-c-x-chord)
-      (defun edmacs-evil-config-add-c-x-chord (&rest _)
-        "Stub for tests: sessions.el's real target lives in evil-config.el."
-        nil))
-
-    ;; sessions.el's `SPC T'/`SPC p w' maps go through `leader-def', a real
-    ;; macro `modules/keybindings.el' defines -- load it before sessions.el
-    ;; so that macro exists when sessions.el's top level is read.
-    (unless (fboundp 'leader-def)
-      (load (expand-file-name "modules/keybindings.el" default-directory) nil t))
-
-    ;; windows.el before sessions.el: `edmacs-stack-sweep-stale-panes' is
-    ;; called from the restore bridge, and an absent one would turn a real
-    ;; restore into a caught warning instead of the path under test.
-    (load (expand-file-name "modules/windows.el" default-directory) nil t)
-    ;; The identity model: what the finish-up stamps through, and what
+    ;; `edmacs-test-support-load-sessions-stack' (`modules/test-support.el')
+    ;; carries the shared bootstrap: evil/general off `straight/build', the
+    ;; `edmacs-evil-config-add-c-x-chord' stub, `modules/keybindings.el' for
+    ;; `leader-def', then git-common-dir/windows/workspaces/sessions in
+    ;; order -- windows.el before sessions.el because
+    ;; `edmacs-stack-sweep-stale-panes' is called from the restore bridge,
+    ;; and windows.el before workspaces.el because the identity model
+    ;; (what the finish-up stamps through, and what
     ;; `edmacs-sessions--stash-frameset-for-daemon' puts the desktop
-    ;; frameset through before stashing it.
-    (load (expand-file-name "modules/workspaces.el" default-directory) nil t)
-    (load (expand-file-name "modules/sessions.el" default-directory) nil t)
+    ;; frameset through before stashing it) depends on it.
+    (edmacs-test-support-load-sessions-stack)
 
     ;; workspaces.el installs a `window-buffer-change-functions' entry that
     ;; schedules a stray-visit sweep on a zero-delay timer, and this suite
