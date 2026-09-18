@@ -28,6 +28,13 @@
 (require 'subr-x)
 (require 'cl-lib)
 
+;; See CLAUDE.md's Testing section: loading real evil advises the
+;; `select-window' subr, which forces a synchronous native-comp
+;; trampoline build (~28s, or an outright failure on a machine whose
+;; native compiler cannot run) the first time it is hit.
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
+
 ;; Declared, not required: every one of these arrives only once
 ;; `edmacs-programming-test--ensure' has loaded evil, general and
 ;; programming.el, which a byte-compile of this file alone never does.

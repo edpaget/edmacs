@@ -32,7 +32,7 @@
 ;; used to carry went with the per-frame restore walk.
 ;;
 ;; Also covers the daemon lifecycle commands `SPC q' dispatches to. They
-;; exist because homebrew.mxcl.emacs-plus@31.plist sets `KeepAlive'
+;; exist because homebrew.mxcl.emacs-plus@32.plist sets `KeepAlive'
 ;; unconditionally: launchd relaunches the daemon on ANY exit, so the three
 ;; intents behind `SPC q q'/`q r'/`q Q' cannot share one command, and each
 ;; one's daemon-vs-not branch is exactly the kind of dispatch that regresses
