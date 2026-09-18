@@ -1434,7 +1434,10 @@ binding ahead of evil-ghostel's insert-state `C-w' passthrough inside a
 claude-term pane. The probe below stands in for
 `evil-ghostel-mode-map' -- an ordinary keymap carrying an
 `evil-define-key*' insert-state binding -- and is made active as the
-buffer's local map so evil actually collects its auxiliary keymap."
+buffer's local map so evil actually collects its auxiliary keymap.
+Covers the tmux tab verbs (`n'/`p'/`c'/`&'/`w') alongside the original
+pane vocabulary's `h', since both live in the same `evil-window-map' and
+both need to survive the same claude-term precedence fight."
   (unless (edmacs-windows-test--ensure-spc-w-bindings)
     (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
   (let ((probe (make-sparse-keymap))
@@ -1447,13 +1450,20 @@ buffer's local map so evil actually collects its auxiliary keymap."
       (let* ((maps (mapcar #'cdr (evil-state-keymaps 'insert)))
              (aux (evil-get-auxiliary-keymap probe 'insert))
              (mode-pos (seq-position maps mode-map))
-             (aux-pos (seq-position maps aux)))
+             (aux-pos (seq-position maps aux))
+             (composed (make-composed-keymap maps)))
         (should mode-pos)
         (should aux-pos)
         (should (< mode-pos aux-pos))
         ;; and the winner really is this module's binding, not the probe's
-        (should (eq (lookup-key (make-composed-keymap maps) (kbd "C-w h"))
-                    'evil-window-left))))))
+        (should (eq (lookup-key composed (kbd "C-w h")) 'evil-window-left))
+        (dolist (pair '(("n" . tab-bar-switch-to-next-tab)
+                        ("p" . tab-bar-switch-to-prev-tab)
+                        ("c" . tab-bar-new-tab)
+                        ("&" . tab-bar-close-tab)
+                        ("w" . tab-bar-switch-to-tab)))
+          (should (eq (lookup-key composed (kbd (concat "C-w " (car pair))))
+                      (cdr pair))))))))
 
 ;; ============================================================================
 ;; Persistence: tab-bar hooks, dead-pane sweep
