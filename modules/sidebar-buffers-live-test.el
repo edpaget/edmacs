@@ -1131,6 +1131,14 @@ is keyed on LOCATOR identity alone, never on SOURCE."
               (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
               (find-file ordinary-path)
               (setq proc (start-process (buffer-name proc-buf) proc-buf "sleep" "5"))
+              ;; Displaying PROC-BUF is what actually lands it in this
+              ;; tab's `bufferlo-buffer-list' -- `generate-new-buffer'
+              ;; alone never does, so without this the exclusion below
+              ;; would have no real candidate row to exclude.
+              (let ((ordinary-buf (current-buffer)))
+                (switch-to-buffer proc-buf)
+                (switch-to-buffer ordinary-buf))
+              (should (memq proc-buf (bufferlo-buffer-list)))
               (puthash agent-key
                        (make-edmacs-agent :key agent-key :root root :instance "1"
                                            :status 'working :status-ts (float-time)
