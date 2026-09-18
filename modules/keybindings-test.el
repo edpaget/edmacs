@@ -140,5 +140,83 @@ local-leader binding resolves through the full keymap stack."
       ;; Verify the resolved binding is ignore (our test binding)
       (should (eq (lookup-key composed (kbd ", m")) 'ignore)))))
 
+;; ============================================================================
+;; C-w n/p/c/&/w tab verbs (tmux vocabulary, every state)
+;; ============================================================================
+
+(defun edmacs-keybindings-test--composed-keymap-for-state (state)
+  "Enter evil STATE on a real buffer and return its composed keymap stack.
+Mirrors the construction already inline in the motion-state end-to-end
+test above, factored out so each state below does not repeat it."
+  (evil-local-mode 1)
+  (funcall (intern (format "evil-%s-state" state)))
+  (should (eq evil-state state))
+  (make-composed-keymap (mapcar #'cdr (evil-state-keymaps state))))
+
+(defun edmacs-keybindings-test--assert-tab-verbs-resolve (state)
+  "Assert the five C-w tab-verb bindings resolve through STATE's keymap stack."
+  (with-temp-buffer
+    (let ((composed (edmacs-keybindings-test--composed-keymap-for-state state)))
+      (should (eq (lookup-key composed (kbd "C-w n")) 'tab-bar-switch-to-next-tab))
+      (should (eq (lookup-key composed (kbd "C-w p")) 'tab-bar-switch-to-prev-tab))
+      (should (eq (lookup-key composed (kbd "C-w c")) 'tab-bar-new-tab))
+      (should (eq (lookup-key composed (kbd "C-w w")) 'tab-bar-switch-to-tab))
+      (should (eq (lookup-key composed (kbd "C-w &")) 'tab-bar-close-tab)))))
+
+(ert-deftest edmacs-keybindings-test-window-prefix-tab-verbs-insert-state ()
+  "AC1: from insert state, C-w n/p/c/w/& resolve to the tab-bar-* commands."
+  (unless (edmacs-keybindings-test--ensure-keybindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (edmacs-keybindings-test--assert-tab-verbs-resolve 'insert))
+
+(ert-deftest edmacs-keybindings-test-window-prefix-tab-verbs-normal-state ()
+  "AC2: the same C-w tab verbs work from normal state."
+  (unless (edmacs-keybindings-test--ensure-keybindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (edmacs-keybindings-test--assert-tab-verbs-resolve 'normal))
+
+(ert-deftest edmacs-keybindings-test-window-prefix-tab-verbs-visual-state ()
+  "AC2: the same C-w tab verbs work from visual state."
+  (unless (edmacs-keybindings-test--ensure-keybindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (edmacs-keybindings-test--assert-tab-verbs-resolve 'visual))
+
+(ert-deftest edmacs-keybindings-test-window-prefix-tab-verbs-emacs-state ()
+  "AC2: the same C-w tab verbs work from emacs state."
+  (unless (edmacs-keybindings-test--ensure-keybindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (edmacs-keybindings-test--assert-tab-verbs-resolve 'emacs))
+
+(ert-deftest edmacs-keybindings-test-window-prefix-tab-verbs-motion-state ()
+  "AC2: the same C-w tab verbs work from motion state."
+  (unless (edmacs-keybindings-test--ensure-keybindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (edmacs-keybindings-test--assert-tab-verbs-resolve 'motion))
+
+(ert-deftest edmacs-keybindings-test-window-prefix-control-spellings-survive ()
+  "AC3: the four shadowed evil window commands still resolve at their
+control-modified spellings (C-w C-n/C-p/C-c/C-w)."
+  (unless (edmacs-keybindings-test--ensure-keybindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (with-temp-buffer
+    (let ((composed (edmacs-keybindings-test--composed-keymap-for-state 'normal)))
+      (should (eq (lookup-key composed (kbd "C-w C-n")) 'evil-window-new))
+      (should (eq (lookup-key composed (kbd "C-w C-p")) 'evil-window-mru))
+      (should (eq (lookup-key composed (kbd "C-w C-c")) 'evil-window-delete))
+      (should (eq (lookup-key composed (kbd "C-w C-w")) 'evil-window-next)))))
+
+(ert-deftest edmacs-keybindings-test-window-prefix-close-tab-last-tab-errors ()
+  "AC4: C-w & resolves to `tab-bar-close-tab', and calling it on the
+sole tab signals `user-error' rather than backtracing."
+  (unless (edmacs-keybindings-test--ensure-keybindings)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (with-temp-buffer
+    (let ((composed (edmacs-keybindings-test--composed-keymap-for-state 'normal)))
+      (should (eq (lookup-key composed (kbd "C-w &")) 'tab-bar-close-tab))))
+  (if (= 1 (length (tab-bar-tabs)))
+      (let ((tab-bar-close-last-tab-choice nil))
+        (should-error (tab-bar-close-tab) :type 'user-error))
+    (ert-skip "ambient batch frame does not carry exactly one tab")))
+
 (provide 'keybindings-test)
 ;;; keybindings-test.el ends here

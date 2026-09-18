@@ -173,6 +173,21 @@
 ;; H/J/K/L, so nothing is lost. Insert-state `C-w' (delete-word-backward)
 ;; and a claude-term pane's own C-w word-erase are the accepted cost of a
 ;; prefix that works without leaving insert state.
+;;
+;; Same trade again for tmux's *window* (Emacs tab) verbs: `C-w n'
+;; (was evil-window-new), `C-w p' (was evil-window-mru) and `C-w c'
+;; (was evil-window-delete) become next/previous/new tab, `C-w w' (was
+;; evil-window-next) prompts for a tab by name, and `C-w &' closes the
+;; current tab. Each shadowed command survives at its control-modified
+;; spelling: `C-w C-n', `C-w C-p', `C-w C-c' and `C-w C-w'. These reuse
+;; the exact `tab-bar-*' commands `SPC T' already binds (modules/sessions.el),
+;; so both prefixes reach the same functions. `C-w &' needs no bespoke
+;; guard against closing the last tab: `tab-bar-close-tab' already signals
+;; `user-error' on the sole tab because `tab-bar-close-last-tab-choice' is
+;; left at its nil default -- see modules/workspaces.el's "Closing the
+;; last tab" section. If that variable is ever set non-nil elsewhere, `C-w
+;; &' on the last tab silently does something else instead of erroring, so
+;; touching it means revisiting this AC too.
 
 (defvar evil-window-map)
 (declare-function evil-define-minor-mode-key "evil-core")
@@ -209,6 +224,13 @@ to be toggled by hand."
   (define-key evil-window-map (kbd "<") #'edmacs-stack-narrow)
   (define-key evil-window-map (kbd ">") #'edmacs-stack-widen)
   (define-key evil-window-map (kbd "S") #'edmacs-stack-toggle)
+
+  ;; tmux's window (Emacs tab) vocabulary, same commands as `SPC T'.
+  (define-key evil-window-map (kbd "n") #'tab-bar-switch-to-next-tab)
+  (define-key evil-window-map (kbd "p") #'tab-bar-switch-to-prev-tab)
+  (define-key evil-window-map (kbd "c") #'tab-bar-new-tab)
+  (define-key evil-window-map (kbd "&") #'tab-bar-close-tab)
+  (define-key evil-window-map (kbd "w") #'tab-bar-switch-to-tab)
 
   (dolist (state '(normal visual insert emacs motion replace operator))
     (evil-define-minor-mode-key state 'edmacs-window-prefix-mode
