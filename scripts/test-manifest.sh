@@ -80,7 +80,7 @@ MANIFEST=(
   "sidebar-agents-live-test|batch|15|1|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-agents-live-test.el|ert-run-tests-batch-and-exit"
   "sidebar-agents-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/agents.el,modules/sidebar-agents-test.el|ert-run-tests-batch-and-exit"
   "sidebar-buffers-live-test|batch|15|2|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-buffers-live-test.el|edmacs-test-support-run-and-exit"
-  "sidebar-buffers-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-buffers-test.el|ert-run-tests-batch-and-exit"
+  "sidebar-buffers-test|batch|15|0|modules/test-support.el,modules/git-common-dir.el,modules/agents.el,modules/sidebar-buffers-test.el|ert-run-tests-batch-and-exit"
   "sidebar-test|batch|15|2|modules/test-support.el,modules/git-common-dir.el,modules/sidebar-test.el|edmacs-test-support-run-and-exit"
   "ui-live-test|batch|15|1|modules/test-support.el,modules/ui-live-test.el|ert-run-tests-batch-and-exit"
   "ui-test|batch|15|0|modules/ui.el,modules/ui-test.el|ert-run-tests-batch-and-exit"

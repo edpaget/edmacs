@@ -7,11 +7,15 @@
 ;; so this file carries the same kind of self-contained invocation:
 ;;
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
-;;         -l modules/git-common-dir.el \
+;;         -l modules/git-common-dir.el -l modules/agents.el \
 ;;         -l modules/sidebar-buffers-test.el -f ert-run-tests-batch-and-exit
 ;;
-;; sidebar.el and workspaces.el are NOT loaded (mirroring sidebar-agents-test.el's
-;; own module-boundary convention); every function sidebar-buffers.el
+;; agents.el is loaded for real (plain elisp, no external deps -- same
+;; rationale sidebar-agents-test.el's own Commentary gives) so the
+;; agent-locator-exclusion tests below can construct real `edmacs-agent'
+;; structs and mutate the real `edmacs-agents--table'; sidebar.el and
+;; workspaces.el are NOT loaded (mirroring sidebar-agents-test.el's own
+;; module-boundary convention); every function sidebar-buffers.el
 ;; calls into either is stubbed via `cl-letf' or a plain stand-in
 ;; `defun'. This suite covers the pure tree/rank/path machinery;
 ;; end-to-end rendering against real frames/tabs/bufferlo is
@@ -456,6 +460,49 @@ fold-preservation code of this phase's own."
               (should root-sec)
               (should (eq t (oref root-sec hidden)))))))
 
+    ;; ==========================================================================
+    ;; Agent-locator exclusion, exercised through the real section renderer
+    ;; ==========================================================================
+
+    (ert-deftest edmacs-sidebar-buffers-test-on-worktree-section-excludes-agent-locator-in-both-modes ()
+      "A buffer that is some tracked agent's LOCATOR renders once, via its
+agent row elsewhere, never as this section's own raw-buffer row --
+identically whether the section draws flat or as a tree, since `bufs'
+is filtered once in `--on-worktree-section', upstream of that branch."
+      (let* ((root "/repo/wt/")
+             (ordinary (generate-new-buffer "ordinary.txt"))
+             (agent-buf (generate-new-buffer "*agent-pane*"))
+             (key (edmacs-agents--key root "inst"))
+             (frame (selected-frame)))
+        (unwind-protect
+            (progn
+              (with-current-buffer ordinary (setq buffer-file-name (concat root "ordinary.txt")))
+              (puthash key
+                       (make-edmacs-agent :key key :root root :instance "inst"
+                                           :status 'working :status-ts 0 :updated-ts 0
+                                           :title "agent row" :source 'claude-term
+                                           :locator agent-buf :unread nil)
+                       edmacs-agents--table)
+              (cl-letf (((symbol-function 'bufferlo-buffer-list)
+                         (lambda (&rest _) (list ordinary agent-buf)))
+                        ((symbol-function 'tab-bar-tabs)
+                         (lambda (&rest _) (list (cons 'current-tab nil)))))
+                (dolist (flat (list nil t))
+                  (set-frame-parameter frame 'edmacs-sidebar-buffers-flat flat)
+                  (with-temp-buffer
+                    (magit-section-mode)
+                    (let ((inhibit-read-only t))
+                      (magit-insert-section (edmacs-sidebar-root nil nil)
+                        (edmacs-sidebar-buffers--on-worktree-section root t frame 1))
+                      (should (string-match-p (regexp-quote (buffer-name ordinary))
+                                               (buffer-string)))
+                      (should-not (string-match-p (regexp-quote (buffer-name agent-buf))
+                                                   (buffer-string))))))))
+          (remhash key edmacs-agents--table)
+          (set-frame-parameter frame 'edmacs-sidebar-buffers-flat nil)
+          (mapc (lambda (b) (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b))
+                (list ordinary agent-buf)))))
+
     ))
 
 (ert-deftest edmacs-sidebar-buffers-test-listable-p-admits-work ()
@@ -484,3 +531,78 @@ fold-preservation code of this phase's own."
           (dolist (b (list sidebar wk help internal))
             (should-not (edmacs-sidebar-buffers--listable-p b))))
       (mapc #'kill-buffer (list sidebar wk help internal)))))
+
+;; ==========================================================================
+;; Agent-locator exclusion in `--listable-p' itself: pure, no magit-section
+;; needed, so these sit outside the `if'/`progn' gate above (mirroring
+;; -admits-work/-rejects-chrome) and run even when magit-section's
+;; straight build is unavailable.
+;; ==========================================================================
+
+(ert-deftest edmacs-sidebar-buffers-test-listable-p-excludes-agent-locator ()
+  "A buffer that is some tracked agent's LOCATOR is never listable, even
+though it would otherwise be admitted (here, via its interactive mode)."
+  (let* ((buf (generate-new-buffer "*claude-term: repo*"))
+         (key (edmacs-agents--key "/repo/wt/" "inst")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf (setq major-mode 'comint-mode))
+          (should (edmacs-sidebar-buffers--listable-p buf))
+          (puthash key
+                   (make-edmacs-agent :key key :root "/repo/wt/" :instance "inst"
+                                       :status 'working :status-ts 0 :updated-ts 0
+                                       :title "agent row" :source 'claude-term
+                                       :locator buf :unread nil)
+                   edmacs-agents--table)
+          (should-not (edmacs-sidebar-buffers--listable-p buf)))
+      (remhash key edmacs-agents--table)
+      (kill-buffer buf))))
+
+(ert-deftest edmacs-sidebar-buffers-test-listable-p-locator-exclusion-is-root-independent ()
+  "The exclusion is global, keyed on buffer identity via LOCATOR alone --
+a row whose ROOT differs from the buffer's own worktree still excludes
+it, per this phase's documented 'pick one' decision."
+  (let* ((buf (generate-new-buffer "*claude-term: repo*"))
+         (key (edmacs-agents--key "/other/root/" "inst")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf (setq major-mode 'comint-mode))
+          (puthash key
+                   (make-edmacs-agent :key key :root "/other/root/" :instance "inst"
+                                       :status 'working :status-ts 0 :updated-ts 0
+                                       :title "agent row" :source 'claude-agent
+                                       :locator buf :unread nil)
+                   edmacs-agents--table)
+          (should-not (edmacs-sidebar-buffers--listable-p buf)))
+      (remhash key edmacs-agents--table)
+      (kill-buffer buf))))
+
+(ert-deftest edmacs-sidebar-buffers-test-listable-p-agent-table-empty-admits-ordinary-buffer ()
+  "An empty (but bound) `edmacs-agents--table' excludes nothing -- same
+answer as before this phase for a plain interactive-mode buffer."
+  (let ((buf (generate-new-buffer "*shell*"))
+        (saved edmacs-agents--table))
+    (unwind-protect
+        (progn
+          (setq edmacs-agents--table (make-hash-table :test #'equal))
+          (with-current-buffer buf (setq major-mode 'comint-mode))
+          (should (edmacs-sidebar-buffers--listable-p buf)))
+      (setq edmacs-agents--table saved)
+      (kill-buffer buf))))
+
+(ert-deftest edmacs-sidebar-buffers-test-listable-p-agents-not-loaded-admits-ordinary-buffer ()
+  "With `edmacs-agents--table' wholly unbound (agents.el never loaded),
+`--agent-locator-p' short-circuits on `boundp' rather than erroring, and
+`--listable-p' falls through to exactly its pre-existing behavior."
+  (let ((buf (generate-new-buffer "*shell*")))
+    (unwind-protect
+        (let ((was-bound (boundp 'edmacs-agents--table))
+              (saved (and (boundp 'edmacs-agents--table) edmacs-agents--table)))
+          (unwind-protect
+              (progn
+                (makunbound 'edmacs-agents--table)
+                (with-current-buffer buf (setq major-mode 'comint-mode))
+                (should (edmacs-sidebar-buffers--listable-p buf)))
+            (when was-bound
+              (setq edmacs-agents--table saved))))
+      (kill-buffer buf))))

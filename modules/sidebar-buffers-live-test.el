@@ -1109,6 +1109,47 @@ render/navigation/rename path."
               (remhash agent-key edmacs-agents--table)
               (ignore-errors (tab-bar-rename-tab "")))))))
 
+    (ert-deftest edmacs-sidebar-live-test-agent-locator-buffer-not-double-counted ()
+      "A real buffer that is some tracked agent's LOCATOR -- admitted today
+via `--listable-p's live-process branch, standing in for a real
+claude-term/ghostel pane or `agent-shell-mode' buffer -- renders once,
+as that agent's own row, never also as this module's own raw buffer
+row; an ordinary file buffer in the same tab still lists normally. Runs
+once per SOURCE (`claude-term', `claude-agent') to prove the exclusion
+is keyed on LOCATOR identity alone, never on SOURCE."
+      (dolist (source '(claude-term claude-agent))
+        (let ((root (edmacs-sidebar-buffers-live-test--make-root)))
+          (edmacs-sidebar-buffers-live-test--with-scenario (list root)
+            (let* ((ordinary-path (edmacs-sidebar-buffers-live-test--write-file root "ordinary.el"))
+                   (agent-key (edmacs-agents--key root "1"))
+                   (agent-title (format "agent-locator-title-%s" source))
+                   (proc-buf (generate-new-buffer (format "*fake-%s-pane*" source)))
+                   proc)
+              (edmacs-sidebar-buffers-live-test--register-worktrees
+               "/repo/.git" (list (cons "repo" root)))
+              (setq edmacs-sidebar-buffers-live-test--group "/repo/.git")
+              (edmacs-sidebar-buffers-live-test--stamp-current-tab-root root)
+              (find-file ordinary-path)
+              (setq proc (start-process (buffer-name proc-buf) proc-buf "sleep" "5"))
+              (puthash agent-key
+                       (make-edmacs-agent :key agent-key :root root :instance "1"
+                                           :status 'working :status-ts (float-time)
+                                           :updated-ts (float-time)
+                                           :title agent-title
+                                           :source source :locator proc-buf :unread nil)
+                       edmacs-agents--table)
+              (unwind-protect
+                  (progn
+                    (edmacs-sidebar-show (selected-frame))
+                    (let ((text (with-current-buffer (edmacs-sidebar--buffer (selected-frame))
+                                  (buffer-string))))
+                      (should (string-match-p (regexp-quote agent-title) text))
+                      (should (string-match-p "ordinary\\.el" text))
+                      (should-not (string-match-p (regexp-quote (buffer-name proc-buf)) text))))
+                (remhash agent-key edmacs-agents--table)
+                (when (process-live-p proc) (delete-process proc))
+                (kill-buffer proc-buf)))))))
+
     ))
 
 ;;; sidebar-buffers-live-test.el ends here

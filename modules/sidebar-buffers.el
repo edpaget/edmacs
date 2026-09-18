@@ -68,9 +68,11 @@
 (declare-function edmacs-sidebar-redraw-frames "sidebar")
 (declare-function edmacs-sidebar--find-buffer-section "sidebar")
 (declare-function nerd-icons-octicon "nerd-icons")
+(declare-function edmacs-agent-locator "agents")
 (defvar edmacs-sidebar-worktree-section-functions)
 (defvar edmacs-sidebar-extra-section-functions)
 (defvar edmacs-sidebar-force-text-glyphs)
+(defvar edmacs-agents--table)
 
 (defgroup edmacs-sidebar-buffers nil
   "Per-tab buffer tree in the sidebar."
@@ -130,6 +132,38 @@ here; a mode absent at load time is simply never matched."
   :type '(repeat symbol)
   :group 'edmacs-sidebar)
 
+(defun edmacs-sidebar-buffers--agent-locator-p (buf)
+  "Non-nil when BUF is some tracked `edmacs-agent' row's LOCATOR.
+Reads `agents.el's shared `edmacs-agents--table' directly (the
+dependency direction this module takes on the agent side -- never
+`sidebar-agents.el's renderer) so a live claude-term or agent-shell
+session renders exactly once, as its agent row, rather than also as a
+raw buffer row here.
+
+Guarded with `boundp': an absent table -- agents.el never loaded, e.g.
+this file's own standalone batch test harness -- means \"exclude
+nothing\", identical to today's behavior, never a `void-variable' or
+`void-function' error.
+
+The exclusion is global, not scoped to any one worktree root: LOCATOR
+is buffer identity, and a buffer already answers \"does some agent row
+already claim this buffer\" without reference to which section is being
+rendered. A row whose ROOT differs from the section currently drawing
+still hides BUF there -- accepted, since the buffer remains visible via
+its agent row somewhere.
+
+A row with a nil LOCATOR (the `agents-set-status-drops-source' shell-hook
+rows) can never match a live buffer via `eq' and so is correctly never
+excluded here."
+  (and (boundp 'edmacs-agents--table)
+       edmacs-agents--table
+       (catch 'found
+         (maphash (lambda (_key row)
+                    (when (eq (edmacs-agent-locator row) buf)
+                      (throw 'found t)))
+                  edmacs-agents--table)
+         nil)))
+
 (defun edmacs-sidebar-buffers--listable-p (buf)
   "Non-nil when BUF is work the user navigates between, not chrome.
 An allowlist, deliberately: `bufferlo' associates every buffer ever
@@ -143,9 +177,15 @@ running a live process (a terminal, an agent pane, a REPL), and a
 buffer whose mode derives from one in
 `edmacs-sidebar-buffers-interactive-modes' (compilation output, which
 has no process once it finishes). A name starting with a space is
-Emacs's own convention for an internal buffer and never lists."
+Emacs's own convention for an internal buffer and never lists.
+
+A buffer that is already some tracked agent's LOCATOR (see
+`--agent-locator-p') is excluded regardless of which of the above
+grounds would otherwise have admitted it, so it renders once, as that
+agent's own row, instead of twice."
   (and (buffer-live-p buf)
        (not (string-prefix-p " " (buffer-name buf)))
+       (not (edmacs-sidebar-buffers--agent-locator-p buf))
        (or (edmacs-sidebar-buffers--file-like-p buf)
            (and (get-buffer-process buf) t)
            (apply #'provided-mode-derived-p
