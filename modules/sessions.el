@@ -583,9 +583,13 @@ to close a window or kill a buffer, never a frame, so they never reach
 ;; Leader-key bindings
 ;; ============================================================================
 ;; SPC T - tab lifecycle, with no dispatch grace period (unlike the C-x chords).
-(general-define-key
- :states 'normal
+;; :global-prefix must be restated as the full sub-prefix here: general.el's
+;; global-prefix path concatenates :global-prefix with :infix, never with
+;; :prefix, so inheriting leader-def's bare "C-SPC" would collapse every key
+;; below onto "C-SPC <key>" instead of "C-SPC T <key>".
+(leader-def
  :prefix "SPC T"
+ :global-prefix "C-SPC T"
  "" '(:ignore t :which-key "tabs")
  "p" '(edmacs-workspaces-open-worktree :which-key "open worktree tab")
  "n" '(tab-bar-new-tab :which-key "new tab")
@@ -596,9 +600,10 @@ to close a window or kill a buffer, never a frame, so they never reach
  "l" '(tab-bar-switch-to-tab :which-key "switch tab by name"))
 
 ;; SPC p w - worktree switching, same no-delay path.
-(general-define-key
- :states 'normal
+;; :global-prefix restated for the same reason as the SPC T block above.
+(leader-def
  :prefix "SPC p w"
+ :global-prefix "C-SPC p w"
  "" '(:ignore t :which-key "worktree")
  "w" '(vc-switch-working-tree :which-key "visit file in other worktree")
  "s" '(vc-working-tree-switch-project :which-key "switch worktree (project)")

@@ -4,15 +4,18 @@
 ;; sessions.el cannot be `-l'-loaded standalone under plain `-Q --batch':
 ;; it makes an unconditional, non-deferred call to
 ;; `edmacs-evil-config-add-c-x-chord' (evil-config.el, never loaded here)
-;; and unconditional `general-define-key' calls (the real `general',
-;; loaded only in a real init.el session). So this file, like
-;; sidebar-test.el, fixes up the environment before loading sessions.el
-;; itself rather than taking it as a `-l' argument:
+;; and unconditional `leader-def' calls (a real macro `modules/keybindings.el'
+;; defines, which in turn needs the real `evil'/`general', loaded only in a
+;; real init.el session). So this file, like sidebar-test.el, fixes up the
+;; environment before loading sessions.el itself rather than taking it as a
+;; `-l' argument:
 ;;
 ;;   - `edmacs-evil-config-add-c-x-chord' is stubbed as a no-op.
-;;   - the real `general' is pulled off this checkout's (or its sibling
-;;     main checkout's) `straight/build', mirroring
+;;   - the real `evil' and `general' are pulled off this checkout's (or its
+;;     sibling main checkout's) `straight/build', mirroring
 ;;     `edmacs-test-support-straight-build-root''s fallback.
+;;   - `modules/keybindings.el' is loaded (once) for its `leader-def' macro
+;;     before `modules/sessions.el' itself.
 ;;
 ;; Run with:
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
@@ -88,13 +91,21 @@ a real Emacs session) to enable this suite"))
 
   (progn
 
+    (add-to-list 'load-path (expand-file-name "evil" edmacs-sessions-test--build-root))
     (add-to-list 'load-path (expand-file-name "general" edmacs-sessions-test--build-root))
+    (require 'evil)
     (require 'general)
 
     (unless (fboundp 'edmacs-evil-config-add-c-x-chord)
       (defun edmacs-evil-config-add-c-x-chord (&rest _)
         "Stub for tests: sessions.el's real target lives in evil-config.el."
         nil))
+
+    ;; sessions.el's `SPC T'/`SPC p w' maps go through `leader-def', a real
+    ;; macro `modules/keybindings.el' defines -- load it before sessions.el
+    ;; so that macro exists when sessions.el's top level is read.
+    (unless (fboundp 'leader-def)
+      (load (expand-file-name "modules/keybindings.el" default-directory) nil t))
 
     (load (expand-file-name "modules/sessions.el" default-directory) nil t)
 

@@ -8,6 +8,22 @@
 ;;   emacs -Q --batch -l ert -l modules/test-support.el \
 ;;         -l modules/keybindings-test.el \
 ;;         -f ert-run-tests-batch-and-exit
+;;
+;; The `SPC T' / `SPC p w' insert-state-reachability tests below also
+;; load `modules/sessions.el', which is not `-l'-loadable standalone
+;; under plain `-Q' (see `modules/sessions-test.el''s Commentary): it
+;; makes an unconditional `edmacs-evil-config-add-c-x-chord' call and
+;; unconditional `leader-def'/`general-define-key' calls. Those tests
+;; therefore need this fuller invocation instead:
+;;
+;;   emacs -Q --batch -l ert -l modules/test-support.el \
+;;         -l modules/git-common-dir.el -l modules/windows.el \
+;;         -l modules/workspaces.el -l modules/keybindings-test.el \
+;;         -f ert-run-tests-batch-and-exit
+;;
+;; `windows.el' before `workspaces.el' mirrors `sessions-test.el': the
+;; post-open handler workspaces.el installs calls
+;; `edmacs-windows-designate-main' directly.
 
 ;;; Code:
 
@@ -44,6 +60,30 @@ has never bootstrapped straight locally, so callers can `ert-skip'."
           (load (expand-file-name "modules/keybindings.el" default-directory) nil t)
           (setq edmacs-keybindings-test--keybindings-loaded t))
         t))))
+
+(defvar edmacs-keybindings-test--sessions-loaded nil
+  "Non-nil once `modules/sessions.el' has been loaded for real by this file.")
+
+(defun edmacs-keybindings-test--ensure-sessions-keys ()
+  "Load real evil/general/keybindings.el, then `SPC T'/`SPC p w's owner.
+Mirrors `modules/sessions-test.el''s own recipe for loading
+`modules/sessions.el' standalone: stub
+`edmacs-evil-config-add-c-x-chord' as a no-op, then load
+`modules/git-common-dir.el', `modules/windows.el',
+`modules/workspaces.el' and `modules/sessions.el' in that order.
+Returns non-nil on success; nil (without erroring) when this checkout
+has never bootstrapped straight locally, so callers can `ert-skip'."
+  (when (edmacs-keybindings-test--ensure-keybindings)
+    (unless edmacs-keybindings-test--sessions-loaded
+      (unless (fboundp 'edmacs-evil-config-add-c-x-chord)
+        (defalias 'edmacs-evil-config-add-c-x-chord #'ignore
+          "Stub for tests: the real target lives in evil-config.el."))
+      (load (expand-file-name "modules/git-common-dir.el" default-directory) nil t)
+      (load (expand-file-name "modules/windows.el" default-directory) nil t)
+      (load (expand-file-name "modules/workspaces.el" default-directory) nil t)
+      (load (expand-file-name "modules/sessions.el" default-directory) nil t)
+      (setq edmacs-keybindings-test--sessions-loaded t))
+    t))
 
 ;; ============================================================================
 ;; Tests
@@ -217,6 +257,94 @@ sole tab signals `user-error' rather than backtracing."
       (let ((tab-bar-close-last-tab-choice nil))
         (should-error (tab-bar-close-tab) :type 'user-error))
     (ert-skip "ambient batch frame does not carry exactly one tab")))
+
+;; ============================================================================
+;; SPC T / SPC p w reachable via C-SPC (insert) as well as SPC (normal)
+;; ============================================================================
+;; sessions.el used to bind these two maps with a bare
+;; `general-define-key :states 'normal', with no `:global-prefix' -- so
+;; unlike every other leader binding (through `leader-def'), they had no
+;; insert-state spelling at all. They now go through `leader-def' itself,
+;; inheriting its `(normal visual insert emacs motion)' states and its
+;; `C-SPC' global prefix.
+
+(defconst edmacs-keybindings-test--tab-lifecycle-commands
+  '(("]" . tab-bar-switch-to-next-tab)
+    ("[" . tab-bar-switch-to-prev-tab)
+    ("n" . tab-bar-new-tab)
+    ("d" . tab-bar-close-tab)
+    ("r" . tab-bar-rename-tab)
+    ("l" . tab-bar-switch-to-tab)
+    ("p" . edmacs-workspaces-open-worktree))
+  "The `SPC T'/`C-SPC T' key/command pairs this phase must keep reachable.")
+
+(defconst edmacs-keybindings-test--worktree-switch-commands
+  '(("w" . vc-switch-working-tree)
+    ("s" . vc-working-tree-switch-project)
+    ("k" . vc-kill-other-working-tree-buffers)
+    ("a" . vc-apply-to-other-working-tree)
+    ("A" . vc-apply-root-to-other-working-tree))
+  "The `SPC p w'/`C-SPC p w' key/command pairs this phase must keep reachable.")
+
+(defun edmacs-keybindings-test--assert-sessions-keys-resolve (state prefix pairs)
+  "In evil STATE, assert each of PAIRS resolves under PREFIX (e.g. \"SPC T \")."
+  (with-temp-buffer
+    (let ((composed (edmacs-keybindings-test--composed-keymap-for-state state)))
+      (dolist (pair pairs)
+        (should (eq (lookup-key composed (kbd (concat prefix (car pair))))
+                    (cdr pair)))))))
+
+(ert-deftest edmacs-keybindings-test-spc-t-resolves-from-insert-state ()
+  "AC1: `C-SPC T ]'/[`/n/d/r/l/p all resolve from insert state."
+  (unless (edmacs-keybindings-test--ensure-sessions-keys)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (edmacs-keybindings-test--assert-sessions-keys-resolve
+   'insert "C-SPC T " edmacs-keybindings-test--tab-lifecycle-commands))
+
+(ert-deftest edmacs-keybindings-test-spc-p-w-resolves-from-insert-state ()
+  "AC2: the five `C-SPC p w' worktree commands resolve from insert state."
+  (unless (edmacs-keybindings-test--ensure-sessions-keys)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (edmacs-keybindings-test--assert-sessions-keys-resolve
+   'insert "C-SPC p w " edmacs-keybindings-test--worktree-switch-commands))
+
+(ert-deftest edmacs-keybindings-test-spc-t-resolves-from-normal-state ()
+  "AC3: `SPC T ...' still resolves from normal state, to the same commands."
+  (unless (edmacs-keybindings-test--ensure-sessions-keys)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (edmacs-keybindings-test--assert-sessions-keys-resolve
+   'normal "SPC T " edmacs-keybindings-test--tab-lifecycle-commands))
+
+(ert-deftest edmacs-keybindings-test-spc-p-w-resolves-from-normal-state ()
+  "AC3: `SPC p w ...' still resolves from normal state, to the same commands."
+  (unless (edmacs-keybindings-test--ensure-sessions-keys)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (edmacs-keybindings-test--assert-sessions-keys-resolve
+   'normal "SPC p w " edmacs-keybindings-test--worktree-switch-commands))
+
+(ert-deftest edmacs-keybindings-test-spc-t-and-spc-p-w-which-key-labels-intact ()
+  "AC3: the `SPC T'/`SPC p w' which-key prefix labels survive the move
+to `leader-def' unchanged (\"tabs\" and \"worktree\")."
+  (unless (edmacs-keybindings-test--ensure-sessions-keys)
+    (ert-skip "real evil.el/general.el not found in this checkout or its sibling main checkout; bootstrap straight once locally to enable this test"))
+  (require 'which-key)
+  ;; general.el records a `:which-key' prefix label as a
+  ;; `which-key-replacement-alist' entry keyed on the anchored key
+  ;; sequence -- see `general--add-which-key-replacement'.
+  (let ((tabs-entry (seq-find (lambda (entry)
+                                 (and (consp entry)
+                                      (consp (car entry))
+                                      (equal (caar entry) "\\`SPC T\\'")))
+                               which-key-replacement-alist))
+        (worktree-entry (seq-find (lambda (entry)
+                                     (and (consp entry)
+                                          (consp (car entry))
+                                          (equal (caar entry) "\\`SPC p w\\'")))
+                                   which-key-replacement-alist)))
+    (should tabs-entry)
+    (should worktree-entry)
+    (should (equal (cddr tabs-entry) "tabs"))
+    (should (equal (cddr worktree-entry) "worktree"))))
 
 (provide 'keybindings-test)
 ;;; keybindings-test.el ends here
