@@ -378,6 +378,64 @@ line (see Commentary). Two frame states in, one out."
         (should (= 2 (length (alist-get 'tabs (car (car (frameset-states
                                                          desktop-saved-frameset)))))))))
 
+    (ert-deftest edmacs-sessions-test-restore-selected-tab-buffers-replaces-the-list ()
+      "The selected tab gets its saved list plus whatever it displays, and
+drops the buffers desktop reopened for other tabs."
+      (let* ((mine (get-buffer-create "edmacs-sessions-test-mine"))
+             (other (get-buffer-create "edmacs-sessions-test-other"))
+             (frame (selected-frame))
+             (desktop-saved-frameset
+              (edmacs-sessions-test--frameset
+               (list (cons '((name . "a"))
+                           '(nil (leaf (buffer "x"))
+                                 (bufferlo-buffer-list
+                                  ("edmacs-sessions-test-mine" "gone-buffer"))))))))
+        (edmacs-sessions-test--with-clean-frame-params frame '(buffer-list buried-buffer-list)
+          (unwind-protect
+              (progn
+                (set-frame-parameter frame 'buffer-list (list mine other))
+                (edmacs-sessions--restore-selected-tab-buffers frame)
+                (let ((bl (frame-parameter frame 'buffer-list)))
+                  (should (memq mine bl))
+                  (should (memq (window-buffer (frame-selected-window frame)) bl))
+                  (should-not (memq other bl))))
+            (kill-buffer mine)
+            (kill-buffer other)))))
+
+    (ert-deftest edmacs-sessions-test-restore-selected-tab-buffers-leaves-an-unsaved-list ()
+      "A frameset carrying no bufferlo list leaves the tab's list alone."
+      (let ((frame (selected-frame))
+            (desktop-saved-frameset
+             (edmacs-sessions-test--frameset (list (cons '((name . "a")) nil)))))
+        (edmacs-sessions-test--with-clean-frame-params frame '(buffer-list)
+          (set-frame-parameter frame 'buffer-list (list (current-buffer)))
+          (edmacs-sessions--restore-selected-tab-buffers frame)
+          (should (equal (frame-parameter frame 'buffer-list) (list (current-buffer)))))))
+
+    (ert-deftest edmacs-sessions-test-restore-selected-tab-buffers-runs-after-restore ()
+      (should (advice-member-p #'edmacs-sessions--restore-selected-tab-buffers
+                               'desktop-restore-frameset)))
+
+    (defvar desktop-buffer-major-mode)
+    (defvar desktop-buffer-locals)
+
+    (ert-deftest edmacs-sessions-test-restored-file-keeps-its-auto-mode ()
+      "A saved `fundamental-mode' is not forced over `auto-mode-alist'; any
+other saved mode still is."
+      (let ((file (make-temp-file "edmacs-sessions-test" nil ".el"))
+            (desktop-buffer-locals nil))
+        (unwind-protect
+            (progn
+              (let ((desktop-buffer-major-mode 'fundamental-mode))
+                (with-current-buffer (desktop-restore-file-buffer file nil nil)
+                  (should (eq major-mode 'emacs-lisp-mode))
+                  (kill-buffer)))
+              (let ((desktop-buffer-major-mode 'text-mode))
+                (with-current-buffer (desktop-restore-file-buffer file nil nil)
+                  (should (eq major-mode 'text-mode))
+                  (kill-buffer))))
+          (delete-file file))))
+
     (ert-deftest edmacs-sessions-test-prepare-runs-before-desktop-restore-frameset ()
       "`desktop-read' calls `desktop-restore-frameset' directly, before
 `desktop-after-read-hook', so the migration has to ride on that call."

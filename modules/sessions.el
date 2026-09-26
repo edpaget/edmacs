@@ -183,6 +183,39 @@ failed migration restores the frameset unmigrated."
 
 (advice-add 'desktop-restore-frameset :before #'edmacs-sessions--prepare-frameset)
 
+(defun edmacs-sessions--restore-selected-tab-buffers (&optional frame)
+  "Give FRAME's selected tab back the buffer list it was saved with.
+bufferlo reapplies a tab's list only when `window-state-put' leaves the
+frame's root window live, which the sidebar split never does, so the
+selected tab would otherwise keep every buffer desktop reopened.  FRAME
+defaults to `edmacs-workspaces-gui-frame'."
+  (when-let* ((frame (or frame (edmacs-workspaces-gui-frame)))
+              ((frame-live-p frame))
+              ((frameset-p desktop-saved-frameset))
+              (state (car (frameset-states desktop-saved-frameset)))
+              (names (cadr (assq 'bufferlo-buffer-list (cdr state)))))
+    (set-frame-parameter
+     frame 'buffer-list
+     (delete-dups (append (mapcar #'window-buffer (window-list frame 'nomini))
+                          (delq nil (mapcar #'get-buffer names)))))
+    (set-frame-parameter frame 'buried-buffer-list nil)))
+
+(advice-add 'desktop-restore-frameset :after #'edmacs-sessions--restore-selected-tab-buffers)
+
+;; desktop re-applies a file buffer's saved major mode over the one
+;; `auto-mode-alist' picks, so a file first visited before its mode was
+;; installed would stay in `fundamental-mode' across every restart.
+(defvar desktop-buffer-major-mode)
+
+(defun edmacs-sessions--keep-auto-mode (fn &rest args)
+  "Call FN with ARGS, never forcing a saved `fundamental-mode'."
+  (let ((desktop-buffer-major-mode
+         (unless (eq desktop-buffer-major-mode 'fundamental-mode)
+           desktop-buffer-major-mode)))
+    (apply fn args)))
+
+(advice-add 'desktop-restore-file-buffer :around #'edmacs-sessions--keep-auto-mode)
+
 (defun edmacs-sessions--finish-frameset-restore (&optional frame)
   "Sweep, stamp and show the sidebar on FRAME after a frameset restore.
 FRAME defaults to `edmacs-workspaces-gui-frame'; with neither, this does
