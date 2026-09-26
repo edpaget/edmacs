@@ -93,6 +93,7 @@
  ("straight.el" . "e40a5b7f8b0c1bb2cde0e7e477b5f81303e34b95")
  ("suggest.el" . "d1395f18519527efc3b43a7b148ebb139017e9ae")
  ("svg-lib" . "8bac472446265381f4e1f5e32b8ae2006e24f28a")
+ ("swift-mode" . "a81a6e5edc3077ea34ded55a6179f5d6166a3008")
  ("transient" . "9ac2d48909e1d34890a4a17581d6693dcc867800")
  ("treesit-auto" . "3106c739c2a84bec2cb671997fe074e5dd5dd967")
  ("use-package" . "4b3484b550431f74ab9cda060a8dc983fe482131")

@@ -174,6 +174,8 @@ LANGUAGE should be the name without the .el extension."
 (load-language-config "java")
 (load-language-config "javascript")
 (load-language-config "rust")
+(load-language-config "ruby")
+(load-language-config "swift")
 
 ;; ============================================================================
 ;; Custom file

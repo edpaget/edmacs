@@ -93,6 +93,8 @@ MANIFEST=(
   "java-test|batch|15|0|modules/git-common-dir.el,modules/languages/java-test.el|ert-run-tests-batch-and-exit"
   "javascript-test|batch|15|0|modules/languages/javascript-test.el|ert-run-tests-batch-and-exit"
   "rust-test|batch|15|0|modules/languages/rust-test.el|ert-run-tests-batch-and-exit"
+  "ruby-test|batch|15|0|modules/languages/ruby-test.el|ert-run-tests-batch-and-exit"
+  "swift-test|batch|15|0|modules/languages/swift-test.el|ert-run-tests-batch-and-exit"
   "claude-lib-test|batch|15|0|modules/claude-lib.el,modules/claude-lib-test.el|ert-run-tests-batch-and-exit"
   "claude-lib-live-test|batch|60|0|modules/claude-lib-live-test.el|ert-run-tests-batch-and-exit"
   "claude-lib-view-test|batch|60|0|modules/windows.el,modules/claude-lib.el,modules/claude-lib-view.el,modules/claude-lib-view-test.el|ert-run-tests-batch-and-exit"

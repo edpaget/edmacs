@@ -9,6 +9,8 @@ Language-specific configurations for edmacs. Each module provides optimized sett
 | JavaScript/TypeScript | `javascript.el` | 2 spaces | ✅ TypeScript 7 `tsc --lsp`, else typescript-language-server | ❌ |
 | Clojure/ClojureScript | `clojure.el` | Lisp-style | ✅ clojure-lsp | ✅ CIDER |
 | Java | `java.el` | 4 spaces | ✅ eglot + jdtls (navigation-only) | ❌ |
+| Ruby | `ruby.el` | 2 spaces | ✅ ruby-lsp or solargraph, when installed | ❌ |
+| Swift | `swift.el` | 4 spaces | ✅ sourcekit-lsp | ❌ |
 
 ---
 
@@ -282,3 +284,28 @@ Example structure:
 ## License
 
 This module is part of the edmacs configuration and is licensed under the GNU General Public License v3.0 or later.
+
+---
+
+## Ruby
+
+**File:** `ruby.el`
+
+- **Mode**: built-in `ruby-ts-mode` via treesit-auto (`.rb`, `Gemfile`,
+  `Rakefile`, `.gemspec`, ...), falling back to `ruby-mode` without the grammar
+- **Language Server**: eglot's built-in entry (`ruby-lsp` or `solargraph`),
+  started only when one is on `exec-path` -- neither ships with Ruby
+  (`gem install ruby-lsp`)
+- **Formatting**: rubocop via Apheleia, in place of apheleia's
+  `prettier-ruby` default
+
+## Swift
+
+**File:** `swift.el`
+
+- **Mode**: `swift-mode` (Emacs has no `swift-ts-mode`)
+- **Language Server**: `sourcekit-lsp`, from the Xcode toolchain. Works out
+  of the box for SwiftPM packages; Xcode projects need a `buildServer.json`
+  (e.g. from xcode-build-server)
+- **Formatting**: `swift-format` via Apheleia, honouring the project's
+  `.swift-format`
