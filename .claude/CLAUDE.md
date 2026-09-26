@@ -295,7 +295,7 @@ wide carrying a 120-pixel image, which batch cannot see at all -- a batch
 frame accepts an image spec and renders nothing, so the declared width
 and the pixel width can disagree indefinitely without a test noticing.
 
-It never touches the user's real daemon (server name `server`) and never
+It never touches the user's real Emacs (server name `server`) and never
 sets `--init-directory`, so it cannot bootstrap a second `straight` package
 tree -- safe to run from a worktree or the main checkout. The throwaway
 daemon is killed on every exit path, including a failure before any test
@@ -338,7 +338,7 @@ scripts/go-eglot-check.sh
 ```
 
 It re-execs itself through a login shell when `gopls` is missing, because
-the toolchain resolves through mise exactly as it does for the daemon via
+the toolchain resolves through mise exactly as it does for the GUI Emacs via
 `exec-path-from-shell`. Copy its shape for the next language moved to
 eglot. `scripts/eglot-languages-check.sh` is that copy, for Rust,
 TypeScript, JSX, JavaScript, JSON and Clojure, and it adds three more traps
@@ -473,11 +473,11 @@ STARTUP_CHECK_EVAL='(princ (format "assert: %S\n" window-sides-slots))' \
 ### Scratch daemon
 
 A form that reads the minibuffer does not merely hang its own `emacsclient`
-request -- it wedges the daemon for **every** later client, and recovery is
+request -- it wedges that Emacs for **every** later client, and recovery is
 not available through the eval channel (even `(kill-emacs)` never returns;
 the process needs a real kill). Interactive surfaces are the ordinary shape
-of an Emacs package, so prototyping them against the operator's live daemon
-is how that daemon dies.
+of an Emacs package, so prototyping them against the operator's live Emacs
+is how that Emacs dies.
 
 So: never the server name `server`, and never a bare interactive form.
 Drive commands through `claude-lib-drive` / `claude-lib-drive-command`
@@ -503,10 +503,10 @@ environment for reproducing a soft-dependency failure by hand.
 reports what it could not undo. The remedy is `restart`, which is cheap
 because the daemon is throwaway. Do not build a teardown framework.
 
-Before calling a prototype done, run `claude-lib-check-q` on it. The daemon
-has evil, consult, embark, magit and transient loaded, so a hard `require`
-in code whose dependency posture is *soft* is invisible there and only fails
-later, in the consumer repo's own `emacs -Q --batch` harness.
+Before calling a prototype done, run `claude-lib-check-q` on it. The scratch
+daemon has evil, consult, embark, magit and transient loaded, so a hard
+`require` in code whose dependency posture is *soft* is invisible there and
+only fails later, in the consumer repo's own `emacs -Q --batch` harness.
 
 ## Worktrees
 
@@ -515,7 +515,7 @@ rdm roadmaps and tasks get their own git worktree under
 at once. Module sources are per-worktree; **the package tree is not**.
 `modules/claude-lib.el`'s promotion path is an exception to the "module
 sources are per-worktree" rule: `claude-lib-promote` always targets the
-main checkout's copy (the one instance `init.el` loads at daemon boot),
+main checkout's copy (the one instance `init.el` loads at startup),
 regardless of which worktree's claude-term session calls it, so a
 worktree's own tracked copy of that file is inert until that worktree
 merges to main.
@@ -523,9 +523,11 @@ merges to main.
 `.gitignore` ignores `straight/*` except `straight/versions/`, so a fresh
 worktree has a lockfile and nothing else -- no `straight/repos/`, no
 `straight/build/`. There is exactly one populated package tree, in the main
-checkout, and one Emacs daemon, whose `user-emacs-directory` is that main
-checkout. A claude-term session opened in a worktree is just a different
-project root inside that one daemon, not a second Emacs.
+checkout, and one running Emacs.app, whose `user-emacs-directory` is that
+main checkout. It is a plain app launch, not a daemon: it starts its own
+server (name `server`) for `emacsclient`, and quits when its last frame
+closes. A claude-term session opened in a worktree is just a different
+project root inside that one Emacs, not a second Emacs.
 
 ### Never point `--init-directory` at a worktree
 
@@ -537,7 +539,7 @@ and rebuilding 100+ packages, and littering the worktree with `eln-cache/`,
 runs with `straight-base-dir` set to a worktree can leave the main
 checkout's `straight/build/` full of symlinks into
 `<worktree>/straight/repos/`, which no longer exists once the worktree is
-cleaned or removed. Every package file then dangles and the daemon fails to
+cleaned or removed. Every package file then dangles and Emacs fails to
 start on its next launch.
 
 So: any command that loads the real config -- the bare startup check above,

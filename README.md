@@ -243,19 +243,14 @@ nothing). `modules/ui.el`'s
 
 ### Quitting and Restarting
 
-Emacs runs as a launchd daemon (`brew services start emacs-plus@31`) whose
-plist sets `KeepAlive` unconditionally — launchd relaunches on *any* exit. So
-"quit" cannot mean "end the process": that is a restart, whatever it is bound
-to. The three intents get three commands (`modules/sessions.el`):
+Emacs is a plain app launch (Emacs.app from the Dock), not a daemon. It
+starts its own server so `emacsclient` works while it is open, and
+`desktop-save-mode` restores tabs and layout on the next launch.
 
 | Key | Action |
 |-----|--------|
-| `SPC qq` | Close the frame; the daemon and your session stay up. Last visible frame hides Emacs, so the Dock tile keeps owning it and a click brings the layout straight back. |
-| `SPC qr` | Restart the daemon: save, exit, let launchd relaunch and the frameset restore. |
-| `SPC qQ` | `brew services stop` — the only one that really quits. Confirms first; starting Emacs again needs a terminal. |
-
-Outside a daemon each falls back to the stock behavior
-(`save-buffers-kill-terminal`, `restart-emacs`).
+| `SPC qq` | Close the frame; closing the last one quits Emacs. |
+| `SPC qr` | Restart Emacs (`restart-emacs`); the session comes back. |
 
 ### Git
 
