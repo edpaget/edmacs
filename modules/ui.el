@@ -85,17 +85,7 @@ advance, which is wider than two cells at every size."
       (set-iosevka-font font-size-standard)
       (message "Font size: %dpt (standard)" font-size-standard))))
 
-;; A daemon has no display at load time, so `find-font' fails there; apply
-;; the font once the first graphical frame exists instead.
-(defun edmacs--set-font-on-first-frame (frame)
-  "Apply the Iosevka font when FRAME is the first graphical frame."
-  (when (display-graphic-p frame)
-    (with-selected-frame frame (set-iosevka-font font-size-current))
-    (remove-hook 'after-make-frame-functions #'edmacs--set-font-on-first-frame)))
-
-(if (daemonp)
-    (add-hook 'after-make-frame-functions #'edmacs--set-font-on-first-frame)
-  (set-iosevka-font font-size-standard))
+(set-iosevka-font font-size-current)
 
 ;; ============================================================================
 ;; Theme - Solarized Dark
@@ -119,20 +109,6 @@ advance, which is wider than two cells at every size."
   :config
   ;; `solarized-light' is the light one.
   (load-theme 'solarized-dark :no-confirm))
-
-;; solarized resolves its palette against the display it is loaded on; a
-;; daemon loads it on a tty and GUI frames then come up black-on-white.
-;; Reload it on the first GUI frame, at a depth that runs before
-;; nano-modeline's face refresh reads the theme.
-(defun edmacs--reload-theme-on-first-frame (frame)
-  "Reload the theme when FRAME is the first graphical frame."
-  (when (display-graphic-p frame)
-    (remove-hook 'after-make-frame-functions #'edmacs--reload-theme-on-first-frame)
-    (with-selected-frame frame
-      (load-theme 'solarized-dark :no-confirm))))
-
-(when (daemonp)
-  (add-hook 'after-make-frame-functions #'edmacs--reload-theme-on-first-frame -10))
 
 ;; solarized gives `nano-modeline-active', `nano-modeline-inactive' and
 ;; `default' all the same background (#002b36), so the mode line is
@@ -511,23 +487,6 @@ and this repo has no `eat' package or hook wired in regardless."
   ;; otherwise falls through to the default text line -- see
   ;; `edmacs-modeline-ghostel-mode'.
   (add-hook 'ghostel-mode-hook #'edmacs-modeline-ghostel-mode))
-
-;; nano-modeline bakes theme colors into its faces at load time, and a daemon
-;; has no display then, so they come out as tty fallbacks. Re-declare them
-;; once the first GUI frame exists; `defface' only re-evaluates a face whose
-;; `face-defface-spec' property has been cleared.
-(defun edmacs--nano-modeline-refresh-faces (frame)
-  "Re-derive nano-modeline's faces on FRAME, the first graphical frame."
-  (when (display-graphic-p frame)
-    (remove-hook 'after-make-frame-functions #'edmacs--nano-modeline-refresh-faces)
-    (with-selected-frame frame
-      (dolist (face (face-list))
-        (when (string-prefix-p "nano-modeline" (symbol-name face))
-          (put face 'face-defface-spec nil)))
-      (load-library "nano-modeline"))))
-
-(when (daemonp)
-  (add-hook 'after-make-frame-functions #'edmacs--nano-modeline-refresh-faces))
 
 ;; ============================================================================
 ;; Icons - Nerd Icons

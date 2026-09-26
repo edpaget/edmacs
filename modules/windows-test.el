@@ -1955,7 +1955,7 @@ window keeps its slot rather than the frame going away."
 
 (ert-deftest edmacs-windows-test-quit-never-deletes-a-frame ()
   "Whatever branch it takes, `:q' must not reach `delete-frame' -- that is
-what drops the daemon out of the Dock."
+on the last frame that quits Emacs."
   (edmacs-windows-test--with-clean-layout
     (let ((buf (generate-new-buffer "ewt-quit-no-delete-frame"))
           (deleted 0))

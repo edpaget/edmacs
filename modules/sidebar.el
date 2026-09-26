@@ -2150,14 +2150,8 @@ this half of the restore path in the ERT suite -- see sidebar-test.el."
 
 (add-hook 'desktop-after-read-hook #'edmacs-sidebar--on-desktop-read)
 
-;; Under the daemon, `sessions.el's `edmacs-sessions--restore-pending-frameset'
-;; restores a stashed frameset from `after-make-frame-functions', deferred
-;; one tick, which lands AFTER `desktop-after-read-hook' already fired at
-;; boot -- so this needs its own entry on the same hook, deferred the same
-;; way. Appended (depth 100, rather than the default which prepends) so it
-;; runs after sessions.el's entry (added at load time, before this module
-;; loads) and actually observes the frameset having landed on FRAME rather
-;; than racing ahead of it.
+;; A frame made after startup (`emacsclient -c', `make-frame') gets its
+;; sidebar here, deferred one tick so the frame is fully created first.
 (defun edmacs-sidebar--regenerate-after-frame (frame)
   "Show FRAME's sidebar once any pending frameset restore has landed on it."
   (run-at-time 0 nil

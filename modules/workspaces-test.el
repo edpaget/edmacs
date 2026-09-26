@@ -1793,10 +1793,8 @@ under test, `graphic' drives `display-graphic-p' (default t) and
                 (lambda (f param) (edmacs-workspaces-test--fake-param f param nil))))
        ,@body)))
 
-(ert-deftest edmacs-workspaces-test-frame-usable-p-excludes-daemon-placeholder ()
-  "The daemon's initial tty frame is never usable while a GUI frame exists.
-That is the frame `desktop--check-dont-save' already refuses to save and
-that nothing can ever be displayed on."
+(ert-deftest edmacs-workspaces-test-frame-usable-p-excludes-tty-beside-gui ()
+  "A tty frame is never usable while a GUI frame exists."
   (edmacs-workspaces-test--with-fake-frames
       '((gui . ((graphic . t)))
         (f1 . ((graphic . nil) (initial . t))))
@@ -1818,8 +1816,7 @@ genuinely terminal-only Emacs) working."
       '((tty-a . ((graphic . nil)))
         (tty-b . ((graphic . nil) (initial . t))))
     (should (edmacs-workspaces-frame-usable-p 'tty-a))
-    ;; The daemon's own placeholder stays excluded even here.
-    (should-not (edmacs-workspaces-frame-usable-p 'tty-b))))
+    (should (edmacs-workspaces-frame-usable-p 'tty-b))))
 
 ;; ============================================================================
 ;; edmacs-workspaces-stamp-frame-tabs -- the restore-side stamper
@@ -2187,10 +2184,9 @@ Every other non-test module must be clean of it."
                   (looking-at-p "[ \t]*;"))
           (should (> (point) migration)))))))
 
-(ert-deftest edmacs-workspaces-test-single-make-frame-call-site ()
-  "No code path creates a frame because a project was opened: the config
-has exactly one `make-frame' call site left, sessions.el's GUI-frame
-maker, and the frames model's own two frame factories are gone."
+(ert-deftest edmacs-workspaces-test-no-make-frame-call-site ()
+  "No code path creates a frame: the initial frame is the session's one
+frame, and the frames model's own two frame factories are gone."
   (dolist (suffix '("-make-frame" "-spare-frame"))
     (should-not (fboundp (intern (concat edmacs-workspaces-test--retired-prefix
                                          suffix)))))
@@ -2203,7 +2199,7 @@ maker, and the frames model's own two frame factories are gone."
         (goto-char (point-min))
         (while (search-forward "(make-frame" nil t)
           (setq total (1+ total)))))
-    (should (= total 1))))
+    (should (= total 0))))
 
 (ert-deftest edmacs-workspaces-test-no-worktree-cache-watch-or-timer-anywhere ()
   "The discovery layer is gone from the whole config, not just this

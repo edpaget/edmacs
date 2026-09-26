@@ -22,12 +22,11 @@
 ;; Environment Variables from Shell
 ;; ============================================================================
 
-;; macOS GUI apps and launchd-started daemons don't inherit the shell
-;; environment. `window-system' is nil in a daemon, so check `daemonp' too.
+;; A macOS GUI app doesn't inherit the shell environment.
 (use-package exec-path-from-shell
-  :if (or (daemonp) (memq window-system '(mac ns x)))
+  :if (memq window-system '(mac ns x))
   :config
-  ;; launchd leaves SHELL unset, which would make this run /bin/sh -l and
+  ;; A Dock launch leaves SHELL unset, which would make this run /bin/sh -l and
   ;; miss Homebrew and mise. Ask the directory service for the login shell.
   (unless (getenv "SHELL")
     (let ((shell (ignore-errors
@@ -60,8 +59,8 @@
 ;; Note: first activation writes `experimental = true' to the global mise config.
 (defun edmacs--enable-mise ()
   "Enable `global-mise-mode' when the mise binary is available.
-An error in `after-init-hook' kills a daemon (exit 255), so a missing
-binary degrades to a warning instead."
+A missing binary degrades to a warning rather than an error in
+`after-init-hook'."
   (if (executable-find "mise")
       (global-mise-mode 1)
     (display-warning 'edmacs "mise not found on PATH; global-mise-mode not enabled")))

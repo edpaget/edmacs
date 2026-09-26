@@ -487,15 +487,13 @@ window and no sidebar either way."
 ;; ============================================================================
 ;; Frames this config may drive
 ;; ============================================================================
-;; One frame is the model, but the frame LIST is not one long: a daemon
-;; also holds its initial tty placeholder, and a completion popup is a
-;; child frame. Both must be declined rather than driven.
+;; One frame is the model, but the frame LIST is not one long: a completion
+;; popup is a child frame, and must be declined rather than driven.
 
 (defun edmacs-workspaces-gui-frame ()
   "Return this session's graphical frame, or nil when it holds none.
-A daemon's frame list also holds its initial tty placeholder, which is
-never graphical; the session is meant to hold exactly one graphical
-frame, so the first match is the answer rather than an arbitrary pick."
+The session is meant to hold exactly one graphical frame, so the first
+match is the answer rather than an arbitrary pick."
   (seq-find (lambda (f) (and (frame-live-p f) (display-graphic-p f)))
             (frame-list)))
 
@@ -506,18 +504,11 @@ frame, so the first match is the answer rather than an arbitrary pick."
 (defun edmacs-workspaces-frame-usable-p (frame)
   "Return non-nil when FRAME is a frame this config may drive.
 Excludes a child frame (a corfu-style popup, which must stay the size
-its owner gave it) and the daemon's initial tty placeholder -- the frame
-`desktop--check-dont-save' already refuses to save, which is never on
-screen and must never be given a sidebar or have its tabs stamped.
-
-A non-graphical frame counts as usable only while the session has no
-graphical frame at all. That disjunct is what keeps the tty-only batch
-test harnesses (and a genuinely terminal-only Emacs) working, while
-still excluding the placeholder on the real daemon, which always holds a
-GUI boot frame."
+its owner gave it).  A non-graphical frame counts as usable only while
+the session has no graphical frame at all, which keeps the tty-only
+batch test harnesses (and a terminal-only Emacs) working."
   (and (frame-live-p frame)
        (not (frame-parameter frame 'parent-frame))
-       (not (and (daemonp) (frame-initial-p frame)))
        (or (display-graphic-p frame)
            (not (edmacs-workspaces--graphical-session-p)))))
 
@@ -1145,9 +1136,8 @@ keep seeing exactly what it sees today."
 ;; Closing the last tab
 ;; ============================================================================
 ;; `tab-bar-close-last-tab-choice' is deliberately left at core's nil, so
-;; closing the sole tab signals instead of doing something. Under the
-;; macOS daemon deleting the last GUI frame drops Emacs out of the Dock;
-;; `edmacs-ns-close-frame' (sessions.el) is the sanctioned way out.
+;; closing the sole tab signals instead of doing something; `SPC q q' is
+;; the way out.
 
 ;; ============================================================================
 ;; Fullscreen -- every graphical frame opens fullscreen
@@ -1181,9 +1171,9 @@ maps it to native macOS fullscreen, the X11/PGTK ports to EWMH's
 Nil when the policy is off, when FRAME already carries that value, or
 when FRAME is one this policy must not touch:
 
-  - a non-graphical frame -- the daemon's own tty placeholder and every
-    `emacsclient -t' frame, where `fullscreen' means nothing and is
-    mangled by frameset's tty shelving on the way into a desktop file.
+  - a non-graphical frame -- every `emacsclient -t' frame, where
+    `fullscreen' means nothing and is mangled by frameset's tty
+    shelving on the way into a desktop file.
     This gate is also why the policy is a hook rather than an entry in
     `default-frame-alist', which those frames read too.
   - a child frame -- a completion popup (corfu's, which already binds
@@ -1199,12 +1189,10 @@ when FRAME is one this policy must not touch:
 
 (defun edmacs-workspaces-apply-fullscreen (frame)
   "Put FRAME fullscreen per `edmacs-workspaces-fullscreen'.
-Deferred to a zero-delay timer that re-checks the target, for the same
-reason `edmacs-sessions--restore-pending-frameset' defers its own work
-\(sessions.el): a frame is not fully mapped while its own creation hook
-is still running, and the NS port drops a fullscreen toggle sent to an
-unmapped window. Never signals -- an error reaching a frameless
-daemon's top level exits it 255 (see core.el)."
+Deferred to a zero-delay timer that re-checks the target: a frame is
+not fully mapped while its own creation hook is still running, and the
+NS port drops a fullscreen toggle sent to an unmapped window.  Never
+signals."
   (when (edmacs-workspaces--fullscreen-target frame)
     (run-at-time
      0 nil
@@ -1221,10 +1209,8 @@ daemon's top level exits it 255 (see core.el)."
 
 (defun edmacs-workspaces--apply-fullscreen-at-startup ()
   "Apply the fullscreen policy to every already-live graphical frame.
-`after-make-frame-functions' never fires for a non-daemon Emacs's
-initial frame, which on a plain `emacs' start is the only frame there
-is; under the daemon this finds nothing and the hook above covers the
-boot frame instead."
+`after-make-frame-functions' never fires for the initial frame, which
+on a plain start is the only frame there is."
   (dolist (frame (frame-list))
     (edmacs-workspaces-apply-fullscreen frame)))
 

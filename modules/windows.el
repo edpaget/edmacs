@@ -914,10 +914,9 @@ Overrides `evil-quit', so this is what `:q', `:wq', `:x', `ZQ' and
 `C-w q' all reach.
 
 Vim's `:q' closes a window, but Emacs cannot close a frame's last one,
-so `evil-quit' falls through to `delete-frame' -- which under the daemon
-takes the last visible frame, and Emacs' place in the Dock with it (see
-`edmacs-ns-close-frame'). That reads as \"Emacs quit\" rather than
-\"buffer closed\". This never deletes a frame:
+so `evil-quit' falls through to `delete-frame' -- which on the last
+frame quits Emacs. That reads as \"Emacs quit\" rather than \"buffer
+closed\". This never deletes a frame:
 
   - a side window (the sidebar) is closed outright;
   - so is the selected window while a center split remains, as in vim;

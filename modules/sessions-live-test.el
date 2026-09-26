@@ -13,7 +13,7 @@
 ;;
 ;; Unlike sessions-test.el this loads the REAL workspaces.el, because the
 ;; function under test is precisely the workspaces.el/sessions.el seam.
-;; Only `edmacs-sessions--ensure-sidebar' is stubbed (it needs
+;; Only `edmacs-sidebar-show' is stubbed (it needs
 ;; magit-section); the stamping runs for real.
 ;;
 ;; No frame is created here. `frameset-restore' reuses the ambient frame
@@ -34,8 +34,8 @@
 ;;         -l modules/git-common-dir.el \
 ;;         -l modules/sessions-live-test.el -f ert-run-tests-batch-and-exit
 ;;
-;; Three tests here need a REAL graphical frame -- they drive the daemon's
-;; own restore bridge and then count graphical frames, or check a
+;; Three tests here need a REAL graphical frame -- they drive the desktop
+;; restore path and then count graphical frames, or check a
 ;; dedicated side window's effect on what a tab saves, neither of which a
 ;; batch frame can answer. They `ert-skip' in batch; run them with:
 ;;
@@ -47,12 +47,8 @@
 ;; main checkout, it cannot bootstrap a second straight tree and is safe
 ;; from a worktree.
 ;;
-;; None of this exercises the launchd daemon, the Dock, or NS hide/show --
-;; those need a real GUI login session and are not ERT-testable. The
-;; daemon-and-Dock-frame roadmap phase's AC4 is the manual checklist that
-;; covers them (daemon-starts-at-login, close-hides-instead-of-quits,
-;; Dock-click-restores, `emacsclient -c' behavior, and restart-restores-
-;; session); see that phase for the pass/fail steps.
+;; None of this exercises a real app launch from the Dock -- that needs a
+;; GUI login session and is a manual check.
 
 ;;; Code:
 
@@ -88,11 +84,11 @@ a real Emacs session) to enable this suite"))
     ;; `edmacs-evil-config-add-c-x-chord' stub, `modules/keybindings.el' for
     ;; `leader-def', then git-common-dir/windows/workspaces/sessions in
     ;; order -- windows.el before sessions.el because
-    ;; `edmacs-stack-sweep-stale-panes' is called from the restore bridge,
+    ;; `edmacs-stack-sweep-stale-panes' is called from the restore finish-up,
     ;; and windows.el before workspaces.el because the identity model
     ;; (what the finish-up stamps through, and what
-    ;; `edmacs-sessions--stash-frameset-for-daemon' puts the desktop
-    ;; frameset through before stashing it) depends on it.
+    ;; `edmacs-sessions--prepare-frameset' migrates the desktop frameset
+    ;; through) depends on it.
     (edmacs-test-support-load-sessions-stack)
 
     ;; workspaces.el installs a `window-buffer-change-functions' entry that
@@ -176,7 +172,7 @@ magit-section."
                                nil t)
                     nil)
 
-              ;; The real round trip the daemon's restore timer performs.
+              ;; The real round trip `desktop-read' performs.
               (let ((desktop-saved-frameset (frameset-save (list frame)))
                     (desktop-restore-frames t)
                     (desktop-restore-reuses-frames t))
@@ -189,8 +185,7 @@ magit-section."
               (should-not (edmacs-workspaces-tab-root
                            (tab-bar--current-tab-find nil frame)))
 
-              (cl-letf (((symbol-function 'edmacs-sessions--ensure-sidebar)
-                         #'ignore))
+              (cl-letf (((symbol-function 'edmacs-sidebar-show) #'ignore))
                 (edmacs-sessions--finish-frameset-restore frame))
 
               (should (equal (edmacs-workspaces-tab-root
@@ -209,18 +204,19 @@ magit-section."
     (ert-deftest edmacs-sessions-live-test-restore-walk-skips-an-unusable-frame ()
       "The gate holds against the real predicate, not just a stubbed one.
 `edmacs-workspaces-frame-usable-p' is loaded for real here, so this is
-the end-to-end form of sessions-test.el's stubbed placeholder test: with
-the ambient frame reported as the daemon's initial one, the finish-up
-must leave it entirely alone."
+the end-to-end form of sessions-test.el's stubbed test: with the ambient
+frame reported as a tty frame in a session that also holds a graphical
+one, the finish-up must leave it entirely alone."
       (let ((frame (selected-frame)))
         (edmacs-sessions-live-test--with-restored-frame frame
           (setf (alist-get edmacs-workspaces-root-parameter
                            (cdr (tab-bar--current-tab-find nil frame))
                            nil t)
                 nil)
-          (cl-letf (((symbol-function 'daemonp) (lambda (&rest _) t))
-                    ((symbol-function 'frame-initial-p) (lambda (_f) t))
-                    ((symbol-function 'edmacs-sessions--ensure-sidebar) #'ignore))
+          (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil))
+                    ((symbol-function 'edmacs-workspaces--graphical-session-p)
+                     (lambda () t))
+                    ((symbol-function 'edmacs-sidebar-show) #'ignore))
             (should-not (edmacs-workspaces-frame-usable-p frame))
             (edmacs-sessions--finish-frameset-restore frame))
           (should-not (edmacs-workspaces-tab-root
@@ -448,7 +444,7 @@ or its sibling main checkout"))
             (when (buffer-live-p b) (kill-buffer b))))))
 
     ;; ========================================================================
-    ;; AC4 -- GUI-only: the real bridge, on a real graphical frame
+    ;; AC4 -- GUI-only: the real restore, on a real graphical frame
     ;; ========================================================================
 
     (defun edmacs-sessions-live-test--skip-unless-graphic ()
@@ -461,20 +457,23 @@ count of graphical frames means anything there."
 `scripts/gui-ert.sh modules/sessions-live-test.el t -l modules/test-support.el' \
 from the main checkout")))
 
-    (defmacro edmacs-sessions-live-test--drive-bridge (frameset &rest body)
-      "Stash FRAMESET, run the real restore bridge on the selected frame, BODY.
-The bridge defers its work onto a zero-delay timer, so the `sit-for'
-below is what actually runs it; the one step with an external dependency
--- the sidebar, which needs magit-section -- is stubbed for the
-duration, exactly as the non-GUI tests above stub it."
+    (defmacro edmacs-sessions-live-test--drive-restore (frameset &rest body)
+      "Restore FRAMESET the way `desktop-read' does, finish it, then BODY.
+The real `desktop-restore-frameset' (with its migration advice) and the
+real `desktop-after-read-hook' entry run; the one step with an external
+dependency -- the sidebar, which needs magit-section -- is stubbed, as
+the non-GUI tests above stub it. The `sit-for' lets the NS frame settle."
       (declare (indent 1))
-      `(let ((edmacs-sessions--pending-frameset ,frameset))
-         (cl-letf (((symbol-function 'edmacs-sessions--ensure-sidebar) #'ignore))
-           (edmacs-sessions--restore-pending-frameset (selected-frame))
+      `(let ((desktop-saved-frameset ,frameset)
+             (desktop-restore-frames t)
+             (desktop-restore-reuses-frames t))
+         (cl-letf (((symbol-function 'edmacs-sidebar-show) #'ignore))
+           (desktop-restore-frameset)
+           (edmacs-sessions--after-desktop-read)
            (sit-for 0.3)
            ,@body)))
 
-    (ert-deftest edmacs-sessions-live-test-bridge-restores-into-one-gui-frame ()
+    (ert-deftest edmacs-sessions-live-test-restore-lands-into-one-gui-frame ()
       "AC4: a migrated frameset holds ONE state, so `frameset-restore'
 reuses the frame it was handed and creates no second one. The frame
 count is the whole point of this test, and it is unfalsifiable in batch
@@ -489,14 +488,14 @@ always zero."
               (edmacs-workspaces-set-tab-root "/w/edmacs/" frame)
               (let ((migrated (edmacs-workspaces-migrate-frameset
                                (frameset-save (list frame)))))
-                (edmacs-sessions-live-test--drive-bridge migrated
+                (edmacs-sessions-live-test--drive-restore migrated
                   (should (= 1 (seq-count (lambda (f)
                                             (and (frame-live-p f) (display-graphic-p f)))
                                           (frame-list))))
                   (should (frame-live-p frame))
                   (should (edmacs-workspaces-find-tab "/w/edmacs/" frame)))))))))
 
-    (ert-deftest edmacs-sessions-live-test-bridge-restores-a-selectable-folded-tab ()
+    (ert-deftest edmacs-sessions-live-test-restore-lands-a-selectable-folded-tab ()
       "A tab folded out of a second frame carries that frame's whole window
 state as its `ws', and `tab-bar-select-tab' puts it back -- a restored
 tab has no live `wc', so `ws' is the only layout it has. Selecting one
@@ -522,7 +521,7 @@ must yield real windows, not an empty frame."
                                 (cdr state)))
                    (migrated (progn (setf (frameset-states saved) (list state other))
                                     (edmacs-workspaces-migrate-frameset saved))))
-              (edmacs-sessions-live-test--drive-bridge migrated
+              (edmacs-sessions-live-test--drive-restore migrated
                 (should (= 1 (seq-count (lambda (f)
                                           (and (frame-live-p f) (display-graphic-p f)))
                                         (frame-list))))
@@ -659,24 +658,28 @@ a repair; with it stubbed back to `identity', at least one does."
                         (should (= 0 (plist-get audit :without-main)))))
                     ;; Without it, the same session restores a tab that does
                     ;; need one -- which is what the assertion above pins.
-                    (edmacs-sessions-live-test--restoring
-                        (cl-letf (((symbol-function 'edmacs-windows-ws-ensure-main)
-                                   #'identity))
-                          (edmacs-workspaces-migrate-frameset (copy-tree poisoned)))
-                      (let ((audit (edmacs-sessions-live-test--audit-restored-tabs
-                                    frame)))
-                        (should (> (plist-get audit :needing-repair) 0))))
+                    ;; sessions.el's own pre-restore migration would sanitize
+                    ;; it again, so it is switched off for this half.
+                    (cl-letf (((symbol-function 'edmacs-sessions--prepare-frameset)
+                               #'ignore))
+                      (edmacs-sessions-live-test--restoring
+                          (cl-letf (((symbol-function 'edmacs-windows-ws-ensure-main)
+                                     #'identity))
+                            (edmacs-workspaces-migrate-frameset (copy-tree poisoned)))
+                        (let ((audit (edmacs-sessions-live-test--audit-restored-tabs
+                                      frame)))
+                          (should (> (plist-get audit :needing-repair) 0)))))
                     ;; Leave the frame healthy for whatever runs next.
                     (edmacs-windows-normalize-frame frame)))))))))
 
     (ert-deftest edmacs-sessions-live-test-sidebar-selected-new-tab-restores-with-a-main-window ()
       "The manual GUI check, run end to end: make a tab while point is in the
-dedicated sidebar, save the session, restore it the way the daemon does
-on a restart, and confirm every tab has a main window and none needs a
+dedicated sidebar, save the session, restore it the way `desktop-read'
+does on a restart, and confirm every tab has a main window and none needs a
 repair.
 
 It belongs on a real graphical frame -- under `--batch' a side window's
-dedication and the restore bridge's frame reuse are both unfalsifiable,
+dedication and the restore's frame reuse are both unfalsifiable,
 which is why it skips there rather than passing vacuously. The
 poisoned-desktop half of the same check, which does not need a window
 system, is the test above."
@@ -710,11 +713,11 @@ system, is the test above."
                     (let ((ws (alist-get 'ws (cdr tab))))
                       (when ws (should-not (edmacs-windows-ws-side-only-p ws)))))
                   (should-not (edmacs-windows-frame-wedged-p frame))
-                  ;; Steps 4-5: save, then restore through the daemon's own
-                  ;; bridge -- the path a restart actually takes.
+                  ;; Steps 4-5: save, then restore the way
+                  ;; `desktop-read' does -- the path a restart actually takes.
                   (let ((migrated (edmacs-workspaces-migrate-frameset
                                    (frameset-save (list frame)))))
-                    (edmacs-sessions-live-test--drive-bridge migrated
+                    (edmacs-sessions-live-test--drive-restore migrated
                       (should (frame-live-p frame))
                       (let ((audit (edmacs-sessions-live-test--audit-restored-tabs
                                     frame)))

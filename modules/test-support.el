@@ -117,7 +117,7 @@ has never bootstrapped straight locally, so callers can `ert-skip'."
         (load (expand-file-name "modules/windows.el" default-directory) nil t))
       (unless (featurep 'workspaces)
         (load (expand-file-name "modules/workspaces.el" default-directory) nil t))
-      (unless (fboundp 'edmacs-sessions--ensure-sidebar)
+      (unless (fboundp 'edmacs-sessions--finish-frameset-restore)
         (load (expand-file-name "modules/sessions.el" default-directory) nil t))
       t)))
 
